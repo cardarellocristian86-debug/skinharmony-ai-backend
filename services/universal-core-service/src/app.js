@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import pg from "pg";
+import { deriveNyraWorkAutomationSystemVerifierId } from "../../shared/nyra-work-automation-system-verifier.js";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
@@ -217,6 +218,7 @@ import {
 import {
   createHostNativeBranchProtectionResolver,
   createHostNativeExternalReadbackVerifier,
+  createHostNativeManualEffectAdapterRegistry,
   createHostNativeOwnerManualMergeReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "./hostNativeExternalReadback.js";
@@ -955,6 +957,8 @@ function ownerContextCanonical(context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    oauth_owner_bound: context.oauth_owner_bound,
+    oauth_confirmation_jti: context.oauth_confirmation_jti,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
@@ -974,6 +978,34 @@ function stableCanonical(value) {
 
 function ownerRequestBinding(purpose, body = {}) {
   const { owner_context: _ownerContext, ...payload } = body;
+  return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
+}
+
+const OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES = new Set([
+  "host_native_owner_authority_envelope_issue",
+  "host_native_owner_authority_envelope_read",
+  "host_native_owner_authority_envelope_revoke",
+  "host_native_owner_manual_effect_reconcile",
+  "host_native_owner_manual_effect_reconciliation_read",
+  "host_native_owner_manual_effect_authorize_closure",
+]);
+
+// Match the MCP bridge's authority binding. Work `verified_at` is validated
+// afresh by the reconciliation service but is intentionally not part of the
+// idempotent OAuth request binding; otherwise a safe retry after a Gallery
+// projection failure would be rejected solely because that timestamp changed.
+function ownerManualEffectAuthorityRequestBinding(purpose, body = {}) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  if (
+    OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES.has(purpose) &&
+    payload.work_binding && typeof payload.work_binding === "object" &&
+    !Array.isArray(payload.work_binding)
+  ) {
+    payload.work_binding = {
+      ...payload.work_binding,
+      verified_at: "server_freshness_validated_at_core",
+    };
+  }
   return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
 }
 
@@ -5792,6 +5824,14 @@ export function createUniversalCoreService(options = {}) {
   const standingReleaseConfigurationValid =
     standingReleaseAutomationEnabledFlag.valid && standingReleaseEmergencyStopFlag.valid;
   const genericWorkCoreJoinProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  // Manual-effect authority retains revocation and one-time confirmation
+  // state.  Production therefore cannot opt out of its distributed-store
+  // requirement through an options override.  Legacy host-native governance
+  // has a distinct storage contract and remains available on its established
+  // restart-durable store.
+  const hostNativeOwnerAuthorityRequireDistributedStore =
+    genericWorkCoreJoinProduction ||
+    options.hostNativeOwnerAuthorityRequireDurableStore === true;
   const genericWorkCoreJoinEnabledFlag = strictGenericWorkCoreJoinBoolean(
     options.genericWorkCoreJoinEnabled ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ENABLED,
     false,
@@ -6638,6 +6678,34 @@ export function createUniversalCoreService(options = {}) {
               5_000,
             ),
           });
+        // Provider clients are deliberately kept outside the generic manual
+        // reconciliation contract.  The registry exposes only independently
+        // observed effects and never grants provider execution authority.
+        // Do not accept a caller/injected registry here.  The production
+        // registry is composed only of built-in read-only adapters; Nyra/Core
+        // break-glass readback uses a fixed GET-only server-owned origin.
+        const hostNativeManualEffectAdapters = createHostNativeManualEffectAdapterRegistry({
+          fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+          githubTokenResolver: hostNativeGithubTokenResolver,
+          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+          renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
+          nyraCoreReadbackOrigin:
+            options.hostNativeNyraCoreManualEffectReadbackOrigin ||
+            process.env.CORE_HOST_NATIVE_NYRA_CORE_MANUAL_EFFECT_READBACK_ORIGIN ||
+            "",
+          // A Nyra/Core repair readback is evidence only when its receipt is
+          // independently signed in the dedicated deployment trust domain.
+          // This is intentionally not derived from a caller, adapter, or URL.
+          nyraCoreRepairReceiptSigningSecret:
+            options.hostNativeNyraCoreManualEffectReceiptSigningSecret ||
+            process.env.CORE_HOST_NATIVE_NYRA_CORE_MANUAL_EFFECT_RECEIPT_SIGNING_SECRET ||
+            "",
+          timeoutMs: Number(
+            options.hostNativeReadbackTimeoutMs ??
+            process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+            5_000,
+          ),
+        });
         const standingReleaseBaseProtectionResolver =
           options.standingReleaseBaseProtectionResolver ||
           (typeof hostNativeGithubTokenResolver === "function"
@@ -6673,8 +6741,22 @@ export function createUniversalCoreService(options = {}) {
           }),
           semanticScopeMode: options.semanticScopeMode || process.env.CORE_SEMANTIC_SCOPE_MODE || "SHADOW",
           semanticScopeContextResolver: options.semanticScopeContextResolver || null,
+          ownerAuthorityProofSigner: genericWorkCoreJoinSigner,
+          manualEffectAdapters: hostNativeManualEffectAdapters,
+          ownerAuthorityRequireDurableStore:
+            hostNativeOwnerAuthorityRequireDistributedStore,
         });
         hostNativeGovernanceState = "ready";
+        if (hostNativeGovernance.owner_manual_effect_reconciliation_configured !== true) {
+          audit.append("core_owner_manual_effect_reconciliation_unavailable", {
+            reason: hostNativeGovernance.owner_manual_effect_reconciliation_unavailable_reason ||
+              "owner_manual_effect_reconciliation_unavailable",
+            store_restart_durable:
+              hostNativeGovernance.storage?.restart_durable === true,
+            store_distributed:
+              hostNativeGovernance.storage?.distributed === true,
+          });
+        }
       } catch (error) {
         hostNativeGovernanceState = "persistent_store_unavailable";
         audit.append("core_host_native_governance_unavailable", {
@@ -11001,11 +11083,11 @@ export function createUniversalCoreService(options = {}) {
 
   function hostNativeFailure(res, error) {
     const code = String(error?.message || "host_native_governance_failed").slice(0, 200);
-    const status = /(?:replayed|revision_conflict|version_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict)/.test(code)
+    const status = /(?:replayed|revision_conflict|version_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict|revocation_closed)/.test(code)
       ? 409
       : /not_found/.test(code)
         ? 404
-        : /(?:cross_tenant|not_active|expired|signature_invalid|owner_mismatch|host_session_mismatch)/.test(code)
+        : /(?:cross_tenant|not_active|expired|signature_invalid|owner_mismatch|host_session_mismatch|owner_oauth_confirmation_required)/.test(code)
           ? 403
           : /(?:store_lock_timeout|store_unavailable)/.test(code)
             ? 503
@@ -11016,6 +11098,35 @@ export function createUniversalCoreService(options = {}) {
   function requireHostNativeGovernance(res) {
     if (hostNativeGovernance) return true;
     publicError(res, 503, "host_native_governance_unavailable", hostNativeGovernanceState);
+    return false;
+  }
+
+  function requireOwnerManualEffectReconciliation(res) {
+    if (!requireHostNativeGovernance(res)) return false;
+    const authorityStoreReady =
+      !hostNativeOwnerAuthorityRequireDistributedStore ||
+      (
+        hostNativeGovernance?.storage?.restart_durable === true &&
+        hostNativeGovernance?.storage?.distributed === true
+      );
+    if (
+      authorityStoreReady &&
+      hostNativeGovernance?.owner_manual_effect_reconciliation_configured === true &&
+      typeof hostNativeGovernance.issueOwnerAuthorityEnvelope === "function" &&
+      typeof hostNativeGovernance.readOwnerAuthorityEnvelope === "function" &&
+      typeof hostNativeGovernance.readOwnerManualEffectReconciliation === "function" &&
+      typeof hostNativeGovernance.revokeOwnerAuthorityEnvelope === "function" &&
+      typeof hostNativeGovernance.recordOwnerManualEffect === "function" &&
+      typeof hostNativeGovernance.authorizeOwnerManualEffectClosure === "function"
+    ) return true;
+    publicError(
+      res,
+      503,
+      "owner_manual_effect_reconciliation_unavailable",
+      !authorityStoreReady
+        ? "owner_authority_distributed_store_required"
+        : hostNativeGovernance?.owner_manual_effect_reconciliation_unavailable_reason || null,
+    );
     return false;
   }
 
@@ -11081,6 +11192,57 @@ export function createUniversalCoreService(options = {}) {
       purpose,
       request_binding_hash: String(context.binding_hash || ""),
     };
+  }
+
+  // Manual-effect authority is intentionally narrower than the compatibility
+  // owner assertion used by legacy Host Native flows. Only a verified OAuth
+  // tenant owner can carry a gateway-issued confirmation JTI; the JTI is
+  // signed into the exact request context and becomes the durable nonce used
+  // by the authority-envelope service.
+  function verifyOAuthOwnerManualAuthorityConfirmation(req, purpose) {
+    if (
+      req.coreKey?.key_type !== "connector" ||
+      !hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) ||
+      req.body?.owner_confirmed !== true
+    ) {
+      throw new Error("owner_oauth_confirmation_required");
+    }
+    const context = req.body?.owner_context;
+    if (
+      !verifyOwnerContextAssertion(
+        context,
+        ownerContextSigningSecret,
+        req.tenantId,
+        ownerManualEffectAuthorityRequestBinding(purpose, req.body || {}),
+      ) ||
+      context?.delegated_actor !== "oauth" ||
+      context?.access_mode !== "tenant_owner" ||
+      context?.role !== "tenant_owner" ||
+      context?.oauth_owner_bound !== true ||
+      !/^ocj_[a-f0-9]{64}$/.test(String(context?.oauth_confirmation_jti || "")) ||
+      !PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""))
+    ) {
+      throw new Error("owner_oauth_confirmation_required");
+    }
+    return {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: context.owner_subject_fingerprint,
+      consent_nonce: context.oauth_confirmation_jti,
+      confirmation_reference: textValue(req.body?.confirmation_reference),
+      purpose,
+      request_binding_hash: String(context.binding_hash || ""),
+    };
+  }
+
+  // Authority confirmations bind the JSON body.  The manual-effect read,
+  // revoke, and closure routes carry their target in the URL, so require an
+  // identical body field before passing it to the service.  This prevents a
+  // valid confirmation for target A from being replayed against path target B.
+  function requireOwnerManualEffectRouteBinding(value, expected, code) {
+    if (typeof value !== "string" || value !== String(expected || "")) {
+      throw new Error(code);
+    }
   }
 
   function verifyEntity360FeatureFlagOwnerConfirmation(req) {
@@ -11356,7 +11518,10 @@ export function createUniversalCoreService(options = {}) {
     async (req, res) => {
       if (!requireNyraWorkAutomation(res)) return;
       try {
-        const verifier_agent_id = `system_verifier_${crypto.createHash("sha256").update(`${req.tenantId}\u0000${req.params.workId}`).digest("hex").slice(0, 24)}`;
+        const verifier_agent_id = deriveNyraWorkAutomationSystemVerifierId({
+          tenantId: req.tenantId,
+          workId: req.params.workId,
+        });
         const record = await nyraWorkAutomation.verifyCi({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId, verifier_agent_id, system_assigned: true });
         return res.json({ ok: true, tenant_id: req.tenantId, record, verifier_agent_id, dedicated_core_gate: nyraDedicatedCoreGate });
       } catch (error) { return hostNativeFailure(res, error); }
@@ -12402,6 +12567,258 @@ export function createUniversalCoreService(options = {}) {
           ok: true,
           tenant_id: req.tenantId,
           manual_merge_readback: receipt,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  // Generic, evidence-only reconciliation.  These routes intentionally do
+  // not issue or consume Host Native action tickets: an already-manual effect
+  // is closed only through a fresh owner confirmation and independent adapter
+  // readback.
+  app.post(
+    "/v1/host-native/owner-authority-envelopes",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_authority_envelope_issue",
+        );
+        const {
+          tenant_id: _tenantId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...input
+        } = req.body || {};
+        const result = await hostNativeGovernance.issueOwnerAuthorityEnvelope({
+          ...input,
+          tenant_id: req.tenantId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_owner_authority_envelope_issued", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: result.envelope.work_id,
+          envelope_id: result.envelope.envelope_id,
+          envelope_digest: result.envelope.envelope_digest,
+          mode: result.envelope.mode,
+          expires_at: result.envelope.expires_at,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          owner_authority_envelope: result.envelope,
+          audit: result.audit,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/owner-authority-envelopes/:envelopeId/read",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_authority_envelope_read",
+        );
+        requireOwnerManualEffectRouteBinding(
+          req.body?.envelope_id,
+          req.params.envelopeId,
+          "owner_authority_envelope_path_binding_invalid",
+        );
+        const envelope = await hostNativeGovernance.readOwnerAuthorityEnvelope({
+          tenant_id: req.tenantId,
+          envelope_id: req.params.envelopeId,
+          owner_confirmation: ownerConfirmation,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          owner_authority_envelope: envelope,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/owner-authority-envelopes/:envelopeId/revoke",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_authority_envelope_revoke",
+        );
+        const {
+          tenant_id: _tenantId,
+          envelope_id: _envelopeId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...input
+        } = req.body || {};
+        requireOwnerManualEffectRouteBinding(
+          _envelopeId,
+          req.params.envelopeId,
+          "owner_authority_envelope_path_binding_invalid",
+        );
+        const result = await hostNativeGovernance.revokeOwnerAuthorityEnvelope({
+          ...input,
+          tenant_id: req.tenantId,
+          envelope_id: req.params.envelopeId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_owner_authority_envelope_revoked", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          envelope_id: req.params.envelopeId,
+          revocation_digest: result.revocation?.revocation_digest || null,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          owner_authority_envelope: result.envelope,
+          revocation: result.revocation,
+          audit: result.audit,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/owner-manual-effect/reconcile",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_manual_effect_reconcile",
+        );
+        const {
+          tenant_id: _tenantId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...input
+        } = req.body || {};
+        const result = await hostNativeGovernance.recordOwnerManualEffect({
+          ...input,
+          tenant_id: req.tenantId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_owner_manual_effect_reconciled", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: result.reconciliation.work_id,
+          reconciliation_id: result.reconciliation.reconciliation_id,
+          reconciliation_digest: result.reconciliation.reconciliation_digest,
+          authority_envelope_id: result.reconciliation.authority_envelope_id,
+          adapter_id: result.reconciliation.adapter_id,
+          effect_type: result.reconciliation.effect_type,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          manual_effect_reconciliation: result.reconciliation,
+          audit: result.audit,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/owner-manual-effect/:reconciliationId/read",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_manual_effect_reconciliation_read",
+        );
+        requireOwnerManualEffectRouteBinding(
+          req.body?.reconciliation_id,
+          req.params.reconciliationId,
+          "owner_manual_effect_reconciliation_path_binding_invalid",
+        );
+        const record = hostNativeGovernance.readOwnerManualEffectReconciliation({
+          tenant_id: req.tenantId,
+          reconciliation_id: req.params.reconciliationId,
+          owner_confirmation: ownerConfirmation,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          manual_effect_reconciliation: record.reconciliation,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/owner-manual-effect/:reconciliationId/authorize-closure",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireOwnerManualEffectReconciliation(res)) return;
+      try {
+        const ownerConfirmation = verifyOAuthOwnerManualAuthorityConfirmation(
+          req,
+          "host_native_owner_manual_effect_authorize_closure",
+        );
+        const {
+          tenant_id: _tenantId,
+          reconciliation_id: _reconciliationId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...input
+        } = req.body || {};
+        requireOwnerManualEffectRouteBinding(
+          _reconciliationId,
+          req.params.reconciliationId,
+          "owner_manual_effect_reconciliation_path_binding_invalid",
+        );
+        const result = await hostNativeGovernance.authorizeOwnerManualEffectClosure({
+          ...input,
+          tenant_id: req.tenantId,
+          reconciliation_id: req.params.reconciliationId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_owner_manual_effect_closure_authorized", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: result.reconciliation.work_id,
+          reconciliation_id: result.reconciliation.reconciliation_id,
+          authority_proof_digest: result.authority_proof.proof_digest,
+          authority_envelope_id: result.reconciliation.authority_envelope_id,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          manual_effect_reconciliation: result.reconciliation,
+          authority_proof: result.authority_proof,
+          closure_authorized: result.closure_authorized === true,
+          audit: result.audit,
         });
       } catch (error) {
         return hostNativeFailure(res, error);

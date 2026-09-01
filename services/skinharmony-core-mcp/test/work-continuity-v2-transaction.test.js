@@ -9,7 +9,16 @@ import {
 import {
   createHostNativeFinalizeAuthorizationProof,
   createLocalGenericWorkCoreJoinSigner,
+  genericWorkCoreJoinDigest,
 } from "../../universal-core-service/src/genericWorkCoreJoin.js";
+import {
+  createInMemoryHostNativeGovernanceStore,
+} from "../../universal-core-service/src/hostNativeGovernance.js";
+import {
+  createOwnerManualEffectReconciliation,
+  OWNER_MANUAL_EFFECT_ADAPTER_OBSERVATION_SCHEMA_VERSION,
+  OWNER_MANUAL_EFFECT_POST_VERIFICATION_SCHEMA_VERSION,
+} from "../../universal-core-service/src/ownerManualEffectReconciliation.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
 
 function key(...parts) { return parts.join("\0"); }
@@ -120,6 +129,167 @@ async function manualClosureAuthority({ workId, intentDigest, repository = "owne
     signer,
   });
   return { authorization, proof, verifier, signer, receiptId, receiptDigest };
+}
+
+async function manualEffectAuthority({
+  workId,
+  intentDigest,
+  mode = "OWNER_MANUAL",
+  manualResourceId = null,
+  workStatus = "active",
+  timestamp = "2026-08-08T10:00:02.000Z",
+  workUpdatedAt = "2026-08-08T10:00:00.000Z",
+} = {}) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const keyId = "gwcj-test-manual-effect";
+  const signer = createLocalGenericWorkCoreJoinSigner({
+    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyId,
+  });
+  const verifier = createGenericWorkCoreJoinVerifier({
+    publicKey: publicKey.export({ type: "spki", format: "pem" }),
+    keyId,
+  });
+  const owner = `osf_${"a".repeat(64)}`;
+  const breakGlass = mode === "OWNER_BREAK_GLASS";
+  const adapterId = breakGlass ? "nyra_core" : "github";
+  const effectType = breakGlass
+    ? "nyra_core.self_repair.commit"
+    : "github.merge";
+  const resourceId = manualResourceId || (breakGlass
+    ? "nyra_core:owner/repo:main:services/nyra-core"
+    : "github:owner/repo");
+  const effectReference = breakGlass
+    ? {
+      repository: "owner/repo",
+      branch: "main",
+      path: "services/nyra-core",
+      commit: "9".repeat(40),
+      repair_action_id: "nra_work-continuity-repair",
+      repair_action_digest: "a".repeat(64),
+      repair_receipt_id: "nrr_work-continuity-repair",
+      repair_receipt_digest: "b".repeat(64),
+    }
+    : { merge_commit: "9".repeat(40), pull_request: 394, repository: "owner/repo" };
+  const effectReferenceDigest = genericWorkCoreJoinDigest(effectReference);
+  const workBindingUnsigned = {
+    schema_version: "owner_manual_effect_work_binding_v1",
+    source: "mcp_work_continuity_v2",
+    tenant_id: "tenant-a",
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    mode,
+    work_status: workStatus,
+    current_version: Date.parse(workUpdatedAt),
+    work_updated_at: workUpdatedAt,
+    repository: "owner/repo",
+    provider_execution: false,
+    allowed_effect_tuples: [{
+      adapter_id: adapterId,
+      effect_type: effectType,
+      resource_id: resourceId,
+      effect_reference_digest: effectReferenceDigest,
+    }],
+  };
+  const workBinding = {
+    ...workBindingUnsigned,
+    trusted: true,
+    verified_at: timestamp,
+    binding_digest: genericWorkCoreJoinDigest(workBindingUnsigned),
+  };
+  const confirmation = (purpose, nonce) => ({
+    verified: true,
+    request_bound: true,
+    owner_subject_fingerprint: owner,
+    consent_nonce: nonce,
+    confirmation_reference: `verified OAuth owner ${purpose}`,
+    purpose,
+    request_binding_hash: "b".repeat(64),
+  });
+  const authority = createOwnerManualEffectReconciliation({
+    store: createInMemoryHostNativeGovernanceStore(),
+    signer,
+    now: () => Date.parse(timestamp),
+    idFactory: () => "work-continuity-manual-effect",
+    adapters: {
+      [adapterId]: {
+        trusted: true,
+        async reconcile(request) {
+          return {
+            schema_version: OWNER_MANUAL_EFFECT_ADAPTER_OBSERVATION_SCHEMA_VERSION,
+            trusted: true,
+            adapter_id: adapterId,
+            effect_type: effectType,
+            resource_id: resourceId,
+            effect_reference_digest: request.effect_reference_digest,
+            observed_at: timestamp,
+            outcome: "VERIFIED_SUCCESS",
+            evidence_digest: "c".repeat(64),
+            post_verification: {
+              schema_version: OWNER_MANUAL_EFFECT_POST_VERIFICATION_SCHEMA_VERSION,
+              verified: true,
+              verifier_id: "independent-core-readback",
+              verified_at: timestamp,
+              evidence_digest: "c".repeat(64),
+              result_digest: "d".repeat(64),
+            },
+            provider_execution: false,
+            external_side_effect: false,
+          };
+        },
+      },
+    },
+  });
+  const envelope = await authority.issueEnvelope({
+    tenant_id: "tenant-a",
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    mode,
+    scope: {
+      adapter_ids: [adapterId],
+      effect_types: [effectType],
+      resource_ids: [resourceId],
+      effect_reference_digests: [effectReferenceDigest],
+    },
+    effect_ceiling: [effectType],
+    ttl_seconds: 300,
+    break_glass_reason_digest: breakGlass ? "f".repeat(64) : null,
+    work_binding: workBinding,
+    owner_confirmation: confirmation("host_native_owner_authority_envelope_issue", "oauth-envelope"),
+    idempotency_key: "issue-manual-effect-envelope",
+  });
+  const reconciled = await authority.recordManualEffect({
+    tenant_id: "tenant-a",
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    envelope_id: envelope.envelope.envelope_id,
+    adapter_id: adapterId,
+    effect_type: effectType,
+    resource_id: resourceId,
+    effect_reference: effectReference,
+    work_binding: workBinding,
+    owner_confirmation: confirmation("host_native_owner_manual_effect_reconcile", "oauth-reconcile"),
+    idempotency_key: "reconcile-manual-effect",
+  });
+  const closure = await authority.authorizeClosure({
+    tenant_id: "tenant-a",
+    reconciliation_id: reconciled.reconciliation.reconciliation_id,
+    owner_confirmation: confirmation(
+      "host_native_owner_manual_effect_authorize_closure",
+      "oauth-closure",
+    ),
+    work_binding: workBinding,
+    idempotency_key: "close-manual-effect",
+  });
+  return {
+    reconciliation: closure.reconciliation,
+    proof: closure.authority_proof,
+    verifier,
+    signer,
+    work_binding: workBinding,
+    mode,
+    break_glass_reason_digest: breakGlass ? "f".repeat(64) : null,
+  };
 }
 
 class AtomicWorkPool {
@@ -431,16 +601,21 @@ class AtomicWorkPool {
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT evidence_id,digest,metadata FROM tenant_work_evidence")) {
+      const manualEffect = q.includes("kind='owner_manual_effect_release'");
       const row = [...this.evidence.values()].find((item) =>
         item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
-        item.kind === "owner_manual_merge_release" &&
-        item.metadata?.manual_merge_readback_id === parameters[2]);
+        item.kind === (manualEffect ? "owner_manual_effect_release" : "owner_manual_merge_release") &&
+        (manualEffect
+          ? item.metadata?.reconciliation_id === parameters[2]
+          : item.metadata?.manual_merge_readback_id === parameters[2]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO tenant_work_evidence")) {
+      const manualEffect = q.includes("'owner_manual_effect_release'");
       const row = {
         tenant_id: parameters[0], evidence_id: parameters[1], work_id: parameters[2],
-        kind: "owner_manual_merge_release", digest: parameters[3], required: true,
+        kind: manualEffect ? "owner_manual_effect_release" : "owner_manual_merge_release",
+        digest: parameters[3], required: true,
         independently_verified: true, verified_by_agent_id: parameters[4],
         verified_by_session_fingerprint: parameters[5], weight: 1,
         metadata: JSON.parse(parameters[6]), created_at: "2026-08-08T10:00:02.000Z",
@@ -1949,4 +2124,405 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
   assert.ok([...pool.events.values()].some((event) =>
     event.event_type === "owner_manual_merge_release_verified" &&
     event.payload.note === "owner_manual_merge"));
+});
+
+test("typed OAuth owner manual-effect evidence is ticket-free and closes through normal Gallery gates", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "24794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const bindingVerifiedAt = new Date();
+  const authority = await manualEffectAuthority({
+    workId,
+    intentDigest,
+    timestamp: bindingVerifiedAt.toISOString(),
+    workUpdatedAt: new Date(bindingVerifiedAt.getTime() - 1_000).toISOString(),
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date(),
+    coreJoinVerifier: authority.verifier,
+  });
+  const work = candidateWork(100, {
+    work_id: workId,
+    legacy_work_id: workId,
+    work_name: "Manual effect closure",
+    work_type: "software_git",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    status: "ACTIVE",
+    acceptance_criteria: ["manual effect independently verified"],
+    intent_digest: intentDigest,
+    architecture: { repository: "owner/repo" },
+    objective: "Close only after the typed authority proof and post verification",
+    created_at: "2026-08-08T10:00:00.000Z",
+    started_at: "2026-08-08T10:00:00.000Z",
+    team_id: null,
+    priority: "P1",
+    updated_at: authority.work_binding.work_updated_at,
+  });
+  pool.works.set(key("tenant-a", workId), work);
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, status: "release_ready",
+    next_action: "verify manual effect", updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", "task-manual-effect"), {
+    tenant_id: "tenant-a", task_id: "task-manual-effect", work_id: workId,
+    title: "Verify manual effect", weight: 1, status: "completed", required: true,
+    acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "evidence-independent"), {
+    tenant_id: "tenant-a", evidence_id: "evidence-independent", work_id: workId,
+    kind: "native_verifier_terminal_report", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "independent-verifier",
+    verified_by_session_fingerprint: "4".repeat(64), weight: 1,
+    metadata: {}, created_at: "2026-08-08T10:00:01.000Z",
+  });
+  // The authority proof is additional evidence, not a way to bypass the
+  // existing generic Work Core Join requirement.
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
+    core_join_context: { authority: "universal_core" },
+  });
+  await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: {
+      ...authority.proof,
+      signature: `${authority.proof.signature[0] === "A" ? "B" : "A"}${authority.proof.signature.slice(1)}`,
+    },
+  }), /owner_manual_effect_release_authority_proof_invalid/);
+
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "tenant-gateway-key-for-composed-test-123456",
+    tenantContextSigningSecret: "tenant-context-key-for-composed-test-123456",
+    ownerContextSigningSecret: "owner-context-key-for-composed-test-123456",
+  }, {
+    fetchImpl: async (url) => new Response(JSON.stringify(
+      String(url).includes("/read")
+        ? {
+          ok: true,
+          tenant_id: "tenant-a",
+          manual_effect_reconciliation: authority.reconciliation,
+        }
+        : {
+          ok: true,
+          tenant_id: "tenant-a",
+          manual_effect_reconciliation: authority.reconciliation,
+          authority_proof: authority.proof,
+        },
+    ), { status: 200, headers: { "content-type": "application/json" } }),
+    tenantWorkGallery: store,
+    resolveOwnerManualEffectWorkBinding: Object.assign(
+      async () => ({
+        work_binding: authority.work_binding,
+        effect_reference: null,
+      }),
+      { trusted: true },
+    ),
+  });
+  const handlerIdentity = {
+    ...identity(),
+    kind: "oauth",
+    subject: "owner",
+    role: "tenant_owner",
+    oauthOwnerBound: true,
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    ownerConfirmationJti: `ocj_${"a".repeat(64)}`,
+    confirmationReference: "confirm exact OAuth manual effect Gallery closure",
+  };
+  const result = await handlers.host_native_owner_manual_effect_finalize_gallery({
+    reconciliation_id: authority.reconciliation.reconciliation_id,
+    idempotency_key: "finalize-manual-effect-gallery",
+  }, handlerIdentity);
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.work_gallery_projection.note, "owner_manual_effect");
+  assert.equal(payload.work_gallery_projection.retrospective_ticket_issued, false);
+  assert.equal(payload.work_gallery_projection.archive_status, "ARCHIVED");
+  const replay = await store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: authority.proof,
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal([...pool.evidence.values()].filter((item) =>
+    item.kind === "owner_manual_effect_release").length, 1);
+  const manualEffectEvidence = [...pool.evidence.values()].find((item) =>
+    item.kind === "owner_manual_effect_release");
+  assert.equal(manualEffectEvidence.metadata.mode, "OWNER_MANUAL");
+  assert.equal(manualEffectEvidence.metadata.break_glass_reason_digest, null);
+  assert.equal(manualEffectEvidence.metadata.work_binding_digest,
+    authority.reconciliation.work_binding_digest);
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "completed");
+  assert.ok([...pool.events.values()].some((event) =>
+    event.event_type === "owner_manual_effect_release_verified" &&
+    event.payload.ticket_issued === false));
+  const legacyClosure = [...pool.coreEvents.values()].find((event) =>
+    event.event_type === "generic_closure_finalized");
+  assert.equal(legacyClosure.payload.note, "owner_manual_effect");
+});
+
+test("typed OAuth owner manual-effect closes a HANDOFF Work with a release_ready binding", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "25794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const bindingVerifiedAt = new Date();
+  const authority = await manualEffectAuthority({
+    workId,
+    intentDigest,
+    workStatus: "release_ready",
+    timestamp: bindingVerifiedAt.toISOString(),
+    workUpdatedAt: new Date(bindingVerifiedAt.getTime() - 1_000).toISOString(),
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date(),
+    coreJoinVerifier: authority.verifier,
+  });
+  pool.works.set(key("tenant-a", workId), candidateWork(105, {
+    work_id: workId,
+    legacy_work_id: workId,
+    work_name: "Manual effect HANDOFF closure",
+    work_type: "software_git",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    status: "HANDOFF",
+    acceptance_criteria: ["manual effect independently verified"],
+    intent_digest: intentDigest,
+    architecture: { repository: "owner/repo" },
+    objective: "Close a release-ready Work after independently verifying the manual effect",
+    created_at: "2026-08-08T10:00:00.000Z",
+    started_at: "2026-08-08T10:00:00.000Z",
+    team_id: null,
+    priority: "P1",
+    updated_at: authority.work_binding.work_updated_at,
+  }));
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, status: "release_ready",
+    next_action: "verify manual effect", updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", "task-manual-effect-handoff"), {
+    tenant_id: "tenant-a", task_id: "task-manual-effect-handoff", work_id: workId,
+    title: "Verify manual effect", weight: 1, status: "completed", required: true,
+    acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "evidence-independent-handoff"), {
+    tenant_id: "tenant-a", evidence_id: "evidence-independent-handoff", work_id: workId,
+    kind: "native_verifier_terminal_report", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "independent-verifier",
+    verified_by_session_fingerprint: "4".repeat(64), weight: 1,
+    metadata: {}, created_at: "2026-08-08T10:00:01.000Z",
+  });
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
+    core_join_context: { authority: "universal_core" },
+  });
+
+  const projection = await store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: authority.proof,
+  });
+  assert.equal(projection.note, "owner_manual_effect");
+  const closure = await store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "software_git",
+  });
+  assert.equal(closure.archive_status, "ARCHIVED");
+  assert.equal(closure.closure_note, "owner_manual_effect");
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "completed");
+});
+
+test("owner manual-effect Gallery bridge rejects signed mode mismatch and server-owned Work drift", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "34794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualEffectAuthority({ workId, intentDigest });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  pool.works.set(key("tenant-a", workId), candidateWork(101, {
+    work_id: workId,
+    owner_user_id: "owner",
+    intent_digest: intentDigest,
+    status: "ACTIVE",
+    architecture: { repository: "other/repository" },
+  }));
+
+  const modeMismatchUnsigned = {
+    ...authority.proof,
+    mode: "OWNER_BREAK_GLASS",
+    break_glass_reason_digest: "e".repeat(64),
+  };
+  delete modeMismatchUnsigned.proof_digest;
+  delete modeMismatchUnsigned.signature;
+  const modeMismatchDigest = genericWorkCoreJoinDigest(modeMismatchUnsigned);
+  const modeMismatchProof = {
+    ...modeMismatchUnsigned,
+    proof_digest: modeMismatchDigest,
+    signature: await authority.signer.signDigest(modeMismatchDigest),
+  };
+  await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: modeMismatchProof,
+  }), /owner_manual_effect_release_authority_proof_invalid/);
+
+  await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: authority.proof,
+  }), /owner_manual_effect_release_work_binding_invalid/);
+
+  for (const overrides of [
+    { updated_at: "2026-08-08T10:00:01.000Z" },
+    { status: "PAUSED" },
+    { intent_digest: "1".repeat(64) },
+  ]) {
+    pool.works.set(key("tenant-a", workId), candidateWork(102, {
+      work_id: workId,
+      owner_user_id: "owner",
+      intent_digest: intentDigest,
+      status: "ACTIVE",
+      architecture: { repository: "owner/repo" },
+      ...overrides,
+    }));
+    await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+      manual_effect_reconciliation: authority.reconciliation,
+      authority_proof: authority.proof,
+    }), /owner_manual_effect_release_work_binding_invalid/);
+  }
+
+  pool.works.set(key("tenant-a", workId), candidateWork(102, {
+    work_id: workId,
+    owner_user_id: "owner",
+    intent_digest: intentDigest,
+    status: "ACTIVE",
+    architecture: { repository: "owner/repo" },
+  }));
+  const staleProofUnsigned = {
+    ...authority.proof,
+    issued_at: "2026-08-08T10:06:00.000Z",
+    expires_at: "2026-08-08T10:07:00.000Z",
+  };
+  delete staleProofUnsigned.proof_digest;
+  delete staleProofUnsigned.signature;
+  const staleProofDigest = genericWorkCoreJoinDigest(staleProofUnsigned);
+  const staleProof = {
+    ...staleProofUnsigned,
+    proof_digest: staleProofDigest,
+    signature: await authority.signer.signDigest(staleProofDigest),
+  };
+  const staleStore = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:06:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  await assert.rejects(staleStore.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: staleProof,
+  }), /owner_manual_effect_release_work_binding_invalid/);
+  assert.equal([...pool.evidence.values()].filter((item) =>
+    item.kind === "owner_manual_effect_release").length, 0);
+});
+
+test("owner manual-effect Gallery bridge binds a GitHub resource to the Work repository", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "3a794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualEffectAuthority({
+    workId,
+    intentDigest,
+    manualResourceId: "github:other/repository",
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  pool.works.set(key("tenant-a", workId), candidateWork(104, {
+    work_id: workId,
+    owner_user_id: "owner",
+    intent_digest: intentDigest,
+    status: "ACTIVE",
+    architecture: { repository: "owner/repo" },
+  }));
+  await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: authority.proof,
+  }), /owner_manual_effect_release_work_binding_invalid/);
+  assert.equal([...pool.evidence.values()].filter((item) =>
+    item.kind === "owner_manual_effect_release").length, 0);
+});
+
+test("owner break-glass self-repair is constrained by the exact V2 binding tuple", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "44794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualEffectAuthority({
+    workId,
+    intentDigest,
+    mode: "OWNER_BREAK_GLASS",
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  pool.works.set(key("tenant-a", workId), candidateWork(103, {
+    work_id: workId,
+    owner_user_id: "owner",
+    intent_digest: intentDigest,
+    status: "ACTIVE",
+    architecture: { repository: "owner/repo" },
+  }));
+  const substitutedReconciliationUnsigned = {
+    ...authority.reconciliation,
+    resource_id: "nyra_core:owner/repo:main:services/other",
+  };
+  delete substitutedReconciliationUnsigned.reconciliation_digest;
+  const substitutedReconciliation = {
+    ...substitutedReconciliationUnsigned,
+    reconciliation_digest: genericWorkCoreJoinDigest(substitutedReconciliationUnsigned),
+  };
+  const substitutedProofUnsigned = {
+    ...authority.proof,
+    reconciliation_digest: substitutedReconciliation.reconciliation_digest,
+  };
+  delete substitutedProofUnsigned.proof_digest;
+  delete substitutedProofUnsigned.signature;
+  const substitutedProofDigest = genericWorkCoreJoinDigest(substitutedProofUnsigned);
+  const substitutedProof = {
+    ...substitutedProofUnsigned,
+    proof_digest: substitutedProofDigest,
+    signature: await authority.signer.signDigest(substitutedProofDigest),
+  };
+  await assert.rejects(store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: substitutedReconciliation,
+    authority_proof: substitutedProof,
+  }), /owner_manual_effect_release_work_binding_invalid/);
+  const projection = await store.recordOwnerManualEffectReleaseEvidence(identity(), {
+    manual_effect_reconciliation: authority.reconciliation,
+    authority_proof: authority.proof,
+  });
+  assert.equal(projection.note, "owner_manual_effect");
+  assert.equal(projection.retrospective_ticket_issued, false);
+  const evidence = [...pool.evidence.values()].find((item) =>
+    item.kind === "owner_manual_effect_release");
+  assert.equal(evidence.metadata.mode, "OWNER_BREAK_GLASS");
+  assert.equal(evidence.metadata.break_glass_reason_digest,
+    authority.break_glass_reason_digest);
+  assert.equal(evidence.metadata.work_binding_digest,
+    authority.reconciliation.work_binding_digest);
 });

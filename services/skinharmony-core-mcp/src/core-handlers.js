@@ -48,9 +48,15 @@ import {
   canonicalGenericWorkCoreJoinContextBody,
   issueGenericWorkCoreJoinContext,
 } from "../../shared/generic-work-core-join-context.js";
+import {
+  genericWorkCoreJoinDigest,
+} from "../../universal-core-service/src/genericWorkCoreJoin.js";
 import { projectNyraControlRoomStatus } from "./nyra-control-room.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const OWNER_MANUAL_EFFECT_WORK_BINDING_SCHEMA_VERSION =
+  "owner_manual_effect_work_binding_v1";
+const OWNER_MANUAL_EFFECT_OAUTH_JTI = /^ocj_[a-f0-9]{64}$/;
 const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const POLICY_REGISTRY_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
 const POLICY_REGISTRY_DOMAIN_PACK_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
@@ -214,6 +220,8 @@ function ownerContextCanonical(context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    oauth_owner_bound: context.oauth_owner_bound,
+    oauth_confirmation_jti: context.oauth_confirmation_jti,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
@@ -249,6 +257,35 @@ export function classifyRemediationResubmissionOutcome(payload = {}) {
 
 function ownerRequestBinding(purpose, body = {}) {
   const { owner_context: _ownerContext, ...payload } = body;
+  return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
+}
+
+const OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES = new Set([
+  "host_native_owner_authority_envelope_issue",
+  "host_native_owner_authority_envelope_read",
+  "host_native_owner_authority_envelope_revoke",
+  "host_native_owner_manual_effect_reconcile",
+  "host_native_owner_manual_effect_reconciliation_read",
+  "host_native_owner_manual_effect_authorize_closure",
+]);
+
+// `verified_at` is a freshness witness, not authority-bearing Work state. It
+// must remain fresh on every closure retry, so bind the stable server-derived
+// Work digest and all semantic fields while leaving that volatile timestamp to
+// Universal Core's independent freshness validator. This keeps an exact OAuth
+// retry recoverable if Core already signed the closure but V2 projection fails.
+function ownerManualEffectAuthorityRequestBinding(purpose, body = {}) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  if (
+    OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES.has(purpose) &&
+    payload.work_binding && typeof payload.work_binding === "object" &&
+    !Array.isArray(payload.work_binding)
+  ) {
+    payload.work_binding = {
+      ...payload.work_binding,
+      verified_at: "server_freshness_validated_at_core",
+    };
+  }
   return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
 }
 
@@ -582,6 +619,16 @@ function isVerifiedOAuthTenantOwner(identity) {
     Boolean(String(identity?.confirmationReference || "").trim());
 }
 
+// The new manual-effect path deliberately has a stricter identity predicate
+// than the established OAuth tenant-owner compatibility flows.  Do not fold
+// this flag into `isVerifiedOAuthTenantOwner`: that would silently change the
+// authorization contract of existing, separately request-bound Core actions.
+function isVerifiedOAuthOwnerManualAuthority(identity) {
+  return isVerifiedOAuthTenantOwner(identity) &&
+    identity?.oauthOwnerBound === true &&
+    OWNER_MANUAL_EFFECT_OAUTH_JTI.test(String(identity?.ownerConfirmationJti || ""));
+}
+
 function requireHostNativeOwnerConfirmation(identity, config) {
   if (isCodexGoodModeDelegation(identity, config)) return "codex_good_mode";
   if (identity?.kind !== "oauth" || !String(identity?.subject || "").trim()) {
@@ -593,6 +640,17 @@ function requireHostNativeOwnerConfirmation(identity, config) {
     !String(identity?.confirmationReference || "").trim()
   ) {
     throw new Error("owner_confirmation_required");
+  }
+  return "oauth_owner_confirmation";
+}
+
+// Authority envelopes are deliberately narrower than legacy Host Native
+// delegations: they must be rooted in the verified OAuth tenant-owner
+// identity itself.  Codex Good Mode and owner-root compatibility paths cannot
+// mint, read, revoke, or consume them.
+function requireVerifiedOAuthOwnerManualAuthority(identity) {
+  if (!isVerifiedOAuthOwnerManualAuthority(identity)) {
+    throw new Error("owner_oauth_confirmation_required");
   }
   return "oauth_owner_confirmation";
 }
@@ -660,6 +718,7 @@ export function createCoreHandlers(config, options = {}) {
   const tenantWorkGallery = options.tenantWorkGallery;
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
   const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
+  const resolveOwnerManualEffectWorkBinding = options.resolveOwnerManualEffectWorkBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
   // The MCP handler owns no Work database projection.  The server injects
   // this bounded reader so Control Room progress is calculated from the
@@ -1299,6 +1358,194 @@ export function createCoreHandlers(config, options = {}) {
     });
   }
 
+  function ownerManualEffectBindingTuple(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.keys(value).sort().join("\u0000") !== [
+          "adapter_id", "effect_reference_digest", "effect_type", "resource_id",
+        ].join("\u0000")) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    const adapterId = String(value.adapter_id || "").trim();
+    const effectType = String(value.effect_type || "").trim();
+    const resourceId = String(value.resource_id || "").trim();
+    const referenceDigest = String(value.effect_reference_digest || "").trim().toLowerCase();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(adapterId) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(effectType) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(resourceId) ||
+        !POLICY_REGISTRY_SHA256.test(referenceDigest)) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    return {
+      adapter_id: adapterId,
+      effect_type: effectType,
+      resource_id: resourceId,
+      effect_reference_digest: referenceDigest,
+    };
+  }
+
+  function normalizeOwnerManualEffectWorkBinding(binding, expected) {
+    const fields = [
+      "allowed_effect_tuples", "binding_digest", "current_version",
+      "intent_anchor_digest", "mode", "provider_execution", "repository",
+      "schema_version", "source", "tenant_id", "trusted", "verified_at",
+      "work_id", "work_status", "work_updated_at",
+    ];
+    if (!binding || typeof binding !== "object" || Array.isArray(binding) ||
+        Object.getPrototypeOf(binding) !== Object.prototype ||
+        Object.keys(binding).sort().join("\u0000") !== [...fields].sort().join("\u0000")) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    const tuples = Array.isArray(binding.allowed_effect_tuples)
+      ? binding.allowed_effect_tuples.map(ownerManualEffectBindingTuple)
+      : [];
+    if (!tuples.length || tuples.length > 32) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    const tupleDigests = tuples.map((entry) => genericWorkCoreJoinDigest(entry));
+    if (tupleDigests.some((entry, index) => index > 0 && entry <= tupleDigests[index - 1])) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    const normalized = {
+      schema_version: OWNER_MANUAL_EFFECT_WORK_BINDING_SCHEMA_VERSION,
+      source: "mcp_work_continuity_v2",
+      tenant_id: String(binding.tenant_id || ""),
+      work_id: String(binding.work_id || "").toLowerCase(),
+      intent_anchor_digest: String(binding.intent_anchor_digest || "").toLowerCase(),
+      mode: binding.mode,
+      work_status: String(binding.work_status || "").toLowerCase(),
+      current_version: binding.current_version,
+      work_updated_at: String(binding.work_updated_at || ""),
+      repository: String(binding.repository || ""),
+      provider_execution: binding.provider_execution,
+      allowed_effect_tuples: tuples,
+    };
+    const verifiedAt = Date.parse(String(binding.verified_at || ""));
+    const updatedAt = Date.parse(normalized.work_updated_at);
+    const now = Date.now();
+    if (
+      binding.schema_version !== normalized.schema_version ||
+      binding.source !== normalized.source || binding.trusted !== true ||
+      normalized.provider_execution !== false ||
+      normalized.tenant_id !== String(expected.tenant_id || "") ||
+      normalized.work_id !== String(expected.work_id || "").toLowerCase() ||
+      normalized.intent_anchor_digest !== String(expected.intent_anchor_digest || "").toLowerCase() ||
+      normalized.mode !== expected.mode ||
+      !["OWNER_MANUAL", "OWNER_BREAK_GLASS"].includes(normalized.mode) ||
+      !["active", "verified", "release_ready"].includes(normalized.work_status) ||
+      !Number.isSafeInteger(normalized.current_version) || normalized.current_version < 1 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(normalized.repository) ||
+      !POLICY_REGISTRY_SHA256.test(normalized.intent_anchor_digest) ||
+      !Number.isFinite(verifiedAt) || String(binding.verified_at) !== new Date(verifiedAt).toISOString() ||
+      !Number.isFinite(updatedAt) || normalized.work_updated_at !== new Date(updatedAt).toISOString() ||
+      verifiedAt > now + 30_000 || verifiedAt < now - 300_000 || updatedAt > verifiedAt + 30_000 ||
+      !POLICY_REGISTRY_SHA256.test(String(binding.binding_digest || "")) ||
+      binding.binding_digest !== genericWorkCoreJoinDigest(normalized)
+    ) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    return Object.freeze({
+      ...normalized,
+      trusted: true,
+      verified_at: new Date(verifiedAt).toISOString(),
+      binding_digest: binding.binding_digest,
+    });
+  }
+
+  function assertOwnerManualEffectBindingSelector(binding, selector) {
+    if (!selector) return;
+    const normalizedSelector = ownerManualEffectBindingTuple(selector);
+    if (!binding.allowed_effect_tuples.some((entry) =>
+      entry.adapter_id === normalizedSelector.adapter_id &&
+      entry.effect_type === normalizedSelector.effect_type &&
+      entry.resource_id === normalizedSelector.resource_id &&
+      entry.effect_reference_digest === normalizedSelector.effect_reference_digest)) {
+      throw new Error("owner_manual_effect_work_binding_selector_denied");
+    }
+  }
+
+  function assertOwnerManualEffectBindingScope(binding, scope, effectCeiling) {
+    if (!scope || typeof scope !== "object" || Array.isArray(scope)) {
+      throw new Error("owner_manual_effect_work_binding_scope_invalid");
+    }
+    const values = {
+      adapter_ids: new Set(binding.allowed_effect_tuples.map((entry) => entry.adapter_id)),
+      effect_types: new Set(binding.allowed_effect_tuples.map((entry) => entry.effect_type)),
+      resource_ids: new Set(binding.allowed_effect_tuples.map((entry) => entry.resource_id)),
+      effect_reference_digests: new Set(binding.allowed_effect_tuples.map(
+        (entry) => entry.effect_reference_digest,
+      )),
+    };
+    for (const [key, allowed] of Object.entries(values)) {
+      if (!Array.isArray(scope[key]) || !scope[key].length ||
+          scope[key].some((entry) => !allowed.has(String(entry || "").trim().toLowerCase()))) {
+        throw new Error("owner_manual_effect_work_binding_scope_denied");
+      }
+    }
+    if (!Array.isArray(effectCeiling) || !effectCeiling.length ||
+        effectCeiling.some((entry) => !values.effect_types.has(String(entry || "").trim()))) {
+      throw new Error("owner_manual_effect_work_binding_scope_denied");
+    }
+  }
+
+  async function persistedOwnerManualEffectWorkBinding(identity, request) {
+    if (
+      typeof resolveOwnerManualEffectWorkBinding !== "function" ||
+      resolveOwnerManualEffectWorkBinding.trusted !== true
+    ) {
+      throw new Error("owner_manual_effect_work_binding_unavailable");
+    }
+    let resolved;
+    try {
+      resolved = await resolveOwnerManualEffectWorkBinding(identity, Object.freeze(structuredClone(request)));
+    } catch (error) {
+      const code = String(error?.code || error?.message || "");
+      if (code.startsWith("owner_manual_effect_work_binding_") ||
+          code === "dtt_work_acl_denied") throw error;
+      throw new Error("owner_manual_effect_work_binding_unavailable");
+    }
+    if (!resolved || typeof resolved !== "object" || Array.isArray(resolved) ||
+        Object.getPrototypeOf(resolved) !== Object.prototype ||
+        Object.keys(resolved).sort().join("\u0000") !== [
+          "effect_reference", "work_binding",
+        ].join("\u0000")) {
+      throw new Error("owner_manual_effect_work_binding_invalid");
+    }
+    const normalized = normalizeOwnerManualEffectWorkBinding(resolved.work_binding, {
+      tenant_id: identity.tenantId,
+      work_id: request.work_id,
+      intent_anchor_digest: request.intent_anchor_digest,
+      mode: request.mode,
+    });
+    let effectReference = null;
+    let resolvedSelector = request.selector || null;
+    if (request.phase === "reconcile") {
+      if (!resolved.effect_reference || typeof resolved.effect_reference !== "object" ||
+          Array.isArray(resolved.effect_reference) ||
+          Object.getPrototypeOf(resolved.effect_reference) !== Object.prototype ||
+          !request.selector || typeof request.selector !== "object" || Array.isArray(request.selector)) {
+        throw new Error("owner_manual_effect_work_binding_reference_invalid");
+      }
+      effectReference = Object.freeze(structuredClone(resolved.effect_reference));
+      resolvedSelector = {
+        adapter_id: request.selector.adapter_id,
+        effect_type: request.selector.effect_type,
+        resource_id: request.selector.resource_id,
+        effect_reference_digest: genericWorkCoreJoinDigest(effectReference),
+      };
+    } else if (resolved.effect_reference !== null) {
+      throw new Error("owner_manual_effect_work_binding_reference_invalid");
+    }
+    assertOwnerManualEffectBindingSelector(normalized, resolvedSelector);
+    if (request.scope) {
+      assertOwnerManualEffectBindingScope(normalized, request.scope, request.effect_ceiling);
+    }
+    return Object.freeze({
+      work_binding: normalized,
+      effect_reference: effectReference,
+    });
+  }
+
   async function genericWorkCoreJoinCoreRequest(path, args, identity, request = {}) {
     if (!genericWorkCoreJoinVerifierMetadata) {
       throw new Error("generic_work_core_join_verifier_unavailable");
@@ -1506,9 +1753,13 @@ export function createCoreHandlers(config, options = {}) {
     const hostNativeOwner = optionObject && options.hostNativeOwner === true;
     const actionEvaluatorGateway = optionObject && options.actionEvaluatorGateway === true;
     const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
+    const oauthManualAuthority = optionObject && options.oauthManualAuthority === true;
 
     if (hostNativeOwner && actionEvaluatorGateway) {
       throw new Error("owner_context_signing_domain_conflict");
+    }
+    if (oauthManualAuthority && !hostNativeOwner) {
+      throw new Error("owner_manual_authority_context_invalid");
     }
 
     // Generic owner assertions are signed with the tenant Core key and bind
@@ -1528,6 +1779,9 @@ export function createCoreHandlers(config, options = {}) {
         !oauthOwner
       ) {
         return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+      if (oauthManualAuthority && !isVerifiedOAuthOwnerManualAuthority(identity)) {
+        throw new Error("owner_oauth_confirmation_required");
       }
       if (
         Buffer.byteLength(
@@ -1571,6 +1825,10 @@ export function createCoreHandlers(config, options = {}) {
         : "tenant_owner",
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
+      ...(oauthManualAuthority ? {
+        oauth_owner_bound: true,
+        oauth_confirmation_jti: String(identity.ownerConfirmationJti),
+      } : {}),
       issued_at: new Date().toISOString(),
       ...(requestBinding === undefined ? {} : {
         binding_version: "owner_request_binding_v1",
@@ -1604,6 +1862,83 @@ export function createCoreHandlers(config, options = {}) {
       }
       throw error;
     }
+  }
+
+  function ownerManualAuthorityContext(identity, purpose, requestBody) {
+    return ownerContext(identity, {
+      hostNativeOwner: true,
+      oauthManualAuthority: true,
+      requestBinding: ownerManualEffectAuthorityRequestBinding(purpose, requestBody),
+    });
+  }
+
+  async function readOwnerManualAuthorityEnvelope(identity, ownerMode, envelopeId) {
+    const route = `/v1/host-native/owner-authority-envelopes/${encodeURIComponent(envelopeId)}/read`;
+    const requestBody = {
+      // The route parameter is part of the OAuth/HMAC request binding.  Keep
+      // the same value in the body so Core can reject path substitution before
+      // it reads a different envelope.
+      envelope_id: envelopeId,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        "host_native_owner_authority_envelope_read",
+        envelopeId,
+      ),
+    };
+    const payload = await coreRequest(route, identity.tenantId, {
+      method: "POST",
+      body: {
+        ...requestBody,
+        owner_context: ownerManualAuthorityContext(
+          identity,
+          "host_native_owner_authority_envelope_read",
+          requestBody,
+        ),
+      },
+    });
+    const envelope = payload?.owner_authority_envelope?.envelope;
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
+        !["OWNER_MANUAL", "OWNER_BREAK_GLASS"].includes(envelope.mode)) {
+      throw new Error("owner_authority_envelope_read_invalid");
+    }
+    return envelope;
+  }
+
+  async function readOwnerManualEffectReconciliation(identity, ownerMode, reconciliationId) {
+    const route = `/v1/host-native/actions/owner-manual-effect/${encodeURIComponent(
+      reconciliationId,
+    )}/read`;
+    const requestBody = {
+      // As above, bind the path target into the signed request body rather
+      // than treating the URL as an unauthenticated routing detail.
+      reconciliation_id: reconciliationId,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        "host_native_owner_manual_effect_reconciliation_read",
+        reconciliationId,
+      ),
+    };
+    const payload = await coreRequest(route, identity.tenantId, {
+      method: "POST",
+      body: {
+        ...requestBody,
+        owner_context: ownerManualAuthorityContext(
+          identity,
+          "host_native_owner_manual_effect_reconciliation_read",
+          requestBody,
+        ),
+      },
+    });
+    const reconciliation = payload?.manual_effect_reconciliation;
+    if (!reconciliation || typeof reconciliation !== "object" || Array.isArray(reconciliation) ||
+        !["OWNER_MANUAL", "OWNER_BREAK_GLASS"].includes(reconciliation.mode)) {
+      throw new Error("owner_manual_effect_reconciliation_read_invalid");
+    }
+    return reconciliation;
   }
 
   async function memoryContext(input, identity) {
@@ -3111,6 +3446,243 @@ export function createCoreHandlers(config, options = {}) {
         },
       });
       return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_owner_authority_envelope_issue: async (args, identity) => {
+      const ownerMode = requireVerifiedOAuthOwnerManualAuthority(identity);
+      const route = "/v1/host-native/owner-authority-envelopes";
+      const resolvedBinding = await persistedOwnerManualEffectWorkBinding(identity, {
+        phase: "issue",
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        mode: args.mode,
+        scope: args.scope,
+        effect_ceiling: args.effect_ceiling,
+      });
+      const workBinding = resolvedBinding.work_binding;
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        mode: args.mode,
+        scope: args.scope,
+        effect_ceiling: args.effect_ceiling,
+        ttl_seconds: args.ttl_seconds,
+        // The Core contract needs an explicit null for OWNER_MANUAL so a
+        // caller cannot smuggle a break-glass reason into the normal mode.
+        break_glass_reason_digest: args.break_glass_reason_digest || null,
+        // Derived from canonical Work Continuity V2 data. This field is
+        // intentionally absent from the public tool schema.
+        work_binding: workBinding,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_authority_envelope_issue",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerManualAuthorityContext(
+            identity,
+            "host_native_owner_authority_envelope_issue",
+            requestBody,
+          ),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_owner_authority_envelope_read: async (args, identity) => {
+      const ownerMode = requireVerifiedOAuthOwnerManualAuthority(identity);
+      const route = `/v1/host-native/owner-authority-envelopes/${encodeURIComponent(
+        args.envelope_id,
+      )}/read`;
+      const requestBody = {
+        envelope_id: args.envelope_id,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_authority_envelope_read",
+          args.envelope_id,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerManualAuthorityContext(
+            identity,
+            "host_native_owner_authority_envelope_read",
+            requestBody,
+          ),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_owner_authority_envelope_revoke: async (args, identity) => {
+      const ownerMode = requireVerifiedOAuthOwnerManualAuthority(identity);
+      const route = `/v1/host-native/owner-authority-envelopes/${encodeURIComponent(
+        args.envelope_id,
+      )}/revoke`;
+      const requestBody = {
+        envelope_id: args.envelope_id,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_authority_envelope_revoke",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerManualAuthorityContext(
+            identity,
+            "host_native_owner_authority_envelope_revoke",
+            requestBody,
+          ),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_owner_manual_effect_reconcile: async (args, identity) => {
+      const ownerMode = requireVerifiedOAuthOwnerManualAuthority(identity);
+      const route = "/v1/host-native/actions/owner-manual-effect/reconcile";
+      const envelope = await readOwnerManualAuthorityEnvelope(
+        identity,
+        ownerMode,
+        args.envelope_id,
+      );
+      if (
+        envelope.work_id !== args.work_id ||
+        envelope.intent_anchor_digest !== args.intent_anchor_digest
+      ) {
+        throw new Error("owner_authority_envelope_selector_mismatch");
+      }
+      const resolvedBinding = await persistedOwnerManualEffectWorkBinding(identity, {
+        phase: "reconcile",
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        mode: envelope.mode,
+        selector: {
+          adapter_id: args.adapter_id,
+          effect_type: args.effect_type,
+          resource_id: args.resource_id,
+        },
+        effect_reference: args.effect_reference,
+      });
+      const workBinding = resolvedBinding.work_binding;
+      const effectReference = resolvedBinding.effect_reference;
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        envelope_id: args.envelope_id,
+        adapter_id: args.adapter_id,
+        effect_type: args.effect_type,
+        resource_id: args.resource_id,
+        // The raw MCP value was checked only by the trusted resolver.  Core
+        // receives the Work-bound, deployment-owned descriptor instead.
+        effect_reference: effectReference,
+        work_binding: workBinding,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_manual_effect_reconcile",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerManualAuthorityContext(
+            identity,
+            "host_native_owner_manual_effect_reconcile",
+            requestBody,
+          ),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_owner_manual_effect_finalize_gallery: async (args, identity) => {
+      const ownerMode = requireVerifiedOAuthOwnerManualAuthority(identity);
+      const reconciliation = await readOwnerManualEffectReconciliation(
+        identity,
+        ownerMode,
+        args.reconciliation_id,
+      );
+      const resolvedBinding = await persistedOwnerManualEffectWorkBinding(identity, {
+        phase: "closure",
+        work_id: reconciliation.work_id,
+        intent_anchor_digest: reconciliation.intent_anchor_digest,
+        mode: reconciliation.mode,
+        selector: {
+          adapter_id: reconciliation.adapter_id,
+          effect_type: reconciliation.effect_type,
+          resource_id: reconciliation.resource_id,
+          effect_reference_digest: reconciliation.effect_reference_digest,
+        },
+      });
+      const workBinding = resolvedBinding.work_binding;
+      const route = `/v1/host-native/actions/owner-manual-effect/${encodeURIComponent(
+        args.reconciliation_id,
+      )}/authorize-closure`;
+      const requestBody = {
+        reconciliation_id: args.reconciliation_id,
+        idempotency_key: args.idempotency_key,
+        work_binding: workBinding,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_manual_effect_authorize_closure",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerManualAuthorityContext(
+            identity,
+            "host_native_owner_manual_effect_authorize_closure",
+            requestBody,
+          ),
+        },
+      });
+      if (
+        typeof tenantWorkGallery?.recordOwnerManualEffectReleaseEvidence !== "function" ||
+        typeof tenantWorkGallery?.finalizeGenericClosure !== "function"
+      ) throw new Error("owner_manual_effect_gallery_bridge_unavailable");
+      const projection = await tenantWorkGallery.recordOwnerManualEffectReleaseEvidence(identity, {
+        manual_effect_reconciliation: payload?.manual_effect_reconciliation,
+        authority_proof: payload?.authority_proof,
+      });
+      const closure = await tenantWorkGallery.finalizeGenericClosure(identity, {
+        work_id: projection.work_id,
+        adapter: projection.adapter,
+      });
+      payload.work_gallery_projection = {
+        schema_version: "owner_manual_effect_gallery_closure_v1",
+        work_id: projection.work_id,
+        note: "owner_manual_effect",
+        reconciliation_id: projection.reconciliation_id,
+        authority_proof_digest: projection.authority_proof_digest,
+        evidence_id: projection.evidence_id,
+        evidence_digest: projection.evidence_digest,
+        retrospective_ticket_issued: false,
+        closure_receipt_digest: closure.receipt?.receipt_digest || null,
+        archive_status: closure.archive_status,
+      };
+      return textResult(payload);
     },
     host_native_owner_manual_merge_readback: async (args, identity) => {
       const ownerMode = requireHostNativeOwnerConfirmation(identity, config);

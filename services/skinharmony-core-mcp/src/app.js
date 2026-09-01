@@ -1068,6 +1068,13 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "nyra_governed_continue",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
+  "host_native_owner_manual_merge_readback",
+  "host_native_owner_manual_merge_finalize_gallery",
+  "host_native_owner_authority_envelope_issue",
+  "host_native_owner_authority_envelope_read",
+  "host_native_owner_authority_envelope_revoke",
+  "host_native_owner_manual_effect_reconcile",
+  "host_native_owner_manual_effect_finalize_gallery",
   ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
   "work_continuity_create",
   "work_continuity_start_or_resume",
@@ -1080,6 +1087,16 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   // exact OAuth owner assertion and the handler's Universal Core gate before
   // it can adopt active Work records.
   "nyra_autopilot_enable",
+]);
+// These routes mint or consume the narrower owner authority envelope.  Their
+// OAuth confirmation receives a server-issued JTI which is later carried in
+// the signed owner context and consumed durably by Universal Core.
+const OAUTH_OWNER_MANUAL_AUTHORITY_TOOLS = new Set([
+  "host_native_owner_authority_envelope_issue",
+  "host_native_owner_authority_envelope_read",
+  "host_native_owner_authority_envelope_revoke",
+  "host_native_owner_manual_effect_reconcile",
+  "host_native_owner_manual_effect_finalize_gallery",
 ]);
 
 function inferClientType(identity) {
@@ -2543,6 +2560,8 @@ export function createApp(config, options = {}) {
             confirmed: true,
             confirmationReference: rawArgs.confirmation_reference,
             requestBinding: ownerRequestBinding(tool.name, rawArgs),
+          }, {
+            manualAuthority: OAUTH_OWNER_MANUAL_AUTHORITY_TOOLS.has(tool.name),
           });
         }
         if (config.environmentRoutingRequired === true && rawArgs.environment === "staging") {

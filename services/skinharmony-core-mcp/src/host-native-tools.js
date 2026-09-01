@@ -69,6 +69,18 @@ const coreJoinVerdictId = {
   type: "string",
   pattern: "^hnj_[a-f0-9]{40}$",
 };
+const ownerAuthorityEnvelopeId = {
+  type: "string",
+  pattern: "^oae_[a-zA-Z0-9._:-]{3,127}$",
+};
+const manualEffectReconciliationId = {
+  type: "string",
+  pattern: "^omer_[a-zA-Z0-9._:-]{3,127}$",
+};
+const providerResourceId = {
+  type: "string",
+  pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{2,254}$",
+};
 const standingReleaseMandateId = {
   type: "string",
   pattern: "^srm_[a-f0-9]{40}$",
@@ -176,6 +188,37 @@ const standingReleaseLimits = object({
   "max_pull_requests", "max_merges", "max_commits", "max_pushes",
   "max_repair_attempts", "max_deploys_per_service", "max_rollbacks",
 ]);
+
+const ownerAuthorityScope = object({
+  adapter_ids: {
+    type: "array",
+    minItems: 1,
+    maxItems: 8,
+    uniqueItems: true,
+    items: identifier,
+  },
+  effect_types: {
+    type: "array",
+    minItems: 1,
+    maxItems: 16,
+    uniqueItems: true,
+    items: identifier,
+  },
+  resource_ids: {
+    type: "array",
+    minItems: 1,
+    maxItems: 32,
+    uniqueItems: true,
+    items: providerResourceId,
+  },
+  effect_reference_digests: {
+    type: "array",
+    minItems: 1,
+    maxItems: 32,
+    uniqueItems: true,
+    items: sha256,
+  },
+}, ["adapter_ids", "effect_types", "resource_ids", "effect_reference_digests"]);
 
 export const HOST_NATIVE_TOOLS = [
   tool(
@@ -639,6 +682,82 @@ export const HOST_NATIVE_TOOLS = [
       },
     }, ["delegation_id", "idempotency_key"]),
     { ownerConfirmationRequired: true, destructive: true },
+  ),
+  tool(
+    "host_native_owner_authority_envelope_issue",
+    "Issue a typed OAuth-owner authority envelope",
+    "Create one short-lived, scope- and effect-ceiling-bound OAuth-owner envelope for evidence-only manual-effect reconciliation. OWNER_BREAK_GLASS is restricted to Nyra/Core self-repair and never authorizes merge, deploy, provider execution, policy override, or ticket issuance.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      mode: { type: "string", enum: ["OWNER_MANUAL", "OWNER_BREAK_GLASS"] },
+      scope: ownerAuthorityScope,
+      effect_ceiling: {
+        type: "array",
+        minItems: 1,
+        maxItems: 16,
+        uniqueItems: true,
+        items: identifier,
+      },
+      ttl_seconds: { type: "integer", minimum: 60, maximum: 1_800 },
+      break_glass_reason_digest: sha256,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "work_id", "intent_anchor_digest", "mode", "scope", "effect_ceiling",
+      "ttl_seconds", "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
+    "host_native_owner_authority_envelope_read",
+    "Read a typed OAuth-owner authority envelope",
+    "Read the current scoped authority state only with a fresh confirmation from the same verified OAuth owner. The response is evidence-only and never exposes a provider credential.",
+    object({ envelope_id: ownerAuthorityEnvelopeId }, ["envelope_id"]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
+    "host_native_owner_authority_envelope_revoke",
+    "Revoke a typed OAuth-owner authority envelope",
+    "Immediately revoke one envelope with a fresh confirmation from the same verified OAuth owner. A revoked envelope cannot reconcile or close an effect.",
+    object({
+      envelope_id: ownerAuthorityEnvelopeId,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["envelope_id", "idempotency_key"]),
+    { ownerConfirmationRequired: true, destructive: true },
+  ),
+  tool(
+    "host_native_owner_manual_effect_reconcile",
+    "Reconcile a verified manual effect",
+    "Use a typed OAuth-owner envelope to ask a provider-neutral Core adapter to independently verify an effect that already occurred. It never creates a retrospective ticket and never invokes a provider mutation.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      envelope_id: ownerAuthorityEnvelopeId,
+      adapter_id: identifier,
+      effect_type: identifier,
+      resource_id: providerResourceId,
+      effect_reference: {
+        type: "object",
+        minProperties: 1,
+        maxProperties: 20,
+        additionalProperties: true,
+      },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "work_id", "intent_anchor_digest", "envelope_id", "adapter_id", "effect_type",
+      "resource_id", "effect_reference", "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
+    "host_native_owner_manual_effect_finalize_gallery",
+    "Close a verified manual-effect Work",
+    "After fresh OAuth-owner confirmation, persist the typed Core AuthorityProof as independently verified Work evidence and run the normal Work Gallery closure gate. This does not create a ticket retroactively.",
+    object({
+      reconciliation_id: manualEffectReconciliationId,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["reconciliation_id", "idempotency_key"]),
+    { ownerConfirmationRequired: true },
   ),
   tool(
     "host_native_owner_manual_merge_readback",

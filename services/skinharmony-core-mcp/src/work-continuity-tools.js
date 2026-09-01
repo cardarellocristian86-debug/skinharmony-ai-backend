@@ -323,6 +323,9 @@ export const WORK_CONTINUITY_TOOLS = [
       assigned_user_ids: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", maxLength: 128 } },
       supervising_user_ids: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", maxLength: 128 } },
       acceptance_criteria: { type: "array", minItems: 1, maxItems: 250, items: text(2_000) },
+      // Constraints are covered by the canonical review digest and must be
+      // admitted unchanged when the resulting Work is queued.
+      constraints: { type: "array", maxItems: 100, items: text(1_000) },
       tasks: { type: "array", minItems: 1, maxItems: 250, items: object({
         task_id: uuid, title: text(2_000), weight: { type: "integer", minimum: 1, maximum: 10_000 }, required: { type: "boolean" },
       }, ["title"]) },

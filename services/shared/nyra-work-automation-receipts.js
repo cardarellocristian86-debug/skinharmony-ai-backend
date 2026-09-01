@@ -6,6 +6,7 @@ export const NYRA_WORK_AUTOMATION_RECEIPT_TYPES = Object.freeze([
   "host_native_action_completion_receipt_v1",
   "host_native_action_reconciliation_receipt_v1",
   "nyra_internal_capability_receipt_v1",
+  "nyra_core_repair_receipt_v1",
   "nyra_commit_attestation_v2",
   "nyra_ci_verification_attestation_v2",
   "nyra_criterion_proof_policy_v1",

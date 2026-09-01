@@ -43,6 +43,78 @@ test("host-native governance advertises Work Automation v3 without provider exec
   assert.equal(governance.nyra_work_automation_v3_supported, true);
   assert.equal(governance.nyra_work_automation_provider_execution, false);
 });
+
+test("a non-distributed authority store fail-closes manual reconciliation without disabling legacy governance", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-native-owner-authority-"));
+  try {
+    const keys = crypto.generateKeyPairSync("ed25519");
+    const governance = createHostNativeGovernance({
+      store: createFileHostNativeGovernanceStore({ root }),
+      signingSecret: "s".repeat(64),
+      closureAttestationSigningSecret: "c".repeat(64),
+      ownerAuthorityProofSigner: createLocalGenericWorkCoreJoinSigner({
+        privateKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }),
+        keyId: "owner-authority-file-store-test",
+      }),
+      ownerAuthorityRequireDurableStore: true,
+      requiredChecksPolicyResolver: async ({ tenant_id, repository, base_branch }) => ({
+        schema_version: "host_native_required_checks_policy_v1",
+        tenant_id,
+        repository,
+        base_branch,
+        required_checks: ["unit"],
+        check_app: { id: 1, slug: "github-actions", owner: "github" },
+        workflow: {
+          id: 1,
+          name: "Unit",
+          path: ".github/workflows/unit.yml",
+          sha256: H("b"),
+          candidate_sha256: null,
+        },
+        allowed_events: ["push"],
+      }),
+    });
+
+    assert.equal(governance.storage.restart_durable, true);
+    assert.equal(governance.storage.distributed, false);
+    assert.equal(governance.owner_manual_effect_reconciliation_configured, false);
+    assert.equal(
+      governance.owner_manual_effect_reconciliation_unavailable_reason,
+      "owner_authority_distributed_store_required",
+    );
+    await assert.rejects(
+      governance.issueOwnerAuthorityEnvelope(),
+      /owner_manual_effect_reconciliation_unavailable/,
+    );
+
+    const legacyPlan = await governance.buildWorkPlan({
+      tenant_id: "tenant",
+      work_id: "legacy-work",
+      intent_anchor_digest: H("a"),
+      repository: "owner/repo",
+      base_branch: "main",
+      objective: "preserve the legacy host-native plan path",
+      required_checks: ["unit"],
+      max_parallel: 2,
+      agents: [{
+        agent_id: "legacy-builder",
+        role: "builder",
+        task: "retain the host-native ticket workflow",
+        depends_on: [],
+        capabilities: ["git.commit"],
+      }, {
+        agent_id: "legacy-verifier",
+        role: "verifier",
+        task: "independently verify the legacy host-native workflow",
+        depends_on: ["legacy-builder"],
+        capabilities: ["read"],
+      }],
+    });
+    assert.equal(legacyPlan.execution_adapter, "host_native");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 import { createHostNativeExternalReadbackVerifier } from "../src/hostNativeExternalReadback.js";
 
 test("host-native domain signer binds causal envelopes to their exact purpose and payload", async () => {

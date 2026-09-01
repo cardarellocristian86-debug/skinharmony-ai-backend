@@ -1106,3 +1106,10 @@ test("Gallery V3 schemas admit only Core-valid bounded idempotency keys", () => 
     assert.equal(pattern.test("invalid\u0000key"), false, name);
   }
 });
+
+test("Gallery V3 queue schema preserves reviewed bootstrap constraints", () => {
+  const queue = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "tenant_work_queue_create_v3");
+  assert.equal(queue.inputSchema.properties.constraints.type, "array");
+  assert.equal(queue.inputSchema.properties.constraints.maxItems, 100);
+  assert.equal(queue.inputSchema.properties.constraints.items.maxLength, 1_000);
+});
