@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, isLegacyNyraAdvisoryPreflight, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, isLegacyNyraAdvisoryPreflight, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresCanonicalWorkReadAuthorization, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
@@ -2725,6 +2725,32 @@ test("requires generic preflight for dynamic invoke except signed presence and W
     }),
     false,
   );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "tenant_work_legacy_reconcile_close",
+      arguments: { work_id: "740915b2-a259-4cd9-b9c7-053854aeb3a5", action: "CANCEL" },
+    }),
+    false,
+  );
+  assert.equal(
+    requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id: "tenant_work_legacy_reconcile_close",
+      arguments: { work_id: "740915b2-a259-4cd9-b9c7-053854aeb3a5", action: "CANCEL" },
+    }),
+    true,
+  );
+});
+
+test("legacy reconciliation keeps exact Work ACL while bypassing continuity preflight", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const hookStart = serverSource.indexOf("requireTenantWorkRequestAuthorization(identity");
+  const hookEnd = serverSource.indexOf("const nativeChildReport", hookStart);
+  const hook = serverSource.slice(hookStart, hookEnd);
+  assert.ok(hookStart >= 0);
+  assert.ok(hookEnd > hookStart);
+  assert.match(hook, /requiresCanonicalWorkReadAuthorization\(toolName, args\)/);
+  assert.match(hook, /dynamicInvocationTarget\(toolName, args, identity\)/);
+  assert.match(hook, /await requireCanonicalWorkRead\(identity, authorizationTarget\.args\.work_id\)/);
 });
 
 test("dispatches only exact Work bootstrap invokes without injecting generic preflight", async () => {

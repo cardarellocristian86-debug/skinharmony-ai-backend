@@ -5,6 +5,7 @@ import {
   configureToolForRuntime,
   filterToolsForClient,
   hasTenantBoundChatGptReadCompatibility,
+  requiresCanonicalWorkReadAuthorization,
   requiresGenericWorkPreflight,
   resolveStaleChatGptReadTool,
   TOOLS,
@@ -349,6 +350,27 @@ test("routes normal actions through generic preflight without deadlocking Work b
     requiresGenericWorkPreflight("nyra_converse"),
     false,
     "Nyra conversation owns its cache-or-one-preflight protocol",
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "tenant_work_legacy_reconcile_close",
+    }),
+    false,
+    "legacy reconciliation must inspect the Work before continuity creates a technical lease",
+  );
+  assert.equal(
+    requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id: "tenant_work_legacy_reconcile_close",
+    }),
+    true,
+    "the preflight-free reconciliation path must retain exact Work ACL",
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "tenant_work_legacy_reconcile_close_replay",
+    }),
+    true,
+    "lookalike capability names must not inherit the reconciliation exemption",
   );
 });
 
