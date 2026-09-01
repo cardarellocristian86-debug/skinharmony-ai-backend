@@ -2198,7 +2198,11 @@ async function advisoryConversationResult({
       selfModelReadback = "UNAVAILABLE";
     }
   }
-  let lessons = [];\n  if (route.intent === "distilled_lessons_read" && typeof readDistilledLessons === "function") {\n    try { lessons = await readDistilledLessons({ project_id: projectId }, identity); } catch { lessons = []; }\n  }\n  const telemetry = buildNyraRoutingTelemetry({
+  let lessons = [];
+  if (route.intent === "distilled_lessons_read" && typeof readDistilledLessons === "function") {
+    try { lessons = await readDistilledLessons({ project_id: projectId }, identity); } catch { lessons = []; }
+  }
+  const telemetry = buildNyraRoutingTelemetry({
     route, preflightInvoked: false, context: null, catalog,
     elapsedMs: Math.max(0, Date.now() - startedAt),
   });
@@ -2211,7 +2215,11 @@ async function advisoryConversationResult({
         : "La lettura governata del Control Room non è al momento disponibile. Non ho eseguito fallback verso Work, ticket, preflight o azioni.")
     : introspectionRead
     ? introspectionReplySeed(english ? "en" : "it", route.intent, selfModel, selfModelReadback)
-    : route.intent === "distilled_lessons_read"\n    ? (lessons.length\n      ? `Ho trovato ${lessons.length} lezioni candidate: ${lessons.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count})`).join("; ")}. Sono guardrail: non autorizzano alcuna azione.`\n      : "Non risultano lezioni distillate disponibili per questo progetto.")\n    : route.intent === "command_catalog"
+    : route.intent === "distilled_lessons_read"
+    ? (lessons.length
+      ? `Ho trovato ${lessons.length} lezioni candidate: ${lessons.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count})`).join("; ")}. Sono guardrail: non autorizzano alcuna azione.`
+      : "Non risultano lezioni distillate disponibili per questo progetto.")
+    : route.intent === "command_catalog"
     ? catalog
       ? (english
         ? `I read ${catalog.commands.length} commands visible to this identity. Every natural-language alias remains a proposal: invocation requires a fresh catalog revision and the corresponding Core gate.`
@@ -2438,6 +2446,7 @@ export function createNyraConverseHandler({
   readCommandCatalog = null,
   readControlRoomStatus = null,
   readNyraSelfModel = null,
+  readDistilledLessons = null,
   dialogueEnabled = true,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
