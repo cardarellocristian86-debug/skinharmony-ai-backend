@@ -1,4 +1,8 @@
-import { createApp, requiresGenericWorkPreflight } from "./app.js";
+import {
+  createApp,
+  requiresCanonicalWorkReadAuthorization,
+  requiresGenericWorkPreflight,
+} from "./app.js";
 import crypto from "node:crypto";
 import { Pool } from "pg";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
@@ -2421,7 +2425,7 @@ const app = createApp(config, {
     // calls, ledger writes and continuity session bindings. A generic or
     // dynamic tool must not use preflight as a tenant-only read oracle for a
     // private canonical Work.
-    if (requiresGenericWorkPreflight(toolName, args)) {
+    if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
         await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);

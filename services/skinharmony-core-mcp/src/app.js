@@ -793,6 +793,15 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
   "core_branch_analyze",
 ]);
 
+// These exact mutations own a dedicated server-side governance gate and must
+// inspect the Work as it existed before the request. Running generic Work
+// Preflight first would resume continuity and create the caller's technical
+// read lease, making an otherwise stale Work look active to the reconciliation
+// gate. They still require an exact canonical-Work ACL check in server.js.
+const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
+  "tenant_work_legacy_reconcile_close",
+]);
+
 // These exact read-only capabilities issue a tenant-and-Work-bound DTT
 // context downstream. Stateless OAuth hosts must first establish the same
 // bounded Work continuity/read binding as an MCP-transport caller. Keep this
@@ -836,6 +845,9 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     if (DEDICATED_WORK_BOOTSTRAP_TOOLS.has(String(args?.capability_id || ""))) {
       return false;
     }
+    if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(String(args?.capability_id || ""))) {
+      return false;
+    }
     return !metadataFreeHeartbeatBootstrap;
   }
   if (
@@ -846,6 +858,14 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     )
   ) return true;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(requestedTool);
+}
+
+export function requiresCanonicalWorkReadAuthorization(toolName, args = {}) {
+  if (requiresGenericWorkPreflight(toolName, args)) return true;
+  const requestedTool = String(toolName || "");
+  if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(requestedTool)) return true;
+  return requestedTool === "core_capability_invoke" &&
+    PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(String(args?.capability_id || ""));
 }
 
 function serverIssuedWorkPreflight(preflight, identity) {
