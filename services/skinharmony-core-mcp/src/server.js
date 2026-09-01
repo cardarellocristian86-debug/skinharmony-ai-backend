@@ -2538,6 +2538,9 @@ const app = createApp(config, {
       memoryFabric
         ? memoryFabric.recordToolActivity(event)
         : Promise.resolve(),
+      event.error && cloudMemoryStore
+        ? cloudMemoryStore.recordDistilledFailure(event.identity, event)
+        : Promise.resolve(),
     ]);
   },
 });
