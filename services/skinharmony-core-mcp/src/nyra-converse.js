@@ -412,14 +412,6 @@ function requireBoundPreflight(result, identity, args) {
       active_task_count: boundedCount(memory.active_task_count),
       active_lock_count: boundedCount(memory.active_lock_count),
       artifact_count: boundedCount(memory.artifact_count),
-      distilled_lessons: Array.isArray(memory.distilled_lessons)
-        ? memory.distilled_lessons.slice(0, 10).map((lesson) => Object.freeze({
-          source_tool: boundedString(lesson?.source_tool, 160),
-          failure_code: boundedString(lesson?.failure_code, 160),
-          occurrence_count: boundedCount(lesson?.occurrence_count),
-          lesson_state: lesson?.lesson_state === "candidate" ? "candidate" : null,
-        }))
-        : [],
     }),
     dialogue: publicNyraDialogue(control.nyra_dialogue),
   });
