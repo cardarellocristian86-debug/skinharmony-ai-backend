@@ -42,6 +42,16 @@ export function stableMemoryId(tenantId, sourcePath) {
   return crypto.createHash("sha256").update(`${tenant(tenantId)}\0${sourcePath}`).digest("hex").slice(0, 24);
 }
 
+// This key deliberately contains no tenant, project, prompt, error message or
+// caller identity. It identifies a platform-wide failure *class*, not a
+// customer's incident. Tenant observations remain service-private and are used
+// only to establish corroboration before a block can be exposed to Nyra.
+export function platformLearningBlockKey(toolName, failureCode) {
+  return crypto.createHash("sha256")
+    .update(`nyra-platform-learning-block-v1\0${toolName}\0${failureCode}`)
+    .digest("hex");
+}
+
 export function createCloudMemoryStore(config, options = {}) {
   if (!config.databaseUrl) return null;
   const pool = options.pool || new Pool({
@@ -79,6 +89,28 @@ export function createCloudMemoryStore(config, options = {}) {
     );
     CREATE INDEX IF NOT EXISTS mcp_memory_distilled_lessons_lookup_idx
       ON mcp_memory_distilled_lessons (tenant_id, project_id, last_observed_at DESC);
+    CREATE TABLE IF NOT EXISTS mcp_platform_learning_blocks (
+      block_key char(64) PRIMARY KEY,
+      source_tool varchar(160) NOT NULL,
+      failure_code varchar(160) NOT NULL,
+      occurrence_count integer NOT NULL DEFAULT 1,
+      corroborating_tenant_count integer NOT NULL DEFAULT 1,
+      lifecycle_state varchar(16) NOT NULL DEFAULT 'candidate',
+      first_observed_at timestamptz NOT NULL DEFAULT now(),
+      last_observed_at timestamptz NOT NULL DEFAULT now(),
+      CHECK (lifecycle_state IN ('candidate', 'shadow', 'verified')),
+      UNIQUE (source_tool, failure_code)
+    );
+    CREATE INDEX IF NOT EXISTS mcp_platform_learning_blocks_read_idx
+      ON mcp_platform_learning_blocks (lifecycle_state, occurrence_count DESC, last_observed_at DESC);
+    CREATE TABLE IF NOT EXISTS mcp_platform_learning_block_observations (
+      block_key char(64) NOT NULL REFERENCES mcp_platform_learning_blocks(block_key) ON DELETE CASCADE,
+      tenant_id varchar(64) NOT NULL,
+      first_observed_at timestamptz NOT NULL DEFAULT now(),
+      last_observed_at timestamptz NOT NULL DEFAULT now(),
+      occurrence_count integer NOT NULL DEFAULT 1,
+      PRIMARY KEY (block_key, tenant_id)
+    );
   `);
 
   return {
@@ -196,7 +228,54 @@ export function createCloudMemoryStore(config, options = {}) {
                    occurrence_count, first_observed_at, last_observed_at`,
         [tenantId, projectId, toolName, code],
       );
-      return { recorded: true, lesson_state: "candidate", ...result.rows[0] };
+      const lesson = result.rows[0];
+      let platformLearning = null;
+      // The platform aggregate contains only a failure class. A tenant ID is
+      // retained exclusively in the non-exposed observation table to count
+      // independent corroboration; it is never returned by a platform read.
+      // A platform-learning write is deliberately best-effort: it must never
+      // prevent the tenant's own lesson from being retained.
+      try {
+        const blockKey = platformLearningBlockKey(toolName, code);
+        await pool.query(
+        `INSERT INTO mcp_platform_learning_blocks
+           (block_key, source_tool, failure_code)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (block_key) DO UPDATE SET
+           occurrence_count = LEAST(mcp_platform_learning_blocks.occurrence_count + 1, 1000000),
+           last_observed_at = now()
+         RETURNING block_key`,
+        [blockKey, toolName, code],
+        );
+        const observation = await pool.query(
+        `INSERT INTO mcp_platform_learning_block_observations
+           (block_key, tenant_id)
+         VALUES ($1,$2)
+         ON CONFLICT (block_key, tenant_id) DO UPDATE SET
+           occurrence_count = LEAST(mcp_platform_learning_block_observations.occurrence_count + 1, 10000),
+           last_observed_at = now()
+         RETURNING (xmax = 0) AS first_for_tenant`,
+        [blockKey, tenantId],
+        );
+        const firstForTenant = observation.rows[0]?.first_for_tenant === true;
+        const platform = await pool.query(
+        `UPDATE mcp_platform_learning_blocks
+         SET corroborating_tenant_count = CASE WHEN $2 THEN LEAST(corroborating_tenant_count + 1, 100000) ELSE corroborating_tenant_count END,
+             lifecycle_state = CASE WHEN (CASE WHEN $2 THEN corroborating_tenant_count + 1 ELSE corroborating_tenant_count END) >= 2
+               THEN CASE WHEN lifecycle_state = 'verified' THEN 'verified' ELSE 'shadow' END
+               ELSE lifecycle_state END,
+             last_observed_at = now()
+         WHERE block_key = $1
+         RETURNING block_key, source_tool, failure_code, occurrence_count,
+                   corroborating_tenant_count, lifecycle_state, first_observed_at, last_observed_at`,
+        [blockKey, firstForTenant],
+        );
+        platformLearning = platform.rows[0] || null;
+      } catch {
+        platformLearning = { state: "unavailable" };
+      }
+      return { recorded: true, lesson_state: "candidate", ...lesson,
+        platform_learning: platformLearning };
     },
     async listDistilledLessons(tenantId, projectId, limit = 10) {
       await initialize();
@@ -210,6 +289,28 @@ export function createCloudMemoryStore(config, options = {}) {
         [tenant(tenantId), scopedProject, Math.min(Math.max(Number(limit) || 10, 1), 20)],
       );
       return result.rows;
+    },
+    async listPlatformLearningBlocks(limit = 10) {
+      await initialize();
+      const result = await pool.query(
+        `SELECT block_key, source_tool, failure_code, occurrence_count,
+                corroborating_tenant_count, lifecycle_state, first_observed_at, last_observed_at
+         FROM mcp_platform_learning_blocks
+         WHERE lifecycle_state IN ('shadow', 'verified')
+         ORDER BY occurrence_count DESC, last_observed_at DESC LIMIT $1`,
+        [Math.min(Math.max(Number(limit) || 10, 1), 20)],
+      );
+      return result.rows.map((row) => ({
+        ...row,
+        scope: "platform_anonymized",
+        entity_360_reference: {
+          schema_version: "entity_360_platform_learning_block_v1",
+          entity_id: `nyra_platform_learning:${String(row.block_key).slice(0, 24)}`,
+          entity_type: "nyra_platform_learning_block",
+          lifecycle_state: row.lifecycle_state,
+          provenance: "aggregate_failure_class_only",
+        },
+      }));
     },
     close: () => pool.end(),
   };
