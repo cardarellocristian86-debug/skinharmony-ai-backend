@@ -1028,6 +1028,31 @@ function healthAttestation({
   return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
 }
 
+function manualMergePreviousLiveBinding({ service, origin, manualMergeReadback }) {
+  const expectedLive = sha(service?.expected_previous_commit);
+  const githubBase = sha(manualMergeReadback?.github_readback?.base_commit);
+  const receiptId = string(manualMergeReadback?.receipt_id);
+  if (
+    !expectedLive || expectedLive !== githubBase ||
+    !/^hnmmr_[a-f0-9]{40}$/.test(receiptId) ||
+    string(service?.health_contract_digest) !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST
+  ) error("release_join_verdict_previous_live_mismatch");
+  const unsigned = {
+    service_id: string(service.service_id),
+    environment: string(service.environment),
+    origin,
+    health_path: "/healthz",
+    deployment_id: `manual-merge-base:${receiptId}`,
+    live_commit: expectedLive,
+    version: "owner_manual_merge_readback_v1",
+    health_status: "manual_merge_base_bound",
+    health_contract_digest: service.health_contract_digest,
+    evidence_kind: "signed_manual_merge_base_binding",
+    manual_merge_readback_id: receiptId,
+  };
+  return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+}
+
 function expectedPrevious(ticket, service) {
   const entries = ticket?.release_join_resolution?.previous_live_attestations;
   if (!Array.isArray(entries)) return null;
@@ -2040,6 +2065,14 @@ export function createHostNativeReleaseJoinVerdictResolver({
       const origin = originForHealth(service?.origin, "release_join_verdict_previous_live_mismatch");
       const expectedLive = sha(service?.expected_previous_commit);
       if (!expectedLive) error("release_join_verdict_previous_live_mismatch");
+      if (manualMergeObservation) {
+        previous_live_attestations.push(manualMergePreviousLiveBinding({
+          service,
+          origin,
+          manualMergeReadback,
+        }));
+        continue;
+      }
       const health = await readResponseJson(
         fetchImpl,
         `${origin}/healthz`,
