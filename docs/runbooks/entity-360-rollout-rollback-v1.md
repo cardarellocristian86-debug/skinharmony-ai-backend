@@ -425,3 +425,18 @@ la sequenza causale completa:
 Fino al punto 6, qualsiasi evidenza live è una fotografia verificata ma non una
 attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
 retention dei sistemi owner restano responsabilità dei rispettivi adapter.
+
+### Carrier di attestazione finale
+
+La baseline operativa include la merge E360 della PR `#402` (`6be14320`) e la
+correzione fail-closed del readback manuale della PR `#410` (`24b83c7a`),
+entrambe antenate del `main` corrente. Se `main` avanza dopo un Core Join ma
+prima dell'osservazione, non riusare il target precedente: creare un carrier
+receipt-bound sul nuovo `main`, rieseguire i check exact-head e usare una
+delegation merge a TTL breve seguita da una delegation `render.observe`
+one-shot. La receipt di osservazione deve attestare tutti i servizi del
+manifest sul medesimo commit prima di invocare `closure_finalize`.
+
+Questa sezione documenta il percorso di attestazione e non dichiara il Work
+chiuso: l'unica fonte di verità resta il readback Core `completed` con
+`closure_receipt` e `final_report` persistiti.
