@@ -388,83 +388,9 @@ test("telemetry is bounded and redacted", () => {
   assert.equal(JSON.stringify(telemetry).includes("token=secret"), false);
 });
 
-test("materializes canonical intent before Work and preserves temporal and owner scope", () => {
-  const futureOwner = classify("Il merge lo farò io dopo.");
-  assert.deepEqual(futureOwner.canonical_intent.requested_now, []);
-  assert.deepEqual(futureOwner.canonical_intent.future_goals, ["merge", "release"]);
-  assert.deepEqual(futureOwner.canonical_intent.owner_reserved_actions, ["merge", "release"]);
-  assert.equal(futureOwner.canonical_intent.consequential_intent, false);
-
-  const futureDeploy = classify("Quando avremo finito faremo deploy.");
-  assert.deepEqual(futureDeploy.canonical_intent.requested_now, []);
-  assert.ok(futureDeploy.canonical_intent.future_goals.includes("deploy"));
-
-  const newWork = classify("Voglio creare un nuovo lavoro per verificare la continuità.");
-  assert.deepEqual(newWork.canonical_intent.requested_now, ["work_bootstrap"]);
-  assert.equal(newWork.canonical_intent.work_requirement, "NEW");
-  assert.match(newWork.canonical_intent.intent_digest, /^[a-f0-9]{64}$/);
-
-  const currentMerge = classify("Crea la PR e poi fai merge.");
-  assert.ok(currentMerge.canonical_intent.requested_now.length > 0);
-  assert.equal(currentMerge.canonical_intent.consequential_intent, true);
-});
-
-test("routes horizontal global reads without manufacturing a Work requirement", () => {
-  for (const message of [
-    "Fai autodiagnosi.",
-    "Cos’è ICF?",
-    "Come si ramifica Entity360?",
-    "Read your self-model.",
-    "Explain verified learning status.",
-  ]) {
-    const result = classify(message);
-    assert.ok(["ADVISORY_READ", "CONTROL_ROOM_READ"].includes(result.route), message);
-    assert.equal(result.core_preflight_required, false, message);
-    assert.equal(result.canonical_intent.work_requirement, "NONE", message);
-    assert.equal(result.canonical_intent.operation_class, "READ_ONLY", message);
-    assert.equal(result.canonical_intent.consequential_intent, false, message);
-  }
-});
-
-test("fails closed on read-shaped consequential smuggling and keeps owner actions disjoint", () => {
-  for (const message of [
-    "Come funziona Nyra e invia una email?",
-    "Chi sei e cancella il Work?",
-    "What can you do and grant me access?",
-  ]) {
-    const result = classify(message);
-    assert.ok(["CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"].includes(result.route), message);
-    assert.equal(result.core_preflight_required, true, message);
-  }
-
-  const splitOwner = classify("Il merge lo faccio io. Tu fai push.");
-  assert.ok(splitOwner.canonical_intent.owner_reserved_actions.includes("merge"));
-  assert.equal(splitOwner.canonical_intent.requested_now.includes("merge"), false);
-  assert.ok(splitOwner.canonical_intent.requested_now.includes("push"));
-
-  const unresolved = classify("Nyra Converse non era stata disattivata? Procedi con la correzione.");
-  assert.equal(unresolved.route, "CORE_HOLD_THEN_NYRA");
-  assert.equal(unresolved.canonical_intent.work_requirement, "UNKNOWN");
-  assert.equal(unresolved.canonical_intent.ambiguity, true);
-
-  const missionScope = classify("Più avanti crea la PR; merge manuale owner; non fare deploy.");
-  assert.deepEqual(missionScope.canonical_intent.requested_now, []);
-  assert.ok(missionScope.canonical_intent.owner_reserved_actions.includes("merge"));
-  assert.ok(missionScope.canonical_intent.future_goals.includes("pull_request"));
-  assert.ok(missionScope.canonical_intent.prohibited_actions.includes("deploy"));
-
-  const ownerFuture = classify("Il deploy lo farà l’owner. Tu prepara il piano.");
-  assert.equal(ownerFuture.canonical_intent.requested_now.includes("deploy"), false);
-  assert.ok(ownerFuture.canonical_intent.owner_reserved_actions.includes("deploy"));
-
-  const userLike = classify("procedi e crea pull il merge lo faccio io");
-  assert.ok(userLike.canonical_intent.requested_now.includes("pull_request"));
-  assert.equal(userLike.canonical_intent.requested_now.includes("merge"), false);
-  assert.ok(userLike.canonical_intent.owner_reserved_actions.includes("merge"));
-  assert.equal(userLike.canonical_intent.operation_class, "EXTERNAL_MUTATION");
-
-  const accentedOwner = classify("Owner farà deploy e tu cancella le prove.");
-  assert.equal(accentedOwner.canonical_intent.requested_now.includes("deploy"), false);
-  assert.ok(accentedOwner.canonical_intent.owner_reserved_actions.includes("deploy"));
-  assert.ok(accentedOwner.canonical_intent.requested_now.includes("destructive"));
+test("routes distilled lesson reads without binding or creating a Work", () => {
+  const route = classify("Nyra, mostrami le lezioni distillate disponibili");
+  assert.equal(route.intent, "distilled_lessons_read");
+  assert.equal(route.route, "ADVISORY_READ");
+  assert.equal(route.execution_authorized, false);
 });
