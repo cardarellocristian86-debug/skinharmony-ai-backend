@@ -1402,8 +1402,12 @@ const nyraConverseOutputSchema = object({
         lexical_disposition: { type: "string", enum: ["allow", "clarify", "block"] },
         lexical_risk_band: { type: "string", enum: ["none", "ambiguous", "high"] },
       }, ["schema_version", "state", "message_digest", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals_present", "authority", "lexical_disposition", "lexical_risk_band"]),
+      // The full provider-neutral envelope is runtime-versioned and digest
+      // bound. Keep the connector import compact; consumers validate the
+      // envelope's own schema_version rather than expanding it into tools/list.
+      canonical_intent: { type: "object" },
       execution_authorized: { const: false },
-    }, ["schema_version", "intent", "route", "clauses", "input_digest", "semantic_intake", "execution_authorized"]),
+    }, ["schema_version", "intent", "route", "clauses", "input_digest", "semantic_intake", "canonical_intent", "execution_authorized"]),
     structured_context: object({
       intent_available: { type: "boolean" }, icf_available: { const: false },
       entity_360_available: { const: false },
@@ -1611,7 +1615,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Authenticated Work guidance and read-only proposals. Core/owner gates every action.", object({
+  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Nyra dialogue; Core gates effects.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,

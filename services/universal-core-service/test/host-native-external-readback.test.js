@@ -2649,8 +2649,12 @@ function manualMergeJoinRequest(overrides = {}) {
   });
 }
 
-function manualMergeJoinFetch({ mainHead = TARGET } = {}) {
-  const fallback = strictFetch();
+function manualMergeJoinFetch({ mainHead = TARGET, workflowPullRequests } = {}) {
+  const fallback = strictFetch({
+    workflowById: workflowPullRequests === undefined
+      ? new Map([[700, strictWorkflow()]])
+      : new Map([[700, strictWorkflow({ pull_requests: workflowPullRequests })]]),
+  });
   return async (url, init) => {
     const root = "https://api.github.com/repos/owner/repo";
     if (url === `${root}/git/commits/${HEAD}`) {
@@ -3286,7 +3290,7 @@ test("production deploy release-join proves exact push source and mixed previous
 
 test("manual merge observation release-join reattests persisted evidence and current main", async () => {
   const resolver = createHostNativeReleaseJoinVerdictResolver({
-    fetchImpl: manualMergeJoinFetch(),
+    fetchImpl: manualMergeJoinFetch({ workflowPullRequests: [] }),
     requiredChecksPolicyResolver: async () => STRICT_POLICY,
     now: () => Date.parse(VERIFIED_AT),
   });
