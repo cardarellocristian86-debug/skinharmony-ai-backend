@@ -1880,6 +1880,260 @@ test("owner manual merge readback persists selector-bound evidence without a ret
   }), /unknown_field:merged/);
 });
 
+test("post-release attestation binds a historical release to one trusted render observation", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  let verifierCalls = 0;
+  let subject;
+  const manualReadbackVerifier = async ({
+    tenant_id,
+    repository,
+    pull_request,
+    core_join_record,
+  }) => {
+    verifierCalls += 1;
+    const unsigned = {
+      schema_version: "host_native_owner_manual_merge_github_readback_v1",
+      trusted: true,
+      source: "universal_core_github_readback",
+      tenant_id,
+      repository,
+      pull_request,
+      merged: true,
+      merged_at: "2026-07-29T10:00:00.000Z",
+      head_branch: "agent/native-work",
+      base_branch: core_join_record.claim.base_branch,
+      base_commit: G("1"),
+      head_commit: core_join_record.claim.checks.commit,
+      merge_commit: G("9"),
+      main_head_commit: G("9"),
+      checks_commit: core_join_record.claim.checks.commit,
+      checks_passed: true,
+      required_checks: core_join_record.claim.checks.required_checks,
+      observed_checks: [{
+        name: "unit-tests",
+        head_commit: core_join_record.claim.checks.commit,
+        status: "completed",
+        conclusion: "success",
+      }],
+      required_checks_policy_digest:
+        core_join_record.claim.required_checks_policy_digest,
+      checks_attestation_digest: H("8"),
+      workflow_sources: [],
+      verified_at: new Date(subject.now()).toISOString(),
+      external_side_effect: false,
+      provider_execution: false,
+    };
+    return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+  };
+  Object.defineProperty(manualReadbackVerifier, "trusted", { value: true });
+  const requiredChecksPolicyResolver = async () => ({
+    schema_version: "host_native_required_checks_policy_v1",
+    tenant_id: "codexai",
+    repository: "owner/repo",
+    base_branch: "main",
+    required_checks: ["unit-tests"],
+    check_app: { id: 1, slug: "github-actions", owner: "github" },
+    workflow: {
+      id: 1,
+      name: "CI",
+      path: ".github/workflows/ci.yml",
+      sha256: H("7"),
+      candidate_sha256: null,
+    },
+    allowed_events: ["pull_request"],
+  });
+  subject = harness({
+    store,
+    clockStart: "2026-07-29T10:05:00.000Z",
+    ownerManualMergeReadbackVerifier: manualReadbackVerifier,
+    requiredChecksPolicyResolver,
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      const readback = trustedExternalReadback(
+        ticket,
+        target_commit,
+        new Date(subject.now()).toISOString(),
+        verification_scope,
+      );
+      readback.github.required_checks_policy_digest =
+        ticket.predecessor.source_required_checks_policy_digest;
+      return redigestTrustedReadback(readback);
+    },
+  });
+  const manifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const freshUntil = new Date(subject.now() + 20 * 60_000).toISOString();
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(manifest, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+  }));
+  const ownerConfirmation = {
+    verified: true,
+    request_bound: true,
+    owner_subject_fingerprint: OWNER,
+    consent_nonce: "post-release-readback-owner",
+    confirmation_reference: "owner confirmed post-release trusted readback",
+    purpose: "host_native_post_release_readback_attest",
+    request_binding_hash: H("9"),
+  };
+  const selectors = {
+    tenant_id: "codexai",
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    core_join_verdict_id: join.verdict_id,
+    pull_request: 42,
+  };
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    ...selectors,
+    owner_confirmation: {
+      ...ownerConfirmation,
+      consent_nonce: "ordinary-historical-readback-owner",
+      purpose: "host_native_owner_manual_merge_readback",
+    },
+    idempotency_key: "ordinary-historical-readback",
+  }, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+  }), /owner_manual_merge_refresh_predecessor_missing/);
+
+  const request = {
+    ...selectors,
+    owner_confirmation: ownerConfirmation,
+    idempotency_key: "post-release-readback-attestation",
+  };
+  const receipt = await subject.governance.recordOwnerManualMergeReadback(request, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+    post_release_attestation: true,
+  });
+  assert.equal(receipt.refresh_lineage, undefined);
+  assert.equal(receipt.post_release_attestation.schema_version,
+    "host_native_post_release_attestation_v1");
+  assert.equal(receipt.post_release_attestation.attestation_kind,
+    "historical_release_readback");
+  assert.equal(receipt.post_release_attestation.authorized_successor_action,
+    "render.observe");
+  assert.equal(receipt.post_release_attestation.core_join_verdict_id,
+    join.verdict_id);
+  assert.equal(receipt.post_release_attestation.release_intent_digest,
+    join.claim.release_intent_digest);
+  assert.equal(receipt.post_release_attestation.provider_execution, false);
+  assert.equal(
+    receipt.post_release_attestation.attestation_digest,
+    hostNativeDigest((({ attestation_digest: _digest, ...rest }) => rest)(
+      receipt.post_release_attestation,
+    )),
+  );
+  const authority = await subject.governance.resolveManualMergeRefreshAuthority({
+    tenant_id: "codexai",
+    work_id: "work-1",
+    core_join_verdict_id: join.verdict_id,
+    manual_merge_readback_id: receipt.receipt_id,
+  });
+  assert.equal(authority.authority_mode, "refresh_closure_only");
+  assert.equal(authority.post_release_attestation_digest,
+    hostNativeDigest(receipt.post_release_attestation));
+
+  const delegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    allowed_actions: ["render.observe"],
+    budget: { ...subject.delegationInput.budget, max_total_actions: 1 },
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      consent_nonce: "post-release-observation-delegation",
+    },
+    idempotency_key: "post-release-observation-delegation",
+  });
+  const boundManifest = manifestWithCoreJoin(manifest, join.verdict_id);
+  const observationRequest = {
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "post-release-observation-session",
+    action: {
+      kind: "render.observe",
+      repository: "owner/repo",
+      branch: "main",
+      service_id: "srv-core",
+      environment: "production",
+      target_commit: G("9"),
+      release_manifest_digest: boundManifest.manifest_digest,
+      provider_execution: false,
+    },
+    evidence_digest: receipt.receipt_digest,
+    release_manifest: boundManifest,
+    manual_merge_readback_id: receipt.receipt_id,
+    idempotency_key: "post-release-observation-ticket",
+  };
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    action: githubMergeAction(),
+    idempotency_key: "post-release-action-substitution",
+  }, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+  }), /owner_manual_merge_successor_action_invalid|branch_not_allowed|action_not_allowed/);
+  const observation = await subject.governance.issueActionTicket(
+    observationRequest,
+    {
+      software_closure_digest: H("2"),
+      software_closure_fresh_until: freshUntil,
+    },
+  );
+  assert.equal(observation.ticket.core_join_verdict_id, join.verdict_id);
+  assert.equal(observation.ticket.predecessor.post_release_attestation
+    .attestation_digest, receipt.post_release_attestation.attestation_digest);
+  const ticketAuthority =
+    await subject.governance.resolveManualMergeRefreshAuthority({
+      tenant_id: "codexai",
+      work_id: "work-1",
+      core_join_verdict_id: join.verdict_id,
+      manual_merge_readback_id: receipt.receipt_id,
+      ticket_id: observation.ticket.ticket_id,
+    });
+  assert.equal(ticketAuthority.authority_mode, "refresh_closure_only");
+
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    idempotency_key: "post-release-observation-reserve",
+  });
+  await subject.governance.completeActionTicket({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    reservation_id: reserved.reservation_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    outcome: "success",
+    result_digest: H("a"),
+    result_commit: G("9"),
+    readback_digest: H("b"),
+    idempotency_key: "post-release-observation-complete",
+  });
+  subject.advance(1);
+  const finalized = await subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+  });
+  assert.equal(finalized.decision, "ALLOW_FINALIZE");
+  assert.equal(finalized.target_commit, G("9"));
+  assert.equal(finalized.services_verified, true);
+  assert.equal(finalized.core_join_verdict_id, join.verdict_id);
+  assert.equal(finalized.predecessor.post_release_attestation.attestation_digest,
+    receipt.post_release_attestation.attestation_digest);
+
+  const replay = await subject.governance.recordOwnerManualMergeReadback(request, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+    post_release_attestation: true,
+  });
+  assert.equal(replay.receipt_digest, receipt.receipt_digest);
+  assert.equal(verifierCalls, 2);
+});
+
 test("legacy manual merge receipt refreshes once onto a canonical Join and survives Join expiry", async () => {
   const store = createInMemoryHostNativeGovernanceStore();
   let verifiedAt = "2026-07-29T10:00:00.000Z";

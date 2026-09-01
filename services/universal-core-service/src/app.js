@@ -12111,6 +12111,10 @@ export function createUniversalCoreService(options = {}) {
     const unsigned = authority && typeof authority === "object"
       ? (({ authority_digest: _digest, ...rest }) => rest)(authority)
       : null;
+    const refreshAuthorityDigests = [
+      authority?.refresh_lineage_digest,
+      authority?.post_release_attestation_digest,
+    ].filter((value) => value !== undefined);
     if (
       !unsigned ||
       authority.schema_version !== "host_native_manual_merge_authority_resolution_v1" ||
@@ -12122,8 +12126,9 @@ export function createUniversalCoreService(options = {}) {
       (binding.ticket_id !== undefined && authority.ticket_id !== binding.ticket_id) ||
       !/^[a-f0-9]{64}$/.test(String(authority.manual_merge_readback_digest || "")) ||
       (authority.authority_mode === "refresh_closure_only"
-        ? !/^[a-f0-9]{64}$/.test(String(authority.refresh_lineage_digest || ""))
-        : authority.refresh_lineage_digest !== undefined) ||
+        ? refreshAuthorityDigests.length !== 1 ||
+          !/^[a-f0-9]{64}$/.test(String(refreshAuthorityDigests[0] || ""))
+        : refreshAuthorityDigests.length !== 0) ||
       authority.authority_digest !== hostNativeDigest(unsigned)
     ) throw new Error("software_cognition_manual_merge_refresh_resolution_invalid");
     return authority;
@@ -12145,6 +12150,27 @@ export function createUniversalCoreService(options = {}) {
           software_closure_fresh_until:
             softwareClosure.payload.evidence_fresh_until,
           software_closure_digest: softwareClosure.payload.closure_digest,
+        }),
+    );
+  };
+
+  const recordHostNativePostReleaseReadbackAttestation = async (input) => {
+    if (softwareCognitionMode === "INVALID") {
+      throw new Error("software_cognition_mode_invalid");
+    }
+    if (softwareCognitionMode !== "ENFORCED") {
+      throw new Error("software_cognition_post_release_attestation_requires_enforced_mode");
+    }
+    return withEnforcedSoftwareCoreJoin(
+      input.tenant_id,
+      input.work_id,
+      input.core_join_verdict_id,
+      async (_record, softwareClosure) =>
+        hostNativeGovernance.recordOwnerManualMergeReadback(input, {
+          software_closure_fresh_until:
+            softwareClosure.payload.evidence_fresh_until,
+          software_closure_digest: softwareClosure.payload.closure_digest,
+          post_release_attestation: true,
         }),
     );
   };
@@ -12425,6 +12451,57 @@ export function createUniversalCoreService(options = {}) {
           ok: true,
           tenant_id: req.tenantId,
           manual_merge_readback: receipt,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/post-release/readback-attest",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const body = req.body || {};
+        const internalOnlyFields = [
+          "post_release_attestation",
+          "software_closure_digest",
+          "software_closure_fresh_until",
+        ];
+        if (internalOnlyFields.some((field) => Object.hasOwn(body, field))) {
+          throw new Error("post_release_attestation_internal_only");
+        }
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_post_release_readback_attest",
+        );
+        const {
+          tenant_id: _tenantId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...selector
+        } = body;
+        const receipt = await recordHostNativePostReleaseReadbackAttestation({
+          ...selector,
+          tenant_id: req.tenantId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_host_native_post_release_readback_attested", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: receipt.work_id,
+          core_join_verdict_id: receipt.core_join_verdict_id,
+          pull_request: receipt.pull_request,
+          receipt_id: receipt.receipt_id,
+          authority: receipt.authority,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          post_release_readback_attestation: receipt,
         });
       } catch (error) {
         return hostNativeFailure(res, error);

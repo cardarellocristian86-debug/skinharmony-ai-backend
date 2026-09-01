@@ -1504,6 +1504,66 @@ test("owner manual merge bridge forwards selectors only under an exact owner ass
   assert.equal(call.init.headers.authorization, "Bearer tenant-a-key");
 });
 
+test("post-release readback bridge forwards selectors only under an exact owner assertion", async () => {
+  let call;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (url, init) => {
+      call = { url, init };
+      return new Response(JSON.stringify({
+        ok: true,
+        post_release_readback_attestation: {
+          schema_version: "host_native_owner_manual_merge_readback_v1",
+          authority: "evidence_only",
+          action_authorized: false,
+          execution_authorized: false,
+        },
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|post-release-owner",
+    role: "tenant_owner",
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "owner confirmed post release readback",
+  };
+  await handlers.host_native_post_release_readback_attest({
+    work_id: "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6",
+    intent_anchor_digest: "a".repeat(64),
+    repository: "owner/repo",
+    core_join_verdict_id: `hnj_${"b".repeat(40)}`,
+    pull_request: 390,
+    idempotency_key: "post-release-readback-pr-390",
+    merged: true,
+    merge_commit: "c".repeat(40),
+    health: { ready: true },
+    post_release_attestation: true,
+  }, identity);
+  assert.equal(new URL(call.url).pathname,
+    "/v1/host-native/actions/post-release/readback-attest");
+  const body = JSON.parse(call.init.body);
+  assert.equal(body.work_id, "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6");
+  assert.equal(body.pull_request, 390);
+  assert.equal(body.owner_confirmed, true);
+  assert.equal(body.confirmation_reference,
+    "owner confirmed post release readback");
+  for (const forbidden of ["merged", "merge_commit", "head_commit", "health",
+    "live_commit", "post_release_attestation"]) {
+    assert.equal(Object.hasOwn(body, forbidden), false);
+  }
+  assert.equal(body.owner_context.purpose, undefined);
+  assert.equal(body.owner_context.assertion,
+    expectedOwnerAssertion(OWNER_CONTEXT_SECRET, body.owner_context));
+  assert.equal(call.init.headers.authorization, "Bearer tenant-a-key");
+});
+
 test("owner manual merge bridge fails closed without an authenticated owner confirmation", async () => {
   let fetched = false;
   const handlers = createCoreHandlers({
