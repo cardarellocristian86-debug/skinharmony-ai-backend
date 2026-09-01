@@ -16,6 +16,16 @@ function tenant(value) {
   return id;
 }
 
+function safeLessonCode(value) {
+  const code = String(value || "").trim().toLowerCase();
+  return /^[a-z][a-z0-9_.:-]{1,159}$/.test(code) ? code : "unclassified_failure";
+}
+
+function safeProjectId(...values) {
+  const value = values.map((item) => String(item || "")).find((item) => /^[a-z0-9][a-z0-9_-]{1,63}$/i.test(item));
+  return value || "";
+}
+
 export function redactMemoryText(value) {
   let text = String(value || "").replaceAll("\u0000", "");
   let redactions = 0;
@@ -57,6 +67,18 @@ export function createCloudMemoryStore(config, options = {}) {
     );
     CREATE INDEX IF NOT EXISTS mcp_memory_documents_tenant_updated_idx
       ON mcp_memory_documents (tenant_id, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS mcp_memory_distilled_lessons (
+      tenant_id varchar(64) NOT NULL,
+      project_id varchar(64) NOT NULL DEFAULT '',
+      tool_name varchar(160) NOT NULL,
+      failure_code varchar(160) NOT NULL,
+      occurrence_count integer NOT NULL DEFAULT 1,
+      first_observed_at timestamptz NOT NULL DEFAULT now(),
+      last_observed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (tenant_id, project_id, tool_name, failure_code)
+    );
+    CREATE INDEX IF NOT EXISTS mcp_memory_distilled_lessons_lookup_idx
+      ON mcp_memory_distilled_lessons (tenant_id, project_id, last_observed_at DESC);
   `);
 
   return {
@@ -147,6 +169,47 @@ export function createCloudMemoryStore(config, options = {}) {
         [tenant(tenantId)],
       );
       return { backend: "postgres", ...result.rows[0] };
+    },
+    async recordDistilledFailure(identity, event = {}) {
+      await initialize();
+      const tenantId = tenant(identity?.tenantId);
+      const dynamic = event.toolName === "core_capability_invoke";
+      const toolName = String(dynamic ? event.args?.capability_id : event.toolName || "").trim().slice(0, 160);
+      const targetArgs = dynamic && event.args?.arguments && typeof event.args.arguments === "object"
+        ? event.args.arguments : event.args || {};
+      const payload = event.result?.structuredContent || {};
+      const code = safeLessonCode(event.error?.code || event.error?.error_code || payload.error_code || payload.code || payload.result?.error_code);
+      const projectId = safeProjectId(
+        event.preflight?.work_preflight?.continuity?.project_id,
+        event.preflight?.work_preflight?.project_id,
+        targetArgs.project_id,
+      );
+      if (!toolName || toolName.startsWith("memory_")) return { recorded: false };
+      const result = await pool.query(
+        `INSERT INTO mcp_memory_distilled_lessons
+           (tenant_id, project_id, tool_name, failure_code)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (tenant_id, project_id, tool_name, failure_code) DO UPDATE SET
+           occurrence_count = LEAST(mcp_memory_distilled_lessons.occurrence_count + 1, 10000),
+           last_observed_at = now()
+         RETURNING tenant_id, project_id, tool_name AS source_tool, failure_code,
+                   occurrence_count, first_observed_at, last_observed_at`,
+        [tenantId, projectId, toolName, code],
+      );
+      return { recorded: true, lesson_state: "candidate", ...result.rows[0] };
+    },
+    async listDistilledLessons(tenantId, projectId, limit = 10) {
+      await initialize();
+      const scopedProject = safeProjectId(projectId);
+      const result = await pool.query(
+        `SELECT tool_name AS source_tool, failure_code, occurrence_count, first_observed_at, last_observed_at,
+                'candidate' AS lesson_state
+         FROM mcp_memory_distilled_lessons
+         WHERE tenant_id = $1 AND project_id = $2
+         ORDER BY occurrence_count DESC, last_observed_at DESC LIMIT $3`,
+        [tenant(tenantId), scopedProject, Math.min(Math.max(Number(limit) || 10, 1), 20)],
+      );
+      return result.rows;
     },
     close: () => pool.end(),
   };
