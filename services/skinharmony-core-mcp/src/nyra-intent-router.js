@@ -33,8 +33,8 @@ const GLOBAL_CONTROL_READ = /(?:\b(?:che|quali|mostra(?:mi)?|dimmi|fammi\s+veder
 const GLOBAL_CONTROL_STATUS_QUESTION = /(?:\b(?:hai|avete|have|has|do\s+you\s+have)\b.{0,80}\b(?:entity\s*360|e360|nyra\s+converse|dialog(?:o|ue)|semantic\s+scope\s+guard|scope\s+guard|work\s+continuity|research\s+airlock)\b.{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|active|inactive|enabled|disabled|on|off|shadow|enforced|stato|status)\b|\b(?:quali|che|what|which)\b.{0,80}(?:funzion\w*|capacità|capacita|capability|capabilities|controll\w*).{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|shadow|enforced|autorizz\w*|owner|conferm\w*)\b|\b(?:per\s+quali|which)\b.{0,80}\b(?:azioni|actions?)\b.{0,80}\b(?:owner|conferm\w*|autorizz\w*)\b)/iu;
 const NYRA_ADVISORY_READ = /\bnyra\b|\b(?:chi\s+sei|come\s+funzioni|cosa\s+ti\s+manca|cosa\s+puoi|qual(?:\s|')*[èe]\s+la\s+differenza)\b|\b(?:entity\s*360|e360)\b.{0,100}\bsemantic\s+scope\s+guard\b/iu;
 const NYRA_SELF_MODEL_READ = /\b(?:self[\s_-]?model|modello\s+(?:di\s+)?(?:te|nyra)|who\s+are\s+you|chi\s+sei|your\s+(?:limits?|capabilities)|tuoi\s+(?:limiti|capacità|capacita))\b/iu;
-const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;
-const DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
+const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;\nconst DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
+const GLOBAL_READ_DOMAIN = /\b(?:nyra|universal\s+core|core|icf|entity\s*360|e360|self[\s_-]?model|autodiagnos\w*|self[\s_-]?diagnos\w*|software\s+(?:atlas|architecture)|architecture\s+atlas|memori\w*|memory|gallery|verified[\s_-]?learning|capabilit\w*|funzion\w*)\b/iu;
 const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|commit|push|pull\s+request|\bpr\b|merge|deploy(?:ed|ing)?|publish\w*|release|rollback)\b/iu;
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
 const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:manca|serve))/iu;
@@ -45,6 +45,8 @@ const HYPOTHETICAL = /\b(?:dicessi|direi|sarebbe|would|hypothetical|ipotetic\w*|
 // Structured `workBootstrap` remains the only explicit non-prose override.
 const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|will|should|may|might|shall|do|does|did|is|are|was|were|am|have|has|had|cosa|qual(?:e|i)?|chi|dove|quando|perch[eé]|come|puoi|potresti|vorresti|posso|devo|dovrei|sei|sono|ha|hai)\b/iu;
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
+const FUTURE_SCOPE = /\b(?:pi[uù]\s+avanti|in\s+seguito|dopo|quando|poi|later|afterwards?|eventually|in\s+the\s+future|when)\b/iu;
+const OWNER_RESERVED = /(?:\b(?:lo\s+far[oò]\s+io|lo\s+faccio\s+io|faccio\s+io|lo\s+far[aà]\s+l[’']?owner|owner\s+(?:esegue|far[aà]|will\s+do)|i(?:'|’)ll\s+do\s+it)(?=\s|[;,.!?]|$)|\b(?:merge|deploy\w*|push|pull(?:\s+request)?|\bpr\b|publish\w*|release)\b.{0,40}\b(?:manual(?:e|mente)?|owner)\b)/iu;
 // V1 deliberately admits only the one route that can be made safe without a
 // Work or an LLM-produced answer. Other semantic interpretations remain on
 // the existing Core/Work path until they have their own bounded contract.
@@ -74,7 +76,7 @@ const ACTION_TYPES = Object.freeze([
   ["runtime_control", RUNTIME_CONTROL_MUTATION],
   ["commit", /\bcommit\w*\b/iu],
   ["push", /\bpush\w*\b/iu],
-  ["pull_request", /\b(?:pull\s+request|pr)\b/iu],
+  ["pull_request", /\b(?:pull(?:\s+request)?|pr)\b/iu],
   ["merge", /\bmerge\w*\b/iu],
   ["deploy", /\bdeploy(?:ed|ing)?\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu],
   ["publish", /\b(?:publish\w*|release|rilasci\w*)\b/iu],
@@ -215,6 +217,119 @@ function semanticHintMessageDigest(message) {
   return sha256({ schema_version: "nyra_semantic_hint_message_v1", message: normalizedIntentText(message) });
 }
 
+function ownerReservedActionsForClause(source, actions) {
+  if (!OWNER_RESERVED.test(source)) return [];
+  const patterns = {
+    merge: "merge",
+    deploy: "deploy\\w*",
+    push: "push",
+    pull_request: "(?:pull(?:\\s+request)?|pr)",
+    publish: "(?:publish\\w*|release)",
+  };
+  const ownerMarker = "(?:lo\\s+far[oò]\\s+io|lo\\s+faccio\\s+io|faccio\\s+io|lo\\s+far[aà]\\s+l[’']?owner|owner|i(?:'|’)ll\\s+do\\s+it|manual(?:e|mente)?)";
+  const marker = new RegExp(ownerMarker, "iu").exec(source);
+  const candidates = actions.filter((action) => action !== "release").flatMap((action) => {
+    const token = patterns[action];
+    if (!token) return [];
+    const match = new RegExp(`\\b${token}\\b`, "iu").exec(source);
+    return match ? [{ action, index: match.index }] : [];
+  });
+  const before = candidates.filter((item) => item.index <= marker.index)
+    .sort((left, right) => right.index - left.index)[0];
+  const after = candidates.filter((item) => item.index > marker.index)
+    .sort((left, right) => left.index - right.index)[0];
+  const selected = before || after;
+  const reserved = selected ? [selected.action] : [];
+  if (reserved.length > 0 && actions.includes("release")) reserved.push("release");
+  return reserved.length > 0 ? reserved : actions.length === 1 ? [...actions] : [];
+}
+
+function materializeCanonicalIntent({
+  text,
+  intent,
+  route,
+  confidence,
+  reason,
+  clauses,
+  semanticIntake,
+  semanticAssessment,
+  workBootstrap,
+}) {
+  const sourceClauses = splitIntentClauses(text).clauses;
+  const requestedNow = [];
+  const futureGoals = [];
+  const constraints = [];
+  const prohibitedActions = [];
+  const referencedActions = [];
+  const ownerReservedActions = [];
+  for (const clause of clauses) {
+    const source = sourceClauses[clause.index] || "";
+    const actions = [...new Set([
+      ...clause.action_candidates,
+      ...detectNyraConsequentialCategories(source),
+    ])];
+    if (actions.length === 0) continue;
+    const future = FUTURE_SCOPE.test(source);
+    const reservedActions = ownerReservedActionsForClause(source, actions);
+    const ownerReserved = reservedActions.length > 0;
+    if (clause.polarity === "negative") {
+      prohibitedActions.push(...actions.filter((action) =>
+        !clause.affirmative_action_candidates.includes(action)));
+    }
+    if (clause.condition) constraints.push(...actions);
+    if (future) futureGoals.push(...actions);
+    if (ownerReserved) ownerReservedActions.push(...reservedActions);
+    const currentConsequentialStatement = ["ticket_or_action", "ambiguous_consequential"].includes(intent) &&
+      clause.polarity === "positive" && clause.modality === "asserted";
+    const consequentialNeed = /\b(?:serve|servono|necessit\w*|need(?:ed)?|required?)\b/iu.test(source) &&
+      actions.length > 0;
+    if ((clause.imperative || currentConsequentialStatement || consequentialNeed) &&
+        (clause.polarity === "positive" || clause.affirmative_action_candidates.length > 0) &&
+        clause.modality === "asserted" && !clause.quote_scope && !future) {
+      requestedNow.push(...(clause.affirmative_action_candidates.length > 0
+        ? clause.affirmative_action_candidates.filter((action) => !reservedActions.includes(action))
+        : actions.filter((action) => !reservedActions.includes(action)).map((action) =>
+          action === "release" && /\b(?:deploy\w*|distribuzion\w*|live|produzione)\b/iu.test(source)
+            ? "deploy" : action)));
+    } else {
+      referencedActions.push(...actions);
+    }
+  }
+  if (workBootstrap || intent === "work_create") requestedNow.unshift("work_bootstrap");
+  const unique = (items) => Object.freeze([...new Set(items)]);
+  const consequentialIntent = requestedNow.some((action) => action !== "work_bootstrap");
+  const workRequirement = intent === "work_create" ? "NEW" :
+    intent === "work_resume" || consequentialIntent ? "EXISTING" :
+      ["command_catalog", "global_control_read", "nyra_self_model_read", "nyra_gap_read", "advisory_read", "analysis", "chat"].includes(intent)
+        ? "NONE" : "UNKNOWN";
+  const envelope = {
+    schema_version: "nyra_canonical_intent_v1",
+    requested_now: unique(requestedNow),
+    future_goals: unique(futureGoals),
+    constraints: unique(constraints),
+    prohibited_actions: unique(prohibitedActions),
+    referenced_actions: unique(referencedActions),
+    owner_reserved_actions: unique(ownerReservedActions),
+    speech_act: semanticIntake.speech_act || (clauses.some((clause) => clause.interrogative) ? "QUESTION" : "REQUEST"),
+    operation_class: consequentialIntent ? "EXTERNAL_MUTATION" : "READ_ONLY",
+    scope: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(route) ? "GLOBAL" :
+      workRequirement === "NONE" ? "CONVERSATION" : "WORK",
+    target: intent,
+    work_requirement: workRequirement,
+    consequential_intent: consequentialIntent,
+    confidence,
+    ambiguity: intent === "ambiguous_consequential",
+    safety_signals: Object.freeze(semanticAssessment.disposition === "allow" ? [] : [semanticAssessment.disposition]),
+    provenance: Object.freeze({
+      source: "nyra_dialogue_semantic_intake",
+      reason_code: reason,
+      semantic_hint_state: semanticIntake.state,
+      raw_text_digest: semanticHintMessageDigest(text),
+    }),
+  };
+  return Object.freeze({ ...envelope, intent_digest: sha256(envelope) });
+}
+
 function normalizeSemanticHint(value, message) {
   const messageDigest = semanticHintMessageDigest(message);
   const fallback = Object.freeze({
@@ -314,9 +429,18 @@ export function classifyNyraIntent({
     clauses.every((clause) => clause.action_candidates.length === 0 ||
       (clause.polarity === "negative" && !clause.imperative && !clause.condition && !clause.quote_scope));
   const advisoryReadQuestion = !safeId(workId) && clauses.some((clause) => clause.interrogative) &&
-    actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
+    actionClauses.length === 0 && clauses.every((clause) => clause.action_candidates.length === 0) &&
+    !workBootstrap && !workCreateRequested &&
     !WORK_RESUME.test(normalized) && !GLOBAL_CONTROL_READ.test(text) &&
     !COMMAND_CATALOG.test(text) && NYRA_ADVISORY_READ.test(text);
+  const comparativeAuthorityRead = clauses.some((clause) => clause.interrogative) &&
+    /\b(?:differenza|difference|distinzione|distinction)\b/iu.test(text) &&
+    clauses.every((clause) => clause.action_candidates.every((action) => action === "authorization"));
+  const horizontalGlobalRead = !safeId(workId) && !workBootstrap && !workCreateRequested &&
+    !WORK_RESUME.test(normalized) && actionClauses.length === 0 && GLOBAL_READ_DOMAIN.test(text) &&
+    clauses.every((clause) => clause.action_candidates.length === 0 && !clause.imperative) &&
+    (/[?？]/u.test(text) || clauses.some((clause) => clause.interrogative || clause.diagnostic) || ANALYSIS.test(text)) &&
+    semanticAssessment.disposition === "allow";
 
   // A host model may express an intent in any language, but it cannot grant
   // authority: the server accepts only this bounded read-only class and still
@@ -325,14 +449,13 @@ export function classifyNyraIntent({
   // available even for hosts that do not emit a semantic hint.
   const safeIntrospectionRead = actionClauses.length === 0 && !workBootstrap &&
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
+    clauses.every((clause) => clause.action_candidates.length === 0) &&
     semanticAssessment.disposition === "allow" &&
     (NYRA_SELF_MODEL_READ.test(text) || NYRA_GAP_READ.test(text));
-  const safeDistilledLessonsRead = actionClauses.length === 0 && !workBootstrap &&
-    !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
-    semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);
-  const hostHintIntrospectionRead = semanticIntake.state === "CANDIDATE" &&
+  const safeDistilledLessonsRead = actionClauses.length === 0 && !workBootstrap &&\n    !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&\n    semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);\n  const hostHintIntrospectionRead = semanticIntake.state === "CANDIDATE" &&
     semanticIntake.route_candidate === "NYRA_INTROSPECTION_READ" &&
     actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
+    clauses.every((clause) => clause.action_candidates.length === 0) &&
     !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     semanticAssessment.disposition === "allow";
 
@@ -363,19 +486,20 @@ export function classifyNyraIntent({
     route = "CORE_CATALOG_READ";
     confidence = 1;
     reason = "exact_command_id_proposal";
-  } else if (safeDistilledLessonsRead) {
-    intent = "distilled_lessons_read";
-    route = "ADVISORY_READ";
-    confidence = 0.99;
-    reason = "bounded_distilled_lessons_read";
-  } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
+  } else if (actionVerbPresent && RUNTIME_CONTROL_MUTATION.test(text) &&
+      clauses.some((clause) => clause.action_candidates.includes("runtime_control"))) {
+    intent = "ticket_or_action";
+    route = "CORE_CONTEXT_THEN_NYRA";
+    confidence = 0.96;
+    reason = "explicit_consequential_action_precedence";
+  } else if (safeDistilledLessonsRead) {\n    intent = "distilled_lessons_read";\n    route = "ADVISORY_READ";\n    confidence = 0.99;\n    reason = "bounded_distilled_lessons_read";\n  } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
     intent = NYRA_SELF_MODEL_READ.test(text) ? "nyra_self_model_read" : "nyra_gap_read";
     route = "ADVISORY_READ";
     confidence = safeIntrospectionRead ? 0.99 : 0.86;
     reason = safeIntrospectionRead
       ? "bounded_nyra_introspection_read"
       : "host_semantic_hint_nyra_introspection_read";
-  } else if (advisoryReadQuestion) {
+  } else if (advisoryReadQuestion || comparativeAuthorityRead) {
     intent = "advisory_read";
     route = "ADVISORY_READ";
     confidence = 0.96;
@@ -400,6 +524,17 @@ export function classifyNyraIntent({
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.98;
     reason = "exact_work_resume_language";
+  } else if (OWNER_RESERVED.test(text) &&
+      clauses.some((clause) => clause.imperative && clause.action_candidates.length === 0)) {
+    intent = "analysis";
+    route = "CORE_CONTEXT_THEN_NYRA";
+    confidence = 0.9;
+    reason = "owner_reserved_effect_with_bounded_preparation";
+  } else if (clauses.some((clause) => clause.imperative && clause.action_candidates.length === 0)) {
+    intent = "ambiguous_consequential";
+    route = "CORE_HOLD_THEN_NYRA";
+    confidence = 0.82;
+    reason = "unresolved_imperative_requires_clarification";
   } else if (actionClauses.length > 0 && (ambiguousActionLanguage ||
       clauses.some((clause) => clause.diagnostic))) {
     intent = "ambiguous_consequential";
@@ -416,6 +551,11 @@ export function classifyNyraIntent({
     route = "CONTROL_ROOM_READ";
     confidence = safeGlobalControlRead ? 0.99 : 0.86;
     reason = safeGlobalControlRead ? "deterministic_global_control_read" : "host_semantic_hint_global_control_read";
+  } else if (horizontalGlobalRead) {
+    intent = "advisory_read";
+    route = "ADVISORY_READ";
+    confidence = 0.94;
+    reason = "horizontal_global_read_plane";
   } else if (ACTION_NOUN.test(text) && !DIAGNOSTIC.test(text) && !ANALYSIS.test(text)) {
     intent = "ambiguous_consequential";
     route = "CORE_HOLD_THEN_NYRA";
@@ -438,6 +578,10 @@ export function classifyNyraIntent({
     reason = "advisory_analysis_language";
   }
 
+  const canonicalIntent = materializeCanonicalIntent({
+    text, intent, route, confidence, reason, clauses, semanticIntake,
+    semanticAssessment, workBootstrap,
+  });
   return Object.freeze({
     schema_version: "nyra_intent_route_v2",
     intent,
@@ -461,6 +605,7 @@ export function classifyNyraIntent({
       lexical_disposition: semanticAssessment.disposition,
       lexical_risk_band: semanticAssessment.risk_band,
     }),
+    canonical_intent: canonicalIntent,
     execution_authorized: false,
   });
 }
@@ -479,6 +624,7 @@ export function publicNyraIntentRoute(route) {
     }))),
     input_digest: route.input_digest,
     semantic_intake: route.semantic_intake,
+    canonical_intent: route.canonical_intent,
     execution_authorized: false,
   });
 }
