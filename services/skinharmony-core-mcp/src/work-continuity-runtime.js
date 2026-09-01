@@ -2305,7 +2305,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
     await initialize();
     const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,
         a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
-        a.lease_expires_at>clock_timestamp() AS lease_active,
         p.status AS plan_status
       FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
         ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
@@ -2319,7 +2318,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     if (row.host_task_id !== hostTaskId) throw new Error("native_agent_host_task_mismatch");
     const leaseExpiresAt = dateValue(row.lease_expires_at, "native_agent_lease");
-    if (row.lease_active !== true) {
+    if (leaseExpiresAt.getTime() <= nowDate().getTime()) {
       throw new Error("native_agent_binding_expired_replan_required");
     }
     if (row.coordinator_session_fingerprint === reporterPresence.session_fingerprint) {
@@ -4403,16 +4402,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (activeCount >= Number(plan.max_parallel || 1)) {
         throw new Error("native_agent_parallel_limit_reached");
       }
-      // PostgreSQL is the authority that expires native-agent leases. Derive
-      // the lease from the same clock so a host/runtime clock skew cannot
-      // create an assignment that the database considers expired immediately.
-      const leaseClock = await client.query(
-        "SELECT (clock_timestamp() + interval '1 hour') AS lease_expires_at",
-      );
-      const leaseExpiresAt = dateValue(
-        leaseClock.rows[0]?.lease_expires_at,
-        "native_agent_lease",
-      ).toISOString();
+      const leaseExpiresAt = new Date(nowDate().getTime() + 60 * 60 * 1_000).toISOString();
       const assignmentBinding = nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
@@ -4563,7 +4553,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
           a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
-          a.lease_expires_at>clock_timestamp() AS lease_active,
           p.plan,p.status AS plan_status,a.v2_task_id
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
@@ -4578,7 +4567,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (row.host_task_id !== hostTaskId) throw new Error("native_agent_host_task_mismatch");
       if (
         row.status === "expired" ||
-        row.lease_active !== true
+        (row.lease_expires_at && dateValue(row.lease_expires_at, "native_agent_lease").getTime() <=
+          nowDate().getTime())
       ) {
         throw new Error("native_agent_binding_expired_replan_required");
       }
