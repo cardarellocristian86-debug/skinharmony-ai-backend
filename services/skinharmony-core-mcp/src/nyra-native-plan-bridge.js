@@ -76,6 +76,7 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
   ].join(" ");
   const verifierInstruction = [
     "Independently verify the builder evidence, required checks, changed scope, and rollback readiness.",
+    "Run in a distinct native agent session; never reuse the builder identity or session.",
     "Do not edit, merge, deploy, or authorize external actions. Report evidence and any blocking discrepancy.",
   ].join(" ");
   return {
@@ -89,6 +90,14 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
       { task_id: "verify", kind: "verifier", instruction: verifierInstruction, dependencies: ["build"] },
     ],
     max_parallel: 1,
+    launch_request: {
+      schema_version: "nyra_host_launch_request_v1",
+      requested_by: "nyra",
+      action: "START_NATIVE_PLAN",
+      verifier_task_id: "verify",
+      distinct_session_required: true,
+      host_execution_required: true,
+    },
     closure_requirements: {
       independent_verifier_required: true,
       tests_required: true,

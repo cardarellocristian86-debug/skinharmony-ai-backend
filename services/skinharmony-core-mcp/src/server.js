@@ -513,6 +513,16 @@ const coreHandlers = createCoreHandlers(config, {
       project_id: args.project_id,
     },
   ),
+  readControlRoomCoordinationOverview: async (identity, args = {}) => {
+    const overview = await coordinationOverviewAuthorized(identity, { ...args, limit: 100 });
+    const sessions = overview.sessions;
+    return {
+      available: true,
+      active_session_count: sessions.length,
+      active_logical_agent_count: new Set(sessions.map((item) => item.agent_id)).size,
+      sessions,
+    };
+  },
 });
 const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === true
   ? createNyraWorkAutomationInternal({
@@ -766,24 +776,20 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       // the already-persisted Autopilot ledger has an assignment. This read
       // path never enables Nyra, creates a run, mints a ticket, or plans a
       // native host action.
-      const storedAssignment = existing.nyra_dialogue?.assignment;
-      if (typeof storedAssignment?.assignment_id === "string" && storedAssignment.assignment_id &&
-          storedAssignment.state !== "claimed") return existing;
-      if (typeof nyraAutopilotRuntime?.readWork !== "function") return existing;
-      try {
+      if (typeof nyraAutopilotRuntime?.readWork !== "function") {
+        autopilot = { assignments: [] };
+      } else try {
         const observed = await nyraAutopilotRuntime.readWork(identity, {
           work_id: continuity.work_id,
         });
-        if (!Array.isArray(observed.assignments) || !observed.assignments.some((assignment) =>
-          assignment?.status === "offered")) {
-          // A prior claimed entry is never reused as an actionable offer by a
-          // later conversation. Re-materialize an empty assignment instead.
-          autopilot = { ...observed, assignments: [] };
-        } else {
-          autopilot = observed;
-        }
+        // Recompute readiness from the entire dependency graph. An `offered`
+        // row is not actionable merely because it is unclaimed: every
+        // dependency must already be submitted or verified.
+        autopilot = observed;
       } catch {
-        return existing;
+        // Preserve the durable Work but never replay an actionable assignment
+        // from cache when its current dependency/claim state cannot be read.
+        autopilot = { assignments: [] };
       }
     }
   }
@@ -1055,6 +1061,15 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
           plan_id: nativePlan.plan.plan_id,
           plan_digest: nativePlan.plan_digest,
           idempotent_replay: nativePlan.idempotent_replay === true,
+          host_launch: {
+            requested_by: "nyra",
+            action: "START_NATIVE_PLAN",
+            independent_verifier_required: true,
+            verifier_task_id: "verify",
+            starts_after: ["build"],
+            distinct_session_required: true,
+            host_execution_required: true,
+          },
           execution_authorized: false,
         },
       };
@@ -1230,6 +1245,19 @@ async function galleryLegacyWorksAuthorized(identity, args = {}) {
   }
   const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
   return workContinuityRuntime.galleryAuthorized(identity, args, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: identity.tenantId,
+    work_ids: workIds,
+  });
+}
+
+async function coordinationOverviewAuthorized(identity, args = {}) {
+  if (typeof workContinuityRuntime?.coordinationOverviewAuthorized !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.coordinationOverviewAuthorized(identity, args, {
     schema_version: "legacy_work_read_authorization_v1",
     server_derived: true,
     tenant_id: identity.tenantId,
@@ -1794,6 +1822,154 @@ const baseHandlers = {
     },
     tenant_work_gallery_list: async (args, identity) => {
       const payload = { ok: true, result: await galleryLegacyWorksAuthorized(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_coordination_read: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      const readback = await workContinuityRuntime.read(identity, {
+        work_id: args.work_id,
+        event_limit: 1,
+      });
+      const now = Date.now();
+      const includeInactive = args.include_inactive === true;
+      const leasesBySession = new Map();
+      for (const lease of readback.leases || []) {
+        const leases = leasesBySession.get(String(lease.session_id)) || [];
+        leases.push({
+          lease_id: lease.lease_id,
+          branch_id: lease.branch_id || null,
+          purpose: lease.purpose,
+          status: lease.status,
+          acquired_at: lease.acquired_at,
+          renewed_at: lease.renewed_at,
+          expires_at: lease.expires_at,
+          active: lease.status === "active" && Date.parse(lease.expires_at) > now,
+          surfaces: Array.isArray(lease.surfaces) ? lease.surfaces : [],
+        });
+        leasesBySession.set(String(lease.session_id), leases);
+      }
+      const sessions = (readback.participants || [])
+        .map((participant) => {
+          const expiresAt = Date.parse(participant.expires_at);
+          const active = participant.status === "active" && Number.isFinite(expiresAt) && expiresAt > now;
+          const leases = leasesBySession.get(String(participant.session_id)) || [];
+          const activeLeaseCount = leases.filter((lease) => lease.active).length;
+          return {
+            session_id: participant.session_id,
+            agent_id: participant.agent_id,
+            client_type: participant.client_type,
+            branch_id: participant.branch_id || null,
+            state: active ? activeLeaseCount > 0 ? "WORKING" : "ONLINE" : participant.status === "active" ? "SUSPECT" : "OFFLINE",
+            joined_at: participant.joined_at,
+            last_heartbeat_at: participant.last_seen_at,
+            presence_expires_at: participant.expires_at,
+            heartbeat_age_seconds: Number.isFinite(Date.parse(participant.last_seen_at))
+              ? Math.max(0, Math.floor((now - Date.parse(participant.last_seen_at)) / 1_000))
+              : null,
+            transport_bound: typeof participant.transport_session_fingerprint === "string" && participant.transport_session_fingerprint.length >= 16,
+            leases,
+          };
+        })
+        .filter((session) => includeInactive || ["ONLINE", "WORKING"].includes(session.state));
+      const observedAt = new Date(now).toISOString();
+      const entity360SourceProjection = {
+        schema_version: "entity_360_work_coordination_source_v1",
+        projection: "work_360",
+        authority: "none",
+        execution_authorized: false,
+        production_decision_mutation: false,
+        snapshot_eligible: false,
+        source: "tenant_work_gallery",
+        observed_at: observedAt,
+        work_identity: {
+          tenant_id: readback.tenant_id,
+          work_id: readback.work?.work_id || args.work_id,
+          project_id: readback.work?.project_id || null,
+        },
+        runtime_state: {
+          active_session_count: sessions.filter((session) => ["ONLINE", "WORKING"].includes(session.state)).length,
+          active_lease_count: sessions.reduce((count, session) =>
+            count + session.leases.filter((lease) => lease.active).length, 0),
+        },
+        relationships: sessions.map((session) => ({
+          relationship_type: "work_participation",
+          from_entity_type: "agent_session",
+          from_entity_id: session.session_id,
+          to_entity_type: "work",
+          to_entity_id: readback.work?.work_id || args.work_id,
+          state: session.state,
+          valid_from: session.joined_at,
+          valid_to: session.presence_expires_at,
+          observed_at: session.last_heartbeat_at,
+          evidence_ref: `tenant-work-participant:${session.session_id}`,
+        })),
+        dependencies: sessions.flatMap((session) => session.leases
+          .filter((lease) => lease.active)
+          .map((lease) => ({
+            dependency_type: "exclusive_work_surface",
+            session_id: session.session_id,
+            lease_id: lease.lease_id,
+            branch_id: lease.branch_id,
+            surfaces: lease.surfaces,
+            valid_to: lease.expires_at,
+            evidence_ref: `tenant-work-lease:${lease.lease_id}`,
+          }))),
+      };
+      const payload = {
+        ok: true,
+        result: {
+          schema_version: "tenant_work_coordination_read_v1",
+          tenant_id: readback.tenant_id,
+          work_id: readback.work?.work_id || args.work_id,
+          project_id: readback.work?.project_id || null,
+          work_status: readback.work?.status || null,
+          generated_at: observedAt,
+          active_session_count: sessions.filter((session) => ["ONLINE", "WORKING"].includes(session.state)).length,
+          active_lease_count: sessions.reduce((count, session) =>
+            count + session.leases.filter((lease) => lease.active).length, 0),
+          sessions,
+          entity360_source_projection: entity360SourceProjection,
+        },
+      };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    tenant_work_coordination_overview: async (args, identity) => {
+      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), 100);
+      const now = Date.now();
+      const overview = await coordinationOverviewAuthorized(identity, { ...args, limit });
+      const sessions = overview.sessions;
+      const activeAgents = new Set(sessions.map((session) => session.agent_id));
+      const payload = {
+        ok: true,
+        result: {
+          schema_version: "tenant_work_coordination_overview_v1",
+          tenant_id: identity.tenantId,
+          generated_at: new Date(now).toISOString(),
+          scanned_work_count: new Set(sessions.flatMap((session) => session.work_memberships.map((membership) => membership.work_id))).size,
+          active_session_count: sessions.length,
+          active_logical_agent_count: activeAgents.size,
+          active_lease_count: sessions.reduce((count, session) => count + session.active_lease_count, 0),
+          sessions,
+          entity360_source_projection: {
+            schema_version: "entity_360_agent_work_coordination_source_v1",
+            authority: "none",
+            execution_authorized: false,
+            snapshot_eligible: false,
+            source: "tenant_work_gallery",
+            observed_at: new Date(now).toISOString(),
+            concurrent_active_work: [...new Set(sessions.flatMap((session) => session.work_memberships.map((membership) => membership.work_id)))],
+            agent_provider_state: sessions.map((session) => ({
+              agent_id: session.agent_id,
+              session_id: session.session_id,
+              client_type: session.client_type,
+              state: session.state,
+              work_memberships: session.work_memberships,
+              last_heartbeat_at: session.last_heartbeat_at,
+              valid_to: session.presence_expires_at,
+            })),
+          },
+        },
+      };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {

@@ -79,6 +79,22 @@ test("a claimed Autopilot assignment is not offered to a later dialogue", () => 
   assert.equal(context.nyra_dialogue.assignment, null);
 });
 
+test("Nyra exposes only an offered assignment whose dependencies are complete", () => {
+  const base = {
+    continuity: { tenant_id: "codexai", project_id: "project-a", work_id: "11111111-1111-4111-8111-111111111111", state: "active" },
+    autopilot: { assignments: [
+      { assignment_id: "11111111-1111-4111-8111-111111111112", run_id: "run-1", assignment_key: "plan", role: "planner", status: "offered", dependencies: [] },
+      { assignment_id: "22222222-2222-4222-8222-222222222222", run_id: "run-1", assignment_key: "execute", role: "executor_specialist", status: "offered", dependencies: ["plan"] },
+    ] },
+  };
+  assert.equal(buildNyraControlContext(base).assignment.role, "planner");
+  const advanced = buildNyraControlContext({ ...base, autopilot: { assignments: [
+    { ...base.autopilot.assignments[0], status: "submitted" },
+    base.autopilot.assignments[1],
+  ] } });
+  assert.equal(advanced.assignment.role, "executor_specialist");
+});
+
 test("the connector returns the compact context instead of a full Work Gallery", () => {
   const context = buildNyraControlContext({
     continuity: {
