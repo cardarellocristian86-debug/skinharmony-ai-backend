@@ -1097,6 +1097,26 @@ export function resolveHostTransportPresence({
     : toolName;
   const oauthDttBackedReadCall = toolName === "core_capability_read" &&
     DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(effectiveCapabilityId);
+  // Assignment hand-off is a bounded Gallery operation, not a general Work
+  // mutation. ChatGPT may rotate MCP transports between messages, so an
+  // authenticated registered host can carry its server-signed logical
+  // presence only for claim/submit. The runtime still proves the exact
+  // tenant, Work, assignment state, eligible client type and signature before
+  // changing anything.
+  const oauthAssignmentCollaborationCall = [
+    "nyra_work_assignment_claim",
+    "nyra_work_assignment_submit",
+  ].includes(toolName);
+  const oauthAssignmentSessionBound = Boolean(
+    oauthAssignmentCollaborationCall &&
+    declaredSessionId &&
+    agentPresence &&
+    identity?.kind === "oauth" &&
+    identity?.authenticatedHostPrincipal?.registered === true &&
+    ["chatgpt_native", "codex_native"].includes(String(identity?.authenticatedHostPrincipal?.host_kind || "")) &&
+    membership?.authenticated === true &&
+    membership?.tenant_id === identity?.tenantId,
+  );
   const oauthLogicalSessionBound = Boolean(
     (oauthNyraNativeCoordinatorCall || oauthNativePlanCall || oauthDttBackedReadCall) &&
     declaredSessionId &&
@@ -1126,8 +1146,10 @@ export function resolveHostTransportPresence({
     });
   }
   return Object.freeze({
-    presence: oauthLogicalSessionBound ? agentPresence : null,
-    binding_source: oauthLogicalSessionBound ? "oauth_declared" : null,
+    presence: oauthLogicalSessionBound || oauthAssignmentSessionBound ? agentPresence : null,
+    binding_source: oauthLogicalSessionBound
+      ? "oauth_declared"
+      : oauthAssignmentSessionBound ? "oauth_assignment_collaboration" : null,
   });
 }
 

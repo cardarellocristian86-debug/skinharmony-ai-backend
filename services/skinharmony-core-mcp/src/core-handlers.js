@@ -3354,7 +3354,7 @@ export function createCoreHandlers(config, options = {}) {
           ? "codex_native"
           : "chatgpt_native";
       const bootstrap = sharedMemoryBootstrap
-        ? await sharedMemoryBootstrap.load(identity)
+        ? await sharedMemoryBootstrap.load(identity, { project_id: args.project_id })
         : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
       const gallery = await galleryContext(args, identity);
       const sharedContext = await memoryContext({

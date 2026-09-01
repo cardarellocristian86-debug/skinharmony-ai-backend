@@ -673,6 +673,17 @@ async function requireBoundedTenantCoordination(identity, actionType, target, id
   }
 }
 
+function requireBoundedAssignmentCollaboration(identity) {
+  // Gallery collaboration is horizontal: a newly authenticated ChatGPT/Codex
+  // session may claim or submit only a server-issued assignment.  The
+  // assignment runtime enforces tenant + Work equality, offered/claimed state,
+  // eligible client type, caller presence signature and append-only receipts.
+  // Do not route this narrow hand-off through the generic coordination gate:
+  // that gate is for arbitrary Work mutation and would make a Work sticky to
+  // the session that originally created it.
+  requireTenantWorkCapability(identity, "read");
+}
+
 function hostType(identity, _args = {}) {
   if (identity?.authenticatedHostPrincipal) {
     try {
@@ -1561,6 +1572,9 @@ const nyraConverseHandler = createNyraConverseHandler({
   // The conversational surface reads the existing bounded Core capability
   // internally; it does not expose a new direct route or materialize state.
   readNyraSelfModel: (args, identity) => coreHandlers.nyra_self_model(args, identity),
+  readDistilledLessons: async (args, identity) => cloudMemoryStore
+    ? cloudMemoryStore.listDistilledLessons(identity.tenantId, args.project_id, 10)
+    : [],
   dialogueEnabled: config.nyraDialogueEnabled === true,
 });
 
@@ -2121,7 +2135,7 @@ const baseHandlers = {
       return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.inbox(identity, args) });
     },
     nyra_work_assignment_claim: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
+      requireBoundedAssignmentCollaboration(identity);
       const result = await nyraAutopilotRuntime.claim(identity, args);
       const nyraVerifierScope = await nyraVerifierAssignmentScope(identity, {
         ...result.assignment,
@@ -2135,7 +2149,7 @@ const baseHandlers = {
       } });
     },
     nyra_work_assignment_submit: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
+      requireBoundedAssignmentCollaboration(identity);
       const result = await nyraAutopilotRuntime.submit(identity, args, {
         validateSubmission: async ({ assignment, result: submittedResult }) => {
           if (assignment?.role !== "independent_verifier" ||
@@ -2526,6 +2540,9 @@ const app = createApp(config, {
         : Promise.resolve(),
       memoryFabric
         ? memoryFabric.recordToolActivity(event)
+        : Promise.resolve(),
+      cloudMemoryStore && (event.error || event.result?.isError === true || event.result?.structuredContent?.ok === false)
+        ? cloudMemoryStore.recordDistilledFailure(event.identity, event)
         : Promise.resolve(),
     ]);
   },

@@ -2116,7 +2116,7 @@ function introspectionReplySeed(language, intent, selfModel, readback) {
 
 async function advisoryConversationResult({
   args, identity, tenantId, sessionId, message, locale, style, route, readCommandCatalog,
-  readControlRoomStatus = null, readNyraSelfModel = null, startedAt = Date.now(),
+  readControlRoomStatus = null, readNyraSelfModel = null, readDistilledLessons = null, startedAt = Date.now(),
 }) {
   const controlRoomRead = route.intent === "global_control_read";
   const introspectionRead = ["nyra_self_model_read", "nyra_gap_read"].includes(route.intent);
@@ -2198,6 +2198,10 @@ async function advisoryConversationResult({
       selfModelReadback = "UNAVAILABLE";
     }
   }
+  let lessons = [];
+  if (route.intent === "distilled_lessons_read" && typeof readDistilledLessons === "function") {
+    try { lessons = await readDistilledLessons({ project_id: projectId }, identity); } catch { lessons = []; }
+  }
   const telemetry = buildNyraRoutingTelemetry({
     route, preflightInvoked: false, context: null, catalog,
     elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -2211,6 +2215,10 @@ async function advisoryConversationResult({
         : "La lettura governata del Control Room non è al momento disponibile. Non ho eseguito fallback verso Work, ticket, preflight o azioni.")
     : introspectionRead
     ? introspectionReplySeed(english ? "en" : "it", route.intent, selfModel, selfModelReadback)
+    : route.intent === "distilled_lessons_read"
+    ? (lessons.length
+      ? `Ho trovato ${lessons.length} lezioni candidate: ${lessons.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count})`).join("; ")}. Sono guardrail: non autorizzano alcuna azione.`
+      : "Non risultano lezioni distillate disponibili per questo progetto.")
     : route.intent === "command_catalog"
     ? catalog
       ? (english
@@ -2438,6 +2446,7 @@ export function createNyraConverseHandler({
   readCommandCatalog = null,
   readControlRoomStatus = null,
   readNyraSelfModel = null,
+  readDistilledLessons = null,
   dialogueEnabled = true,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
@@ -2504,7 +2513,7 @@ export function createNyraConverseHandler({
       }
       return advisoryConversationResult({
         args, identity, tenantId, sessionId, message, locale, style,
-        route: intentRoute, readCommandCatalog, readControlRoomStatus, readNyraSelfModel, startedAt,
+        route: intentRoute, readCommandCatalog, readControlRoomStatus, readNyraSelfModel, readDistilledLessons, startedAt,
       });
     }
 

@@ -140,6 +140,26 @@ test("enforces work.read on direct and dynamic Work reads", () => {
   }));
 });
 
+test("Gallery readers can claim or submit only bounded assignments across sessions", () => {
+  const reader = identity(["work.read"]);
+  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit"]) {
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: reader, toolName, tools: TOOLS,
+    }), toolName);
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: reader,
+      toolName: "core_capability_invoke",
+      args: { capability_id: toolName },
+      tools: TOOLS,
+    }), `dynamic ${toolName}`);
+  }
+  for (const toolName of ["tenant_work_branch_open", "tenant_work_message_post", "tenant_work_lease_acquire"]) {
+    assert.throws(() => requireHostAppToolCapability({
+      identity: reader, toolName, tools: TOOLS,
+    }), /host_app_capability_required:work\.coordinate/, toolName);
+  }
+});
+
 test("requires work.read only when Control Room includes Work-bound context", () => {
   const metadataOnly = identity([]);
   assert.doesNotThrow(() => requireHostAppToolCapability({

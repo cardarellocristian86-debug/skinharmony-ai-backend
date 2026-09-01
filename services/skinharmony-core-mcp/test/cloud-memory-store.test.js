@@ -71,3 +71,21 @@ test("canonical bootstrap lookup uses exact tenant-scoped source paths", async (
   assert.deepEqual(inspect.params, ["codexai", paths]);
   assert.deepEqual(fetch.params, ["codexai", paths]);
 });
+
+test("distilled failures persist only structured, tenant-scoped lesson metadata", async () => {
+  const calls = [];
+  const pool = { query: async (sql, params) => {
+    calls.push({ sql, params });
+    return { rows: params ? [{ source_tool: "nyra_converse", failure_code: "core_unavailable", occurrence_count: 1 }] : [] };
+  } };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.recordDistilledFailure({ tenantId: "tenant-a" }, {
+    toolName: "nyra_converse",
+    args: { project_id: "nyra-runtime" },
+    error: { code: "core unavailable: raw prompt must not persist" },
+  });
+  const write = calls.at(-1);
+  assert.match(write.sql, /mcp_memory_distilled_lessons/);
+  assert.deepEqual(write.params, ["tenant-a", "nyra-runtime", "nyra_converse", "unclassified_failure"]);
+  assert.equal(JSON.stringify(write.params).includes("raw prompt"), false);
+});

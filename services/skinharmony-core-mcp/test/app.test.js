@@ -115,6 +115,47 @@ test("does not promote caller-declared sessions without an authenticated OAuth o
   }
 });
 
+test("binds a registered tenant member only for bounded Gallery assignment hand-off", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "chatgpt-gallery-agent",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const member = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "member",
+    },
+    authenticatedHostPrincipal: {
+      registered: true,
+      host_kind: "chatgpt_native",
+      capabilities: ["work.read"],
+    },
+  };
+  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit"]) {
+    const resolved = resolveHostTransportPresence({
+      identity: member, toolName, declaredSessionId: "gallery-logical-session",
+      agentPresence, transportAgentPresence: null,
+    });
+    assert.equal(resolved.presence, agentPresence, toolName);
+    assert.equal(resolved.binding_source, "oauth_assignment_collaboration", toolName);
+  }
+  for (const identity of [
+    { ...member, authenticatedHostPrincipal: { ...member.authenticatedHostPrincipal, registered: false } },
+    { ...member, authenticatedTenantMembership: { ...member.authenticatedTenantMembership, tenant_id: "tenant-b" } },
+  ]) {
+    const resolved = resolveHostTransportPresence({
+      identity, toolName: "nyra_work_assignment_claim", declaredSessionId: "gallery-logical-session",
+      agentPresence, transportAgentPresence: null,
+    });
+    assert.equal(resolved.presence, null);
+    assert.equal(resolved.binding_source, null);
+  }
+});
+
 test("prefers the actual MCP transport binding over an OAuth logical session", () => {
   const logicalPresence = Object.freeze({ session_fingerprint: "a".repeat(24) });
   const transportPresence = Object.freeze({ session_fingerprint: "b".repeat(24) });
