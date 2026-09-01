@@ -28,8 +28,15 @@ const WORK_COORDINATION_TOOLS = new Set([
   "tenant_work_lease_renew",
   "tenant_work_lease_release",
   "tenant_work_message_post",
-  // Assignment children remain bounded coordination: their lease/capability
-  // checks are handler-owned and they never inherit general Work operate.
+]);
+
+// A claim or submission is not general Work coordination.  Both operations
+// are bound to one tenant, one Work and one server-issued assignment; the
+// runtime verifies the offered/claimed state, eligible host type and the
+// caller's exact presence before it writes a receipt.  Keeping this separate
+// lets a Gallery reader resume compatible offered work across ChatGPT sessions
+// without granting branch, lease, message or arbitrary Work mutation rights.
+const WORK_ASSIGNMENT_COLLABORATION_TOOLS = new Set([
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
 ]);
@@ -274,6 +281,7 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   }
   if (WORK_CREATE_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_CREATE;
   if (WORK_REVIEW_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_REVIEW;
+  if (WORK_ASSIGNMENT_COLLABORATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_READ;
   if (WORK_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   if (CORE_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   // The health-only Control Room is safe as a metadata read, but supplying a
