@@ -342,7 +342,12 @@ class EphemeralContinuityPool {
         candidate.agent_id === agentId);
       const plan = this.plans.get(mapKey(tenantId, planId));
       return {
-        rows: row && plan ? [{ ...row, plan: plan.plan, plan_status: plan.status }] : [],
+        rows: row && plan ? [{
+          ...row,
+          lease_active: new Date(row.lease_expires_at).getTime() > this.now().getTime(),
+          plan: plan.plan,
+          plan_status: plan.status,
+        }] : [],
         rowCount: row && plan ? 1 : 0,
       };
     }
