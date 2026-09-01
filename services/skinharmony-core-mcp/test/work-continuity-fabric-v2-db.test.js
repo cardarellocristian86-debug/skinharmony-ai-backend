@@ -666,6 +666,14 @@ class ContinuityPool {
         .map((row) => ({ task_id: row.task_id, status: row.status }));
       return { rows, rowCount: rows.length };
     }
+    if (q === "SELECT (clock_timestamp() + interval '1 hour') AS lease_expires_at") {
+      return {
+        rows: [{
+          lease_expires_at: new Date(this.clock().getTime() + 60 * 60 * 1_000).toISOString(),
+        }],
+        rowCount: 1,
+      };
+    }
     if (q.startsWith("SELECT task_id,agent_id,host_type,host_task_id,task_digest,")) {
       const [tenantId, planId, taskId, agentId, hostTaskId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
@@ -2306,10 +2314,11 @@ test("only a bound independent verifier can read redacted persisted acceptance c
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {
   let instant = new Date("2026-07-29T13:10:00.000Z");
   const clock = () => new Date(instant);
+  const skewedHostClock = () => new Date(instant.getTime() - 2 * 60 * 60 * 1_000);
   const pool = new ContinuityPool(clock);
   const runtime = createWorkContinuityRuntime({
     dttAgentIdentitySigningSecret: "d".repeat(32),
-  }, { pool, now: clock });
+  }, { pool, now: skewedHostClock });
   const legacyFallbackOnlyRuntime = createWorkContinuityRuntime({
     agentSignatureSecret: "a".repeat(32),
     ownerContextSigningSecret: "o".repeat(32),
@@ -2394,6 +2403,10 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
     host_task_id: `/root/${taskId}`,
   });
   const builderBinding = await bind("build", "codex-builder");
+  assert.equal(
+    builderBinding.binding.lease_expires_at,
+    "2026-07-29T14:10:00.000Z",
+  );
   await assert.rejects(bind("research", "codex-researcher"), /native_agent_parallel_limit_reached/);
 
   instant = new Date("2026-07-29T14:11:00.000Z");

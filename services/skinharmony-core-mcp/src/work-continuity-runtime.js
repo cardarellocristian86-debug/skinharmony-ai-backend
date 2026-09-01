@@ -4402,7 +4402,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (activeCount >= Number(plan.max_parallel || 1)) {
         throw new Error("native_agent_parallel_limit_reached");
       }
-      const leaseExpiresAt = new Date(nowDate().getTime() + 60 * 60 * 1_000).toISOString();
+      // PostgreSQL is the authority that expires native-agent leases. Derive
+      // the lease from the same clock so a host/runtime clock skew cannot
+      // create an assignment that the database considers expired immediately.
+      const leaseClock = await client.query(
+        "SELECT (clock_timestamp() + interval '1 hour') AS lease_expires_at",
+      );
+      const leaseExpiresAt = dateValue(
+        leaseClock.rows[0]?.lease_expires_at,
+        "native_agent_lease",
+      ).toISOString();
       const assignmentBinding = nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
