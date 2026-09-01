@@ -44,6 +44,8 @@ test("Native Team persistence is tenant/work scoped and keeps a receipt ledger a
   assert.match(runtime.schemaSql, /core_nyra_agent_receipts_append_only/);
   assert.match(runtime.schemaSql, /model_invocation_allowed boolean NOT NULL DEFAULT false/);
   assert.match(runtime.schemaSql, /external_action_allowed boolean NOT NULL DEFAULT false/);
+  assert.equal(typeof runtime.materializeForWork, "function");
+  assert.equal(typeof runtime.materializeForWorkInTransaction, "function");
 });
 
 test("Native Team MCP tools separate reads from owner-gated package and bootstrap writes", () => {

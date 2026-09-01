@@ -98,6 +98,10 @@ import {
 } from "../../shared/work-preflight-gate.mjs";
 import { mediateFailureObservation } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import {
+  bindNyraCanonicalIntent,
+  validateNyraCanonicalIntent,
+} from "../../shared/nyra-canonical-intent.mjs";
+import {
   githubWorkerActionDigest,
   signGitHubWorkerExecutionClaim,
 } from "../../shared/github-worker-execution-claim.js";
@@ -1113,15 +1117,17 @@ function createOwnerExecutionApprovalStore({ root, credentialStore }) {
 }
 
 function verifyMcpTenantContextAssertion(value, secret, tenantId, now = Date.now()) {
-  if (!secret) return false;
+  if (!secret) return null;
   let context;
-  try { context = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8")); } catch { return false; }
-  if (!context || context.version !== "mcp_tenant_context_v1" || context.tenant_id !== tenantId) return false;
+  try { context = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8")); } catch { return null; }
+  if (!context || context.version !== "mcp_tenant_context_v1" || context.tenant_id !== tenantId) return null;
   const issuedAt = Date.parse(String(context.issued_at || ""));
-  if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
-  const canonical = JSON.stringify({ version: context.version, tenant_id: context.tenant_id, issued_at: context.issued_at });
+  if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return null;
+  const canonical = JSON.stringify({ version: context.version, tenant_id: context.tenant_id, issued_at: context.issued_at,
+    ...(context.native_precommit_claim ? { native_precommit_claim: context.native_precommit_claim } : {}) });
   const expected = `mtc_${crypto.createHmac("sha256", secret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
-  return typeof context.assertion === "string" && context.assertion.length === expected.length && crypto.timingSafeEqual(Buffer.from(context.assertion), Buffer.from(expected));
+  return typeof context.assertion === "string" && context.assertion.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(context.assertion), Buffer.from(expected)) ? context : null;
 }
 
 function hasProviderSetupOwnerContext(context) {
@@ -1589,11 +1595,12 @@ function createAuth(keyStore, audit, requiredScope, {
     const tenantId = safeTenantId(req, auth.record);
     const serviceIssuer = allowProviderSetupService === true && isProviderSetupLinkServiceRecord(auth.record);
     const tenantGateway = isMcpTenantGatewayRecord(auth.record);
-    const validGatewayContext = tenantGateway && verifyMcpTenantContextAssertion(
+    const gatewayContext = tenantGateway && verifyMcpTenantContextAssertion(
       req.get("x-sh-tenant-context"),
       tenantContextSigningSecret,
       tenantId,
     );
+    const validGatewayContext = Boolean(gatewayContext);
     if (!tenantId || (!serviceIssuer && !validGatewayContext && !requireTenantAccess(auth.record, tenantId))) {
       audit.append("core_tenant_scope_denied", { key_id: auth.record.key_id, requested_tenant: tenantId, path: req.path });
       return publicError(res, 403, "tenant_scope_denied");
@@ -1607,6 +1614,7 @@ function createAuth(keyStore, audit, requiredScope, {
 
     req.coreKey = auth.record;
     req.tenantId = tenantId || auth.record.tenant_id;
+    req.mcpTenantContext = gatewayContext || null;
     if (requireWorkPreflight) {
       const gate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
         requireGallery: true,
@@ -2344,6 +2352,7 @@ function composeMandatoryWorkPreflight(req, {
     researchAllowedDomains: normalizeList(body.research_allowed_domains, 20),
     dynamicCapability: body.dynamic_capability,
     workBinding: body.work_binding,
+    canonicalIntent: body.canonical_intent,
   });
 }
 
@@ -10378,14 +10387,22 @@ export function createUniversalCoreService(options = {}) {
     }
     const ownerBranches = verifiedOwnerBranchProfile(req, [], "work_preflight", ownerContextSigningSecret);
     const ownerProfileActive = ownerBranches.owner_profile === "tenant_scoped_verified_owner";
-    const preflight = composeMandatoryWorkPreflight(req, {
-      // A verified codexai OAuth owner gets a tenant-scoped registry profile;
-      // this is not a commercial plan and it does not alter execution policy.
-      domainPack: ownerProfileActive ? ownerBranches.domain_pack : domainPackAccess.pack,
-      memoryContext: memoryContext.value,
-      ...(ownerProfileActive ? { branchContext: ownerBranches } : {}),
-      galleryContext: galleryContext.value,
-    });
+    let preflight;
+    try {
+      preflight = composeMandatoryWorkPreflight(req, {
+        // A verified codexai OAuth owner gets a tenant-scoped registry profile;
+        // this is not a commercial plan and it does not alter execution policy.
+        domainPack: ownerProfileActive ? ownerBranches.domain_pack : domainPackAccess.pack,
+        memoryContext: memoryContext.value,
+        ...(ownerProfileActive ? { branchContext: ownerBranches } : {}),
+        galleryContext: galleryContext.value,
+      });
+    } catch (error) {
+      if (String(error?.code || error?.message || "").startsWith("nyra_canonical_intent_")) {
+        return publicError(res, 409, String(error.code || error.message));
+      }
+      throw error;
+    }
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -11676,16 +11693,21 @@ export function createUniversalCoreService(options = {}) {
           ...input
         } = req.body || {};
         const actionTicket = await withEnforcedSoftwareActionTicket(req.tenantId, input.ticket_id,
-          async (_ticket, trusted) => hostNativeGovernance.reserveStandingReleaseRunTicket({
-            ...input,
-            tenant_id: req.tenantId,
-            run_id: req.params.runId,
-            dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
-            dtt_session_fingerprint: dttWorkSessionFingerprint(req),
-          }, trusted));
+          async (ticket, trusted) => {
+            if (ticket?.ticket?.action?.kind === "github.merge") {
+              throw new Error("standing_release_manual_merge_only");
+            }
+            return hostNativeGovernance.reserveStandingReleaseRunTicket({
+              ...input,
+              tenant_id: req.tenantId,
+              run_id: req.params.runId,
+              dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+              dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+            }, trusted);
+          });
         const githubAction = actionTicket?.ticket?.action;
         const githubExecutionClaim = githubWorkerExecutionSigningSecret &&
-          ["git.push.branch", "github.draft_pr", "github.ready", "github.merge"].includes(githubAction?.kind)
+          ["git.push.branch", "github.draft_pr", "github.ready"].includes(githubAction?.kind)
           ? signGitHubWorkerExecutionClaim({
               schema_version: "github_worker_execution_claim_v1",
               tenant_id: req.tenantId,
@@ -12412,11 +12434,51 @@ export function createUniversalCoreService(options = {}) {
 
   app.post(
     "/v1/host-native/actions/authorize",
-    coreAuth(SCOPES.AUTOMATION_CODEX),
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {
         const { tenant_id: _tenantId, ...input } = req.body || {};
+        // A standing-release delegation is server-persisted, mandate-bound and
+        // independently validated by hostNativeGovernance. All other commit
+        // ticket acquisition is claim-gated here.
+        const commitDelegation = input.action?.kind === "git.commit"
+          ? await hostNativeGovernance.readDelegation({ tenant_id: req.tenantId,
+              delegation_id: input.delegation_id })
+          : null;
+        const standingReleaseCommit = commitDelegation?.effective_state === "active" &&
+          Boolean(commitDelegation?.grant?.standing_release_binding);
+        if (input.action?.kind === "git.commit" && !standingReleaseCommit) {
+          const claim = req.mcpTenantContext?.native_precommit_claim;
+          const fields = ["schema_version", "claim_id", "claim_digest", "claim_replay", "gate_projection_digest",
+            "continuation_ref", "request_digest", "tenant_id", "work_id", "intent_anchor_digest",
+            "delegation_id", "repository", "action_digest", "evidence_digest",
+            "host_session_fingerprint", "idempotency_key"];
+          if (!claim || Object.keys(claim).sort().join("\0") !== fields.sort().join("\0") ||
+              claim.schema_version !== "native_precommit_claim_attestation_v1" ||
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(claim.claim_id || "")) ||
+              typeof claim.claim_replay !== "boolean" ||
+              claim.tenant_id !== req.tenantId || claim.work_id !== input.work_id ||
+              claim.intent_anchor_digest !== input.intent_anchor_digest ||
+              claim.delegation_id !== input.delegation_id || claim.repository !== input.repository ||
+              claim.action_digest !== hostNativeDigest(input.action) ||
+              claim.evidence_digest !== input.evidence_digest ||
+              claim.gate_projection_digest !== input.evidence_digest ||
+              claim.host_session_fingerprint !== input.host_session_fingerprint ||
+              claim.idempotency_key !== input.idempotency_key ||
+              !/^[a-f0-9]{64}$/.test(String(claim.claim_digest || "")) ||
+              !/^[a-f0-9]{64}$/.test(String(claim.request_digest || "")) ||
+              claim.claim_digest !== hostNativeDigest({
+                schema_version: "precommit_ticket_gate_claim_v1", claim_id: claim.claim_id,
+                work_id: claim.work_id, continuation_ref: claim.continuation_ref,
+                request_digest: claim.request_digest, delegation_id: claim.delegation_id,
+                action_digest: claim.action_digest, gate_projection_digest: claim.gate_projection_digest,
+                host_session_fingerprint: claim.host_session_fingerprint,
+                idempotency_key: claim.idempotency_key, replay: claim.claim_replay,
+              })) {
+            throw new Error("native_precommit_claim_required");
+          }
+        }
         const actionTicket = await issueHostNativeActionTicket({
           ...input,
           tenant_id: req.tenantId,
@@ -12427,6 +12489,10 @@ export function createUniversalCoreService(options = {}) {
           ticket_id: actionTicket.ticket.ticket_id,
           delegation_id: actionTicket.ticket.delegation_id,
           action_kind: actionTicket.ticket.action.kind,
+          ...(req.mcpTenantContext?.native_precommit_claim ? {
+            native_precommit_claim_id: req.mcpTenantContext.native_precommit_claim.claim_id,
+            native_precommit_claim_digest: req.mcpTenantContext.native_precommit_claim.claim_digest,
+          } : {}),
         });
         return res.status(201).json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
       } catch (error) {
@@ -14739,6 +14805,23 @@ export function createUniversalCoreService(options = {}) {
     const niraText = String(req.body?.text || req.body?.request || req.body?.task || "").trim();
     if (!niraText) return publicError(res, 400, "nira_text_required");
     if (niraText.length > 20_000) return publicError(res, 413, "nira_text_too_long");
+    let canonicalIntent = null;
+    let canonicalIntentBinding = null;
+    try {
+      if (req.body?.canonical_intent !== undefined) {
+        canonicalIntent = validateNyraCanonicalIntent(req.body.canonical_intent, { message: niraText });
+        canonicalIntentBinding = bindNyraCanonicalIntent(canonicalIntent, { message: niraText });
+      }
+    } catch (error) {
+      return publicError(res, 409, String(error?.code || error?.message || "nyra_canonical_intent_invalid"));
+    }
+    const suppliedCanonicalBinding = req.body?.work_preflight?.canonical_intent_binding || null;
+    if ((canonicalIntentBinding && (!suppliedCanonicalBinding ||
+          suppliedCanonicalBinding.binding_digest !== canonicalIntentBinding.binding_digest ||
+          suppliedCanonicalBinding.intent_digest !== canonicalIntentBinding.intent_digest)) ||
+        (!canonicalIntentBinding && suppliedCanonicalBinding)) {
+      return publicError(res, 409, "nyra_canonical_intent_preflight_binding_mismatch");
+    }
     const requestedNyraBranches = req.body?.nyra_branches;
     if (requestedNyraBranches !== undefined && !Array.isArray(requestedNyraBranches)) {
       return publicError(res, 400, "nyra_branches_must_be_array");
@@ -14884,6 +14967,10 @@ export function createUniversalCoreService(options = {}) {
       branchContext,
       nyraNetwork,
     });
+    if (canonicalIntentBinding &&
+        workPreflight.canonical_intent_binding?.binding_digest !== canonicalIntentBinding.binding_digest) {
+      return publicError(res, 409, "nyra_canonical_intent_core_binding_mismatch");
+    }
     const result = runNiraUniversalCoreBridge({
       request_id: coreRequestId,
       text: niraText,
@@ -15410,6 +15497,8 @@ export function createUniversalCoreService(options = {}) {
         Number(deepBranchV2?.evaluation?.evaluated_node_count),
       ) ? Number(deepBranchV2.evaluation.evaluated_node_count) : 0,
       deep_branch_v2_execution_allowed: false,
+      canonical_intent_digest: canonicalIntent?.intent_digest || null,
+      core_orchestration_verdict: workPreflight.core_orchestration_verdict?.verdict || null,
     });
     res.json({
       ok: true,

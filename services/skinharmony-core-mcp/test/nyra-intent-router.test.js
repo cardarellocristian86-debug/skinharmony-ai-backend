@@ -398,6 +398,11 @@ test("materializes canonical intent before Work and preserves temporal and owner
   const futureDeploy = classify("Quando avremo finito faremo deploy.");
   assert.deepEqual(futureDeploy.canonical_intent.requested_now, []);
   assert.ok(futureDeploy.canonical_intent.future_goals.includes("deploy"));
+  assert.equal(futureDeploy.intent, "analysis");
+  assert.equal(futureDeploy.route, "ADVISORY_READ");
+  assert.equal(futureDeploy.core_preflight_required, false);
+  assert.equal(futureDeploy.canonical_intent.ambiguity, false);
+  assert.equal(futureDeploy.canonical_intent.operation_class, "READ_ONLY");
 
   const newWork = classify("Voglio creare un nuovo lavoro per verificare la continuità.");
   assert.deepEqual(newWork.canonical_intent.requested_now, ["work_bootstrap"]);

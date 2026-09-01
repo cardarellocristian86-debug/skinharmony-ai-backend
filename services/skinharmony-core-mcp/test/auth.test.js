@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createAuthenticator,
   isCodexGoodModeDelegation,
+  oauthReconnectErrorDetails,
   requireScopes,
   verifyAuth0Jwt,
 } from "../src/auth.js";
@@ -36,6 +37,93 @@ function auth0Fixture(overrides = {}) {
   });
   return { token, config, cache: { get: async () => jwk } };
 }
+
+async function rejectedError(operation) {
+  try {
+    await operation();
+  } catch (error) {
+    return error;
+  }
+  assert.fail("expected operation to reject");
+}
+
+test("brands only recoverable OAuth reconnect failures with frozen safe details", async () => {
+  const authenticate = createAuthenticator({ codexKeys: [], auth0Issuer: "" });
+  const missing = await rejectedError(() => authenticate());
+  assert.deepEqual(oauthReconnectErrorDetails(missing), {
+    reason: "missing_token",
+    missingScopes: [],
+  });
+
+  const expiredFixture = auth0Fixture({ exp: Math.floor(Date.now() / 1000) - 1 });
+  const expired = await rejectedError(() => verifyAuth0Jwt(
+    expiredFixture.token,
+    expiredFixture.config,
+    expiredFixture.cache,
+  ));
+  assert.deepEqual(oauthReconnectErrorDetails(expired), {
+    reason: "expired_token",
+    missingScopes: [],
+  });
+
+  const required = ["core:govern", "core:govern"];
+  let insufficient;
+  try {
+    requireScopes({ scopes: ["core:read"] }, required);
+  } catch (error) {
+    insufficient = error;
+  }
+  const insufficientDetails = oauthReconnectErrorDetails(insufficient);
+  assert.deepEqual(insufficientDetails, {
+    reason: "insufficient_scope",
+    missingScopes: ["core:govern"],
+  });
+  assert.equal(Object.isFrozen(insufficientDetails), true);
+  assert.equal(Object.isFrozen(insufficientDetails.missingScopes), true);
+  required[0] = "unsafe:scope";
+  assert.deepEqual(insufficientDetails.missingScopes, ["core:govern"]);
+  assert.throws(() => insufficientDetails.missingScopes.push("unsafe:scope"), TypeError);
+});
+
+test("does not brand malformed, forged, wrong-audience, membership or name-spoofed failures", async () => {
+  const fixture = auth0Fixture();
+  const malformed = await rejectedError(() => verifyAuth0Jwt("not-a-jwt", fixture.config, fixture.cache));
+  assert.equal(oauthReconnectErrorDetails(malformed), null);
+
+  const [header, payload] = fixture.token.split(".");
+  const forged = await rejectedError(() => verifyAuth0Jwt(
+    `${header}.${payload}.${Buffer.from("forged-signature").toString("base64url")}`,
+    fixture.config,
+    fixture.cache,
+  ));
+  assert.equal(oauthReconnectErrorDetails(forged), null);
+
+  const wrongAudienceFixture = auth0Fixture({ aud: "https://attacker.invalid" });
+  const wrongAudience = await rejectedError(() => verifyAuth0Jwt(
+    wrongAudienceFixture.token,
+    wrongAudienceFixture.config,
+    wrongAudienceFixture.cache,
+  ));
+  assert.equal(oauthReconnectErrorDetails(wrongAudience), null);
+
+  const membershipFixture = auth0Fixture({ sub: "oauth|expired-member" });
+  const membershipExpired = await rejectedError(() => verifyAuth0Jwt(
+    membershipFixture.token,
+    {
+      ...membershipFixture.config,
+      oauthTenantMemberships: {
+        "oauth|expired-member": {
+          tenantId: "tenant-a",
+          role: "member",
+          expiresAt: "2020-01-01T00:00:00.000Z",
+        },
+      },
+    },
+    membershipFixture.cache,
+  ));
+  assert.equal(oauthReconnectErrorDetails(membershipExpired), null);
+  assert.equal(oauthReconnectErrorDetails(new Error("insufficient_scope")), null);
+});
 
 test("accepts a scoped Codex bearer without exposing it", async () => {
   const auth = createAuthenticator({ codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "owner-private" });
@@ -633,11 +721,16 @@ test("keeps OAuth owner elevation short and delegates long work to Core leases",
   }, { jwksCache: fixture.cache });
   const identity = await auth(`Bearer ${fixture.token}`);
 
-  assert.throws(() => auth.elevateOAuthOwner(identity, {
+  const staleError = await rejectedError(() => auth.elevateOAuthOwner(identity, {
     confirmed: true,
     confirmationReference: "expired OAuth bootstrap",
     requestBinding: "publish-another-draft-pr",
-  }), /owner_authentication_stale/);
+  }));
+  assert.match(staleError.message, /owner_authentication_stale/);
+  assert.deepEqual(oauthReconnectErrorDetails(staleError), {
+    reason: "owner_authentication_stale",
+    missingScopes: [],
+  });
 });
 
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {

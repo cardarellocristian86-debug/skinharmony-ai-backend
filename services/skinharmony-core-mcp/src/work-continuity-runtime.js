@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
 import { assertTransitionAllowed } from "../../shared/core-block-remediation.js";
+import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 
 // Existing MCP create/read/capsule responses retain their v1 contract. New
 // fabric methods advertise WORK_CONTINUITY_FABRIC_SCHEMA_VERSION; the storage
@@ -31,6 +32,7 @@ const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
 const NATIVE_TASK_KINDS = new Set(["builder", "verifier", "researcher", "reviewer", "supervisor"]);
 const NATIVE_REPORT_STATES = new Set(["completed", "failed", "blocked"]);
 const NATIVE_ASSIGNMENT_CAPABILITY_PATTERN = /^hnac_[A-Za-z0-9_-]{43}$/;
+const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
   "work_continuity_native_acceptance_contract_read";
 // This capability is emitted only in the Core-signed host-native plan.  A
@@ -407,7 +409,50 @@ function cleanJson(value, maxBytes = 200_000) {
   return cleaned;
 }
 
+function canonicalTurnIntentBinding(input = {}) {
+  const value = input?.architecture?.host_binding?.canonical_intent_binding;
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("intent_anchor_canonical_binding_invalid");
+  }
+  const expected = new Set([
+    "schema_version", "canonical_intent_digest", "core_orchestration_verdict_digest",
+    "core_orchestration_verdict", "intent_anchor_materialization", "immutable", "authority",
+  ]);
+  if (Object.keys(value).length !== expected.size ||
+      Object.keys(value).some((key) => !expected.has(key)) ||
+      value.schema_version !== "nyra_work_canonical_intent_binding_v1" ||
+      !/^[a-f0-9]{64}$/.test(String(value.canonical_intent_digest || "")) ||
+      !/^[a-f0-9]{64}$/.test(String(value.core_orchestration_verdict_digest || "")) ||
+      value.intent_anchor_materialization !== "intent_anchor_v1_from_governed_bootstrap" ||
+      value.immutable !== true || value.authority !== "DESCRIPTIVE_ONLY") {
+    throw new Error("intent_anchor_canonical_binding_invalid");
+  }
+  let coreOrchestrationVerdict;
+  try {
+    coreOrchestrationVerdict = validateCoreOrchestrationVerdict(
+      value.core_orchestration_verdict,
+      { canonicalIntentDigest: value.canonical_intent_digest },
+    );
+  } catch {
+    throw new Error("intent_anchor_core_orchestration_verdict_invalid");
+  }
+  if (coreOrchestrationVerdict.verdict_digest !== value.core_orchestration_verdict_digest) {
+    throw new Error("intent_anchor_core_orchestration_verdict_invalid");
+  }
+  return Object.freeze({
+    schema_version: value.schema_version,
+    canonical_intent_digest: value.canonical_intent_digest,
+    core_orchestration_verdict_digest: value.core_orchestration_verdict_digest,
+    core_orchestration_verdict: coreOrchestrationVerdict,
+    intent_anchor_materialization: value.intent_anchor_materialization,
+    immutable: true,
+    authority: "DESCRIPTIVE_ONLY",
+  });
+}
+
 function canonicalIntentInput(input = {}) {
+  const canonicalIntentBinding = canonicalTurnIntentBinding(input);
   return {
     project_id: safeText(input.project_id, 64),
     session_id: safeText(input.session_id, 64),
@@ -423,6 +468,7 @@ function canonicalIntentInput(input = {}) {
       maxItems: 100,
       maxLength: 1_000,
     }),
+    ...(canonicalIntentBinding ? { canonical_intent_binding: canonicalIntentBinding } : {}),
   };
 }
 
@@ -443,6 +489,9 @@ export function buildIntentAnchor(input = {}) {
       client_type: NATIVE_HOST_TYPES.has(input.host_type) ? input.host_type : safeText(input.client_type || "connected_ai", 40),
       session_id: canonical.session_id,
     },
+    ...(canonical.canonical_intent_binding
+      ? { canonical_intent_binding: canonical.canonical_intent_binding }
+      : {}),
     immutable: true,
   };
   return { anchor, intent_digest: digest(anchor), create_request_digest: digest(canonical) };
@@ -2213,6 +2262,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ? options.nativeVerifierEvidenceBridge
     : null;
   const nativeVerifierEvidenceBridgeRequired = options.nativeVerifierEvidenceBridgeRequired === true;
+  let nativePrecommitGateBridge = typeof options.nativePrecommitGateBridge === "function"
+    ? options.nativePrecommitGateBridge
+    : null;
+  const nativePrecommitGateBridgeRequired = options.nativePrecommitGateBridgeRequired === true;
   let ready;
   const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
@@ -2522,6 +2575,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_verifier_evidence_bridge_already_configured");
     }
     nativeVerifierEvidenceBridge = bridge;
+    return true;
+  }
+
+  function setNativePrecommitGateBridge(bridge) {
+    if (typeof bridge !== "function") {
+      throw new Error("native_precommit_gate_bridge_invalid");
+    }
+    if (nativePrecommitGateBridge && nativePrecommitGateBridge !== bridge) {
+      throw new Error("native_precommit_gate_bridge_already_configured");
+    }
+    nativePrecommitGateBridge = bridge;
     return true;
   }
 
@@ -4856,6 +4920,59 @@ export function createWorkContinuityRuntime(config, options = {}) {
           VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)`,
         [context.tenantId, context.workId, planId, evaluationId, JSON.stringify(evaluation),
           evaluationDigest, context.actor]);
+        let precommitTicketGate = null;
+        if (evaluation.commit_ticket_ready === true) {
+          if (!nativePrecommitGateBridge && nativePrecommitGateBridgeRequired) {
+            throw new Error("native_precommit_gate_bridge_unavailable");
+          }
+          precommitTicketGate = nativePrecommitGateBridge
+            ? await nativePrecommitGateBridge(client, {
+                schema_version: "native_precommit_gate_source_v1",
+                server_owned: true,
+                tenant_id: context.tenantId,
+                work_id: context.workId,
+                plan_id: planId,
+                plan_digest: planResult.rows[0].plan_digest,
+                evaluation_id: evaluationId,
+                evaluation_digest: evaluationDigest,
+                workspace_digest: evaluation.precommit_verification.workspace_digest,
+                evaluated_by: context.actor,
+              })
+            : null;
+          const {
+            projection_digest: gateProjectionDigest,
+            idempotent_replay: gateReplay,
+            ...gateProjection
+          } = precommitTicketGate || {};
+          if (nativePrecommitGateBridge && (
+            precommitTicketGate?.schema_version !== "precommit_ticket_gate_v2" ||
+            precommitTicketGate?.gate_source !== "native_closure_evaluation" ||
+            precommitTicketGate?.tenant_id !== context.tenantId ||
+            String(precommitTicketGate?.work_id || "").toLowerCase() !== context.workId.toLowerCase() ||
+            String(precommitTicketGate?.plan_id || "").toLowerCase() !== planId.toLowerCase() ||
+            String(precommitTicketGate?.evaluation_id || "").toLowerCase() !== evaluationId.toLowerCase() ||
+            precommitTicketGate?.evaluation_digest !== evaluationDigest ||
+            precommitTicketGate?.workspace_digest !== evaluation.precommit_verification.workspace_digest ||
+            precommitTicketGate?.action_kind !== "git.commit" ||
+            precommitTicketGate?.gate_kind !== "ticket_acquisition" ||
+            precommitTicketGate?.fresh !== true || precommitTicketGate?.fulfilled !== false ||
+            !Array.isArray(precommitTicketGate?.legacy_evidence_ids) ||
+            precommitTicketGate.legacy_evidence_ids.length !== 0 ||
+            !Array.isArray(precommitTicketGate?.replacement_evidence_ids) ||
+            precommitTicketGate.replacement_evidence_ids.length !== 0 ||
+            typeof gateReplay !== "boolean" ||
+            !SHA256_DIGEST.test(String(gateProjectionDigest || "")) ||
+            digest(gateProjection) !== gateProjectionDigest
+          )) {
+            throw new Error("native_precommit_gate_bridge_result_invalid");
+          }
+          if (precommitTicketGate) {
+            precommitTicketGate = Object.freeze({
+              ...gateProjection,
+              projection_digest: gateProjectionDigest,
+            });
+          }
+        }
         if (evaluation.closed) {
           await client.query(`UPDATE core_continuity_works
             SET next_action='Issue and persist the exact Universal Core Join verdict before release readiness.',
@@ -4888,6 +5005,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           ...evaluation,
           core_join_required: evaluation.closed,
           ...(coreJoinMaterial ? { core_join_material: coreJoinMaterial } : {}),
+          ...(precommitTicketGate ? { precommit_ticket_gate: precommitTicketGate } : {}),
           event,
         };
       },
@@ -6712,6 +6830,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readNyraOperationalState,
     setWorkEventProjector,
     setNativeVerifierEvidenceBridge,
+    setNativePrecommitGateBridge,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,

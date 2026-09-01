@@ -103,12 +103,14 @@ CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate (
   plan_id uuid NOT NULL, evaluation_id uuid NOT NULL,
   evaluation_digest char(64) NOT NULL, workspace_digest char(64) NOT NULL,
   supersession_digest char(64) NOT NULL, reconciliation_digest char(64) NOT NULL,
+  gate_source varchar(48) NOT NULL DEFAULT 'legacy_evidence_reconciliation',
   action_kind varchar(40) NOT NULL DEFAULT 'git.commit',
   gate_kind varchar(40) NOT NULL DEFAULT 'ticket_acquisition',
   created_by_user_id varchar(128) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, work_id, task_id),
   UNIQUE (tenant_id, work_id, action_kind, gate_kind),
   CHECK (action_kind='git.commit'), CHECK (gate_kind='ticket_acquisition'),
+  CHECK (gate_source IN ('legacy_evidence_reconciliation','native_closure_evaluation')),
   FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id),
   FOREIGN KEY (tenant_id, work_id, task_id)
     REFERENCES tenant_work_task(tenant_id, work_id, task_id)
@@ -144,6 +146,36 @@ CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_fulfillment (
   FOREIGN KEY (tenant_id, work_id, task_id)
     REFERENCES tenant_work_precommit_ticket_gate(tenant_id, work_id, task_id)
 );
+CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_claim (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, gate_projection_digest char(64) NOT NULL,
+  claim_id uuid NOT NULL, continuation_ref varchar(240) NOT NULL, request_digest char(64) NOT NULL,
+  delegation_id varchar(160) NOT NULL, action_digest char(64) NOT NULL,
+  host_session_fingerprint varchar(128) NOT NULL, idempotency_key varchar(160) NOT NULL,
+  claim_digest char(64) NOT NULL, state varchar(16) NOT NULL DEFAULT 'CLAIMED',
+  ticket_id varchar(160), claimed_by_user_id varchar(128) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id,work_id,gate_projection_digest), UNIQUE (tenant_id,claim_id),
+  UNIQUE (tenant_id,work_id,idempotency_key), CHECK (state='CLAIMED'), CHECK (ticket_id IS NULL),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_claim_fulfillment (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, gate_projection_digest char(64) NOT NULL,
+  claim_id uuid NOT NULL, claim_digest char(64) NOT NULL, ticket_id varchar(160) NOT NULL,
+  fulfilled_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id,work_id,gate_projection_digest), UNIQUE (tenant_id,claim_id),
+  FOREIGN KEY (tenant_id,work_id,gate_projection_digest)
+    REFERENCES tenant_work_precommit_ticket_gate_claim(tenant_id,work_id,gate_projection_digest)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_claim_reconciliation (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, claim_id uuid NOT NULL,
+  reconciliation_id uuid NOT NULL, gate_projection_digest char(64) NOT NULL,
+  stage varchar(40) NOT NULL, ticket_id varchar(160), error_code varchar(160) NOT NULL,
+  request_digest char(64) NOT NULL, continuation_ref varchar(240) NOT NULL,
+  idempotency_key varchar(160) NOT NULL, reconciliation_digest char(64) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id,reconciliation_id),
+  UNIQUE (tenant_id,work_id,claim_id,stage),
+  FOREIGN KEY (tenant_id,claim_id) REFERENCES tenant_work_precommit_ticket_gate_claim(tenant_id,claim_id)
+);
 CREATE OR REPLACE FUNCTION tenant_work_precommit_reconciliation_append_only() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'tenant_work_precommit_reconciliation_append_only'; END;
 $$ LANGUAGE plpgsql;
@@ -162,6 +194,21 @@ DROP TRIGGER IF EXISTS tenant_work_precommit_ticket_fulfillment_no_mutation
 CREATE TRIGGER tenant_work_precommit_ticket_fulfillment_no_mutation
 BEFORE UPDATE OR DELETE ON tenant_work_precommit_ticket_fulfillment
 FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
+DROP TRIGGER IF EXISTS tenant_work_precommit_claim_no_mutation
+  ON tenant_work_precommit_ticket_gate_claim;
+CREATE TRIGGER tenant_work_precommit_claim_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_precommit_ticket_gate_claim
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
+DROP TRIGGER IF EXISTS tenant_work_precommit_claim_fulfillment_no_mutation
+  ON tenant_work_precommit_ticket_gate_claim_fulfillment;
+CREATE TRIGGER tenant_work_precommit_claim_fulfillment_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_precommit_ticket_gate_claim_fulfillment
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
+DROP TRIGGER IF EXISTS tenant_work_precommit_claim_reconciliation_no_mutation
+  ON tenant_work_precommit_ticket_gate_claim_reconciliation;
+CREATE TRIGGER tenant_work_precommit_claim_reconciliation_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_precommit_ticket_gate_claim_reconciliation
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
 
 -- A stale v1 gate remains immutable.  Fresh native plan/evaluation evidence
 -- advances through this append-only version chain instead of rewriting it.
@@ -171,6 +218,7 @@ CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_supersession (
   evaluation_digest char(64) NOT NULL, workspace_digest char(64) NOT NULL,
   supersession_digest char(64) NOT NULL, reconciliation_digest char(64) NOT NULL,
   supersedes_reconciliation_digest char(64) NOT NULL,
+  gate_source varchar(48) NOT NULL DEFAULT 'legacy_evidence_reconciliation',
   action_kind varchar(40) NOT NULL DEFAULT 'git.commit',
   gate_kind varchar(40) NOT NULL DEFAULT 'ticket_acquisition',
   created_by_user_id varchar(128) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
@@ -178,6 +226,7 @@ CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_supersession (
   UNIQUE (tenant_id, work_id, reconciliation_digest),
   CHECK (gate_version>1), CHECK (action_kind='git.commit'),
   CHECK (gate_kind='ticket_acquisition'),
+  CHECK (gate_source IN ('legacy_evidence_reconciliation','native_closure_evaluation')),
   CHECK (reconciliation_digest<>supersedes_reconciliation_digest),
   FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id),
   FOREIGN KEY (tenant_id, work_id, task_id)

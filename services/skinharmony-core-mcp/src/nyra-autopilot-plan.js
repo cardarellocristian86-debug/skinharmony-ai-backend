@@ -1,4 +1,5 @@
 import { digest } from "./work-continuity-runtime.js";
+import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 
 // This compiler is intentionally pure. It creates a bounded, explainable
 // proposal for the Work: it never invokes a model, selects a provider, calls
@@ -62,6 +63,23 @@ function activeWave(id, blueprintIds, reasonCode) {
 }
 function role(blueprintId) { return Object.freeze({ blueprint_id: blueprintId, ...ROLE_DETAILS[blueprintId] }); }
 
+function authoritativeVerdict(value, expectedIntentDigest) {
+  if (value === undefined || value === null) return null;
+  const verdict = validateCoreOrchestrationVerdict(value, {
+    canonicalIntentDigest: expectedIntentDigest,
+  });
+  const binding = verdict.canonical_intent_binding;
+  return Object.freeze({
+    verdict: verdict.verdict,
+    verdict_digest: verdict.verdict_digest,
+    canonical_intent_digest: binding.intent_digest,
+    canonical_intent_binding_digest: binding.binding_digest,
+    maximum_parallel_assignments: verdict.maximum_parallel_assignments,
+    required_role_ids: Object.freeze([...verdict.required_roles]),
+    required_nyra_branches: verdict.required_nyra_branches,
+  });
+}
+
 export function compileNyraAutopilotPlan(input = {}) {
   const source = asRecord(input);
   const work = asRecord(source.work);
@@ -70,31 +88,41 @@ export function compileNyraAutopilotPlan(input = {}) {
     project_id: normalizeId(source.project_id ?? source.projectId ?? work.project_id ?? work.projectId, "project", PROJECT_PATTERN),
     work_id: normalizeId(source.work_id ?? source.workId ?? work.work_id ?? work.workId, "work", UUID_PATTERN),
   });
+  const coreVerdict = authoritativeVerdict(
+    source.core_orchestration_verdict,
+    source.canonical_intent_digest ? String(source.canonical_intent_digest) : null,
+  );
   const text = textValues(source, work);
-  const needsResearch = truthyIntent(source, work, "research") || INTENT_PATTERNS.research.test(text);
-  const needsImplementation = truthyIntent(source, work, "implementation") || INTENT_PATTERNS.implementation.test(text);
-  const needsRelease = truthyIntent(source, work, "release") || INTENT_PATTERNS.release.test(text);
-  const risky = isHighRisk(source, work, text);
-  const verificationRequired = risky || needsImplementation || needsRelease;
-  const requiredIds = ["memory_curator", "planner"];
-  if (needsResearch) requiredIds.push("researcher");
-  if (needsImplementation) requiredIds.push("executor_specialist");
-  if (needsRelease) requiredIds.push("release_operations");
-  if (verificationRequired) requiredIds.push("independent_verifier");
-  const waves = [activeWave("plan", ["memory_curator", "planner"], "work_plan_required")];
-  if (needsResearch) waves.push(activeWave("research", ["memory_curator", "researcher"], "research_intent_detected"));
-  if (needsImplementation) waves.push(activeWave("implementation", ["memory_curator", "executor_specialist"], "implementation_intent_detected"));
-  if (needsRelease) waves.push(activeWave("release_preparation", ["memory_curator", "release_operations"], "release_intent_detected"));
-  if (verificationRequired) waves.push(activeWave("independent_verification", ["memory_curator", "independent_verifier"], "independent_verification_required"));
+  const authoritativeRoles = new Set(coreVerdict?.required_role_ids || []);
+  const needsResearch = coreVerdict ? authoritativeRoles.has("researcher") : truthyIntent(source, work, "research") || INTENT_PATTERNS.research.test(text);
+  const needsImplementation = coreVerdict ? authoritativeRoles.has("executor_specialist") : truthyIntent(source, work, "implementation") || INTENT_PATTERNS.implementation.test(text);
+  const needsRelease = coreVerdict ? authoritativeRoles.has("release_operations") : truthyIntent(source, work, "release") || INTENT_PATTERNS.release.test(text);
+  const risky = coreVerdict ? coreVerdict.verdict !== "ALLOW" : isHighRisk(source, work, text);
+  const verificationRequired = coreVerdict
+    ? authoritativeRoles.has("independent_verifier")
+    : risky || needsImplementation || needsRelease;
+  const requiredIds = coreVerdict ? [...coreVerdict.required_role_ids] : ["memory_curator", "planner"];
+  if (!coreVerdict && needsResearch) requiredIds.push("researcher");
+  if (!coreVerdict && needsImplementation) requiredIds.push("executor_specialist");
+  if (!coreVerdict && needsRelease) requiredIds.push("release_operations");
+  if (!coreVerdict && verificationRequired) requiredIds.push("independent_verifier");
+  const waves = coreVerdict
+    ? (coreVerdict.verdict === "BLOCK" ? [] : requiredIds.map((id, index) => activeWave(`core_required_${index + 1}`, [id], "core_orchestration_verdict_required")))
+    : [activeWave("plan", ["memory_curator", "planner"], "work_plan_required")];
+  if (!coreVerdict && needsResearch) waves.push(activeWave("research", ["memory_curator", "researcher"], "research_intent_detected"));
+  if (!coreVerdict && needsImplementation) waves.push(activeWave("implementation", ["memory_curator", "executor_specialist"], "implementation_intent_detected"));
+  if (!coreVerdict && needsRelease) waves.push(activeWave("release_preparation", ["memory_curator", "release_operations"], "release_intent_detected"));
+  if (!coreVerdict && verificationRequired) waves.push(activeWave("independent_verification", ["memory_curator", "independent_verifier"], "independent_verification_required"));
   const plan = {
     schema_version: NYRA_AUTOPILOT_PLAN_SCHEMA_VERSION,
     scope,
     intent: { research: needsResearch, implementation: needsImplementation, release: needsRelease, risky, independent_verification_required: verificationRequired },
+    ...(coreVerdict ? { core_orchestration: coreVerdict, required_nyra_branches: coreVerdict.required_nyra_branches } : {}),
     required_roles: requiredIds.map(role),
     activation: {
       max_active_roles: NYRA_AUTOPILOT_MAX_ACTIVE_ROLES,
-      max_parallel: NYRA_AUTOPILOT_MAX_PARALLEL,
-      priority_blueprint_ids: ["memory_curator", "planner", ...(verificationRequired ? ["independent_verifier"] : []), ...(needsImplementation ? ["executor_specialist"] : []), ...(needsRelease ? ["release_operations"] : []), ...(needsResearch ? ["researcher"] : [])],
+      max_parallel: coreVerdict?.maximum_parallel_assignments || NYRA_AUTOPILOT_MAX_PARALLEL,
+      priority_blueprint_ids: coreVerdict ? [...requiredIds] : ["memory_curator", "planner", ...(verificationRequired ? ["independent_verifier"] : []), ...(needsImplementation ? ["executor_specialist"] : []), ...(needsRelease ? ["release_operations"] : []), ...(needsResearch ? ["researcher"] : [])],
       waves,
     },
     execution: { execution_authorized: false, model_invocation_allowed: false, tool_invocation_allowed: false, external_action_allowed: false },

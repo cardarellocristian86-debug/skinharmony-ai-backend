@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import {
@@ -15,9 +16,80 @@ import {
   governedWorkBootstrapDigest,
   materializeGovernedWorkBootstrapRequest,
 } from "../src/work-bootstrap-contract.js";
+import {
+  bindNyraCanonicalIntent,
+  finalizeNyraCanonicalIntent,
+  nyraCanonicalIntentMessageDigest,
+} from "../../shared/nyra-canonical-intent.mjs";
+import { coreOrchestrationVerdictDigest } from "../../shared/nyra-core-orchestration-verdict.mjs";
 
 const SECRET_DIGEST = "a".repeat(64);
 const CONTEXT_DIGEST = "b".repeat(64);
+
+function deterministicDigest(value) {
+  const stable = (item) => Array.isArray(item)
+    ? item.map(stable)
+    : item && typeof item === "object"
+      ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, stable(item[key])]))
+      : item;
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+const BOOTSTRAP_MESSAGE = "Crea un nuovo Work governato per la continuità Nyra.";
+const BOOTSTRAP_CANONICAL_INTENT = finalizeNyraCanonicalIntent({
+  schema_version: "nyra_canonical_intent_v1",
+  requested_now: ["work_bootstrap"],
+  future_goals: [],
+  constraints: [],
+  prohibited_actions: [],
+  referenced_actions: ["work_bootstrap"],
+  owner_reserved_actions: [],
+  speech_act: "REQUEST",
+  operation_class: "READ_ONLY",
+  scope: "WORK",
+  target: "work_create",
+  work_requirement: "NEW",
+  consequential_intent: false,
+  confidence: 0.99,
+  ambiguity: false,
+  safety_signals: [],
+  provenance: {
+    source: "nyra_dialogue_semantic_intake",
+    reason_code: "test_new_work",
+    semantic_hint_state: "NOT_PROVIDED",
+    raw_text_digest: nyraCanonicalIntentMessageDigest(BOOTSTRAP_MESSAGE),
+  },
+}, { message: BOOTSTRAP_MESSAGE });
+const BOOTSTRAP_CANONICAL_BINDING = bindNyraCanonicalIntent(
+  BOOTSTRAP_CANONICAL_INTENT,
+  { message: BOOTSTRAP_MESSAGE },
+);
+const CORE_VERDICT_MATERIAL = {
+  schema_version: "core_orchestration_verdict_v1",
+  authority: "UNIVERSAL_CORE",
+  verdict: "HOLD",
+  reason_codes: ["new_work_identity_required"],
+  canonical_intent_binding: BOOTSTRAP_CANONICAL_BINDING,
+  required_nyra_branches: [{
+    id: "quality_verification",
+    work_phase: "verification",
+    core_branch_bindings: ["test.read"],
+  }],
+  denied_nyra_branches: [],
+  required_roles: ["memory_curator", "planner", "executor_specialist", "independent_verifier"],
+  task_graph_digest: "8".repeat(64),
+  maximum_parallel_assignments: 2,
+  independent_verifier_required: true,
+  nyra_materializes_branches: true,
+  core_join_required: true,
+  permitted_progress: ["ANALYSIS", "PLANNING", "EVIDENCE", "BOUNDED_WORKSPACE"],
+  external_execution_authorized: false,
+};
+const CORE_ORCHESTRATION_VERDICT = Object.freeze({
+  ...CORE_VERDICT_MATERIAL,
+  verdict_digest: coreOrchestrationVerdictDigest(CORE_VERDICT_MATERIAL),
+});
+const CANONICAL_INTENT_DIGEST = BOOTSTRAP_CANONICAL_INTENT.intent_digest;
+const CORE_ORCHESTRATION_VERDICT_DIGEST = CORE_ORCHESTRATION_VERDICT.verdict_digest;
 const REGISTRY_REVISION = "c".repeat(64);
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const CONTINUATION_REF = `nyc1_${"z".repeat(40)}`;
@@ -67,10 +139,14 @@ function bootstrapSpec() {
 function bootstrapDirective(caller = identity()) {
   const request = materializeGovernedWorkBootstrapRequest({
     spec: bootstrapSpec(), identity: caller, projectId: "nyra_core",
+    canonicalIntentDigest: CANONICAL_INTENT_DIGEST,
+    coreOrchestrationVerdictDigest: CORE_ORCHESTRATION_VERDICT_DIGEST,
+    coreOrchestrationVerdict: CORE_ORCHESTRATION_VERDICT,
   });
   return {
     directive_id: "nyra_dir_1234567890abcdef12345678",
     request_digest: CONTEXT_DIGEST,
+    core_orchestration_verdict: CORE_ORCHESTRATION_VERDICT,
     ticket_request: {
       required: true,
       state: "WORK_BOOTSTRAP_READY",
@@ -85,6 +161,9 @@ function bootstrapDirective(caller = identity()) {
         work_revision: null,
         intent_digest: null,
         context_digest: null,
+        canonical_intent_digest: CANONICAL_INTENT_DIGEST,
+        canonical_intent_binding_digest: BOOTSTRAP_CANONICAL_BINDING.binding_digest,
+        core_orchestration_verdict_digest: CORE_ORCHESTRATION_VERDICT_DIGEST,
       },
     },
   };
@@ -104,6 +183,8 @@ function actionRecord(overrides = {}) {
     work_revision: 7,
     intent_digest: SECRET_DIGEST,
     context_digest: CONTEXT_DIGEST,
+    canonical_intent_digest: CANONICAL_INTENT_DIGEST,
+    core_orchestration_verdict_digest: CORE_ORCHESTRATION_VERDICT_DIGEST,
     issued_at: "2026-08-28T21:00:00.000Z",
     expires_at: "2026-08-28T21:05:00.000Z",
     ...overrides,
@@ -133,6 +214,32 @@ function precommitGate(overrides = {}) {
     projection_digest: "3".repeat(64),
     ...overrides,
   };
+}
+
+function nativePrecommitGate(overrides = {}) {
+  const material = {
+    schema_version: "precommit_ticket_gate_v2",
+    gate_source: "native_closure_evaluation",
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    action_kind: "git.commit",
+    gate_kind: "ticket_acquisition",
+    task_id: "22222222-2222-4222-8222-222222222222",
+    plan_id: "33333333-3333-4333-8333-333333333333",
+    evaluation_id: "44444444-4444-4444-8444-444444444444",
+    evaluation_digest: "e".repeat(64),
+    workspace_digest: "f".repeat(64),
+    supersession_digest: "1".repeat(64),
+    reconciliation_digest: "2".repeat(64),
+    legacy_evidence_ids: [],
+    replacement_evidence_ids: [],
+    fulfilled: false,
+    ticket_id: null,
+    fresh: true,
+    drift_codes: [],
+    ...overrides,
+  };
+  return { ...material, projection_digest: deterministicDigest(material) };
 }
 
 function commitContext(gate = precommitGate()) {
@@ -191,6 +298,78 @@ function commitTicket(request, gate = precommitGate(), overrides = {}) {
   };
 }
 
+function pushRequest() {
+  return {
+    work_id: WORK_ID,
+    intent_anchor_digest: SECRET_DIGEST,
+    delegation_id: "hnd_push-delegation-001",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    action: { kind: "git.push.branch", branch: "fix/nyra-conversation-quality-v1", commit: "8".repeat(40) },
+    evidence_digest: "9".repeat(64),
+  };
+}
+
+function pushTicket(request, overrides = {}) {
+  const ticket = {
+    schema_version: "host_native_action_ticket_v1",
+    ticket_id: `hnt_${"8".repeat(64)}`,
+    delegation_id: request.delegation_id,
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    intent_anchor_digest: SECRET_DIGEST,
+    repository: request.repository,
+    host_kind: "chatgpt_native",
+    host_session_fingerprint: "d".repeat(32),
+    action: request.action,
+    evidence_digest: request.evidence_digest,
+    issued_at: "2026-08-28T21:00:10.000Z",
+    expires_at: "2026-08-28T21:05:10.000Z",
+    max_uses: 1,
+    provider_execution: false,
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    signature: `hnt_${"9".repeat(64)}`,
+    ...overrides,
+  };
+  return {
+    schema_version: "host_native_action_ticket_record_v1",
+    tenant_id: "tenant-a",
+    state: "issued",
+    uses: 0,
+    ticket,
+  };
+}
+
+function pullRequestRequest(kind = "github.draft_pr") {
+  const materialization = pullRequestMaterialization();
+  return {
+    work_id: WORK_ID,
+    intent_anchor_digest: SECRET_DIGEST,
+    delegation_id: "hnd_pr-delegation-001",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    action: {
+      kind,
+      head_branch: "fix/nyra-pr",
+      base_branch: "main",
+      head_commit: "8".repeat(40),
+      expected_base_commit: "7".repeat(40),
+      changed_files: ["services/skinharmony-core-mcp/src/nyra-governed-continue.js"],
+      title_digest: crypto.createHash("sha256").update(materialization.title).digest("hex"),
+      body_digest: crypto.createHash("sha256").update(materialization.body).digest("hex"),
+      draft: true,
+      force: false,
+    },
+    evidence_digest: "9".repeat(64),
+  };
+}
+
+function pullRequestMaterialization() {
+  return {
+    title: "fix(nyra): restore canonical orchestration",
+    body: "Core-bound draft PR prepared by Nyra after independent verification.",
+  };
+}
+
 function commitHandler({ ticketOverrides = {}, includeReadback = true } = {}) {
   const gate = precommitGate();
   const request = commitRequest(gate);
@@ -227,9 +406,10 @@ function bootstrapRecord() {
     action_class: "WORK_BOOTSTRAP",
     work_id: null,
     work_revision: null,
-    intent_digest: null,
-    context_digest: null,
+    intent_digest: CANONICAL_INTENT_DIGEST,
+    context_digest: CORE_ORCHESTRATION_VERDICT_DIGEST,
     work_bootstrap_request_digest: directive.ticket_request.work_bootstrap_request_digest,
+    core_orchestration_verdict: CORE_ORCHESTRATION_VERDICT,
   });
 }
 
@@ -324,6 +504,7 @@ test("the durable continuation store fails closed until PostgreSQL schema readin
           operation_table: true,
           open_index: true,
           operation_index: true,
+          core_verdict_column: true,
         }] };
       }
       return { rows: [] };
@@ -342,6 +523,30 @@ test("the durable continuation store fails closed until PostgreSQL schema readin
   });
   assert.match(statements[0], /CREATE TABLE IF NOT EXISTS nyra_governed_continuation/);
   assert.match(statements[1], /to_regclass/);
+  assert.match(statements[1], /atttypid='jsonb'::regtype/);
+  assert.match(statements[1], /NOT attnotnull/);
+});
+
+test("the durable continuation store rejects a drifted Core verdict column", async () => {
+  const pool = {
+    query: async (statement) => {
+      if (String(statement).includes("to_regclass")) {
+        return { rows: [{
+          continuation_table: true,
+          operation_table: true,
+          open_index: true,
+          operation_index: true,
+          core_verdict_column: false,
+        }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const store = createNyraGovernedContinuationStore({
+    pool,
+    signingSecret: "continuation-store-test-secret-0123456789abcdef",
+  });
+  await assert.rejects(store.initialize(), /nyra_continuation_schema_unverified/);
 });
 
 test("an expired open reference is atomically retired before the same Nyra binding is reissued", async () => {
@@ -356,8 +561,8 @@ test("an expired open reference is atomically retired before the same Nyra bindi
       if (sql.includes("INSERT INTO nyra_governed_continuation")) {
         return { rows: [{
           continuation_ref: parameters[1],
-          expires_at: parameters[23],
-          state: parameters[20],
+          expires_at: parameters[24],
+          state: parameters[21],
         }] };
       }
       throw new Error(`unexpected_sql:${sql.slice(0, 48)}`);
@@ -374,6 +579,7 @@ test("an expired open reference is atomically retired before the same Nyra bindi
           operation_table: true,
           open_index: true,
           operation_index: true,
+          core_verdict_column: true,
         }] };
       }
       return { rows: [] };
@@ -520,6 +726,199 @@ test("a git.commit task is fulfilled only after trusted and fresh Core ticket re
   assert.equal(fulfillments[0].action_ticket, record);
 });
 
+test("native precommit gate is CAS-claimed before authorization and fulfilled from trusted readback", async () => {
+  const gate = nativePrecommitGate();
+  const request = commitRequest(gate);
+  const record = commitTicket(request, gate);
+  const order = [];
+  let claimReceipt;
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => commitContext(gate),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    reviewWorkBootstrap: async () => { throw new Error("unexpected_review"); },
+    createWorkBootstrap: async () => { throw new Error("unexpected_create"); },
+    claimPrecommitTicketGate: async (binding) => {
+      order.push("claim");
+      assert.equal(binding.work_id, WORK_ID);
+      assert.equal(binding.continuation_ref, CONTINUATION_REF);
+      assert.match(binding.request_digest, /^[a-f0-9]{64}$/);
+      assert.equal(binding.delegation_id, request.delegation_id);
+      assert.equal(binding.action_digest, deterministicDigest(request.action));
+      assert.equal(binding.gate_projection_digest, gate.projection_digest);
+      assert.equal(binding.host_session_fingerprint, "d".repeat(32));
+      assert.equal(binding.idempotency_key, "core_authorize_action");
+      const material = {
+        schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "precommit-claim-native-001",
+        ...binding,
+        replay: false,
+      };
+      claimReceipt = { ...material, claim_digest: deterministicDigest(material) };
+      return claimReceipt;
+    },
+    releaseOrReconcilePrecommitTicketGateClaim: async () => {
+      throw new Error("unexpected_claim_recovery");
+    },
+    authorizeAction: async () => {
+      order.push("authorize");
+      return { structuredContent: { action_ticket: record } };
+    },
+    readActionTicket: async () => {
+      order.push("readback");
+      return { structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } };
+    },
+    fulfillPrecommitTicketTask: async (input) => {
+      order.push("fulfill");
+      assert.equal(input.action_ticket, record);
+      assert.equal(input.gate_projection_digest, gate.projection_digest);
+      assert.deepEqual(input.gate_claim, claimReceipt);
+    },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  const response = await handler({
+    operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-native-commit-authorization",
+    action_request: request,
+  }, identity());
+  assert.equal(response.structuredContent.ticket_id, record.ticket.ticket_id);
+  assert.deepEqual(order, ["claim", "authorize", "readback", "fulfill"]);
+});
+
+test("native precommit retry after fulfilled recovers the prior ticket without authorize or fulfill", async () => {
+  const originalGate = nativePrecommitGate();
+  const request = commitRequest(originalGate);
+  const record = commitTicket(request, originalGate);
+  let authorizations = 0;
+  let fulfillments = 0;
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => ({ ...commitContext(nativePrecommitGate({
+      fulfilled: true, ticket_id: record.ticket.ticket_id,
+    })), precommit_ticket_gate_applicable: false }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    readPrecommitTicketGateClaimRecovery: async (binding) => {
+      const claimMaterial = { schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "11111111-1111-4111-8111-111111111111", ...binding,
+        gate_projection_digest: originalGate.projection_digest,
+        idempotency_key: "core_authorize_action", replay: true };
+      return { schema_version: "precommit_ticket_gate_recovery_v1", ticket_id: record.ticket.ticket_id,
+        gate_claim: { ...claimMaterial, claim_digest: deterministicDigest(claimMaterial) } };
+    },
+    authorizeAction: async () => { authorizations += 1; },
+    readActionTicket: async () => ({ structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } }),
+    fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  const result = await handler({ operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-crash-retry", action_request: request }, identity());
+  assert.equal(result.structuredContent.ticket_id, record.ticket.ticket_id);
+  assert.equal(authorizations, 0);
+  assert.equal(fulfillments, 0);
+});
+
+test("native precommit gate fails closed before authorization without an exact claim receipt", async (t) => {
+  const gate = nativePrecommitGate();
+  const request = commitRequest(gate);
+  for (const [name, claimCallback, expected] of [
+    ["missing callback", null, /nyra_continue_precommit_claim_unavailable/],
+    ["mismatched receipt", async (binding) => {
+      const material = {
+        schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "precommit-claim-native-002",
+        ...binding,
+        delegation_id: "hnd_attacker-substitution",
+        replay: false,
+      };
+      return { ...material, claim_digest: deterministicDigest(material) };
+    }, /nyra_continue_precommit_claim_invalid/],
+  ]) {
+    await t.test(name, async () => {
+      let authorizations = 0;
+      const handler = createNyraGovernedContinueHandler({
+        store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+        readDirectiveContext: async () => commitContext(gate),
+        normalizeDirectiveContext: (value) => value,
+        issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+        authorizeAction: async () => { authorizations += 1; },
+        claimPrecommitTicketGate: claimCallback,
+        releaseOrReconcilePrecommitTicketGateClaim: async () => {},
+      });
+      await assert.rejects(handler({
+        operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+        idempotency_key: `caller-native-claim-${name.replace(" ", "-")}`,
+        action_request: request,
+      }, identity()), expected);
+      assert.equal(authorizations, 0);
+    });
+  }
+});
+
+test("native precommit gate rejects source, mapping and projection widening before claim", async (t) => {
+  const valid = nativePrecommitGate();
+  const cases = [
+    ["wrong source", { ...valid, gate_source: "caller_reconciliation" }],
+    ["non-empty mappings", nativePrecommitGate({
+      legacy_evidence_ids: ["55555555-5555-4555-8555-555555555555"],
+      replacement_evidence_ids: ["66666666-6666-4666-8666-666666666666"],
+    })],
+    ["tampered projection", { ...valid, projection_digest: "9".repeat(64) }],
+  ];
+  for (const [name, gate] of cases) {
+    await t.test(name, async () => {
+      let claims = 0;
+      let authorizations = 0;
+      const request = commitRequest(gate);
+      const handler = createNyraGovernedContinueHandler({
+        store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+        readDirectiveContext: async () => commitContext(gate),
+        normalizeDirectiveContext: (value) => value,
+        issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+        claimPrecommitTicketGate: async () => { claims += 1; },
+        releaseOrReconcilePrecommitTicketGateClaim: async () => {},
+        authorizeAction: async () => { authorizations += 1; },
+      });
+      await assert.rejects(handler({
+        operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+        idempotency_key: `native-gate-widen-${name.replaceAll(" ", "-")}`,
+        action_request: request,
+      }, identity()), /nyra_continue_precommit_evidence_mismatch/);
+      assert.equal(claims, 0);
+      assert.equal(authorizations, 0);
+    });
+  }
+});
+
+test("native precommit claim is reconciled when authorization fails after CAS claim", async () => {
+  const gate = nativePrecommitGate();
+  const request = commitRequest(gate);
+  const recoveries = [];
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => commitContext(gate),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    claimPrecommitTicketGate: async (binding) => {
+      const material = { schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "precommit-claim-native-003", ...binding, replay: true };
+      return { ...material, claim_digest: deterministicDigest(material) };
+    },
+    authorizeAction: async () => { throw new Error("core_authorize_unavailable"); },
+    releaseOrReconcilePrecommitTicketGateClaim: async (input) => { recoveries.push(input); },
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-native-claim-recovery", action_request: request,
+  }, identity()), /core_authorize_unavailable/);
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].stage, "before_ticket_locator");
+  assert.equal(recoveries[0].ticket_id, null);
+  assert.equal(recoveries[0].gate_claim.replay, true);
+});
+
 test("git.commit fulfillment rejects temporally stale or cross-bound Core readback", async (t) => {
   const cases = [
     ["expired", { expires_at: "2026-08-28T21:00:19.000Z" }],
@@ -551,4 +950,226 @@ test("git.commit fails closed when trusted Core ticket readback is unavailable",
     action_request: request,
   }, identity()), /nyra_continue_commit_ticket_readback_unavailable/);
   assert.equal(fulfillments.length, 0);
+});
+
+test("owner-reserved GIT_MERGE cannot issue a delegation or authorize an action", async (t) => {
+  for (const operation of ["issue_delegation", "authorize_action"]) {
+    for (const ownerConfirmed of [false, true]) {
+      await t.test(`${operation} owner_confirmed=${ownerConfirmed}`, async () => {
+        const calls = [];
+        const store = fakeStore(actionRecord({ action_class: "GIT_MERGE", merge_policy: "MANUAL_OWNER_ONLY" }));
+        const handler = createNyraGovernedContinueHandler({
+          store,
+          readDirectiveContext: async () => { calls.push("readDirectiveContext"); },
+          normalizeDirectiveContext: (value) => value,
+          issueDelegation: async () => { calls.push("issueDelegation"); },
+          authorizeAction: async () => { calls.push("authorizeAction"); },
+          readActionTicket: async () => { calls.push("readActionTicket"); },
+          reviewWorkBootstrap: async () => { calls.push("reviewWorkBootstrap"); },
+          createWorkBootstrap: async () => { calls.push("createWorkBootstrap"); },
+        });
+        const action = {
+          operation,
+          continuation_ref: CONTINUATION_REF,
+          idempotency_key: `merge-${operation}-${ownerConfirmed}`,
+          owner_confirmed: ownerConfirmed,
+          ...(operation === "issue_delegation" ? { delegation_request: {
+            work_id: WORK_ID, intent_anchor_digest: SECRET_DIGEST,
+            audience: ["chatgpt_native"], allowed_actions: ["github.merge"],
+          } } : { action_request: {
+            work_id: WORK_ID, intent_anchor_digest: SECRET_DIGEST,
+            delegation_id: "hnd_merge-delegation-001",
+            repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+            action: { kind: "github.merge", pull_request: 413 }, evidence_digest: "9".repeat(64),
+          } }),
+        };
+        await assert.rejects(handler(action, identity({ ownerConfirmed })), /nyra_continue_manual_merge_only/);
+        assert.deepEqual(calls, []);
+        assert.equal(store.calls.some(([kind]) => kind === "claim"), false);
+      });
+    }
+  }
+});
+
+test("a non-commit action does not trust the immediate adapter ticket without trusted readback", async () => {
+  const request = pushRequest();
+  const record = pushTicket(request);
+  const store = fakeStore(actionRecord({ action_class: "GIT_PUSH" }));
+  const handler = createNyraGovernedContinueHandler({
+    store,
+    readDirectiveContext: async () => ({
+      available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+      intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+    }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    reviewWorkBootstrap: async () => { throw new Error("unexpected_review"); },
+    createWorkBootstrap: async () => { throw new Error("unexpected_create"); },
+    authorizeAction: async () => ({ structuredContent: { action_ticket: record } }),
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "push-without-trusted-readback", action_request: request,
+  }, identity()), /nyra_continue_action_ticket_readback_unavailable/);
+});
+
+test("a non-commit action accepts only an exact trusted Core ticket readback", async (t) => {
+  const request = pushRequest();
+  for (const [name, ticketOverrides, accepted] of [
+    ["exact", {}, true],
+    ["changed branch", { action: { ...request.action, branch: "main" } }, false],
+    ["wrong repository", { repository: "attacker/example" }, false],
+    ["wrong host session", { host_session_fingerprint: "0".repeat(32) }, false],
+  ]) {
+    await t.test(name, async () => {
+      const immediate = pushTicket(request);
+      const trusted = pushTicket(request, ticketOverrides);
+      const store = fakeStore(actionRecord({ action_class: "GIT_PUSH" }));
+      const handler = createNyraGovernedContinueHandler({
+        store,
+        readDirectiveContext: async () => ({
+          available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+          intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+        }),
+        normalizeDirectiveContext: (value) => value,
+        issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+        reviewWorkBootstrap: async () => { throw new Error("unexpected_review"); },
+        createWorkBootstrap: async () => { throw new Error("unexpected_create"); },
+        authorizeAction: async () => ({ structuredContent: { action_ticket: immediate } }),
+        readActionTicket: async ({ ticket_id }) => {
+          assert.equal(ticket_id, immediate.ticket.ticket_id);
+          return { structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: trusted } };
+        },
+        now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+      });
+      const invoke = () => handler({
+        operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+        idempotency_key: `push-trusted-${name.replaceAll(" ", "-")}`, action_request: request,
+      }, identity());
+      if (accepted) {
+        const response = await invoke();
+        assert.equal(response.structuredContent.ticket_id, trusted.ticket.ticket_id);
+      } else {
+        await assert.rejects(invoke(), /nyra_continue_action_ticket_readback_invalid/);
+      }
+    });
+  }
+});
+
+test("a trusted draft PR ticket reaches the injected standing-release coordinator after readback", async () => {
+  const request = pullRequestRequest();
+  const record = pushTicket(request);
+  const calls = [];
+  const store = fakeStore(actionRecord({ action_class: "PULL_REQUEST_OPEN" }));
+  const handler = createNyraGovernedContinueHandler({
+    store,
+    readDirectiveContext: async () => ({
+      available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+      intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+    }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    reviewWorkBootstrap: async () => { throw new Error("unexpected_review"); },
+    createWorkBootstrap: async () => { throw new Error("unexpected_create"); },
+    authorizeAction: async () => { calls.push("authorize"); return { structuredContent: { action_ticket: record } }; },
+    readActionTicket: async () => {
+      calls.push("trusted_readback");
+      return { structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } };
+    },
+    coordinatePullRequest: async (input) => {
+      calls.push("coordinate");
+      assert.deepEqual(input.action_request, request);
+      assert.deepEqual(input.action_ticket, record);
+      assert.deepEqual(input.materialization, pullRequestMaterialization());
+      assert.equal(input.idempotency_key, "core_authorize_action");
+      return { structuredContent: { standing_release_run: { run_id: `srr_${"a".repeat(40)}` } } };
+    },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  const response = await handler({
+    operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "draft-pr-trusted-handoff", action_request: request,
+    pull_request_materialization: pullRequestMaterialization(),
+  }, identity());
+  assert.deepEqual(calls, ["authorize", "trusted_readback", "coordinate"]);
+  assert.equal(response.structuredContent.ticket_id, record.ticket.ticket_id);
+  assert.equal(response.structuredContent.pull_request_handoff_started, true);
+  assert.match(response.structuredContent.host_response_contract.reply_seed, /standing-release/);
+});
+
+test("draft PR continuation fails closed without coordinator and rejects action widening", async (t) => {
+  for (const widenedKind of ["github.ready", "github.merge"]) {
+    await t.test(`rejects ${widenedKind}`, async () => {
+      const request = pullRequestRequest(widenedKind);
+      const calls = [];
+      const handler = createNyraGovernedContinueHandler({
+        store: fakeStore(actionRecord({ action_class: "PULL_REQUEST_OPEN" })),
+        readDirectiveContext: async () => ({
+          available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+          intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+        }),
+        normalizeDirectiveContext: (value) => value,
+        issueDelegation: async () => { calls.push("delegation"); },
+        authorizeAction: async () => { calls.push("authorize"); },
+        reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+      });
+      await assert.rejects(handler({
+        operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+        idempotency_key: `pr-widen-${widenedKind}`, action_request: request,
+      }, identity()), /nyra_continue_action_binding_mismatch/);
+      assert.deepEqual(calls, []);
+    });
+  }
+
+  const request = pullRequestRequest();
+  const record = pushTicket(request);
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "PULL_REQUEST_OPEN" })),
+    readDirectiveContext: async () => ({
+      available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+      intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+    }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    authorizeAction: async () => ({ structuredContent: { action_ticket: record } }),
+    readActionTicket: async () => ({ structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } }),
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "draft-pr-no-coordinator", action_request: request,
+    pull_request_materialization: pullRequestMaterialization(),
+  }, identity()), /nyra_continue_pull_request_coordinator_unavailable/);
+});
+
+test("draft PR materialization is digest-bound and rejected before claim or Core on drift", async () => {
+  const request = pullRequestRequest();
+  const store = fakeStore(actionRecord({ action_class: "PULL_REQUEST_OPEN" }));
+  const callbacks = [];
+  const handler = createNyraGovernedContinueHandler({
+    store,
+    readDirectiveContext: async () => ({
+      available: true, work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+      intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST, status: "ACTIVE",
+    }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { callbacks.push("delegation"); },
+    authorizeAction: async () => { callbacks.push("authorize"); },
+    reviewWorkBootstrap: async () => { callbacks.push("review"); },
+    createWorkBootstrap: async () => { callbacks.push("create"); },
+    coordinatePullRequest: async () => { callbacks.push("coordinate"); },
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF,
+    idempotency_key: "draft-pr-materialization-drift",
+    action_request: request,
+    pull_request_materialization: {
+      ...pullRequestMaterialization(),
+      title: "tampered title",
+    },
+  }, identity()), /nyra_continue_pull_request_materialization_invalid/);
+  assert.deepEqual(store.calls, []);
+  assert.deepEqual(callbacks, []);
 });

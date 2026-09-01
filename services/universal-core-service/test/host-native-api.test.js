@@ -99,6 +99,9 @@ function signedTenantContext(secret, tenantId, overrides = {}) {
     version: context.version,
     tenant_id: context.tenant_id,
     issued_at: context.issued_at,
+    ...(context.native_precommit_claim
+      ? { native_precommit_claim: context.native_precommit_claim }
+      : {}),
   });
   return Buffer.from(JSON.stringify({
     ...context,
@@ -755,7 +758,7 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
     assert.equal(replay.status, 201);
     assert.equal(replay.json.delegation.delegation_id, issued.json.delegation.delegation_id);
 
-    const ticket = await request("POST", "/v1/host-native/actions/authorize", {
+    const commitRequest = {
       idempotency_key: "api-action-commit-1",
       delegation_id: issued.json.delegation.delegation_id,
       work_id: "work-api-1",
@@ -776,7 +779,37 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
         provider_execution: false,
       },
       evidence_digest: H("9"),
-    }, automationKey.json.key);
+    };
+    const directCommit = await request("POST", "/v1/host-native/actions/authorize",
+      commitRequest, automationKey.json.key);
+    assert.equal(directCommit.status, 400);
+    assert.equal(directCommit.json.error, "native_precommit_claim_required");
+    const nativeClaim = {
+      schema_version: "native_precommit_claim_attestation_v1",
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      claim_digest: "", claim_replay: false, gate_projection_digest: H("9"),
+      continuation_ref: "nyc_native-precommit-api-claim-0001", request_digest: H("b"),
+      tenant_id: "tenant-host-native", work_id: commitRequest.work_id,
+      intent_anchor_digest: commitRequest.intent_anchor_digest,
+      delegation_id: commitRequest.delegation_id, repository: commitRequest.repository,
+      action_digest: hostNativeDigest(commitRequest.action), evidence_digest: commitRequest.evidence_digest,
+      host_session_fingerprint: commitRequest.host_session_fingerprint,
+      idempotency_key: commitRequest.idempotency_key,
+    };
+    nativeClaim.claim_digest = hostNativeDigest({
+      schema_version: "precommit_ticket_gate_claim_v1", claim_id: nativeClaim.claim_id,
+      work_id: nativeClaim.work_id, continuation_ref: nativeClaim.continuation_ref,
+      request_digest: nativeClaim.request_digest, delegation_id: nativeClaim.delegation_id,
+      action_digest: nativeClaim.action_digest, gate_projection_digest: nativeClaim.gate_projection_digest,
+      host_session_fingerprint: nativeClaim.host_session_fingerprint,
+      idempotency_key: nativeClaim.idempotency_key, replay: nativeClaim.claim_replay,
+    });
+    const ticket = await request("POST", "/v1/host-native/actions/authorize", commitRequest,
+      MCP_TENANT_GATEWAY_KEY, {
+        "x-sh-tenant-id": "tenant-host-native",
+        "x-sh-tenant-context": signedTenantContext(MCP_TENANT_CONTEXT_SECRET,
+          "tenant-host-native", { native_precommit_claim: nativeClaim }),
+      });
     assert.equal(ticket.status, 201);
     assert.equal(ticket.json.action_ticket.ticket.max_uses, 1);
     const ticketId = ticket.json.action_ticket.ticket.ticket_id;

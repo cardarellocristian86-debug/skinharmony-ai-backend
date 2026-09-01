@@ -95,6 +95,9 @@ class PrecommitPool {
     this.supersedingGates = [];
     this.supersedingMappings = new Map();
     this.supersedingFulfillments = new Map();
+    this.claims = new Map();
+    this.claimFulfillments = new Map();
+    this.claimReconciliations = new Map();
     this.events = [];
   }
   snapshot() {
@@ -107,6 +110,8 @@ class PrecommitPool {
       supersedingGates: structuredClone(this.supersedingGates),
       supersedingMappings: cloneMap(this.supersedingMappings),
       supersedingFulfillments: cloneMap(this.supersedingFulfillments),
+      claims: cloneMap(this.claims), claimFulfillments: cloneMap(this.claimFulfillments),
+      claimReconciliations: cloneMap(this.claimReconciliations),
     };
   }
   restore(snapshot) { Object.assign(this, snapshot); }
@@ -131,7 +136,8 @@ class PrecommitPool {
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate") &&
-        !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession")) {
+        !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession") &&
+        !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_claim")) {
       const row = this.gates.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
@@ -195,6 +201,12 @@ class PrecommitPool {
           b.evaluation_id.localeCompare(a.evaluation_id));
       return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
     }
+    if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,")) {
+      const rows = this.events.filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.event_type === "work_v2_created")
+        .sort((a, b) => a.sequence_number - b.sequence_number);
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT ticket_id,ticket_digest,gate_projection_digest")) {
       const source = q.includes("fulfillment_supersession")
         ? this.supersedingFulfillments : this.fulfillments;
@@ -203,6 +215,26 @@ class PrecommitPool {
         : q.includes("gate_version=$3")
           ? source.get(key(parameters[0], parameters[1], parameters[2]))
           : source.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT c.*,f.ticket_id AS fulfilled_ticket_id")) {
+      const rows = [...this.claims.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && (q.includes("c.idempotency_key=$4")
+          ? (row.gate_projection_digest === parameters[2] || row.idempotency_key === parameters[3])
+          : row.gate_projection_digest === parameters[2]));
+      const row = rows[0];
+      const fulfillment = row && this.claimFulfillments.get(key(row.tenant_id, row.work_id,
+        row.gate_projection_digest));
+      return { rows: row ? [{ ...structuredClone(row), fulfilled_ticket_id: fulfillment?.ticket_id || null }] : [],
+        rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_claim WHERE")) {
+      const row = [...this.claims.values()].find((item) => item.tenant_id === parameters[0] &&
+        item.work_id === parameters[1] && item.claim_id === parameters[2]);
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_claim_reconciliation")) {
+      const row = this.claimReconciliations.get(key(parameters[0], parameters[1], parameters[2], parameters[3]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT evidence_id,required,independently_verified FROM tenant_work_evidence")) {
@@ -226,21 +258,33 @@ class PrecommitPool {
         payload_digest: receipt.payload_digest }], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate") &&
-        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_supersession")) {
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_supersession") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim")) {
+      const native = q.includes("'native_closure_evaluation'");
       const row = { tenant_id: parameters[0], work_id: parameters[1], task_id: parameters[2],
         plan_id: parameters[3], evaluation_id: parameters[4], evaluation_digest: parameters[5],
         workspace_digest: parameters[6], supersession_digest: parameters[7],
         reconciliation_digest: parameters[8], action_kind: "git.commit",
+        gate_source: native ? "native_closure_evaluation" : "legacy_evidence_reconciliation",
         gate_kind: "ticket_acquisition", created_by_user_id: parameters[9] };
       this.gates.set(key(row.tenant_id, row.work_id), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("INSERT INTO tenant_work_task")) {
+      const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
+        title: parameters[3], weight: 1, status: "planned", required: true,
+        acceptance_verified: false };
+      this.tasks.set(key(row.tenant_id, row.task_id), row);
+      return { rows: [], rowCount: 1 };
+    }
     if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_supersession")) {
+      const native = q.includes("'native_closure_evaluation'");
       const row = { tenant_id: parameters[0], work_id: parameters[1], gate_version: parameters[2],
         task_id: parameters[3], plan_id: parameters[4], evaluation_id: parameters[5],
         evaluation_digest: parameters[6], workspace_digest: parameters[7],
         supersession_digest: parameters[8], reconciliation_digest: parameters[9],
         supersedes_reconciliation_digest: parameters[10], action_kind: "git.commit",
+        gate_source: native ? "native_closure_evaluation" : "legacy_evidence_reconciliation",
         gate_kind: "ticket_acquisition", created_by_user_id: parameters[11] };
       this.supersedingGates.push(row);
       return { rows: [], rowCount: 1 };
@@ -292,6 +336,32 @@ class PrecommitPool {
         task_id: parameters[3], ticket_id: parameters[4], ticket_digest: parameters[5],
         gate_projection_digest: parameters[6], fulfillment_digest: parameters[7] };
       this.supersedingFulfillments.set(key(row.tenant_id, row.work_id, row.gate_version), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim_fulfillment")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        gate_projection_digest: parameters[2], claim_id: parameters[3],
+        claim_digest: parameters[4], ticket_id: parameters[5] };
+      this.claimFulfillments.set(key(row.tenant_id, row.work_id, row.gate_projection_digest), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim_fulfillment") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim_reconciliation")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        gate_projection_digest: parameters[2], claim_id: parameters[3], continuation_ref: parameters[4],
+        request_digest: parameters[5], delegation_id: parameters[6], action_digest: parameters[7],
+        host_session_fingerprint: parameters[8], idempotency_key: parameters[9],
+        claim_digest: parameters[10], state: "CLAIMED", ticket_id: null };
+      this.claims.set(key(row.tenant_id, row.work_id, row.gate_projection_digest), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_claim_reconciliation")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], claim_id: parameters[2],
+        reconciliation_id: parameters[3], gate_projection_digest: parameters[4], stage: parameters[5],
+        ticket_id: parameters[6], error_code: parameters[7], request_digest: parameters[8],
+        continuation_ref: parameters[9], idempotency_key: parameters[10], reconciliation_digest: parameters[11] };
+      this.claimReconciliations.set(key(row.tenant_id, row.work_id, row.claim_id, row.stage), row);
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work_task SET status='completed'")) {
@@ -370,10 +440,19 @@ function actionTicket(projectionDigest, overrides = {}) {
   return { state: "issued", uses: 0, ticket: {
     schema_version: "host_native_action_ticket_v1", ticket_id: `hnt_${"a".repeat(64)}`,
     tenant_id: "tenant-a", work_id: WORK_ID, action: { kind: "git.commit" },
+    delegation_id: "delegation-1", host_session_fingerprint: "a".repeat(64),
     evidence_digest: projectionDigest, max_uses: 1, provider_execution: false,
     host_policy_override: false, host_policy_must_allow: true,
     signature: `hnt_${"b".repeat(64)}`, ...overrides,
   } };
+}
+async function claimGate(store, projection, overrides = {}) {
+  return store.claimPrecommitTicketGate(identity(), {
+    work_id: WORK_ID, gate_projection_digest: projection.projection_digest,
+    continuation_ref: "continuation-1", request_digest: "1".repeat(64),
+    delegation_id: "delegation-1", action_digest: digest({ kind: "git.commit" }),
+    host_session_fingerprint: "a".repeat(64), idempotency_key: "claim-1", ...overrides,
+  });
 }
 
 test("reconciles exact receipt-bound evidence idempotently without mutating closure evidence", async () => {
@@ -592,4 +671,144 @@ test("migration is additive, replay-safe and append-only", () => {
   assert.match(supersedingMigration, /BEFORE UPDATE OR DELETE[\s\S]*append_only/);
   assert.match(supersedingMigration,
     /20260830_precommit_ticket_gate_supersession_v1'[\s\S]*ON CONFLICT DO NOTHING/);
+
+  const nativeMigration = fs.readFileSync(path.join(directory,
+    "../migrations/20260901_native_precommit_ticket_gate_v2.sql"), "utf8");
+  assert.match(nativeMigration, /gate_source varchar\(48\)/);
+  assert.match(nativeMigration, /legacy_evidence_reconciliation/);
+  assert.match(nativeMigration, /native_closure_evaluation/);
+  assert.match(nativeMigration, /20260901_native_precommit_ticket_gate_v2/);
+  const claimMigration = fs.readFileSync(path.join(directory,
+    "../migrations/20260901_precommit_ticket_gate_claim_v1.sql"), "utf8");
+  assert.match(claimMigration, /tenant_work_precommit_ticket_gate_claim/);
+  assert.match(claimMigration, /tenant_work_precommit_ticket_gate_claim_fulfillment/);
+  assert.match(claimMigration, /BEFORE UPDATE OR DELETE/);
+  assert.match(claimMigration, /20260901_precommit_ticket_gate_claim_v1/);
+});
+
+test("claim CAS permits exact replay and rejects cross-bound projection or request", async () => {
+  const { store, input } = fixture();
+  const gate = await store.reconcilePrecommitTicketGate(identity(), input);
+  const claim = await claimGate(store, gate);
+  assert.equal(claim.schema_version, "precommit_ticket_gate_claim_v1");
+  assert.equal(claim.replay, false);
+  const replay = await claimGate(store, gate);
+  assert.equal(replay.replay, true);
+  assert.equal(replay.claim_id, claim.claim_id);
+  await assert.rejects(claimGate(store, gate, { request_digest: "9".repeat(64) }),
+    /precommit_gate_claim_replay_conflict/);
+  await assert.rejects(claimGate(store, { ...gate, projection_digest: "8".repeat(64) }, {
+    idempotency_key: "claim-cross-projection",
+  }), /precommit_gate_claim_gate_invalid/);
+  await assert.rejects(store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    gate_claim: { ...claim, claim_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    action_ticket: actionTicket(gate.projection_digest),
+  }), /precommit_ticket_fulfillment_claim_unexpected/);
+});
+
+test("claim recovery is append-only, exact-replayable and cross-binding closed", async () => {
+  const { store, input, pool } = fixture();
+  const gate = await store.reconcilePrecommitTicketGate(identity(), input);
+  const claim = await claimGate(store, gate);
+  const recovery = { work_id: WORK_ID, gate_claim: claim,
+    gate_projection_digest: gate.projection_digest, continuation_ref: "continuation-1",
+    request_digest: "1".repeat(64), idempotency_key: "claim-1",
+    stage: "before_ticket_locator", ticket_id: null, error_code: "core_authorize_unavailable" };
+  const first = await store.reconcilePrecommitTicketGateClaim(identity(), recovery);
+  assert.equal(first.replay, false);
+  const replay = await store.reconcilePrecommitTicketGateClaim(identity(), recovery);
+  assert.equal(replay.replay, true);
+  assert.equal(replay.reconciliation_id, first.reconciliation_id);
+  assert.equal(pool.claimReconciliations.size, 1);
+  await assert.rejects(store.reconcilePrecommitTicketGateClaim(identity(), {
+    ...recovery, error_code: "different_failure",
+  }), /precommit_claim_reconciliation_replay_conflict/);
+  await assert.rejects(store.reconcilePrecommitTicketGateClaim(identity(), {
+    ...recovery, request_digest: "9".repeat(64),
+  }), /precommit_claim_reconciliation_claim_invalid/);
+});
+
+test("materializes one server-owned native closure gate for a canonical promoted V2 bridge", async () => {
+  const pool = new PrecommitPool();
+  pool.works.set(key("tenant-a", WORK_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, legacy_work_id: WORK_ID,
+    work_type: "software_git", intent_digest: "1".repeat(64),
+    owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
+  });
+  const createdEventMaterial = { tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
+    event_type: "work_v2_created",
+    payload: { legacy_work_id: WORK_ID, intent_digest: "1".repeat(64), legacy_event_hash: "2".repeat(64) },
+    previous_event_hash: null };
+  pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
+  const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    plan, plan_digest: digest(plan), status: "planned", plan_version: 1, supersedes_plan_id: null });
+  const evaluation = { schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: WORKSPACE_DIGEST } };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    evaluation_id: EVALUATION_ID, evaluation, evaluation_digest: digest(evaluation),
+    created_at: "2026-09-01T10:00:00.000Z" });
+  const store = createWorkContinuityV2Store({ pool });
+  const client = await pool.connect();
+  await client.query("BEGIN");
+  const input = { server_owned: true, tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: PLAN_ID, evaluation_id: EVALUATION_ID, evaluation_digest: digest(evaluation),
+    workspace_digest: WORKSPACE_DIGEST };
+  const first = await store.materializeNativePrecommitTicketGateWithClient(client, input);
+  assert.equal(first.schema_version, "precommit_ticket_gate_v2");
+  assert.equal(first.gate_source, "native_closure_evaluation");
+  assert.equal(first.fresh, true);
+  assert.deepEqual(first.legacy_evidence_ids, []);
+  assert.deepEqual(first.replacement_evidence_ids, []);
+  assert.equal(first.idempotent_replay, false);
+  await assert.rejects(store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID, gate_projection_digest: first.projection_digest,
+    action_ticket: actionTicket(first.projection_digest),
+  }), /precommit_ticket_fulfillment_claim_invalid/);
+  const replay = await store.materializeNativePrecommitTicketGateWithClient(client, input);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.projection_digest, first.projection_digest);
+  assert.equal(pool.tasks.size, 1);
+  pool.plans[0].status = "superseded";
+  const nextPlan = { schema_version: "native_agent_plan_v1", tasks: [{ task_id: "next" }] };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    plan: nextPlan, plan_digest: digest(nextPlan), status: "planned", plan_version: 2,
+    supersedes_plan_id: PLAN_ID });
+  const nextEvaluation = { ...evaluation,
+    precommit_verification: { ready: true, workspace_digest: SUPERSEDING_WORKSPACE_DIGEST } };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    evaluation_id: SUPERSEDING_EVALUATION_ID, evaluation: nextEvaluation,
+    evaluation_digest: digest(nextEvaluation), created_at: "2026-09-01T11:00:00.000Z" });
+  const superseding = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(nextEvaluation), workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+  });
+  assert.equal(superseding.schema_version, "precommit_ticket_gate_v2");
+  assert.equal(superseding.fresh, true);
+  assert.equal(superseding.plan_id, SUPERSEDING_PLAN_ID);
+  assert.equal(pool.supersedingGates.length, 1);
+  assert.equal(pool.tasks.size, 1, "native supersession reuses the immutable ticket-acquisition task");
+  await client.query("COMMIT");
+});
+
+test("native gate writer rejects caller authority and noncanonical legacy projections", async () => {
+  const { pool, store } = fixture();
+  const client = await pool.connect();
+  const base = { server_owned: true, tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: PLAN_ID, evaluation_id: EVALUATION_ID,
+    evaluation_digest: pool.evaluations[0].evaluation_digest, workspace_digest: WORKSPACE_DIGEST };
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client,
+    { ...base, server_owned: false }), /native_precommit_gate_server_owned_required/);
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
+    /native_precommit_gate_work_invalid/);
+  pool.works.get(key("tenant-a", WORK_ID)).work_type = "legacy";
+  const createdEventMaterial = { tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
+    event_type: "work_v2_created", payload: { legacy_work_id: WORK_ID,
+      intent_digest: "1".repeat(64) }, previous_event_hash: null };
+  pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
+    /native_precommit_gate_work_invalid/);
 });

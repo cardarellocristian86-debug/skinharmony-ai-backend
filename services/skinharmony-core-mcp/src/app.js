@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import express from "express";
 import {
   createAuthenticator,
   isCodexGoodModeDelegation,
+  oauthReconnectErrorDetails,
   ownerRequestBinding,
   requireScopes,
 } from "./auth.js";
@@ -1780,6 +1782,33 @@ function securitySchemes(scopes) {
   return [{ type: "oauth2", scopes }];
 }
 
+const OAUTH_RESOURCE_METADATA_PATHS = new Set([
+  "/.well-known/oauth-protected-resource",
+  "/.well-known/oauth-protected-resource/mcp-v015",
+]);
+
+function canonicalMcpPublicOrigin(config) {
+  let parsed;
+  try {
+    parsed = new URL(String(config.publicUrl || ""));
+  } catch {
+    throw new Error("mcp_public_url_invalid");
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const ipv4Loopback = isIP(hostname) === 4 && Number(hostname.split(".")[0]) === 127;
+  const loopbackHttp = parsed.protocol === "http:" && (
+    hostname === "localhost" || hostname.endsWith(".localhost") ||
+    hostname === "::1" || ipv4Loopback
+  );
+  if (!["https:", "http:"].includes(parsed.protocol) ||
+      parsed.username || parsed.password || parsed.search || parsed.hash ||
+      !["", "/"].includes(parsed.pathname) ||
+      (parsed.protocol !== "https:" && !loopbackHttp)) {
+    throw new Error("mcp_public_url_invalid");
+  }
+  return parsed.origin;
+}
+
 function challenge(
   config,
   error = "invalid_token",
@@ -1787,9 +1816,61 @@ function challenge(
   description = "Authentication is required to use this MCP resource",
   metadataPath = "/.well-known/oauth-protected-resource",
 ) {
-  const metadata = `${config.publicUrl}${metadataPath}`;
+  if (!OAUTH_RESOURCE_METADATA_PATHS.has(metadataPath)) throw new Error("oauth_resource_metadata_path_invalid");
+  const metadata = `${canonicalMcpPublicOrigin(config)}${metadataPath}`;
   const safeDescription = String(description).replace(/["\\\r\n]/g, " ").slice(0, 160);
   return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
+}
+
+const OAUTH_RECONNECT_DESCRIPTIONS = Object.freeze({
+  missing_token: "Authentication is required; connect the OAuth account",
+  expired_token: "Authentication expired; reconnect the OAuth account",
+  insufficient_scope: "Additional OAuth permission is required; reconnect the account",
+  owner_authentication_stale: "Fresh owner authentication is required; reconnect the OAuth account",
+});
+
+function reconnectScopes(config, missingScopes = []) {
+  const supported = new Set((config.supportedScopes || []).map(String));
+  return [...new Set(missingScopes.map(String))]
+    .filter((scope) => supported.has(scope) && /^[\x21\x23-\x5B\x5D-\x7E]{1,128}$/.test(scope))
+    .sort();
+}
+
+function oauthReconnectChallenge(config, details, metadataPath) {
+  if (!details || !config.auth0Issuer) return null;
+  const description = OAUTH_RECONNECT_DESCRIPTIONS[details.reason];
+  if (!description) return null;
+  const scopes = details.reason === "insufficient_scope"
+    ? reconnectScopes(config, details.missingScopes)
+    : [];
+  if (details.reason === "insufficient_scope" && scopes.length === 0) return null;
+  return challenge(
+    config,
+    details.reason === "insufficient_scope" ? "insufficient_scope" : "invalid_token",
+    scopes.join(" "),
+    description,
+    metadataPath,
+  );
+}
+
+function oauthReconnectToolFailure(config, details, metadataPath) {
+  const authChallenge = oauthReconnectChallenge(config, details, metadataPath);
+  if (!authChallenge) return null;
+  const payload = {
+    ok: false,
+    error: {
+      code: "oauth_reconnect_required",
+      message: "Reconnect the OAuth account, then retry this tool.",
+      retryable: false,
+      user_action_required: true,
+    },
+  };
+  return {
+    structuredContent: payload,
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    isError: true,
+    _meta: { "mcp/www_authenticate": [authChallenge] },
+  };
 }
 
 const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
@@ -1893,6 +1974,9 @@ function configureToolForRuntime(tool, config) {
 }
 
 export function createApp(config, options = {}) {
+  // Fail at startup instead of emitting a caller-visible OAuth challenge with
+  // a non-canonical or insecure production origin.
+  canonicalMcpPublicOrigin(config);
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const environmentDelegationNonceStore = options.environmentDelegationNonceStore ||
@@ -2389,9 +2473,10 @@ export function createApp(config, options = {}) {
     const resourceMetadataPath = req.path === "/mcp-v015"
       ? "/.well-known/oauth-protected-resource/mcp-v015"
       : "/.well-known/oauth-protected-resource";
+    const environmentDelegation = req.headers["x-skinharmony-environment-delegation"];
     let identity;
     try {
-      const delegation = req.headers["x-skinharmony-environment-delegation"];
+      const delegation = environmentDelegation;
       if (delegation) {
         if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
         if (req.body?.method !== "tools/call") throw new Error("environment_delegation_invalid");
@@ -2426,13 +2511,29 @@ export function createApp(config, options = {}) {
           error: { code: -32003, message: "Environment delegation unavailable" },
         });
       }
-      res.set("WWW-Authenticate", challenge(
-        config,
-        "invalid_token",
-        "",
-        "Authentication is required to use this MCP resource",
-        resourceMetadataPath,
-      ));
+      const reconnectDetails = environmentDelegation
+        ? null
+        : oauthReconnectErrorDetails(error);
+      const reconnectResult = req.body?.method === "tools/call"
+        ? oauthReconnectToolFailure(config, reconnectDetails, resourceMetadataPath)
+        : null;
+      const authChallenge = environmentDelegation
+        ? null
+        : oauthReconnectChallenge(config, reconnectDetails, resourceMetadataPath) || challenge(
+          config,
+          "invalid_token",
+          "",
+          "Authentication is required to use this MCP resource",
+          resourceMetadataPath,
+        );
+      if (authChallenge) res.set("WWW-Authenticate", authChallenge);
+      if (reconnectResult) {
+        return res.status(401).json({
+          jsonrpc: "2.0",
+          id: req.body?.id ?? null,
+          result: reconnectResult,
+        });
+      }
       return res.status(401).json({ jsonrpc: "2.0", id: req.body?.id ?? null, error: { code: -32001, message: "Unauthorized" } });
     }
     const { id = null, method, params = {} } = req.body || {};
@@ -2914,29 +3015,33 @@ export function createApp(config, options = {}) {
             : { identity, toolName: params.name, args: params.arguments || {}, error });
         } catch {}
       }
-      if (error.message === "insufficient_scope") {
+      const reconnectDetails = oauthReconnectErrorDetails(error);
+      const reconnectResult = identity?.kind === "oauth"
+        ? oauthReconnectToolFailure(config, reconnectDetails, resourceMetadataPath)
+        : null;
+      if (reconnectResult) {
+        const authChallenge = reconnectResult._meta["mcp/www_authenticate"][0];
+        res.set("WWW-Authenticate", authChallenge);
+        const status = reconnectDetails.reason === "insufficient_scope" ? 403 : 200;
+        return res.status(status).json({ jsonrpc: "2.0", id, result: reconnectResult });
+      }
+      if (reconnectDetails?.reason === "insufficient_scope") {
+        if (identity?.kind !== "oauth") {
+          return res.status(403).json({
+            jsonrpc: "2.0",
+            id,
+            result: toolFailure({ code: "insufficient_scope", status: 403 }),
+          });
+        }
+        const safeMissingScopes = reconnectScopes(config, reconnectDetails.missingScopes);
         res.set("WWW-Authenticate", challenge(
           config,
           "insufficient_scope",
-          error.missing.join(" "),
+          safeMissingScopes.join(" "),
           "Authentication is required to use this MCP resource",
           resourceMetadataPath,
         ));
         return res.status(403).json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Insufficient scope" } });
-      }
-      if (error.message === "owner_authentication_stale") {
-        res.set("WWW-Authenticate", challenge(
-          config,
-          "invalid_token",
-          "",
-          "Fresh owner authentication is required; reconnect the OAuth session",
-          resourceMetadataPath,
-        ));
-        return res.status(401).json({
-          jsonrpc: "2.0",
-          id,
-          error: { code: -32001, message: "Fresh owner authentication is required" },
-        });
       }
       if (error.message === "memory_checksum_mismatch") {
         return res.status(400).json({

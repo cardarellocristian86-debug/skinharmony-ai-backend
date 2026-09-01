@@ -41,7 +41,7 @@ export const NYRA_AUTOPILOT_TOOLS = [
     "List only the authenticated connected AI's tenant-scoped, zero-privilege assignment offers. An offer is not an executed task.",
     object({ work_id: uuid })),
   tool("nyra_autopilot_enable", "Enable Nyra Autopilot for this tenant",
-    "One-time tenant owner activation. Thereafter Nyra automatically plans each new or changed Work; no per-Work request is required. It never enables model calls, credentials, deploy, merge or external actions.",
+    "Owner-gated activation of automatic governed Work planning. Never enables credentials or external actions.",
     object({ idempotency_key: identifier }, ["idempotency_key"]), { readOnly: false, ownerRequired: true }),
   tool("nyra_autopilot_reconcile", "Recover or plan a Nyra Work",
     "Owner recovery command for one existing Work. Normal Work creation and Work changes invoke the same process automatically.",

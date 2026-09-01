@@ -154,6 +154,45 @@ function assignmentSpecs(plan) {
   return specs;
 }
 
+export function nyraAutopilotCoreEvidence(plan = {}) {
+  return plan.core_orchestration ? Object.freeze({
+    core_orchestration_verdict_digest: plan.core_orchestration.verdict_digest,
+    canonical_intent_digest: plan.core_orchestration.canonical_intent_digest,
+    canonical_intent_binding_digest: plan.core_orchestration.canonical_intent_binding_digest,
+    required_nyra_branches: clone(plan.required_nyra_branches || []),
+  }) : Object.freeze({});
+}
+
+export function validateNyraAutopilotMaterialization(plan = {}, materialization = {}) {
+  const expected = (Array.isArray(plan.required_roles) ? plan.required_roles : [])
+    .map((item) => item?.blueprint_id);
+  const instances = Array.isArray(materialization.instances) ? materialization.instances : [];
+  const actual = instances.map((item) => item?.blueprint_id);
+  if (new Set(expected).size !== expected.length || new Set(actual).size !== actual.length ||
+      actual.length !== expected.length || expected.some((id) => !actual.includes(id)) ||
+      actual.some((id) => !expected.includes(id))) {
+    throw new Error("nyra_autopilot_materialization_set_mismatch");
+  }
+  return new Map(instances.map((item) => [item.blueprint_id, item]));
+}
+
+export function validateNyraAutopilotBranchMaterialization(plan = {}, materialized = []) {
+  const expected = (Array.isArray(plan.required_nyra_branches) ? plan.required_nyra_branches : [])
+    .map((item) => item?.id);
+  const actual = (Array.isArray(materialized) ? materialized : []).map((item) => item?.branch_key);
+  if (new Set(expected).size !== expected.length || new Set(actual).size !== actual.length ||
+      expected.length !== actual.length || expected.some((id) => !actual.includes(id)) ||
+      actual.some((id) => !expected.includes(id)) ||
+      materialized.some((item) => !item?.branch_id || item.status !== "active")) {
+    throw new Error("nyra_autopilot_branch_materialization_set_mismatch");
+  }
+  return Object.freeze(materialized.map((item) => Object.freeze({
+    branch_id: item.branch_id,
+    branch_key: item.branch_key,
+    status: "active",
+  })));
+}
+
 function presence(identity) {
   const value = identity?.agentPresence || {};
   const clientType = String(value.client_type || "").toLowerCase();
@@ -213,20 +252,47 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
 
   async function materializeRun(identity, run) {
     const plan = run.plan;
-    const materialization = await teamRuntime.materializeForWork(identity, {
-      project_id: run.project_id,
-      work_id: run.work_id,
-      agent_id: "nyra_autopilot",
-      blueprint_ids: plan.required_roles.map((item) => item.blueprint_id),
-      idempotency_key: shortKey("nyraauto", { tenant: run.tenant_id, work: run.work_id, version: run.architecture_version, digest: run.plan_digest }),
-      receipt_event_type: "nyra_autopilot_team_materialized",
-    });
+    if (plan.core_orchestration?.verdict === "BLOCK") {
+      throw new Error("nyra_autopilot_core_verdict_blocked");
+    }
     return transaction(async (client) => {
       const current = await client.query(`SELECT status FROM core_nyra_autopilot_runs
         WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`, [run.tenant_id, run.work_id, run.run_id]);
       if (!current.rows[0]) throw new Error("nyra_autopilot_run_not_found");
-      if (current.rows[0].status === "materialized") return { materialization, idempotent_replay: true };
-      const instances = new Map(materialization.instances.map((item) => [item.blueprint_id, item]));
+      const materializedBranches = [];
+      for (const required of plan.required_nyra_branches || []) {
+        const branch = await client.query(`INSERT INTO core_continuity_branches
+          (tenant_id,work_id,branch_id,parent_branch_id,branch_key,title,objective,created_by)
+          VALUES ($1,$2,$3,NULL,$4,$5,$6,$7)
+          ON CONFLICT (tenant_id,work_id,branch_key) DO UPDATE SET
+            updated_at=core_continuity_branches.updated_at
+          RETURNING branch_id,branch_key,status`, [
+          run.tenant_id,
+          run.work_id,
+          crypto.randomUUID(),
+          required.id,
+          `Nyra Core branch: ${required.id}`,
+          `Core-required phase ${required.work_phase}; verdict ${plan.core_orchestration.verdict_digest}`,
+          "nyra_autopilot",
+        ]);
+        materializedBranches.push(branch.rows[0]);
+      }
+      const branches = validateNyraAutopilotBranchMaterialization(plan, materializedBranches);
+      if (typeof teamRuntime.materializeForWorkInTransaction !== "function") {
+        throw new Error("nyra_autopilot_atomic_team_materialization_unavailable");
+      }
+      const materialization = await teamRuntime.materializeForWorkInTransaction(client, identity, {
+        project_id: run.project_id,
+        work_id: run.work_id,
+        agent_id: "nyra_autopilot",
+        blueprint_ids: plan.required_roles.map((item) => item.blueprint_id),
+        idempotency_key: shortKey("nyraauto", { tenant: run.tenant_id, work: run.work_id, version: run.architecture_version, digest: run.plan_digest }),
+        receipt_event_type: "nyra_autopilot_team_materialized",
+      });
+      const instances = validateNyraAutopilotMaterialization(plan, materialization);
+      if (current.rows[0].status === "materialized") {
+        return { materialization, materialized_nyra_branches: branches, idempotent_replay: true };
+      }
       for (const spec of assignmentSpecs(plan)) {
         const instance = instances.get(spec.blueprintId);
         if (!instance) throw new Error("nyra_autopilot_materialization_incomplete");
@@ -235,6 +301,8 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           work_scope: { tenant_id: run.tenant_id, project_id: run.project_id, work_id: run.work_id },
           plan_digest: run.plan_digest, execution_authorized: false, tool_allowlist: [], model_invocation_allowed: false,
           external_action_allowed: false, core_gate_required: true,
+          materialized_nyra_branches: branches,
+          ...nyraAutopilotCoreEvidence(plan),
         };
         await client.query(`INSERT INTO core_nyra_autopilot_assignments
           (tenant_id,work_id,run_id,assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies)
@@ -247,8 +315,10 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const receipt = await appendReceipt(client, run.tenant_id, run.work_id, "nyra_autopilot_materialized", {
         run_id: run.run_id, plan_digest: run.plan_digest, selected_blueprint_ids: plan.required_roles.map((item) => item.blueprint_id),
         assignment_keys: assignmentSpecs(plan).map((item) => item.key), execution_authorized: false,
+        materialized_nyra_branches: branches,
+        ...nyraAutopilotCoreEvidence(plan),
       });
-      return { materialization, receipt, idempotent_replay: false };
+      return { materialization, materialized_nyra_branches: branches, receipt, idempotent_replay: false };
     });
   }
 
@@ -331,8 +401,19 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         const row = work.rows[0];
         if (!row) throw new Error("continuity_work_not_found");
         if (requestedProjectId && row.project_id !== requestedProjectId) throw new Error("nyra_autopilot_project_mismatch");
+        const persistedCoreBinding = row.anchor?.canonical_intent_binding || null;
+        const persistedCoreVerdict = persistedCoreBinding?.core_orchestration_verdict || null;
+        if (persistedCoreBinding && (
+          persistedCoreBinding.canonical_intent_digest !==
+            persistedCoreVerdict?.canonical_intent_binding?.intent_digest ||
+          persistedCoreBinding.core_orchestration_verdict_digest !== persistedCoreVerdict?.verdict_digest
+        )) throw new Error("nyra_autopilot_persisted_core_binding_invalid");
         const plan = compileNyraAutopilotPlan({ tenant_id: tenantId, project_id: row.project_id, work_id: workId,
-          idea: row.idea, objective: row.objective, work: row.anchor || {} });
+          idea: row.idea, objective: row.objective, work: row.anchor || {},
+          ...(persistedCoreVerdict ? {
+            core_orchestration_verdict: persistedCoreVerdict,
+            canonical_intent_digest: persistedCoreBinding.canonical_intent_digest,
+          } : {}) });
         const existing = await client.query(`SELECT tenant_id,work_id,run_id,project_id,architecture_version,intent_digest,plan,plan_digest,status
           FROM core_nyra_autopilot_runs WHERE tenant_id=$1 AND work_id=$2 AND architecture_version=$3 AND plan_digest=$4 FOR UPDATE`,
         [tenantId, workId, Number(row.current_version), plan.plan_digest]);
@@ -355,10 +436,29 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         [tenantId, workId, runId, row.project_id, triggerType, Number(row.current_version), row.intent_digest, JSON.stringify(plan), plan.plan_digest, actor(identity)]);
         await appendReceipt(client, tenantId, workId, "nyra_autopilot_planned", { run_id: runId, trigger_type: triggerType,
           architecture_version: Number(row.current_version), intent_digest: row.intent_digest, plan_digest: plan.plan_digest,
-          selected_blueprint_ids: plan.required_roles.map((item) => item.blueprint_id), execution_authorized: false });
+          selected_blueprint_ids: plan.required_roles.map((item) => item.blueprint_id), execution_authorized: false,
+          ...nyraAutopilotCoreEvidence(plan) });
         return { tenant_id: tenantId, work_id: workId, run_id: runId, project_id: row.project_id, architecture_version: Number(row.current_version),
           intent_digest: row.intent_digest, plan, plan_digest: plan.plan_digest, status: "pending", idempotent_replay: false };
       });
+      if (run.plan.core_orchestration?.verdict === "BLOCK") {
+        if (run.status === "blocked") {
+          return { tenant_id: tenantId, work_id: workId, run_id: run.run_id, status: "blocked",
+            retryable: false, code: "nyra_autopilot_core_verdict_blocked", execution_authorized: false,
+            idempotent_replay: true };
+        }
+        await transaction(async (client) => {
+          await client.query(`UPDATE core_nyra_autopilot_runs SET status='blocked',updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND status<>'materialized'`, [tenantId, workId, run.run_id]);
+          await appendReceipt(client, tenantId, workId, "nyra_autopilot_blocked", {
+            run_id: run.run_id,
+            code: "nyra_autopilot_core_verdict_blocked",
+            ...nyraAutopilotCoreEvidence(run.plan),
+          });
+        });
+        return { tenant_id: tenantId, work_id: workId, run_id: run.run_id, status: "blocked",
+          retryable: false, code: "nyra_autopilot_core_verdict_blocked", execution_authorized: false };
+      }
       try {
         const materialized = await materializeRun(identity, run);
         return { tenant_id: tenantId, work_id: workId, run_id: run.run_id, status: "materialized", plan: run.plan,

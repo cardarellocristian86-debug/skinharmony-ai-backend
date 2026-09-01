@@ -168,7 +168,7 @@ const definitions = [
   [
     "entity_360_shadow_enable",
     "Enable Entity 360 tenant shadow",
-    "Enable the tenant-wide Entity 360 context fabric in non-authoritative SHADOW mode. This requires a fresh owner confirmation and can never enable execution or production decision mutation.",
+    "Owner-gated Entity 360 SHADOW mode. Non-authoritative and never enables execution.",
     object({
       expected_revision: { type: "integer", minimum: 0 },
       idempotency_key: idempotencyKey,
@@ -179,7 +179,7 @@ const definitions = [
   [
     "entity_360_shadow_disable",
     "Disable Entity 360 tenant shadow",
-    "Disable the tenant-wide Entity 360 context fabric. This preserves history and requires a fresh owner confirmation; it can never delete Entity 360 records, enable execution or mutate a production decision.",
+    "Owner-gated Entity 360 disable. Preserves history and never enables execution.",
     object({
       expected_revision: { type: "integer", minimum: 0 },
       idempotency_key: idempotencyKey,
