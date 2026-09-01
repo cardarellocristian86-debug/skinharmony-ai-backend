@@ -1571,7 +1571,7 @@ const nyraConverseHandler = createNyraConverseHandler({
   readControlRoomStatus: (args, identity) => coreHandlers.nyra_control_room_status(args, identity),
   // The conversational surface reads the existing bounded Core capability
   // internally; it does not expose a new direct route or materialize state.
-  readNyraSelfModel: (args, identity) => coreHandlers.nyra_self_model(args, identity),
+  readNyraSelfModel: (args, identity) => coreHandlers.nyra_self_model(args, identity),\n  readDistilledLessons: async (args, identity) => cloudMemoryStore\n    ? cloudMemoryStore.listDistilledLessons(identity.tenantId, args.project_id, 10)\n    : [],
   dialogueEnabled: config.nyraDialogueEnabled === true,
 });
 
