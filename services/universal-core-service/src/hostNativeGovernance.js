@@ -5485,6 +5485,11 @@ export function createHostNativeGovernance({
       ]));
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const state = store.readState();
+      const ticketRecord = state.tickets[String(input.ticket_id || "")];
+      if (
+        ticketRecord?.ticket?.tenant_id === tenantId &&
+        ticketRecord.ticket.action?.kind === "github.merge"
+      ) fail("standing_release_manual_merge_only");
       const runRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
       const run = verifiedStandingReleaseRunRecord(runRecord);
       if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== run.work_id) {

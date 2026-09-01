@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
 import { QUALITY_SECURITY_CONTRACT } from "../../shared/ai-work-quality-failure-mediation.mjs";
+import {
+  bindNyraCanonicalIntent,
+  validateNyraCanonicalIntent,
+} from "../../shared/nyra-canonical-intent.mjs";
 import { buildCoreResearchDirective } from "./coreResearchDirective.js";
 
 const PREFLIGHT_VERSION = "skinharmony_work_preflight_v1";
@@ -244,6 +248,103 @@ function buildTaskGraph({ memoryContext, toolRouting, ownerConfirmationRequired,
   };
 }
 
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+
+function deterministicDigest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+function coreSemanticEscalation({ canonicalIntent }) {
+  const safetySignal = (canonicalIntent?.safety_signals || [])
+    .find((signal) => signal === "clarify" || signal === "block");
+  if (!canonicalIntent || !safetySignal || canonicalIntent.consequential_intent) return null;
+  const escalation = {
+    schema_version: "core_semantic_escalation_v1",
+    original_intent_digest: canonicalIntent.intent_digest,
+    original_operation_class: canonicalIntent.operation_class,
+    escalated_operation_class: "EXTERNAL_MUTATION",
+    reason_code: "core_independent_consequential_safety_signal",
+    safety_signal: `canonical_${safetySignal}_safety_signal`,
+    component: "UNIVERSAL_CORE",
+    authority: "SAFETY_NARROWING_ONLY",
+    execution_authorized: false,
+  };
+  return Object.freeze({ ...escalation, escalation_digest: deterministicDigest(escalation) });
+}
+
+function coreOrchestrationVerdict({
+  canonicalIntentBinding,
+  canonicalIntent,
+  nyraNetwork,
+  taskGraph,
+  semanticEscalation,
+  ownerConfirmationRequired,
+}) {
+  const openedBranches = (Array.isArray(nyraNetwork?.opened_branches) ? nyraNetwork.opened_branches : [])
+    .map((branch) => ({
+      id: cleanText(branch?.id, 64),
+      work_phase: cleanText(branch?.work_phase, 64) || "general",
+      core_branch_bindings: normalizeCapabilities(branch?.core_branch_bindings),
+    }))
+    .filter((branch) => branch.id);
+  const openedIds = new Set(openedBranches.map((branch) => branch.id));
+  const requested = new Set(canonicalIntent?.requested_now || []);
+  const requiredRoles = ["memory_curator", "planner"];
+  if (openedIds.has("research_evidence")) requiredRoles.push("researcher");
+  if (openedIds.has("execution_planning") || canonicalIntent?.work_requirement === "NEW") {
+    requiredRoles.push("executor_specialist");
+  }
+  if ([...requested].some((action) =>
+    ["commit", "push", "pull_request", "deploy", "publish", "release", "rollback"]
+      .some((name) => action === name || action.startsWith(`${name}_`)))) {
+    requiredRoles.push("release_operations");
+  }
+  if (canonicalIntent?.consequential_intent || canonicalIntent?.work_requirement === "NEW" ||
+      openedIds.has("quality_verification") || openedIds.has("risk_governance")) {
+    requiredRoles.push("independent_verifier");
+  }
+  const safetyBlocked = canonicalIntent?.ambiguity === true ||
+    (canonicalIntent?.safety_signals || []).some((signal) => signal === "block");
+  const held = Boolean(
+    canonicalIntent?.consequential_intent || canonicalIntent?.work_requirement === "NEW" ||
+    semanticEscalation || ownerConfirmationRequired,
+  );
+  const verdict = safetyBlocked ? "BLOCK" : held ? "HOLD" : "ALLOW";
+  const material = {
+    schema_version: "core_orchestration_verdict_v1",
+    authority: "UNIVERSAL_CORE",
+    verdict,
+    reason_codes: Object.freeze([
+      ...(safetyBlocked ? ["canonical_intent_ambiguous_or_blocked"] : []),
+      ...(semanticEscalation ? [semanticEscalation.reason_code] : []),
+      ...(ownerConfirmationRequired ? ["owner_confirmation_required"] : []),
+      ...(canonicalIntent?.work_requirement === "NEW" ? ["new_work_identity_required"] : []),
+      ...(canonicalIntent?.consequential_intent ? ["consequential_action_ticket_required"] : []),
+    ]),
+    canonical_intent_binding: canonicalIntentBinding,
+    required_nyra_branches: Object.freeze(openedBranches),
+    denied_nyra_branches: Object.freeze((Array.isArray(nyraNetwork?.denied_branches)
+      ? nyraNetwork.denied_branches : []).slice(0, 64).map((branch) => cleanText(branch, 64)).filter(Boolean)),
+    required_roles: Object.freeze([...new Set(requiredRoles)]),
+    task_graph_digest: deterministicDigest(taskGraph),
+    maximum_parallel_assignments: 2,
+    independent_verifier_required: requiredRoles.includes("independent_verifier"),
+    nyra_materializes_branches: true,
+    core_join_required: true,
+    permitted_progress: Object.freeze(verdict === "ALLOW"
+      ? ["READ_ONLY", "ANALYSIS"]
+      : verdict === "HOLD"
+        ? ["ANALYSIS", "PLANNING", "EVIDENCE", "BOUNDED_WORKSPACE"]
+        : ["ANALYSIS", "EVIDENCE", "REMEDIATION_PROPOSAL"]),
+    external_execution_authorized: false,
+  };
+  return Object.freeze({ ...material, verdict_digest: deterministicDigest(material) });
+}
+
 export function buildWorkPreflight({
   tenantId,
   requestText,
@@ -261,17 +362,40 @@ export function buildWorkPreflight({
   researchAllowedDomains = [],
   dynamicCapability = null,
   workBinding = null,
+  canonicalIntent = null,
 } = {}) {
+  const boundedCanonicalIntent = canonicalIntent
+    ? validateNyraCanonicalIntent(canonicalIntent, { message: requestText })
+    : null;
+  const canonicalIntentBinding = boundedCanonicalIntent
+    ? bindNyraCanonicalIntent(boundedCanonicalIntent, { message: requestText })
+    : null;
   const normalizedRequest = cleanText(requestText, 20_000);
   if (!normalizedRequest) throw new Error("work_preflight_request_required");
   const capabilities = normalizeCapabilities(availableCapabilities);
-  const routing = toolRoute(normalizedRequest, capabilities, toolName);
-  const highImpact = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i.test(`${normalizedRequest} ${operationType}`);
+  const canonicalRoutingText = boundedCanonicalIntent
+    ? boundedCanonicalIntent.requested_now.join(" ").replaceAll("_", " ")
+    : normalizedRequest;
+  const routing = toolRoute(canonicalRoutingText, capabilities, toolName);
+  const rawHighImpact = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i
+    .test(`${normalizedRequest} ${operationType}`);
+  const semanticEscalation = coreSemanticEscalation({ canonicalIntent: boundedCanonicalIntent });
+  const highImpact = boundedCanonicalIntent
+    ? boundedCanonicalIntent.consequential_intent || Boolean(semanticEscalation)
+    : rawHighImpact;
   const ownerConfirmationRequired = highImpact || Boolean(routing.release_policy);
   const memoryReady = Boolean(memoryContext);
   const operationKey = cleanText(toolName || operationType, 100).toLowerCase();
   const readOnlyOperation = READ_ONLY_OPERATIONS.has(operationKey);
-  const executionAllowedByPreflight = memoryReady && readOnlyOperation;
+  // A canonical effect request must enter the governed plane even when it
+  // arrives through a read-shaped adapter. Legacy internal advisory
+  // evaluations retain their read-only path so Core can still issue its own
+  // policy receipts; raw prose never becomes execution authority.
+  const canonicalEffectBlocked = Boolean(boundedCanonicalIntent) && (
+    highImpact || boundedCanonicalIntent.work_requirement === "NEW" ||
+    boundedCanonicalIntent.ambiguity === true
+  );
+  const executionAllowedByPreflight = memoryReady && readOnlyOperation && !canonicalEffectBlocked;
   const gallery = galleryContext && typeof galleryContext === "object"
     ? galleryContext
     : {
@@ -304,6 +428,21 @@ export function buildWorkPreflight({
     session_id: cleanText(workBinding.session_id, 240),
     agent_id: cleanText(workBinding.agent_id, 120),
   } : null;
+  const taskGraph = buildTaskGraph({
+    memoryContext,
+    toolRouting: routing,
+    ownerConfirmationRequired,
+    executionAllowedByPreflight,
+    researchDirective: coreResearch.directive,
+  });
+  const orchestrationVerdict = coreOrchestrationVerdict({
+    canonicalIntentBinding,
+    canonicalIntent: boundedCanonicalIntent,
+    nyraNetwork,
+    taskGraph,
+    semanticEscalation,
+    ownerConfirmationRequired,
+  });
 
   return {
     schema_version: PREFLIGHT_VERSION,
@@ -326,6 +465,9 @@ export function buildWorkPreflight({
     },
     ...(boundedDynamicCapability ? { dynamic_capability: boundedDynamicCapability } : {}),
     ...(boundedWorkBinding ? { work_binding: boundedWorkBinding } : {}),
+    ...(canonicalIntentBinding ? { canonical_intent_binding: canonicalIntentBinding } : {}),
+    ...(semanticEscalation ? { semantic_escalation: semanticEscalation } : {}),
+    core_orchestration_verdict: orchestrationVerdict,
     operational_surface: "tenant_work_gallery",
     gallery_version: gallery.schema_version || "tenant_work_gallery_v1",
     tenant_work_gallery: {
@@ -370,17 +512,12 @@ export function buildWorkPreflight({
       selected_groups: branchContext?.selected_groups || [],
       final_router: "universal_core",
     },
-    task_graph: buildTaskGraph({
-      memoryContext,
-      toolRouting: routing,
-      ownerConfirmationRequired,
-      executionAllowedByPreflight,
-      researchDirective: coreResearch.directive,
-    }),
+    task_graph: taskGraph,
     core_research: coreResearch,
     tool_routing: routing,
     governance: {
-      core_verdict_required_before_execution: !readOnlyOperation,
+      core_verdict_required_before_execution: !readOnlyOperation || highImpact ||
+        boundedCanonicalIntent?.work_requirement === "NEW" || boundedCanonicalIntent?.ambiguity === true,
       owner_confirmation_required: ownerConfirmationRequired && !ownerConfirmed,
       owner_confirmation_satisfied: ownerConfirmationRequired && ownerConfirmed,
       execution_allowed_by_preflight: executionAllowedByPreflight,

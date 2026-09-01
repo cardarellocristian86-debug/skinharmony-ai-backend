@@ -2649,13 +2649,19 @@ function manualMergeJoinRequest(overrides = {}) {
   });
 }
 
-function manualMergeJoinFetch({ mainHead = TARGET, workflowPullRequests } = {}) {
+function manualMergeJoinFetch({
+  mainHead = TARGET,
+  workflowPullRequests,
+  serviceCommit = BASE,
+  calls = null,
+} = {}) {
   const fallback = strictFetch({
     workflowById: workflowPullRequests === undefined
       ? new Map([[700, strictWorkflow()]])
       : new Map([[700, strictWorkflow({ pull_requests: workflowPullRequests })]]),
   });
   return async (url, init) => {
+    calls?.push(url);
     const root = "https://api.github.com/repos/owner/repo";
     if (url === `${root}/git/commits/${HEAD}`) {
       return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
@@ -2671,7 +2677,7 @@ function manualMergeJoinFetch({ mainHead = TARGET, workflowPullRequests } = {}) 
       return jsonResponse(serviceHealth("service-a", {
         build: {
           build_id: "previous-service-a",
-          commit_sha: BASE,
+          commit_sha: serviceCommit,
           commit_verifiable: true,
         },
       }));
@@ -3300,6 +3306,34 @@ test("manual merge observation release-join reattests persisted evidence and cur
   assert.equal(resolution.source_attestation.pull_request, 42);
   assert.equal(resolution.required_checks_policy_digest, STRICT_POLICY_DIGEST);
   assert.equal(resolution.trusted, true);
+});
+
+test("manual merge observation keeps the signed pre-merge binding after target convergence", async () => {
+  const calls = [];
+  const resolver = createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl: manualMergeJoinFetch({ serviceCommit: TARGET, calls }),
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const resolution = await resolver(manualMergeJoinRequest());
+  assert.equal(
+    calls.includes("https://service-a.onrender.com/healthz"),
+    false,
+  );
+  assert.deepEqual(
+    resolution.previous_live_attestations.map((entry) => ({
+      service_id: entry.service_id,
+      live_commit: entry.live_commit,
+      evidence_kind: entry.evidence_kind,
+      manual_merge_readback_id: entry.manual_merge_readback_id,
+    })),
+    [{
+      service_id: "service-a",
+      live_commit: BASE,
+      evidence_kind: "signed_manual_merge_base_binding",
+      manual_merge_readback_id: `hnmmr_${"1".repeat(40)}`,
+    }],
+  );
 });
 
 test("manual merge observation release-join rejects receipt tampering and current-main drift", async (t) => {

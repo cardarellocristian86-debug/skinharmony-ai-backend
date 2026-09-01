@@ -4,6 +4,29 @@ import {
   registeredBearerApp,
 } from "./host-app-registry.js";
 
+// Recoverable connector authentication failures are branded in a private
+// WeakMap.  The MCP transport may use this signal to request OAuth relinking,
+// while an identically named error from Core, a provider or a tool handler
+// remains an ordinary governed failure and can never manufacture a reconnect
+// challenge.
+const oauthReconnectErrors = new WeakMap();
+
+function oauthReconnectError(message, reason, details = {}) {
+  const error = new Error(message);
+  const missingScopes = Object.freeze([
+    ...new Set((Array.isArray(details.missingScopes) ? details.missingScopes : [])
+      .map((scope) => String(scope || "").trim())
+      .filter(Boolean)),
+  ]);
+  oauthReconnectErrors.set(error, Object.freeze({ reason, missingScopes }));
+  return error;
+}
+
+export function oauthReconnectErrorDetails(error) {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) return null;
+  return oauthReconnectErrors.get(error) || null;
+}
+
 function b64json(value) {
   return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
 }
@@ -146,7 +169,9 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const authTime = Number(identity.tokenIssuedAt);
   const now = Math.floor(Date.now() / 1000);
   const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
-  if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
+  if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) {
+    throw oauthReconnectError("owner_authentication_stale", "owner_authentication_stale");
+  }
   const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
   if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
   consumed.set(key, now);
@@ -205,7 +230,9 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   if (payload.iss !== `${config.auth0Issuer}/`) throw new Error("jwt_issuer_invalid");
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!audiences.includes(config.auth0Audience)) throw new Error("jwt_audience_invalid");
-  if (!Number.isFinite(payload.exp) || payload.exp <= now) throw new Error("jwt_expired");
+  if (!Number.isFinite(payload.exp) || payload.exp <= now) {
+    throw oauthReconnectError("jwt_expired", "expired_token");
+  }
   if (payload.nbf && payload.nbf > now + 30) throw new Error("jwt_not_active");
   const subject = String(payload.sub || "").trim();
   if (!subject) throw new Error("jwt_subject_missing");
@@ -278,7 +305,7 @@ export function createAuthenticator(config, options = {}) {
   const jwtConfig = options.audience ? { ...config, auth0Audience: options.audience } : config;
   const authenticate = async function authenticate(header) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
-    if (!match) throw new Error("bearer_required");
+    if (!match) throw oauthReconnectError("bearer_required", "missing_token");
     const token = match[1].trim();
     const registeredBearer = registeredBearerApp(token, config.hostAppRegistry);
     if (registeredBearer) {
@@ -346,7 +373,9 @@ export function ownerRequestBinding(toolName, args = {}) {
 export function requireScopes(identity, required) {
   const missing = required.filter((scope) => !identity.scopes.includes(scope));
   if (missing.length) {
-    const error = new Error("insufficient_scope");
+    const error = oauthReconnectError("insufficient_scope", "insufficient_scope", {
+      missingScopes: missing,
+    });
     error.missing = missing;
     throw error;
   }

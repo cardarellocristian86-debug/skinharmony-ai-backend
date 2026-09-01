@@ -2493,9 +2493,44 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
 test("precommit-native reports agree on one server-digested workspace before a commit ticket", async () => {
   const clock = () => new Date("2026-08-28T21:30:00.000Z");
   const pool = new ContinuityPool(clock);
+  const gateBridgeCalls = [];
   const runtime = createWorkContinuityRuntime({
     dttAgentIdentitySigningSecret: "p".repeat(32),
-  }, { pool, now: clock });
+  }, {
+    pool,
+    now: clock,
+    nativePrecommitGateBridgeRequired: true,
+    nativePrecommitGateBridge: async (client, source) => {
+      assert.equal(client, pool);
+      gateBridgeCalls.push(source);
+      const projection = {
+        schema_version: "precommit_ticket_gate_v2",
+        gate_source: "native_closure_evaluation",
+        tenant_id: source.tenant_id,
+        work_id: source.work_id,
+        action_kind: "git.commit",
+        gate_kind: "ticket_acquisition",
+        task_id: "00000000-0000-4000-8000-000000000101",
+        plan_id: source.plan_id,
+        evaluation_id: source.evaluation_id,
+        evaluation_digest: source.evaluation_digest,
+        workspace_digest: source.workspace_digest,
+        supersession_digest: "c".repeat(64),
+        reconciliation_digest: "d".repeat(64),
+        legacy_evidence_ids: [],
+        replacement_evidence_ids: [],
+        fulfilled: false,
+        ticket_id: null,
+        fresh: true,
+        drift_codes: [],
+      };
+      return Object.freeze({
+        ...projection,
+        projection_digest: digest(projection),
+        idempotent_replay: false,
+      });
+    },
+  });
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
@@ -2645,6 +2680,23 @@ test("precommit-native reports agree on one server-digested workspace before a c
   assert.equal(evaluation.commit_ticket_ready, true);
   assert.equal(evaluation.execution_authorized, false);
   assert.match(evaluation.precommit_verification.workspace_digest, /^[a-f0-9]{64}$/);
+  assert.equal(gateBridgeCalls.length, 1);
+  assert.deepEqual(gateBridgeCalls[0], {
+    schema_version: "native_precommit_gate_source_v1",
+    server_owned: true,
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    plan_id: planId,
+    plan_digest: planned.plan_digest,
+    evaluation_id: evaluation.evaluation_id,
+    evaluation_digest: evaluation.evaluation_digest,
+    workspace_digest: evaluation.precommit_verification.workspace_digest,
+    evaluated_by: "codex-coordinator",
+  });
+  assert.equal(evaluation.precommit_ticket_gate.schema_version, "precommit_ticket_gate_v2");
+  assert.equal(evaluation.precommit_ticket_gate.projection_digest,
+    digest(Object.fromEntries(Object.entries(evaluation.precommit_ticket_gate)
+      .filter(([key]) => key !== "projection_digest"))));
   assert.match(pool.works.get(key("tenant-a", work.work_id)).next_action,
     /exact Core git\.commit ticket/);
 });

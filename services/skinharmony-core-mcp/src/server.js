@@ -206,6 +206,7 @@ const decisionLedger = createDecisionLedger(config, {
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
   nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
+  nativePrecommitGateBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -231,6 +232,18 @@ if (workContinuityRuntime && workContinuityV2Store) {
     async (client, source) => {
       await workContinuityV2StoreReady;
       return workContinuityV2Store.recordNativeVerifierEvidenceWithClient(client, source);
+    },
+  );
+  // A ready native closure evaluation and its commit-ticket gate are one
+  // transaction. A failed bridge therefore cannot leave a misleading
+  // `commit_ticket_ready` evaluation without the gate Nyra must consume.
+  workContinuityRuntime.setNativePrecommitGateBridge(
+    async (client, source) => {
+      await workContinuityV2StoreReady;
+      return workContinuityV2Store.materializeNativePrecommitTicketGateWithClient(
+        client,
+        source,
+      );
     },
   );
 }
@@ -1594,13 +1607,30 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
       readDirectiveContext: readNyraDirectiveContext,
       normalizeDirectiveContext: normalizeNyraDirectiveContext,
       issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
-      authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
+      authorizeAction: (args, identity, nativeClaim) =>
+        coreHandlers.host_native_action_authorize(args,
+          nativeClaim ? { ...identity, nativePrecommitClaimIssuer: true } : identity,
+          nativeClaim),
       reviewWorkBootstrap: reviewCanonicalWorkCreation,
       createWorkBootstrap: createCanonicalWorkGoverned,
       resumeExistingWork: resumeExistingContinuityWork,
       createNativePlan: createNativeContinuityPlan,
       bindNativeChild: bindNativeContinuityChild,
       readActionTicket: (args, identity) => coreHandlers.host_native_action_read(args, identity),
+      coordinatePullRequest: (request, identity) =>
+        coreHandlers.coordinateNyraDraftPullRequest(request, identity),
+      claimPrecommitTicketGate: (request, identity) =>
+        workContinuityV2Store.claimPrecommitTicketGate(
+          withTenantWorkAcl(identity), request,
+        ),
+      releaseOrReconcilePrecommitTicketGateClaim: (request, identity) =>
+        workContinuityV2Store.reconcilePrecommitTicketGateClaim(
+          withTenantWorkAcl(identity), request,
+        ),
+      readPrecommitTicketGateClaimRecovery: (request, identity) =>
+        workContinuityV2Store.readPrecommitTicketGateClaimRecovery(
+          withTenantWorkAcl(identity), request,
+        ),
       fulfillPrecommitTicketTask: (request, identity) =>
         workContinuityV2Store.fulfillPrecommitTicketTask(
           withTenantWorkAcl(identity), request,

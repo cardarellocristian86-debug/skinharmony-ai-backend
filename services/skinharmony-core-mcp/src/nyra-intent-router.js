@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { assessLexicalSemanticText } from "../../shared/lexical-semantic-engine.mjs";
+import { finalizeNyraCanonicalIntent } from "../../shared/nyra-canonical-intent.mjs";
 
 const MAX_COMMANDS = 24;
 const MAX_CLAUSES = 8;
@@ -328,7 +329,7 @@ function materializeCanonicalIntent({
       raw_text_digest: semanticHintMessageDigest(text),
     }),
   };
-  return Object.freeze({ ...envelope, intent_digest: sha256(envelope) });
+  return finalizeNyraCanonicalIntent(envelope, { message: text });
 }
 
 function normalizeSemanticHint(value, message) {
@@ -416,7 +417,13 @@ export function classifyNyraIntent({
   const actionClauses = pureStatePredicate ? [] : clauses.filter((clause) => clause.action_candidates.length > 0 &&
     ((clause.affirmative_action_candidates.length > 0 && clause.imperative) ||
       clause.modality !== "asserted" || clause.quote_scope));
-  const distinctActions = new Set(actionClauses.flatMap((clause) => clause.affirmative_action_candidates));
+  const sourceClauses = splitIntentClauses(text).clauses;
+  const distinctActions = new Set(actionClauses.flatMap((clause) => {
+    const source = sourceClauses[clause.index] || "";
+    if (FUTURE_SCOPE.test(source)) return [];
+    const reserved = new Set(ownerReservedActionsForClause(source, clause.affirmative_action_candidates));
+    return clause.affirmative_action_candidates.filter((action) => !reserved.has(action));
+  }));
   const englishNegatedBareContrast = /\bdo\s+not\b[^;.!?]{0,200}(?:,|\bbut\b)\s*(?:deploy|push|merge|publish|release)\b/iu.test(text);
   const ambiguousActionLanguage = englishNegatedBareContrast || distinctActions.size > 1 || actionClauses.some((clause) => (
     (clause.polarity === "negative" && clause.affirmative_action_candidates.length === 0) ||
@@ -424,6 +431,9 @@ export function classifyNyraIntent({
     clause.modality === "hypothetical"
   ));
   const workCreateRequested = clauses.some((clause) => clause.work_create_affirmative);
+  const pureFutureEffect = !workBootstrap && !workCreateRequested && actionClauses.length > 0 &&
+    distinctActions.size === 0 && actionClauses.every((clause) =>
+      FUTURE_SCOPE.test(sourceClauses[clause.index] || ""));
   const explicitReadOnlyBoundary = clauses.some((clause) =>
     clause.action_candidates.length > 0 && clause.polarity === "negative") &&
     clauses.every((clause) => clause.affirmative_action_candidates.length === 0) &&
@@ -530,6 +540,14 @@ export function classifyNyraIntent({
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.98;
     reason = "exact_work_resume_language";
+  } else if (pureFutureEffect) {
+    // A future goal is descriptive planning context, not a current effect.
+    // Keep it visible in the canonical envelope without manufacturing a
+    // ticket, ambiguity, Work binding or Core effect gate.
+    intent = "analysis";
+    route = safeId(workId) ? "CORE_CONTEXT_THEN_NYRA" : "ADVISORY_READ";
+    confidence = 0.96;
+    reason = "future_goal_without_current_effect";
   } else if (OWNER_RESERVED.test(text) &&
       clauses.some((clause) => clause.imperative && clause.action_candidates.length === 0)) {
     intent = "analysis";

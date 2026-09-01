@@ -178,6 +178,77 @@ function config() {
   };
 }
 
+test("Nyra draft PR handoff consumes standing release start, bind and reserve in order", async () => {
+  const handlers = createCoreHandlers({
+    ...config(),
+    standingReleaseAutoCoordinatorEnabled: true,
+    standingReleaseAutoCoordinatorConfigurationValid: true,
+  });
+  const runId = `srr_${"a".repeat(40)}`;
+  const ticketId = `hnt_${"b".repeat(64)}`;
+  const calls = [];
+  const materialization = {
+    title: "fix(nyra): canonical orchestration",
+    body: "Core-bound draft PR.",
+  };
+  handlers.host_native_standing_release_run_start = async (args) => {
+    calls.push(["start", args]);
+    return { structuredContent: { standing_release_run: { run_id: runId, run: { run_id: runId, version: 1 } } } };
+  };
+  handlers.host_native_standing_release_run_bind_ticket = async (args) => {
+    calls.push(["bind", args]);
+    return { structuredContent: { standing_release_run: { run_id: runId, run: { run_id: runId, version: 2 } } } };
+  };
+  handlers.host_native_standing_release_run_reserve = async (args) => {
+    calls.push(["reserve", args]);
+    return { structuredContent: { standing_release_run: { run_id: runId } } };
+  };
+  const request = {
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    delegation_id: `hnd_${"c".repeat(40)}`,
+    repository: "owner/repo",
+    action: {
+      kind: "github.draft_pr",
+      head_branch: "agent/pr",
+      base_branch: "main",
+      title_digest: crypto.createHash("sha256").update(materialization.title).digest("hex"),
+      body_digest: crypto.createHash("sha256").update(materialization.body).digest("hex"),
+    },
+  };
+  await handlers.coordinateNyraDraftPullRequest({
+    action_request: request,
+    action_ticket: { ticket: {
+      ticket_id: ticketId,
+      delegation_id: request.delegation_id,
+      work_id: request.work_id,
+      intent_anchor_digest: request.intent_anchor_digest,
+      repository: request.repository,
+      action: request.action,
+    } },
+    materialization,
+    idempotency_key: "core-authorize-pr",
+  }, identity());
+  assert.deepEqual(calls.map(([name]) => name), ["start", "bind", "reserve"]);
+  assert.equal(calls[1][1].ticket_id, ticketId);
+  assert.equal(calls[1][1].expected_version, 1);
+  assert.equal(calls[2][1].expected_version, 2);
+  assert.deepEqual(calls[2][1].materialization, materialization);
+  await assert.rejects(handlers.coordinateNyraDraftPullRequest({
+    action_request: request,
+    action_ticket: { ticket: {
+      ticket_id: ticketId,
+      delegation_id: request.delegation_id,
+      work_id: request.work_id,
+      intent_anchor_digest: request.intent_anchor_digest,
+      repository: request.repository,
+      action: request.action,
+    } },
+    materialization: { ...materialization, body: "tampered" },
+    idempotency_key: "core-authorize-pr-tampered",
+  }, identity()), /nyra_pull_request_coordinator_materialization_invalid/);
+});
+
 test("standing release tools require UUID Work IDs and expose no caller authority fields", () => {
   const install = HOST_NATIVE_TOOLS.find((tool) =>
     tool.name === "host_native_standing_release_mandate_install");
@@ -255,6 +326,72 @@ test("GitHub worker handlers forward only same-tenant persisted-Intent claims", 
     claim: { ...claim, tenant_id: "other-tenant" },
   }, identity()), /claim_binding_mismatch/);
   assert.equal(calls.length, 2);
+});
+
+test("direct GitHub execute rejects merge before Intent resolution or worker fetch", async () => {
+  let intentReads = 0;
+  let fetches = 0;
+  const handlers = createCoreHandlers(config(), {
+    resolveStandingReleaseIntentBinding: trustedResolver(async () => {
+      intentReads += 1;
+      return intentBinding(RELEASE_WORK, RELEASE_DIGEST);
+    }),
+    fetchImpl: async () => { fetches += 1; throw new Error("must_not_fetch"); },
+  });
+  await assert.rejects(handlers.host_native_standing_release_github_execute({
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    claim: {
+      schema_version: "github_worker_execution_claim_v1",
+      tenant_id: "tenant-a",
+      work_id: RELEASE_WORK,
+      action: { kind: "github.merge" },
+    },
+  }, identity()), /github_worker_manual_merge_only/);
+  assert.equal(intentReads, 0);
+  assert.equal(fetches, 0);
+});
+
+test("automatic reserve rejects a merge claim before marker or worker dispatch", async () => {
+  const runId = `srr_${"1".repeat(40)}`;
+  const ticketId = `hnt_${"2".repeat(64)}`;
+  const reservationId = `hnr_${"3".repeat(40)}`;
+  const calls = [];
+  const handlers = createCoreHandlers({ ...config(), standingReleaseAutoCoordinatorEnabled: true }, {
+    resolveStandingReleaseIntentBinding: trustedResolver(async (_actor, workId) =>
+      intentBinding(workId, RELEASE_DIGEST)),
+    resolveDttWorkBinding: async (actor, workId) => leaseBinding(actor, workId),
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      calls.push(path);
+      if (!path.endsWith("/reserve")) throw new Error("provider_or_marker_dispatch_must_not_run");
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        action_ticket: { state: "reserved", reservation_id: reservationId, ticket: { ticket_id: ticketId } },
+        github_execution_claim: {
+          schema_version: "github_worker_execution_claim_v1",
+          tenant_id: "tenant-a",
+          work_id: RELEASE_WORK,
+          repository: "owner/repo",
+          ticket_id: ticketId,
+          reservation_id: reservationId,
+          action: { kind: "github.merge" },
+          action_digest: H("4"),
+          nonce: H("5"),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  await assert.rejects(handlers.host_native_standing_release_run_reserve({
+    run_id: runId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: ticketId,
+    expected_version: 2,
+    idempotency_key: "automatic-merge-must-stop",
+  }, identity()), /standing_release_manual_merge_only/);
+  assert.deepEqual(calls, [`/v1/host-native/standing-release/runs/${runId}/reserve`]);
 });
 
 test("reserved GitHub tickets are forwarded once and successful evidence is completed in Core", async () => {

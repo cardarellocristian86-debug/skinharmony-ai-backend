@@ -1,4 +1,9 @@
 import crypto from "node:crypto";
+import {
+  bindNyraCanonicalIntent,
+  validateNyraCanonicalIntent,
+} from "../../shared/nyra-canonical-intent.mjs";
+import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
 import {
   governedWorkBootstrapDigest,
@@ -337,8 +342,36 @@ function requireBoundPreflight(result, identity, args) {
     !Object.hasOwn(envelope, "operational_surface") ||
     envelope.operational_surface !== "tenant_work_gallery" ||
     !Object.hasOwn(envelope, "state") ||
-    envelope.state !== "ready_read_only"
+    !new Set([
+      "ready_read_only",
+      "routed_waiting_for_core_verdict",
+      "routed_owner_confirmed_waiting_for_core_verdict",
+    ]).has(envelope.state)
   ) throw fail("nyra_converse_work_preflight_binding_invalid");
+
+  const canonicalIntent = validateNyraCanonicalIntent(args.canonical_intent, { message: args.message });
+  const expectedCanonicalBinding = bindNyraCanonicalIntent(canonicalIntent, { message: args.message });
+  const actualCanonicalBinding = envelope.canonical_intent_binding;
+  let orchestrationVerdict;
+  try {
+    orchestrationVerdict = validateCoreOrchestrationVerdict(
+      envelope.core_orchestration_verdict,
+      {
+        canonicalIntentDigest: canonicalIntent.intent_digest,
+        canonicalIntentBindingDigest: expectedCanonicalBinding.binding_digest,
+      },
+    );
+  } catch {
+    throw fail("nyra_converse_canonical_intent_preflight_mismatch", 409);
+  }
+  if (!actualCanonicalBinding ||
+      actualCanonicalBinding.schema_version !== "nyra_canonical_intent_binding_v1" ||
+      actualCanonicalBinding.intent_digest !== canonicalIntent.intent_digest ||
+      actualCanonicalBinding.binding_digest !== expectedCanonicalBinding.binding_digest ||
+      orchestrationVerdict.canonical_intent_binding?.binding_digest !== expectedCanonicalBinding.binding_digest ||
+      orchestrationVerdict.external_execution_authorized !== false) {
+    throw fail("nyra_converse_canonical_intent_preflight_mismatch", 409);
+  }
 
   const continuity = envelope.continuity && typeof envelope.continuity === "object"
     ? envelope.continuity
@@ -381,7 +414,8 @@ function requireBoundPreflight(result, identity, args) {
     : payload.tenant_work_gallery && typeof payload.tenant_work_gallery === "object"
       ? payload.tenant_work_gallery
       : {};
-  const selectionRequired = args.work_bootstrap === undefined && !workId && (
+  const selectionRequired = args.work_bootstrap === undefined &&
+    args.canonical_intent?.work_requirement !== "NEW" && !workId && (
     continuity.state === "work_selection_required" ||
     Number(gallery.work_count || 0) > 1
   );
@@ -414,6 +448,10 @@ function requireBoundPreflight(result, identity, args) {
       artifact_count: boundedCount(memory.artifact_count),
     }),
     dialogue: publicNyraDialogue(control.nyra_dialogue),
+    canonicalIntent,
+    canonicalIntentBinding: Object.freeze({ ...actualCanonicalBinding }),
+    coreOrchestrationVerdict: Object.freeze({ ...orchestrationVerdict }),
+    semanticEscalation: envelope.semantic_escalation || null,
   });
 }
 
@@ -465,7 +503,7 @@ function requirePersistedConversationContext(value, identity, args) {
   });
 }
 
-function requireTenantBoundInterpretation(result, identity) {
+function requireTenantBoundInterpretation(result, identity, canonicalIntent, message) {
   const payload = structured(result);
   const tenantId = requireAuthenticatedIdentity(identity);
   const runtime = payload.core_runtime;
@@ -494,6 +532,28 @@ function requireTenantBoundInterpretation(result, identity) {
   const selectedState = normalizeCoreState(selected.state);
   const selectedControl = normalizeCoreControl(selected.control_level);
   const selectedRisk = normalizeRisk(selected.risk_band);
+  const expectedCanonicalBinding = bindNyraCanonicalIntent(canonicalIntent, { message });
+  const interpretedPreflight = payload.result?.work_preflight || payload.work_preflight;
+  const interpretedCanonicalBinding = interpretedPreflight?.canonical_intent_binding;
+  let interpretedVerdict;
+  try {
+    interpretedVerdict = validateCoreOrchestrationVerdict(
+      interpretedPreflight?.core_orchestration_verdict,
+      {
+        canonicalIntentDigest: canonicalIntent.intent_digest,
+        canonicalIntentBindingDigest: expectedCanonicalBinding.binding_digest,
+      },
+    );
+  } catch {
+    throw fail("nyra_converse_canonical_intent_interpretation_mismatch", 409);
+  }
+  if (!interpretedCanonicalBinding ||
+      interpretedCanonicalBinding.binding_digest !== expectedCanonicalBinding.binding_digest ||
+      interpretedCanonicalBinding.intent_digest !== canonicalIntent.intent_digest ||
+      interpretedVerdict.canonical_intent_binding?.binding_digest !== expectedCanonicalBinding.binding_digest ||
+      interpretedVerdict.external_execution_authorized !== false) {
+    throw fail("nyra_converse_canonical_intent_interpretation_mismatch", 409);
+  }
   if (selected.can_execute !== false || automation.execution_allowed !== false) {
     throw fail("nyra_converse_interpretation_execution_claim_invalid", 409);
   }
@@ -546,6 +606,9 @@ function requireTenantBoundInterpretation(result, identity) {
     governance_diagnostics: governanceDiagnostics,
     dialogue_accepted: deep.dialogue?.validator?.accepted === true,
     opened_branch_count: boundedCount(deep.cognition?.opened_branch_count),
+    canonical_intent_binding: Object.freeze({ ...interpretedCanonicalBinding }),
+    core_orchestration_verdict: Object.freeze({ ...interpretedVerdict }),
+    semantic_escalation: interpretedPreflight?.semantic_escalation || null,
     memory: Object.freeze({
       revision: boundedCount(memory.revision),
       relevant_count: boundedCount(memory.relevant_count),
@@ -697,15 +760,18 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
   }
-  const fields = [
+  const legacyFields = [
     "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind",
     "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
     "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
     "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
     "projection_digest",
   ];
+  const native = value.schema_version === "precommit_ticket_gate_v2";
+  const fields = native ? [...legacyFields, "gate_source"] : legacyFields;
   if (Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
-      value.schema_version !== "precommit_ticket_gate_v1" ||
+      (!native && value.schema_version !== "precommit_ticket_gate_v1") ||
+      (native && value.gate_source !== "native_closure_evaluation") ||
       value.tenant_id !== tenantId || boundedWorkId(value.work_id) !== workId ||
       value.action_kind !== "git.commit" || value.gate_kind !== "ticket_acquisition" ||
       !boundedWorkId(value.task_id) || !boundedWorkId(value.plan_id) ||
@@ -713,12 +779,15 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
       ![value.evaluation_digest, value.workspace_digest, value.supersession_digest,
         value.reconciliation_digest, value.projection_digest]
         .every((item) => /^[a-f0-9]{64}$/.test(String(item || ""))) ||
-      !Array.isArray(value.legacy_evidence_ids) || !value.legacy_evidence_ids.length ||
+      !Array.isArray(value.legacy_evidence_ids) ||
+      (!native && !value.legacy_evidence_ids.length) ||
+      (native && value.legacy_evidence_ids.length !== 0) ||
       value.legacy_evidence_ids.length > 128 ||
       value.legacy_evidence_ids.some((item) => !boundedWorkId(item)) ||
       new Set(value.legacy_evidence_ids).size !== value.legacy_evidence_ids.length ||
       !Array.isArray(value.replacement_evidence_ids) ||
       value.replacement_evidence_ids.length !== value.legacy_evidence_ids.length ||
+      (native && value.replacement_evidence_ids.length !== 0) ||
       value.replacement_evidence_ids.some((item) => !boundedWorkId(item)) ||
       new Set(value.replacement_evidence_ids).size !== value.replacement_evidence_ids.length ||
       typeof value.fulfilled !== "boolean" || typeof value.fresh !== "boolean" ||
@@ -845,8 +914,11 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   const precommitTicketGateApplicable = Boolean(
     precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
     pendingTaskIds.has(precommitTicketGate.task_id) &&
-    precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
-    precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id))
+    (precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
+      ? tasks.some((item) => item.task_id === precommitTicketGate.task_id &&
+          item.required === true && item.status === "planned" && item.acceptance_verified === false)
+      : precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
+        precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id)))
   );
   const precommitPendingRequiredTasks = precommitTicketGateApplicable
     ? pendingRequiredTasks.filter((item) => item.task_id !== precommitTicketGate.task_id)
@@ -854,8 +926,10 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   const mappedLegacyEvidenceIds = precommitTicketGateApplicable
     ? new Set(precommitTicketGate.legacy_evidence_ids)
     : new Set();
-  const precommitUnverifiedEvidence = unverifiedEvidence
-    .filter((item) => !mappedLegacyEvidenceIds.has(item.evidence_id));
+  const precommitUnverifiedEvidence = precommitTicketGateApplicable &&
+    precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
+    ? []
+    : unverifiedEvidence.filter((item) => !mappedLegacyEvidenceIds.has(item.evidence_id));
   const closureProjection = value.closure_verification &&
     typeof value.closure_verification === "object" &&
     !Array.isArray(value.closure_verification)
@@ -981,6 +1055,9 @@ function orchestrationDirective({
   connectorHint,
   workBootstrapRequestDigest = null,
   continuationOperation = null,
+  canonicalIntentBinding = null,
+  coreOrchestrationVerdict = null,
+  semanticEscalation = null,
 }) {
   workContext = releaseReadyDirectiveContext(work, workContext, interpretation);
   const workBound = Boolean(work.work_id);
@@ -1016,6 +1093,9 @@ function orchestrationDirective({
     work_revision: workContext.work_revision,
     intent_digest: workContext.intent_digest,
     context_digest: workContext.context_digest,
+    canonical_intent_digest: canonicalIntentBinding?.intent_digest || null,
+    canonical_intent_binding_digest: canonicalIntentBinding?.binding_digest || null,
+    core_orchestration_verdict_digest: coreOrchestrationVerdict?.verdict_digest || null,
     precommit_ticket_gate: commitPreflightGate
       ? Object.freeze({
           task_id: commitPreflightGate.task_id,
@@ -1452,6 +1532,9 @@ function orchestrationDirective({
     request_digest: requestDigest,
     source,
     problem,
+    canonical_intent_binding: canonicalIntentBinding,
+    core_orchestration_verdict: coreOrchestrationVerdict,
+    semantic_escalation: semanticEscalation,
     core_diagnostics: interpretation.governance_diagnostics,
     needs: Object.freeze(needs),
     next_actions: Object.freeze(nextActions),
@@ -2266,7 +2349,7 @@ async function advisoryConversationResult({
     intent_routing: Object.freeze({
       route: publicNyraIntentRoute(route),
       structured_context: Object.freeze({
-        intent_available: false,
+        intent_available: true,
         icf_available: false,
         entity_360_available: false,
         ramy_state: "unavailable_no_verified_adapter",
@@ -2349,7 +2432,7 @@ async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
   // review. A sole, unrelated Work in the same project is not sufficient
   // evidence that it is the requested identity. An explicit work_id still
   // wins above and resumes that exact canonical Work.
-  if (args.work_bootstrap !== undefined) return args;
+  if (args.work_bootstrap !== undefined || args.canonical_intent?.work_requirement === "NEW") return args;
   const requestedProjectId = boundedProjectId(args.project_id);
   let catalogs;
   try {
@@ -2423,6 +2506,7 @@ export function createNyraConversePreflight({
       client_type: identity.agentPresence?.client_type || resumeArgs.client_type,
       host_type: hostType(identity, resumeArgs),
       available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
+      canonical_intent: resumeArgs.canonical_intent,
     };
     const continuityBinding = await resolveContinuityProjectBinding(
       identity,
@@ -2434,7 +2518,8 @@ export function createNyraConversePreflight({
       ...preflightArgs,
       project_id: continuityBinding.projectId,
     }, identity);
-    if (resumeArgs.work_bootstrap === undefined || resumeArgs.work_id) {
+    if ((resumeArgs.work_bootstrap === undefined &&
+         resumeArgs.canonical_intent?.work_requirement !== "NEW") || resumeArgs.work_id) {
       await ensureContinuity(
         identity,
         continuityBinding.continuityArgs,
@@ -2583,6 +2668,9 @@ export function createNyraConverseHandler({
         owner_confirmation_required: false,
         dialogue_accepted: true,
         opened_branch_count: 0,
+        canonical_intent_binding: null,
+        core_orchestration_verdict: null,
+        semantic_escalation: null,
         memory: Object.freeze({
           revision: 0,
           relevant_count: 0,
@@ -2593,6 +2681,7 @@ export function createNyraConverseHandler({
     } else {
       const preflightResult = await preflight({
         message,
+        canonical_intent: intentRoute.canonical_intent,
         ...(args.work_id ? { work_id: args.work_id } : {}),
         ...(args.project_id ? { project_id: args.project_id } : {}),
         ...(args.work_bootstrap !== undefined ? { work_bootstrap: args.work_bootstrap } : {}),
@@ -2600,9 +2689,14 @@ export function createNyraConverseHandler({
         agent_id: identity.agentPresence?.agent_id,
         client_type: identity.agentPresence?.client_type,
       }, identity);
-      boundedPreflight = requireBoundPreflight(preflightResult, identity, args);
+      boundedPreflight = requireBoundPreflight(preflightResult, identity, {
+        ...args,
+        message,
+        canonical_intent: intentRoute.canonical_intent,
+      });
       const interpretationResult = await interpret({
         message,
+        canonical_intent: intentRoute.canonical_intent,
         session_id: sessionId,
         ...(boundedPreflight.work.project_id ? { project_id: boundedPreflight.work.project_id } : {}),
         // The server-issued preflight is forwarded byte-semantically. Routing
@@ -2612,7 +2706,12 @@ export function createNyraConverseHandler({
         response_mode: "fast",
         available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
       }, identity);
-      interpretation = requireTenantBoundInterpretation(interpretationResult, identity);
+      interpretation = requireTenantBoundInterpretation(
+        interpretationResult,
+        identity,
+        intentRoute.canonical_intent,
+        message,
+      );
       interpretation = Object.freeze({
         ...interpretation,
         source: "fresh_core_interpretation",
@@ -2662,6 +2761,9 @@ export function createNyraConverseHandler({
         spec: args.work_bootstrap,
         identity,
         projectId: boundedPreflight.work.project_id,
+        canonicalIntentDigest: boundedPreflight.canonicalIntentBinding?.intent_digest,
+        coreOrchestrationVerdictDigest: boundedPreflight.coreOrchestrationVerdict?.verdict_digest,
+        coreOrchestrationVerdict: boundedPreflight.coreOrchestrationVerdict,
       });
       workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
     }
@@ -2674,7 +2776,8 @@ export function createNyraConverseHandler({
     );
     if (continuationOperation !== null &&
         (intentRoute.route === "CORE_HOLD_THEN_NYRA" ||
-          action.work_bootstrap_requested || !action.consequential_request_detected)) {
+          action.work_bootstrap_requested || !action.consequential_request_detected ||
+          action.action_class === "GIT_MERGE")) {
       throw fail("nyra_converse_continuation_operation_not_applicable");
     }
     const directiveAction = intentRoute.route === "CORE_HOLD_THEN_NYRA"
@@ -2694,6 +2797,12 @@ export function createNyraConverseHandler({
       connectorHint,
       workBootstrapRequestDigest,
       continuationOperation,
+      canonicalIntentBinding: boundedPreflight.canonicalIntentBinding ||
+        interpretation.canonical_intent_binding || null,
+      coreOrchestrationVerdict: interpretation.core_orchestration_verdict ||
+        boundedPreflight.coreOrchestrationVerdict || null,
+      semanticEscalation: interpretation.semantic_escalation ||
+        boundedPreflight.semanticEscalation || null,
     });
     let continuation = Object.freeze({
       schema_version: "nyra_continuation_ref_v1",
@@ -2704,7 +2813,10 @@ export function createNyraConverseHandler({
       reason: "continuation_store_unavailable",
     });
     const continuationEligible = intentRoute.intent === "work_create" ||
-      (intentRoute.intent === "ticket_or_action" && action.action_class !== "EXTERNAL_MUTATION");
+      (intentRoute.intent === "ticket_or_action" &&
+        !new Set(["EXTERNAL_MUTATION", "GIT_MERGE"]).has(action.action_class) &&
+        !(action.action_class === "GIT_COMMIT" &&
+          workContext.precommit_unverified_required_evidence_count > 0));
     if (continuationEligible && typeof openContinuation === "function") {
       try {
         const reference = await boundedContinuationOpen(openContinuation({ identity, directive: baseDirective }));
@@ -2750,7 +2862,7 @@ export function createNyraConverseHandler({
     const localRouting = Object.freeze({
       route: publicNyraIntentRoute(intentRoute),
       structured_context: Object.freeze({
-        intent_available: Boolean(boundedPreflight.dialogue.intent_digest),
+        intent_available: true,
         icf_available: false,
         entity_360_available: false,
         ramy_state: "unavailable_no_verified_adapter",
