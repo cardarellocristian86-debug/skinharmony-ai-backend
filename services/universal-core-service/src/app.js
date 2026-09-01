@@ -7279,15 +7279,16 @@ export function createUniversalCoreService(options = {}) {
     const trackedProbe = Object.freeze({ source: sourceProbe, response: gateResponse });
     entity360ShadowTenantGateInFlight.set(tenantId, trackedProbe);
     // A response timeout is not proof that the database operation stopped.
-    // Keep the real source probe counted and tenant-singleflight until it
-    // settles; the PostgreSQL Store applies the same policy-bound
-    // statement_timeout to cancel the underlying feature-flag query.
-    void sourceProbe.finally(() => {
+    // Keep the real source probe counted and tenant-singleflight until both
+    // the Store operation and response/cache publication settle. The
+    // PostgreSQL Store applies the same policy-bound statement_timeout to
+    // cancel the underlying feature-flag query.
+    void Promise.allSettled([sourceProbe, gateResponse]).then(() => {
       clearTimeout(gateTimeout);
       if (entity360ShadowTenantGateInFlight.get(tenantId) === trackedProbe) {
         entity360ShadowTenantGateInFlight.delete(tenantId);
       }
-    }).catch(() => { /* gateResponse owns the externally audited failure */ });
+    });
     return bindWork(await gateResponse);
   };
   const reserveEntity360ShadowObservation = ({ tenantId, workId, preflightId,
