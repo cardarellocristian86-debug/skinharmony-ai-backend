@@ -425,7 +425,6 @@ la sequenza causale completa:
 Fino al punto 6, qualsiasi evidenza live è una fotografia verificata ma non una
 attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
 retention dei sistemi owner restano responsabilità dei rispettivi adapter.
-
 ### Carrier di attestazione finale
 
 La baseline operativa include la merge E360 della PR `#402` (`6be14320`) e la
