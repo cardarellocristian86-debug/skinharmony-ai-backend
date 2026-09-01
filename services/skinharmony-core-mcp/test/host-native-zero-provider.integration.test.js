@@ -273,14 +273,6 @@ class EphemeralContinuityPool {
         .map((row) => ({ task_id: row.task_id, status: row.status }));
       return { rows, rowCount: rows.length };
     }
-    if (query === "SELECT (clock_timestamp() + interval '1 hour') AS lease_expires_at") {
-      return {
-        rows: [{
-          lease_expires_at: new Date(this.now().getTime() + 60 * 60 * 1_000).toISOString(),
-        }],
-        rowCount: 1,
-      };
-    }
     if (query.startsWith("SELECT task_id,agent_id,host_type,host_task_id,task_digest,")) {
       const [tenantId, planId, taskId, agentId, hostTaskId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
@@ -342,12 +334,7 @@ class EphemeralContinuityPool {
         candidate.agent_id === agentId);
       const plan = this.plans.get(mapKey(tenantId, planId));
       return {
-        rows: row && plan ? [{
-          ...row,
-          lease_active: new Date(row.lease_expires_at).getTime() > this.now().getTime(),
-          plan: plan.plan,
-          plan_status: plan.status,
-        }] : [],
+        rows: row && plan ? [{ ...row, plan: plan.plan, plan_status: plan.status }] : [],
         rowCount: row && plan ? 1 : 0,
       };
     }
