@@ -491,3 +491,23 @@ manual-merge readback è stato respinto atomicamente con
 receipt. Nessuna closure è avvenuta. Il prossimo carrier exact-main deve
 ricevere il proprio Core Join prima della merge; soltanto dopo potrà procedere
 con readback della merge, osservazione one-shot e receipt finale governata.
+
+### Binding di release successivo alla PR426
+
+La PR `#426`, source `747b913314abff6e8be14d1ca6cf0ebdab23d0c3`
+su base `896b61995492bab255f3e811eb42f0f546435cdf`, è confluita nel merge
+`770c8ad5f8ab89eec45a5117ba19273849f49195`. La CI post-merge
+`33520536892` ha completato con successo i quattro gate richiesti e i readback
+di Universal Core e Core MCP hanno osservato lo stesso commit, ready e
+commit-verifiable. Il manual-merge readback `hnmmr_6c3...` è valido, ma il
+tentativo non è stato finalizzato: non è stato emesso alcun ticket
+`render.observe` e la delegation `hnd_be36...` è rimasta a usage zero.
+
+Il Core Join di quel tentativo legava `delivery_branch` alla feature branch;
+il percorso manuale di osservazione richiede invece che
+`release_manifest.delivery_branch` coincida con la base GitHub di release,
+cioè `main`. Il prossimo carrier deve quindi essere valutato prima della merge
+con `delivery_branch=main` e
+`delivery_method=github_protected_push_auto_deploy`. Nessuna evidenza di questo
+tentativo dichiara il Work chiuso: restano necessari Join pre-merge, readback
+manuale, osservazione one-shot e receipt Core finale sul nuovo carrier.
