@@ -437,9 +437,10 @@ delegation merge a TTL breve seguita da una delegation `render.observe`
 one-shot. La receipt di osservazione deve attestare tutti i servizi del
 manifest sul medesimo commit. Il passo conclusivo governato è
 `host_native_owner_manual_merge_finalize_gallery`, invocato con il
-`ticket_id` del ticket di merge completato: prima dell'invocazione devono
-esistere sia il manual-merge readback server-validated per quel ticket sia la
-closure receipt dell'osservazione `render.observe` one-shot sul commit live.
+`ticket_id` del ticket `render.observe` one-shot completato. Quel ticket deve
+essere già collegato al manual-merge readback server-validated e deve avere
+prodotto la closure receipt di osservazione per lo stesso commit live; il
+ticket di merge resta l'antenato della catena e non va passato al finalizer.
 
 Questa sezione documenta il percorso di attestazione e non dichiara il Work
 chiuso: l'unica fonte di verità resta il readback Core `completed` con
