@@ -2041,6 +2041,10 @@ test("native plan replay is deterministic and receipts preserve host policy boun
       },
     ],
     max_parallel: 2,
+    launch_request: {
+      schema_version: "nyra_host_launch_request_v1", requested_by: "nyra", action: "START_NATIVE_PLAN",
+      verifier_task_id: "verify", distinct_session_required: true, host_execution_required: true,
+    },
     idempotency_key: "native-plan-stable",
   };
   const corePlan = corePlanFor(work, request);
@@ -2053,6 +2057,7 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   assert.equal(planned.receipt.host_policy_override, false);
   assert.equal(planned.receipt.host_policy_must_allow, true);
   assert.equal(planned.receipt.provider_execution, false);
+  assert.deepEqual(planned.plan.launch_request, request.launch_request);
   const changedRequest = {
     ...request,
     tasks: [

@@ -669,6 +669,7 @@ export function createCoreHandlers(config, options = {}) {
   // this bounded reader so Control Room progress is calculated from the
   // canonical V2 Work context, not from caller data or a second preflight.
   const readControlRoomWorkContext = options.readControlRoomWorkContext;
+  const readControlRoomCoordinationOverview = options.readControlRoomCoordinationOverview;
   const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
@@ -2379,12 +2380,18 @@ export function createCoreHandlers(config, options = {}) {
             ...(args.project_id ? { project_id: args.project_id } : {}),
           })
         : null;
+      const coordination = typeof readControlRoomCoordinationOverview === "function"
+        ? await readControlRoomCoordinationOverview(identity, {
+            ...(args.project_id ? { project_id: args.project_id } : {}),
+          })
+        : null;
       return textResult({
         ok: health?.ok === true,
         tenant_id: identity.tenantId,
         control_room: projectNyraControlRoomStatus({
           health,
           work,
+          coordination,
           nyraDialogueEnabled: config.nyraDialogueEnabled === true,
         }),
       });

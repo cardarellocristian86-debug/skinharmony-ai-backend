@@ -3324,7 +3324,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     [tenantId, workId, Math.min(Math.max(Number(input.event_limit) || 50, 1), 200)]);
     const branches = await pool.query(`SELECT branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at
       FROM core_continuity_branches WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at`, [tenantId, workId]);
-    const participants = await pool.query(`SELECT session_id,agent_id,client_type,branch_id,status,joined_at,last_seen_at,
+    const participants = await pool.query(`SELECT session_id,agent_id,client_type,transport_session_fingerprint,branch_id,status,joined_at,last_seen_at,
         expires_at,(status='active' AND expires_at>now()) AS active
       FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2 ORDER BY last_seen_at DESC`,
     [tenantId, workId]);
@@ -3753,6 +3753,61 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function galleryAuthorized(identity, input = {}, authorization = {}) {
     return galleryInternal(identity, input,
       normalizeLegacyReadAuthorization(identity, authorization));
+  }
+
+  async function coordinationOverviewAuthorized(identity, input = {}, authorization = {}) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const authorizedWorkIds = normalizeLegacyReadAuthorization(identity, authorization);
+    if (!authorizedWorkIds.length) return { schema_version: "tenant_work_coordination_overview_v1", tenant_id: tenantId, sessions: [] };
+    const projectId = input.project_id ? identifier(input.project_id, "project_id") : null;
+    const limit = positiveInteger(input.limit, 50, 100);
+    const rows = await pool.query(`WITH active_participants AS (
+        SELECT p.session_id,p.agent_id,p.client_type,p.transport_session_fingerprint,
+          p.joined_at,p.last_seen_at,p.expires_at,p.work_id,p.branch_id,w.project_id,w.status AS work_status,
+          (SELECT count(*)::int FROM core_continuity_leases l
+            WHERE l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+              AND l.status='active' AND l.expires_at>now()) AS active_lease_count
+        FROM core_continuity_participants p
+        JOIN core_continuity_works w ON w.tenant_id=p.tenant_id AND w.work_id=p.work_id
+        WHERE p.tenant_id=$1 AND p.work_id=ANY($2::uuid[])
+          AND p.status='active' AND p.expires_at>now()
+          AND ($3::varchar IS NULL OR w.project_id=$3)
+      ), ranked_participants AS (
+        SELECT active_participants.*,
+          row_number() OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint ORDER BY last_seen_at DESC,work_id) AS membership_rank,
+          count(*) OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint)::int AS membership_total,
+          sum(active_lease_count) OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint)::int AS session_active_lease_count,
+          min(joined_at) OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint) AS session_joined_at,
+          max(last_seen_at) OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint) AS session_last_seen_at,
+          max(expires_at) OVER (PARTITION BY session_id,agent_id,client_type,transport_session_fingerprint) AS session_expires_at
+        FROM active_participants
+      ) SELECT session_id,agent_id,client_type,transport_session_fingerprint,
+        max(session_joined_at) AS joined_at,max(session_last_seen_at) AS last_seen_at,max(session_expires_at) AS expires_at,
+        max(session_active_lease_count)::int AS active_lease_count,max(membership_total)::int AS membership_total,
+        jsonb_agg(jsonb_build_object('work_id',work_id,'project_id',project_id,
+          'work_status',work_status,'branch_id',branch_id,'active_lease_count',active_lease_count)
+          ORDER BY last_seen_at DESC,work_id) AS work_memberships
+      FROM ranked_participants WHERE membership_rank<=100
+      GROUP BY session_id,agent_id,client_type,transport_session_fingerprint
+      ORDER BY max(last_seen_at) DESC LIMIT $4`, [tenantId, authorizedWorkIds, projectId, limit]);
+    return {
+      schema_version: "tenant_work_coordination_overview_v1",
+      tenant_id: tenantId,
+      sessions: rows.rows.map((row) => ({
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        client_type: row.client_type,
+        transport_bound: typeof row.transport_session_fingerprint === "string" && row.transport_session_fingerprint.length >= 16,
+        state: Number(row.active_lease_count || 0) > 0 ? "WORKING" : "ONLINE",
+        joined_at: row.joined_at,
+        last_heartbeat_at: row.last_seen_at,
+        presence_expires_at: row.expires_at,
+        active_lease_count: Number(row.active_lease_count || 0),
+        work_memberships_truncated: Number(row.membership_total || 0) > 100,
+        work_memberships: Array.isArray(row.work_memberships) ? row.work_memberships : [],
+      })),
+    };
   }
 
   async function join(identity, input) {
@@ -4273,6 +4328,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const planVersion = Number(priorPlan?.plan_version || 0) + 1;
         const plan = {
           ...basePlan,
+          ...(input.launch_request?.schema_version === "nyra_host_launch_request_v1" &&
+              input.launch_request?.requested_by === "nyra" && input.launch_request?.action === "START_NATIVE_PLAN" &&
+              input.launch_request?.verifier_task_id === "verify" && input.launch_request?.distinct_session_required === true &&
+              input.launch_request?.host_execution_required === true
+            ? { launch_request: {
+              schema_version: "nyra_host_launch_request_v1", requested_by: "nyra", action: "START_NATIVE_PLAN",
+              verifier_task_id: "verify", distinct_session_required: true, host_execution_required: true,
+            } } : {}),
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
           acceptance_contract: buildAcceptanceContract(
             work.rows[0].anchor,
@@ -6860,6 +6923,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     remediationStore,
     gallery,
     galleryAuthorized,
+    coordinationOverviewAuthorized,
     resolveDttWorkLeaseBinding,
     rotateNyraReadParticipant,
     resolveGenericWorkCoreJoinLeaseBinding,

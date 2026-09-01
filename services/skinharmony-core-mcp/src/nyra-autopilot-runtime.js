@@ -493,8 +493,15 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const parameters = [tenantId, claimant.client_type];
       const predicate = ["tenant_id=$1", "status='offered'", "eligible_client_types ? $2"];
       if (workId) { parameters.push(workId); predicate.push(`work_id=$${parameters.length}`); }
-      const result = await pool.query(`SELECT assignment_id,run_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
-        FROM core_nyra_autopilot_assignments WHERE ${predicate.join(" AND ")} ORDER BY created_at,assignment_key LIMIT 50`, parameters);
+      const result = await pool.query(`SELECT a.assignment_id,a.run_id,a.assignment_key,a.agent_instance_id,a.blueprint_id,a.role,a.task_contract,a.dependencies,a.eligible_client_types,a.status,a.claim_expires_at,a.submitted_result,a.quarantine
+        FROM core_nyra_autopilot_assignments a WHERE ${predicate.map((item) => `a.${item}`).join(" AND ")}
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements_text(a.dependencies) required(assignment_key)
+          LEFT JOIN core_nyra_autopilot_assignments dependency
+            ON dependency.tenant_id=a.tenant_id AND dependency.work_id=a.work_id AND dependency.run_id=a.run_id
+            AND dependency.assignment_key=required.assignment_key
+          WHERE dependency.status IS NULL OR dependency.status NOT IN ('submitted','verified')
+        ) ORDER BY a.created_at,a.assignment_key LIMIT 50`, parameters);
       return { tenant_id: tenantId, agent_id: claimant.agent_id, assignments: result.rows.map(publicAssignment), execution_authorized: false };
     },
     async claim(identity, input = {}) {

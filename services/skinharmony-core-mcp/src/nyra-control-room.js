@@ -190,8 +190,9 @@ function normalizeReadbackDetail(domainId, value) {
       });
     }
     case "work_continuity": {
-      const detail = requireExactObject(raw, ["backend", "progress"]);
-      return Object.freeze({ backend: readbackMode(detail.backend), progress: normalizeReadbackProgress(detail.progress) });
+      const detail = requireExactObject(raw, ["backend", "progress", "coordination"], ["backend", "progress"]);
+      const coordination = detail.coordination === undefined || detail.coordination === null ? null : normalizeCoordinationOverview(detail.coordination);
+      return Object.freeze({ backend: readbackMode(detail.backend), progress: normalizeReadbackProgress(detail.progress), coordination });
     }
     case "research_airlock": {
       const detail = requireExactObject(raw, ["state", "operational_safe"]);
@@ -204,6 +205,32 @@ function normalizeReadbackDetail(domainId, value) {
     default:
       return readbackInvalid();
   }
+}
+
+function normalizeCoordinationOverview(value) {
+  const raw = requireExactObject(value, ["available", "active_session_count", "active_logical_agent_count", "sessions"]);
+  if (typeof raw.available !== "boolean" || !Number.isSafeInteger(raw.active_session_count) ||
+      !Number.isSafeInteger(raw.active_logical_agent_count) || !Array.isArray(raw.sessions) || raw.sessions.length > 100 ||
+      raw.active_session_count !== raw.sessions.length || raw.active_logical_agent_count > raw.active_session_count) readbackInvalid();
+  const sessions = raw.sessions.map((item) => {
+    const session = requireExactObject(item, ["session_id", "agent_id", "client_type", "transport_bound", "state", "joined_at", "last_heartbeat_at", "presence_expires_at", "active_lease_count", "work_memberships_truncated", "work_memberships"]);
+    if (!["chatgpt", "codex", "api_agent", "other"].includes(session.client_type)) readbackInvalid();
+    if (!["ONLINE", "WORKING"].includes(session.state) || typeof session.transport_bound !== "boolean" ||
+        !Number.isSafeInteger(session.active_lease_count) || session.active_lease_count < 0 ||
+        typeof session.work_memberships_truncated !== "boolean" || !Array.isArray(session.work_memberships) ||
+        session.work_memberships.length < 1 || session.work_memberships.length > 100) readbackInvalid();
+    for (const key of ["session_id", "agent_id", "joined_at", "last_heartbeat_at", "presence_expires_at"]) {
+      if (typeof session[key] !== "string" || !session[key]) readbackInvalid();
+    }
+    const memberships = session.work_memberships.map((membership) => {
+      const item = requireExactObject(membership, ["work_id", "project_id", "work_status", "branch_id", "active_lease_count"]);
+      if (typeof item.work_id !== "string" || !item.work_id || !Number.isSafeInteger(item.active_lease_count) || item.active_lease_count < 0) readbackInvalid();
+      return Object.freeze({ ...item });
+    });
+    return Object.freeze({ ...session, work_memberships: Object.freeze(memberships) });
+  });
+  return Object.freeze({ available: raw.available, active_session_count: raw.active_session_count,
+    active_logical_agent_count: raw.active_logical_agent_count, sessions: Object.freeze(sessions) });
 }
 
 // A Nyra conversational response is rendered by a host LLM.  Re-project the
@@ -252,6 +279,7 @@ export function projectNyraConversationControlRoomReadback(value) {
     domains: Object.freeze(source.domains.map((domain) => Object.freeze({
       id: domain.id,
       state: domain.state,
+      ...(domain.id === "work_continuity" ? { coordination: domain.detail.coordination } : {}),
       allowed_actions: Object.freeze(domain.allowed_actions.map((item) => Object.freeze({
         id: item.id,
         availability: item.availability,
@@ -370,7 +398,7 @@ export function projectWorkClosureProgress(work = null) {
   });
 }
 
-export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDialogueEnabled } = {}) {
+export function projectNyraControlRoomStatus({ health = {}, work = null, coordination = null, nyraDialogueEnabled } = {}) {
   const host = health.host_native_governance || {};
   const entity360 = health.entity_360 || {};
   const causalContinuity = health.causal_continuity || {};
@@ -465,6 +493,7 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
     ), {
       backend: mode(causalContinuity.state, "UNKNOWN"),
       progress,
+      coordination,
     }, [action("READ_STATUS")]),
     domain("research_airlock", mode(researchAirlock.mode, "UNKNOWN"), {
       state: mode(researchAirlock.state, readiness(researchAirlock.ready)),
