@@ -425,6 +425,7 @@ la sequenza causale completa:
 Fino al punto 6, qualsiasi evidenza live è una fotografia verificata ma non una
 attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
 retention dei sistemi owner restano responsabilità dei rispettivi adapter.
+
 ### Carrier di attestazione finale
 
 La baseline operativa include la merge E360 della PR `#402` (`6be14320`) e la
@@ -434,7 +435,11 @@ prima dell'osservazione, non riusare il target precedente: creare un carrier
 receipt-bound sul nuovo `main`, rieseguire i check exact-head e usare una
 delegation merge a TTL breve seguita da una delegation `render.observe`
 one-shot. La receipt di osservazione deve attestare tutti i servizi del
-manifest sul medesimo commit prima di invocare `closure_finalize`.
+manifest sul medesimo commit. Il passo conclusivo governato è
+`host_native_owner_manual_merge_finalize_gallery`, invocato con il
+`ticket_id` del ticket di merge completato: prima dell'invocazione devono
+esistere sia il manual-merge readback server-validated per quel ticket sia la
+closure receipt dell'osservazione `render.observe` one-shot sul commit live.
 
 Questa sezione documenta il percorso di attestazione e non dichiara il Work
 chiuso: l'unica fonte di verità resta il readback Core `completed` con
@@ -450,11 +455,17 @@ La PR `#421` lega il source
 quattro gate richiesti (`universal-core`, `core-mcp`, `deployment-parity`,
 `smartdesk`).
 
-Il fix della lease DB-authoritative è provato dal builder Core receipt
+Il fix della lease DB-authoritative era provato, prima del revert, dal builder Core receipt
 `202c86e6-3cb7-4973-91d5-5a3cd630d4cd` (report
 `ee3c1830708fa795efff36a013cde8bda27a7d2a932b1ee35a94b91e78c5353c`) e
 dal verifier indipendente receipt `2f3b27ea-94a1-43f6-8249-06e1022c58ef`
 (report `da40a7fdde27a9572ede7761f7da0e4ce894533d32dad38e0a6798236fe659b4`).
+La PR `#424` (`e2f7fba`) ha successivamente rimosso quell'implementazione e i
+relativi test: i receipt di PR421 non provano quindi il carrier corrente. Prima
+di usare la lease DB-authoritative come evidenza di chiusura occorre
+ripristinare sul `main` corrente il calcolo e la validazione tramite clock
+PostgreSQL, rieseguire i test di skew/expiry e ottenere nuovi receipt builder e
+verifier indipendente sul commit exact-head risultante.
 
 Il baseline live osservato è
 `ccebb2f755f1dc64b8420a30720d561184f8b45a`, discendente di `e133cae1`,
