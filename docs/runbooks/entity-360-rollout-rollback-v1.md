@@ -475,3 +475,19 @@ Questo anchor non chiude il Work: il `main` avanzato rende non riusabile il
 manual-merge readback di PR421. La finalizzazione resta pendente fino a un
 nuovo carrier exact-main, un nuovo Core Join, il readback della merge senza
 drift, l'osservazione live one-shot e la receipt Core finale persistita.
+
+### Carrier successivo alla PR425
+
+La PR `#425` ha ripristinato sul source `2747fb78` il calcolo e la validazione
+della lease tramite clock PostgreSQL ed è confluita nel merge `f72d61b4` alle
+`2026-09-01T13:40:59Z`; la CI pre-merge `33513608767` era verde. La CI
+post-merge `33514861730` ha poi completato con successo i quattro gate e i
+readback di Universal Core e Core MCP hanno osservato `f72d61b4`, ready e
+commit-verifiable. Queste evidenze non rendono retroattivo un Core Join.
+
+Il primo Core Join emesso dopo quella merge non è retroattivo: il relativo
+manual-merge readback è stato respinto atomicamente con
+`owner_manual_merge_refresh_software_cognition_invalid` e non ha prodotto una
+receipt. Nessuna closure è avvenuta. Il prossimo carrier exact-main deve
+ricevere il proprio Core Join prima della merge; soltanto dopo potrà procedere
+con readback della merge, osservazione one-shot e receipt finale governata.

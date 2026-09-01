@@ -398,13 +398,19 @@ test("Entity 360 shadow scheduler gates OFF tenants before tenant-scoped and glo
     assert.equal(observations.length, 2,
       "one tenant cannot monopolize the configured per-tenant in-flight budget");
     releaseOffGate();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal((await call(base, "POST", "/v1/work/preflight",
-      bodyFor("entity360-off", "77777777-7777-5777-8777-777777777777"),
-      keys.get("entity360-off"))).status, 200);
+    const postReleaseOffWorkIds = [
+      "77777777-7777-5777-8777-777777777777",
+      "cccccccc-cccc-5ccc-8ccc-cccccccccccc",
+      "dddddddd-dddd-5ddd-8ddd-dddddddddddd",
+    ];
+    const postReleaseOffRequests = postReleaseOffWorkIds.map((workId) =>
+      call(base, "POST", "/v1/work/preflight",
+        bodyFor("entity360-off", workId), keys.get("entity360-off")));
+    assert.deepEqual((await Promise.all(postReleaseOffRequests)).map(({ status }) => status),
+      [200, 200, 200]);
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(gateReads.filter((item) => item.tenant_id === "entity360-off").length, 1,
-      "the bounded negative tenant gate cache must suppress sequential OFF probe flooding");
+      "release/cache publication must not reopen the tenant slot or duplicate OFF probes");
     const absentWorkIds = ["88888888-8888-5888-8888-888888888888",
       "99999999-9999-5999-8999-999999999999"];
     assert.equal((await call(base, "POST", "/v1/work/preflight",
