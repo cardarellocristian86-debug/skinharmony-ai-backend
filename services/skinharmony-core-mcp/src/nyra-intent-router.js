@@ -33,7 +33,8 @@ const GLOBAL_CONTROL_READ = /(?:\b(?:che|quali|mostra(?:mi)?|dimmi|fammi\s+veder
 const GLOBAL_CONTROL_STATUS_QUESTION = /(?:\b(?:hai|avete|have|has|do\s+you\s+have)\b.{0,80}\b(?:entity\s*360|e360|nyra\s+converse|dialog(?:o|ue)|semantic\s+scope\s+guard|scope\s+guard|work\s+continuity|research\s+airlock)\b.{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|active|inactive|enabled|disabled|on|off|shadow|enforced|stato|status)\b|\b(?:quali|che|what|which)\b.{0,80}(?:funzion\w*|capacità|capacita|capability|capabilities|controll\w*).{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|shadow|enforced|autorizz\w*|owner|conferm\w*)\b|\b(?:per\s+quali|which)\b.{0,80}\b(?:azioni|actions?)\b.{0,80}\b(?:owner|conferm\w*|autorizz\w*)\b)/iu;
 const NYRA_ADVISORY_READ = /\bnyra\b|\b(?:chi\s+sei|come\s+funzioni|cosa\s+ti\s+manca|cosa\s+puoi|qual(?:\s|')*[èe]\s+la\s+differenza)\b|\b(?:entity\s*360|e360)\b.{0,100}\bsemantic\s+scope\s+guard\b/iu;
 const NYRA_SELF_MODEL_READ = /\b(?:self[\s_-]?model|modello\s+(?:di\s+)?(?:te|nyra)|who\s+are\s+you|chi\s+sei|your\s+(?:limits?|capabilities)|tuoi\s+(?:limiti|capacità|capacita))\b/iu;
-const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;\nconst DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
+const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;
+const DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
 const GLOBAL_READ_DOMAIN = /\b(?:nyra|universal\s+core|core|icf|entity\s*360|e360|self[\s_-]?model|autodiagnos\w*|self[\s_-]?diagnos\w*|software\s+(?:atlas|architecture)|architecture\s+atlas|memori\w*|memory|gallery|verified[\s_-]?learning|capabilit\w*|funzion\w*)\b/iu;
 const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|commit|push|pull\s+request|\bpr\b|merge|deploy(?:ed|ing)?|publish\w*|release|rollback)\b/iu;
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
@@ -452,7 +453,10 @@ export function classifyNyraIntent({
     clauses.every((clause) => clause.action_candidates.length === 0) &&
     semanticAssessment.disposition === "allow" &&
     (NYRA_SELF_MODEL_READ.test(text) || NYRA_GAP_READ.test(text));
-  const safeDistilledLessonsRead = actionClauses.length === 0 && !workBootstrap &&\n    !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&\n    semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);\n  const hostHintIntrospectionRead = semanticIntake.state === "CANDIDATE" &&
+  const safeDistilledLessonsRead = actionClauses.length === 0 && !workBootstrap &&
+    !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
+    semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);
+  const hostHintIntrospectionRead = semanticIntake.state === "CANDIDATE" &&
     semanticIntake.route_candidate === "NYRA_INTROSPECTION_READ" &&
     actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
     clauses.every((clause) => clause.action_candidates.length === 0) &&
@@ -492,7 +496,9 @@ export function classifyNyraIntent({
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.96;
     reason = "explicit_consequential_action_precedence";
-  } else if (safeDistilledLessonsRead) {\n    intent = "distilled_lessons_read";\n    route = "ADVISORY_READ";\n    confidence = 0.99;\n    reason = "bounded_distilled_lessons_read";\n  } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
+  } else if (safeDistilledLessonsRead) {
+    intent = "distilled_lessons_read"; route = "ADVISORY_READ"; confidence = 0.99; reason = "bounded_distilled_lessons_read";
+  } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
     intent = NYRA_SELF_MODEL_READ.test(text) ? "nyra_self_model_read" : "nyra_gap_read";
     route = "ADVISORY_READ";
     confidence = safeIntrospectionRead ? 0.99 : 0.86;
