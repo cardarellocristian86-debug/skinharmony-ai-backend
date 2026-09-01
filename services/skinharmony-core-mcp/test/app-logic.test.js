@@ -5,14 +5,17 @@ import {
   configureToolForRuntime,
   filterToolsForClient,
   hasTenantBoundChatGptReadCompatibility,
+  normalizeLegacyNyraContinueArguments,
   requiresCanonicalWorkReadAuthorization,
   requiresGenericWorkPreflight,
+  resolveConnectorToolName,
   resolveStaleChatGptReadTool,
   TOOLS,
 } from "../src/app.js";
 import { compactMcpTools } from "../src/dynamic-capability-router.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
+import { validateToolArguments } from "../src/schema-validation.js";
 
 function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   return {
@@ -36,6 +39,41 @@ function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
     ...overrides,
   };
 }
+
+test("routes only the retired governed continuation name to the opaque current contract", () => {
+  assert.equal(resolveConnectorToolName("nyra_governed_continue", TOOLS), "nyra_continue");
+  assert.equal(
+    resolveConnectorToolName("skinharmony_nyra_core.nyra_governed_continue", TOOLS),
+    "nyra_continue",
+  );
+  assert.equal(resolveConnectorToolName("unknown_governed_continue", TOOLS), null);
+
+  const normalized = normalizeLegacyNyraContinueArguments({
+    operation: "review_work_bootstrap",
+    candidate_attestation: `nyc1_${"x".repeat(40)}`,
+    review_id: "11111111-1111-4111-8111-111111111111",
+    review_digest: "a".repeat(64),
+    idempotency_key: "legacy-continuation-test",
+  });
+  assert.deepEqual(normalized, {
+    operation: "review_work_bootstrap",
+    continuation_ref: `nyc1_${"x".repeat(40)}`,
+    idempotency_key: "legacy-continuation-test",
+  });
+
+  const ambiguous = normalizeLegacyNyraContinueArguments({
+    operation: "authorize_action",
+    candidate_attestation: `nyc1_${"a".repeat(40)}`,
+    continuation_ref: `nyc1_${"b".repeat(40)}`,
+    idempotency_key: "legacy-continuation-conflict",
+  });
+  const violations = validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_continue").inputSchema,
+    ambiguous,
+  );
+  assert(violations.some((item) =>
+    item.path === "$.candidate_attestation" && item.code === "additional_property"));
+});
 
 test("keeps claim-only and unregistered conversational hosts on the Nyra front door plus read-only status", () => {
   const claimOnlyTools = filterToolsForClient(TOOLS, { kind: "oauth" });

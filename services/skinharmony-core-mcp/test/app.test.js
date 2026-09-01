@@ -200,9 +200,14 @@ test("governed continuation restores the logical presence only after its handler
     handlers: {
       core_health: async () => ({ structuredContent: { ok: true }, content: [] }),
       nyra_continue: async (args, identity) => {
-        if (args.continuation_ref.includes("invalid")) {
-          const error = new Error("nyra_continue_ref_invalid");
-          error.code = "nyra_continue_ref_invalid";
+        const rejectedState = ["invalid", "expired", "replayed"]
+          .find((state) => args.continuation_ref.includes(state));
+        if (rejectedState) {
+          const code = rejectedState === "replayed"
+            ? "nyra_continuation_replayed"
+            : `nyra_continue_ref_${rejectedState}`;
+          const error = new Error(code);
+          error.code = code;
           throw error;
         }
         observed.push(identity.agentPresence);
@@ -258,6 +263,42 @@ test("governed continuation restores the logical presence only after its handler
       "stale-transport-agent",
     );
 
+    for (const state of ["expired", "replayed"]) {
+      const failedAlias = await call("stale-mcp-transport", "nyra_governed_continue", {
+        operation: "authorize_action",
+        candidate_attestation: `nyc1_${state}${"z".repeat(40)}`,
+        idempotency_key: `legacy-continuation-${state}`,
+        session_id: "attested-logical-session",
+      });
+      assert.equal(failedAlias.response.status, 200);
+      assert.equal(failedAlias.body.result.isError, true);
+      assert.equal(observed.length, 0);
+      const stillUnchanged = await call("stale-mcp-transport", "core_health");
+      assert.equal(
+        stillUnchanged.body.result.structuredContent.agent_presence.agent_id,
+        "stale-transport-agent",
+      );
+    }
+
+    const malformedAlias = await call("stale-mcp-transport", "nyra_governed_continue", {
+      operation: "authorize_action",
+      candidate_attestation: "not-an-opaque-continuation",
+      idempotency_key: "legacy-continuation-malformed",
+      session_id: "attested-logical-session",
+    });
+    assert.equal(malformedAlias.body.error.code, -32602);
+    assert.equal(observed.length, 0);
+
+    const conflictingAlias = await call("stale-mcp-transport", "nyra_governed_continue", {
+      operation: "authorize_action",
+      candidate_attestation: `nyc1_${"a".repeat(40)}`,
+      continuation_ref: `nyc1_${"b".repeat(40)}`,
+      idempotency_key: "legacy-continuation-conflicting-refs",
+      session_id: "attested-logical-session",
+    });
+    assert.equal(conflictingAlias.body.error.code, -32602);
+    assert.equal(observed.length, 0);
+
     const accepted = await call("stale-mcp-transport", "nyra_continue", {
       operation: "authorize_action",
       continuation_ref: `nyc1_${"x".repeat(40)}`,
@@ -273,6 +314,18 @@ test("governed continuation restores the logical presence only after its handler
       rebound.body.result.structuredContent.agent_presence.agent_id,
       "attested-logical-agent",
     );
+
+    const legacyAlias = await call("stale-mcp-transport", "nyra_governed_continue", {
+      operation: "authorize_action",
+      candidate_attestation: `nyc1_${"y".repeat(40)}`,
+      review_id: "11111111-1111-4111-8111-111111111111",
+      review_digest: "a".repeat(64),
+      idempotency_key: "legacy-continuation-alias",
+      session_id: "attested-logical-session",
+    });
+    assert.equal(legacyAlias.response.status, 200);
+    assert.equal(legacyAlias.body.result.structuredContent.ok, true);
+    assert.equal(observed.length, 2);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
