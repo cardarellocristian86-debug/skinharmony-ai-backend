@@ -92,7 +92,13 @@ export function createSharedMemoryBootstrap(store, options = {}) {
 
       const manifestSignature = signature(manifest);
       const cached = cache.get(tenantId);
-      if (cached && cached.signature === manifestSignature && cached.expiresAt > now()) return cached.value;
+      if (cached && cached.signature === manifestSignature && cached.expiresAt > now()) {
+        // Lessons are written after a tool call. They must be visible to the
+        // next AI turn immediately, rather than waiting for the five-minute
+        // shared-state cache to expire.
+        if (typeof store.listDistilledLessons !== "function") return cached.value;
+        return { ...cached.value, distilled_lessons: await store.listDistilledLessons(tenantId, "", 10) };
+      }
 
       const records = await store.fetchBySourcePaths(tenantId, SHARED_MEMORY_BOOTSTRAP_PATHS);
       const byPath = new Map(records.map((record) => [record.source_path, record]));
@@ -117,6 +123,9 @@ export function createSharedMemoryBootstrap(store, options = {}) {
         latest_handoff: latestHandoff(handoff.content),
         recent_tasks: Array.isArray(tasks.tasks) ? tasks.tasks.slice(0, RECENT_LIMIT).map(compactTask) : [],
         recent_artifacts: Array.isArray(artifacts.artifacts) ? artifacts.artifacts.slice(0, RECENT_LIMIT).map(compactArtifact) : [],
+        distilled_lessons: typeof store.listDistilledLessons === "function"
+          ? await store.listDistilledLessons(tenantId, "", 10)
+          : [],
         checksum: manifestSignature,
         cache_ttl_seconds: Math.floor(cacheTtlMs / 1000),
       };
