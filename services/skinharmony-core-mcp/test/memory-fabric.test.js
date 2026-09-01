@@ -172,6 +172,30 @@ test("automatic journal stores safe metadata but never raw arguments", async (t)
   assert.equal(lifecycle.source, "mcp_work_lifecycle");
 });
 
+test("distills repeated failures into one tenant-scoped searchable candidate lesson", async (t) => {
+  const { root, fabric } = fixture();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const hostileError = "never persist this raw error detail";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await fabric.recordToolActivity({
+      identity: tenantA,
+      toolName: "nyra_work_assignment_claim",
+      args: { project_id: "project-learning", agent_id: "chatgpt-learning", client_type: "chatgpt", session_id: `lesson-${attempt}` },
+      error: { code: "nyra_autopilot_claim_presence_required", message: hostileError },
+    });
+  }
+  const context = fabric.context({ project_id: "project-learning" }, tenantA);
+  assert.equal(context.distilled_lessons.length, 1);
+  const [lesson] = context.distilled_lessons;
+  assert.equal(lesson.lesson_state, "candidate");
+  assert.equal(lesson.failure_code, "nyra_autopilot_claim_presence_required");
+  assert.equal(lesson.occurrence_count, 2);
+  assert.equal(fabric.search({ query: "claim presence" }, tenantA).results[0].id, lesson.id);
+  assert.equal(fabric.search({ query: "claim presence" }, tenantB).results.length, 0);
+  const stored = fs.readFileSync(path.join(root, "tenants", "tenant-a", "memory-fabric", "state.json"), "utf8");
+  assert.equal(stored.includes(hostileError), false);
+});
+
 test("automatic lifecycle separates concurrent chats owned by the same OAuth subject", async (t) => {
   const { root, fabric } = fixture();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
