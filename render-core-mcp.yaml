@@ -120,15 +120,15 @@ services:
         generateValue: true
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         generateValue: true
-      # Generic Work Core Join remains code-dark until the public verifier pin,
-      # durable shared store and Universal Core signer all pass their gates.
-      # This service holds verifier material only; never add a private key here.
+      # Generic Work Core Join is fail-closed on the pinned public verifier,
+      # durable shared store and Universal Core remote signer. This service
+      # holds verifier material only; never add a private key here.
       - key: GENERIC_WORK_CORE_JOIN_ENABLED
-        value: "false"
+        value: "true"
       - key: GENERIC_WORK_CORE_JOIN_REQUIRED
-        value: "false"
+        value: "true"
       - key: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
-        value: generic-work-core-join-production-v1
+        value: universal-core-generic-join-v1
       - key: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
         sync: false
       # Policy Registry mutations remain code-dark until Universal Core reports

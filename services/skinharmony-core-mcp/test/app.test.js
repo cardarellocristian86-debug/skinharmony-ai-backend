@@ -1229,7 +1229,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
           configuration_valid: scenario.upstreamConfigurationValid ?? true,
           algorithm: scenario.upstreamAlgorithm ?? "Ed25519",
           ready: true,
-          backend: scenario.upstreamBackend ?? "postgresql",
+          backend: scenario.upstreamBackend ?? "postgres_append_only_v1",
           restart_durable: scenario.upstreamRestartDurable ?? true,
           distributed: scenario.upstreamDistributed ?? true,
           signer_state: scenario.upstreamSignerState ?? "ready",
@@ -1288,9 +1288,9 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
     enabled: true,
     configuration_valid: true,
     algorithm: "Ed25519",
-    required: false,
+    required: true,
     ready: true,
-    backend: "postgresql",
+    backend: "postgres_append_only_v1",
     restart_durable: true,
     distributed: true,
     signer_state: "ready",
@@ -1302,7 +1302,7 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   const input = {
     config: {
       genericWorkCoreJoinEnabled: true,
-      genericWorkCoreJoinRequired: false,
+      genericWorkCoreJoinRequired: true,
       genericWorkCoreJoinConfigurationValid: true,
     },
     options: {
@@ -1313,6 +1313,7 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   const cases = [
     ["signer absent", { signer_state: "unconfigured", state: "signer_unavailable", reason: "generic_work_core_join_signer_unconfigured" }, "generic_work_core_join_signer_unconfigured"],
     ["ledger absent", { backend: "unavailable", state: "durability_or_signing_unavailable", reason: "generic_work_core_join_postgres_unavailable" }, "generic_work_core_join_postgres_unavailable"],
+    ["non-append-only backend", { backend: "postgresql", state: "durability_or_signing_unavailable", reason: null }, "generic_work_core_join_postgres_unavailable"],
     ["migration absent", { ready: false, state: "failed", reason: "generic_work_core_join_migration_unavailable" }, "generic_work_core_join_migration_unavailable"],
     ["restart durability absent", { restart_durable: false, state: "durability_or_signing_unavailable", reason: "generic_work_core_join_durable_store_unavailable" }, "generic_work_core_join_durable_store_unavailable"],
     ["distributed store absent", { distributed: false, state: "durability_or_signing_unavailable", reason: "generic_work_core_join_distributed_store_unavailable" }, "generic_work_core_join_distributed_store_unavailable"],
@@ -1327,7 +1328,7 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   assert.equal(ready.enabled, true);
   assert.equal(ready.ready, true);
   assert.equal(ready.state, "ready");
-  assert.equal(ready.backend, "postgresql");
+  assert.equal(ready.backend, "postgres_append_only_v1");
   assert.equal(ready.restart_durable, true);
   assert.equal(ready.distributed, true);
   assert.equal(ready.signer_state, "ready");
