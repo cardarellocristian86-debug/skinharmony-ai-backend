@@ -49,6 +49,14 @@ const RESERVED_AUTHORITY_KEYS = new Set([
   "tenant_id",
 ]);
 
+const MANUAL_OWNER_ACTION_PATTERN = /\b(?:manual\w*|lo\s+faccio\s+io|faccio\s+io|owner\s+esegue|i(?:'|’)ll\s+do\s+it)\b/iu;
+const MERGE_PATTERN = /\bmerge\w*\b/iu;
+const GIT_COMMIT_PATTERN = /\b(?:git\s+commit|committ\w*|(?:fai|fare|crea\w*|esegui\w*|effettua\w*)\s+(?:un\s+)?commit)\b/iu;
+const GIT_PUSH_PATTERN = /\bpush\w*\b/iu;
+const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
+const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu;
+const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
+const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
 // Work discovery is a read-only conversational operation.  It must be
 // recognized before preflight/continuity so that asking to choose a Work can
 // never resume, bind or mutate the Work that happens to be attached to the
@@ -62,6 +70,8 @@ const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
 // intentionally preserved and will still be governed.
+const READ_ONLY_ACTION_DENIAL_PATTERN = /\b(?:non|senza)\s+(?:crea\w*|modifica\w*|esegui\w*|f(?:ai|ar)\w*|effettua\w*|avvia\w*|richied\w*|apri\w*|pubblica\w*|rilascia\w*).{0,600}?(?:[.!?]|$)/giu;
+const DIRECT_ACTION_DENIAL_PATTERN = /\b(?:senza|n[eé]|non)\s+(?:(?:fare|esegui\w*|effettua\w*|crea\w*|apri\w*|richied\w*|autorizza\w*)\s+)?(?:git\s+commit|commit\w*|push\w*|pull\s+request|pr|merge\w*|deploy\w*|deployment|publish\w*|release)(?:\s*(?:,|\/|\be\b|\bo\b|\bn[eé]\b|\bnor\b)\s*(?:git\s+commit|commit\w*|push\w*|pull\s+request|pr|merge\w*|deploy\w*|deployment|publish\w*|release))*\b/giu;
 const GENERIC_GUARD_REASON = "safety_mode";
 const ACTION_CONTINUATION_OPERATIONS = new Set([
   "issue_delegation",
@@ -412,6 +422,14 @@ function requireBoundPreflight(result, identity, args) {
       active_task_count: boundedCount(memory.active_task_count),
       active_lock_count: boundedCount(memory.active_lock_count),
       artifact_count: boundedCount(memory.artifact_count),
+      distilled_lessons: Array.isArray(memory.distilled_lessons)
+        ? memory.distilled_lessons.slice(0, 10).map((lesson) => Object.freeze({
+          source_tool: boundedString(lesson?.source_tool, 160),
+          failure_code: boundedString(lesson?.failure_code, 160),
+          occurrence_count: boundedCount(lesson?.occurrence_count),
+          lesson_state: lesson?.lesson_state === "candidate" ? "candidate" : null,
+        }))
+        : [],
     }),
     dialogue: publicNyraDialogue(control.nyra_dialogue),
   });
@@ -574,42 +592,44 @@ function serverConnectorHint(args) {
   return Object.freeze({ request_kind: requestKind, capability_hint: capabilityHint });
 }
 
-function requestedActionClass(canonicalIntent, connectorHint, workBootstrapProvided = false) {
-  const requested = new Set(canonicalIntent?.requested_now || []);
-  const has = (name) => [...requested].some((action) => action === name || action.startsWith(`${name}_`));
+function requestedActionClass(message, connectorHint, workBootstrapProvided = false) {
+  const actionText = actionRelevantText(message);
   if (connectorHint.capability_hint === "host_native_action_reserve") return "TICKET_RESERVE";
   // A structured bootstrap is an explicit, typed request.  Its contract must
   // win over incidental prose such as "then merge/deploy" in the objective;
   // otherwise a new-Work review can be incorrectly promoted to an external
   // mutation before Core has evaluated the candidate.
   if (workBootstrapProvided) return "WORK_BOOTSTRAP";
-  if (has("merge")) return "GIT_MERGE";
-  if (has("commit")) return "GIT_COMMIT";
-  if (has("push")) return "GIT_PUSH";
-  if (has("pull_request")) return "PULL_REQUEST_OPEN";
-  if (has("deploy")) return "DEPLOY";
-  if (has("publish")) return "PUBLISH";
-  if (requested.has("work_bootstrap")) return "WORK_BOOTSTRAP";
+  if (MERGE_PATTERN.test(actionText)) return "GIT_MERGE";
+  if (GIT_COMMIT_PATTERN.test(actionText)) return "GIT_COMMIT";
+  if (GIT_PUSH_PATTERN.test(actionText)) return "GIT_PUSH";
+  if (PULL_REQUEST_PATTERN.test(actionText)) return "PULL_REQUEST_OPEN";
+  if (DEPLOY_PATTERN.test(actionText)) return "DEPLOY";
+  if (PUBLISH_PATTERN.test(actionText)) return "PUBLISH";
+  // A question about a ticket is diagnostic until it contains an actual
+  // mutation request.  Do not turn "why was no ticket issued?" into a Work
+  // bootstrap candidate merely because it mentions creation in prose.
+  if (!workBootstrapProvided && DIAGNOSTIC_REQUEST_PATTERN.test(actionText) &&
+      !WORK_BOOTSTRAP_PATTERN.test(actionText)) return "NONE";
+  if (WORK_BOOTSTRAP_PATTERN.test(actionText)) return "WORK_BOOTSTRAP";
   return "NONE";
 }
 
+function actionRelevantText(message) {
+  return String(message || "")
+    .replace(READ_ONLY_ACTION_DENIAL_PATTERN, " ")
+    .replace(DIRECT_ACTION_DENIAL_PATTERN, " ");
+}
+
 function actionPolicy(
-  canonicalIntent,
+  message,
   connectorHint,
   coreOwnerConfirmationRequired = false,
   workBootstrapProvided = false,
 ) {
-  const requested = canonicalIntent?.requested_now || [];
-  const categories = [...new Set(requested.flatMap((action) => {
-    const values = [];
-    if (["commit", "push", "pull_request", "merge", "deploy", "publish", "rollback", "release"]
-      .some((name) => action === name || action.startsWith(`${name}_`))) values.push("release");
-    for (const name of ["communication", "destructive", "financial", "scheduling", "access"]) {
-      if (action === name || action.endsWith(`_${name}`)) values.push(name);
-    }
-    return values;
-  }))];
-  const classifiedAction = requestedActionClass(canonicalIntent, connectorHint, workBootstrapProvided);
+  const actionText = actionRelevantText(message);
+  const categories = [...detectNyraConsequentialCategories(actionText)];
+  const classifiedAction = requestedActionClass(message, connectorHint, workBootstrapProvided);
   if (classifiedAction === "GIT_COMMIT" && !categories.includes("release")) {
     categories.push("release");
   }
@@ -631,7 +651,7 @@ function actionPolicy(
     work_bootstrap_requested: workBootstrapRequested,
     work_bootstrap_spec_provided: workBootstrapProvided,
     manual_owner_execution_requested:
-      mergeRequested || (canonicalIntent?.owner_reserved_actions || []).length > 0,
+      mergeRequested || (categories.includes("release") && MANUAL_OWNER_ACTION_PATTERN.test(message)),
     mode: consequential ? "proposal_only" : "advisory_only",
     classification_only: true,
     external_action_authorized: false,
@@ -1003,8 +1023,7 @@ function orchestrationDirective({
   const ticketRequired = workBootstrapRequested
     ? workBootstrapCandidate
     : action.consequential_request_detected || interpretation.owner_confirmation_required;
-  const mergeManual = action.action_class === "GIT_MERGE" ||
-    action.manual_owner_execution_requested === true;
+  const mergeManual = action.action_class === "GIT_MERGE";
   const commitPreflightGate = action.action_class === "GIT_COMMIT" &&
     workContext.precommit_ticket_gate_applicable === true
     ? workContext.precommit_ticket_gate
@@ -2647,7 +2666,7 @@ export function createNyraConverseHandler({
     }
     const advisoryOnly = intentRoute.reason === "explicit_read_only_boundary";
     const action = actionPolicy(
-      advisoryOnly ? Object.freeze({ requested_now: [] }) : intentRoute.canonical_intent,
+      advisoryOnly ? "" : message,
       connectorHint,
       advisoryOnly ? false : interpretation.owner_confirmation_required,
       args.work_bootstrap !== undefined,
@@ -2658,7 +2677,7 @@ export function createNyraConverseHandler({
       throw fail("nyra_converse_continuation_operation_not_applicable");
     }
     const directiveAction = intentRoute.route === "CORE_HOLD_THEN_NYRA"
-      ? actionPolicy(Object.freeze({ requested_now: [] }), connectorHint, false, false)
+      ? actionPolicy("", connectorHint, false, false)
       : action;
     const directiveInterpretation = intentRoute.route === "CORE_HOLD_THEN_NYRA"
       ? Object.freeze({ ...interpretation, owner_confirmation_required: false })
