@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { softwareAuthoritySnapshotDigest } from "../src/softwareCognition.js";
+import { hostNativeDigest } from "../src/hostNativeGovernance.js";
 
 const H = (value) => String(value).repeat(64);
 
@@ -35,6 +36,9 @@ test("ENFORCED consumers reject persisted pre-enforcement v1 Core Join and actio
   };
   let actionIssueCalls = 0;
   let reserveCalls = 0;
+  let coreJoinReadCalls = 0;
+  let manualMergeTicket = false;
+  let manualMergeReadbackId = `hnmmr_${"a".repeat(40)}`;
   let currentRecord = {
     tenant_id: "tenant-a", verdict_id: "join-v1", state: "active",
     claim: { schema_version: "host_native_core_join_claim_v1", work_id: "work-a" },
@@ -44,13 +48,31 @@ test("ENFORCED consumers reject persisted pre-enforcement v1 Core Join and actio
   const governance = {
     required_checks_policy_resolver_configured: true,
     closure_attestation_verifier_configured: true,
-    readCoreJoinVerdict: async () => currentRecord,
+    readCoreJoinVerdict: async () => {
+      coreJoinReadCalls += 1;
+      return currentRecord;
+    },
     verifyCoreJoinVerdict: () => coreJoinSignatureValid,
     verifyActionTicket: () => true,
-    issueActionTicket: async () => { actionIssueCalls += 1; return {}; },
+    issueActionTicket: async () => {
+      actionIssueCalls += 1;
+      return { ticket: {
+        ticket_id: "issued-manual-observation",
+        delegation_id: "manual-observation-delegation",
+        action: { kind: "render.observe" },
+        issued_at: new Date().toISOString(),
+      } };
+    },
     readActionTicket: async () => ({ ticket: {
       ticket_id: "ticket-v1", tenant_id: "tenant-a", work_id: "work-a",
       core_join_verdict_id: "join-v1", issued_at: new Date().toISOString(),
+      ...(manualMergeTicket ? {
+        action: { kind: "render.observe" },
+        predecessor: {
+          predecessor_type: "owner_manual_github_merge_readback",
+          manual_merge_readback_id: manualMergeReadbackId,
+        },
+      } : {}),
     } }),
     reserveActionTicket: async () => { reserveCalls += 1; return {}; },
   };
@@ -128,6 +150,135 @@ test("ENFORCED consumers reject persisted pre-enforcement v1 Core Join and actio
     assert.equal(tampered.status, 400, JSON.stringify(tampered.json));
     assert.equal(tampered.json.error, "software_cognition_core_join_binding_mismatch");
     assert.equal(actionIssueCalls, 0);
+
+    coreJoinSignatureValid = true;
+    const manualMergeIssue = (manual_merge_readback_id) => request(
+      "/v1/host-native/actions/authorize",
+      {
+        tenant_id: "tenant-a",
+        work_id: "work-a",
+        action: { kind: "render.observe" },
+        manual_merge_readback_id,
+        release_manifest: { verification: { core_join_verdict_id: "join-v1" } },
+      },
+      automationKey.json.key,
+    );
+    const missingIssueResolver = await manualMergeIssue(manualMergeReadbackId);
+    assert.equal(missingIssueResolver.status, 400, JSON.stringify(missingIssueResolver.json));
+    assert.equal(missingIssueResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolver_unavailable");
+    assert.equal(actionIssueCalls, 0);
+
+    manualMergeTicket = true;
+    const missingLifecycleResolver = await request(
+      "/v1/host-native/actions/ticket-v1/reserve",
+      {},
+      automationKey.json.key,
+    );
+    assert.equal(missingLifecycleResolver.status, 400,
+      JSON.stringify(missingLifecycleResolver.json));
+    assert.equal(missingLifecycleResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolver_unavailable");
+    assert.equal(reserveCalls, 0);
+
+    governance.resolveManualMergeRefreshAuthority = async () => {
+      throw new Error("owner_manual_merge_authority_invalid");
+    };
+    const rejectedIssueResolver = await manualMergeIssue(manualMergeReadbackId);
+    assert.equal(rejectedIssueResolver.status, 400,
+      JSON.stringify(rejectedIssueResolver.json));
+    assert.equal(rejectedIssueResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolution_failed");
+    const rejectedLifecycleResolver = await request(
+      "/v1/host-native/actions/ticket-v1/reserve",
+      {},
+      automationKey.json.key,
+    );
+    assert.equal(rejectedLifecycleResolver.status, 400,
+      JSON.stringify(rejectedLifecycleResolver.json));
+    assert.equal(rejectedLifecycleResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolution_failed");
+    assert.equal(actionIssueCalls, 0);
+    assert.equal(reserveCalls, 0);
+
+    governance.resolveManualMergeRefreshAuthority = async () => ({ trusted: true });
+    const booleanOnlyIssueResolver = await manualMergeIssue(manualMergeReadbackId);
+    assert.equal(booleanOnlyIssueResolver.status, 400,
+      JSON.stringify(booleanOnlyIssueResolver.json));
+    assert.equal(booleanOnlyIssueResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolution_invalid");
+    const booleanOnlyLifecycleResolver = await request(
+      "/v1/host-native/actions/ticket-v1/reserve",
+      {},
+      automationKey.json.key,
+    );
+    assert.equal(booleanOnlyLifecycleResolver.status, 400,
+      JSON.stringify(booleanOnlyLifecycleResolver.json));
+    assert.equal(booleanOnlyLifecycleResolver.json.error,
+      "software_cognition_manual_merge_refresh_resolution_invalid");
+    assert.equal(actionIssueCalls, 0);
+    assert.equal(reserveCalls, 0);
+
+    governance.resolveManualMergeRefreshAuthority = async (binding) => {
+      const unsigned = {
+        schema_version: "host_native_manual_merge_authority_resolution_v1",
+        authority_mode: "refresh_closure_only",
+        tenant_id: binding.tenant_id,
+        work_id: binding.work_id,
+        core_join_verdict_id: binding.core_join_verdict_id,
+        manual_merge_readback_id: binding.manual_merge_readback_id,
+        manual_merge_readback_digest: H("e"),
+        refresh_lineage_digest: H("f"),
+        ...(binding.ticket_id ? { ticket_id: binding.ticket_id } : {}),
+      };
+      return { ...unsigned, authority_digest: hostNativeDigest(unsigned) };
+    };
+    const coreJoinReadsBeforeRefresh = coreJoinReadCalls;
+    const acceptedIssueResolver = await manualMergeIssue(manualMergeReadbackId);
+    assert.equal(acceptedIssueResolver.status, 201,
+      JSON.stringify(acceptedIssueResolver.json));
+    assert.equal(actionIssueCalls, 1);
+    const acceptedLifecycleResolver = await request(
+      "/v1/host-native/actions/ticket-v1/reserve",
+      {},
+      automationKey.json.key,
+    );
+    assert.equal(acceptedLifecycleResolver.status, 200,
+      JSON.stringify(acceptedLifecycleResolver.json));
+    assert.equal(reserveCalls, 1);
+    assert.equal(coreJoinReadCalls, coreJoinReadsBeforeRefresh);
+
+    manualMergeReadbackId = `hnmmr_${"b".repeat(40)}`;
+    governance.resolveManualMergeRefreshAuthority = async (binding) => {
+      const unsigned = {
+        schema_version: "host_native_manual_merge_authority_resolution_v1",
+        authority_mode: "core_join",
+        tenant_id: binding.tenant_id,
+        work_id: binding.work_id,
+        core_join_verdict_id: binding.core_join_verdict_id,
+        manual_merge_readback_id: binding.manual_merge_readback_id,
+        manual_merge_readback_digest: H("d"),
+        ...(binding.ticket_id ? { ticket_id: binding.ticket_id } : {}),
+      };
+      return { ...unsigned, authority_digest: hostNativeDigest(unsigned) };
+    };
+    currentRecord.claim_digest = hostNativeDigest(currentRecord.claim);
+    currentRecord.verdict.claim_digest = currentRecord.claim_digest;
+    const coreJoinReadsBeforeOrdinary = coreJoinReadCalls;
+    const acceptedOrdinaryIssue = await manualMergeIssue(manualMergeReadbackId);
+    assert.equal(acceptedOrdinaryIssue.status, 201,
+      JSON.stringify(acceptedOrdinaryIssue.json));
+    assert.equal(actionIssueCalls, 2);
+    assert.equal(coreJoinReadCalls, coreJoinReadsBeforeOrdinary + 1);
+    const acceptedOrdinaryLifecycle = await request(
+      "/v1/host-native/actions/ticket-v1/reserve",
+      {},
+      automationKey.json.key,
+    );
+    assert.equal(acceptedOrdinaryLifecycle.status, 200,
+      JSON.stringify(acceptedOrdinaryLifecycle.json));
+    assert.equal(reserveCalls, 2);
+    assert.equal(coreJoinReadCalls, coreJoinReadsBeforeOrdinary + 2);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(storageRoot, { recursive: true, force: true });
