@@ -2070,6 +2070,45 @@ function manualMergeRefreshLineageValid(receipt, state, signing, nowValue) {
     priorSuccessor.core_join_verdict_id === receipt.core_join_verdict_id;
 }
 
+function postReleaseAttestationValid(receipt, state, signing, nowValue) {
+  const attestation = receipt?.post_release_attestation;
+  if (!attestation) return true;
+  if (receipt?.refresh_lineage) return false;
+  const coreJoin = state.core_join_verdicts?.[receipt.core_join_verdict_id];
+  const { attestation_digest: attestationDigest, ...unsignedAttestation } =
+    attestation || {};
+  const mergedAt = Date.parse(receipt.github_readback?.merged_at || "");
+  const joinedAt = Date.parse(coreJoin?.verdict?.issued_at || "");
+  const recordedAt = Date.parse(receipt.recorded_at || "");
+  const freshUntil = Date.parse(
+    coreJoin?.claim?.software_closure_fresh_until || "",
+  );
+  return attestation.schema_version ===
+      "host_native_post_release_attestation_v1" &&
+    attestation.attestation_kind === "historical_release_readback" &&
+    attestation.core_join_verdict_id === coreJoin?.verdict_id &&
+    attestation.core_join_claim_digest === coreJoin?.claim_digest &&
+    attestation.release_intent_digest ===
+      coreJoin?.release_intent?.release_intent_digest &&
+    attestation.github_readback_digest ===
+      receipt.github_readback?.readback_digest &&
+    attestation.merge_commit === receipt.github_readback?.merge_commit &&
+    attestation.merged_at === receipt.github_readback?.merged_at &&
+    attestation.core_join_issued_at === coreJoin?.verdict?.issued_at &&
+    attestation.software_closure_digest ===
+      coreJoin?.claim?.software_closure_digest &&
+    attestation.software_closure_fresh_until ===
+      coreJoin?.claim?.software_closure_fresh_until &&
+    attestation.authorized_successor_action === "render.observe" &&
+    attestation.provider_execution === false &&
+    attestationDigest === hostNativeDigest(unsignedAttestation) &&
+    coreJoinRecordSignatureValid(coreJoin, signing) &&
+    Number.isFinite(mergedAt) && Number.isFinite(joinedAt) &&
+    Number.isFinite(recordedAt) && Number.isFinite(freshUntil) &&
+    mergedAt < joinedAt && joinedAt <= recordedAt &&
+    recordedAt <= freshUntil && recordedAt <= nowValue;
+}
+
 function validateManualMergeObservationDelegationBeforeMutation(
   delegation,
   receipt,
@@ -2115,6 +2154,7 @@ function validateStoredManualMergeObservation(record, state, {
   if (
     !manualMergeReadbackSignatureValid(receipt, signing) ||
     !manualMergeRefreshLineageValid(receipt, state, signing, nowValue) ||
+    !postReleaseAttestationValid(receipt, state, signing, nowValue) ||
     !safeEqual(ticket.signature, ticketSignature(signing, ticket)) ||
     !delegation || !issuedDelegationIssuanceSignatureValid(delegation, signing) ||
     !sameStrings(delegation.grant?.allowed_actions, ["render.observe"]) ||
@@ -4160,8 +4200,15 @@ export function createHostNativeGovernance({
         "owner_manual_merge_pull_request_invalid",
         Number.MAX_SAFE_INTEGER,
       );
+      const postReleaseMode = trusted.post_release_attestation === true;
+      const ownerPurpose = postReleaseMode
+        ? "host_native_post_release_readback_attest"
+        : "host_native_owner_manual_merge_readback";
+      const idempotencyOperation = postReleaseMode
+        ? "recordPostReleaseReadbackAttestation"
+        : "recordOwnerManualMergeReadback";
       const ownerConfirmation = checkOwnerConfirmation(input.owner_confirmation);
-      if (ownerConfirmation.purpose !== "host_native_owner_manual_merge_readback" ||
+      if (ownerConfirmation.purpose !== ownerPurpose ||
           !ownerConfirmation.request_binding_hash) {
         fail("owner_manual_merge_owner_confirmation_invalid");
       }
@@ -4180,7 +4227,7 @@ export function createHostNativeGovernance({
       const replay = getIdempotent(
         initial,
         tenantId,
-        "recordOwnerManualMergeReadback",
+        idempotencyOperation,
         idempotencyInput,
       );
       if (replay?.result) return replay.result;
@@ -4232,6 +4279,10 @@ export function createHostNativeGovernance({
           githubReadback.head_commit !== coreJoin.claim.checks?.commit ||
           githubReadback.checks_commit !== coreJoin.claim.checks?.commit ||
           githubReadback.base_branch !== coreJoin.claim.base_branch ||
+          githubReadback.head_commit !== releaseIntent.head_commit ||
+          githubReadback.checks_commit !== releaseIntent.verification?.checks_commit ||
+          githubReadback.base_branch !== releaseIntent.base_branch ||
+          githubReadback.base_commit !== releaseIntent.base_commit ||
           githubReadback.merge_commit !== githubReadback.main_head_commit ||
           githubReadback.required_checks_policy_digest !==
             coreJoin.claim.required_checks_policy_digest ||
@@ -4252,29 +4303,33 @@ export function createHostNativeGovernance({
               trusted.software_closure_fresh_until) {
           fail("owner_manual_merge_refresh_software_cognition_invalid");
         }
-        const candidates = Object.values(initial.owner_manual_merge_readbacks || {})
-          .filter((candidate) => {
-            const priorJoin = initial.core_join_verdicts?.[
-              candidate?.core_join_verdict_id
-            ];
-            return !initial.owner_manual_merge_successors?.[candidate?.receipt_id] &&
-              candidate?.owner_subject_fingerprint ===
-                ownerConfirmation.owner_subject_fingerprint &&
-              legacyManualMergeRefreshBindingValid({
-                priorReceipt: candidate,
-                priorJoin,
-                currentJoin: coreJoin,
-                githubReadback,
-                nowValue: nowMillis(now),
-                signing,
-              });
-          });
-        if (candidates.length !== 1) {
-          fail(candidates.length ?
-            "owner_manual_merge_refresh_ambiguous" :
-            "owner_manual_merge_refresh_predecessor_missing");
+        if (!postReleaseMode) {
+          const candidates = Object.values(initial.owner_manual_merge_readbacks || {})
+            .filter((candidate) => {
+              const priorJoin = initial.core_join_verdicts?.[
+                candidate?.core_join_verdict_id
+              ];
+              return !initial.owner_manual_merge_successors?.[candidate?.receipt_id] &&
+                candidate?.owner_subject_fingerprint ===
+                  ownerConfirmation.owner_subject_fingerprint &&
+                legacyManualMergeRefreshBindingValid({
+                  priorReceipt: candidate,
+                  priorJoin,
+                  currentJoin: coreJoin,
+                  githubReadback,
+                  nowValue: nowMillis(now),
+                  signing,
+                });
+            });
+          if (candidates.length !== 1) {
+            fail(candidates.length ?
+              "owner_manual_merge_refresh_ambiguous" :
+              "owner_manual_merge_refresh_predecessor_missing");
+          }
+          refreshPredecessor = candidates[0];
         }
-        refreshPredecessor = candidates[0];
+      } else if (postReleaseMode) {
+        fail("post_release_attestation_historical_merge_required");
       }
       const coreJoinDigest = hostNativeDigest(coreJoin);
       const predecessorUnsigned = {
@@ -4325,6 +4380,27 @@ export function createHostNativeGovernance({
         ...refreshLineageUnsigned,
         lineage_digest: hostNativeDigest(refreshLineageUnsigned),
       } : null;
+      const recordedAt = iso(nowMillis(now));
+      const postReleaseAttestationUnsigned = postReleaseMode ? {
+        schema_version: "host_native_post_release_attestation_v1",
+        attestation_kind: "historical_release_readback",
+        core_join_verdict_id: verdictId,
+        core_join_claim_digest: coreJoin.claim_digest,
+        release_intent_digest: releaseIntent.release_intent_digest,
+        github_readback_digest: githubReadback.readback_digest,
+        merge_commit: githubReadback.merge_commit,
+        merged_at: githubReadback.merged_at,
+        core_join_issued_at: coreJoin.verdict.issued_at,
+        software_closure_digest: coreJoin.claim.software_closure_digest,
+        software_closure_fresh_until:
+          coreJoin.claim.software_closure_fresh_until,
+        authorized_successor_action: "render.observe",
+        provider_execution: false,
+      } : null;
+      const postReleaseAttestation = postReleaseAttestationUnsigned ? {
+        ...postReleaseAttestationUnsigned,
+        attestation_digest: hostNativeDigest(postReleaseAttestationUnsigned),
+      } : null;
       const receiptUnsigned = {
         schema_version: "host_native_owner_manual_merge_readback_v1",
         receipt_id: `hnmmr_${hostNativeDigest({
@@ -4344,6 +4420,9 @@ export function createHostNativeGovernance({
         github_readback: githubReadback,
         predecessor,
         ...(refreshLineage ? { refresh_lineage: refreshLineage } : {}),
+        ...(postReleaseAttestation
+          ? { post_release_attestation: postReleaseAttestation }
+          : {}),
         owner_subject_fingerprint: ownerConfirmation.owner_subject_fingerprint,
         authority: "evidence_only",
         evidence_only: true,
@@ -4353,7 +4432,7 @@ export function createHostNativeGovernance({
         execution_authorized: false,
         host_policy_override: false,
         provider_execution: false,
-        recorded_at: iso(nowMillis(now)),
+        recorded_at: recordedAt,
       };
       const receiptDigest = hostNativeDigest(receiptUnsigned);
       const receipt = {
@@ -4365,7 +4444,7 @@ export function createHostNativeGovernance({
         const descriptor = getIdempotent(
           state,
           tenantId,
-          "recordOwnerManualMergeReadback",
+          idempotencyOperation,
           idempotencyInput,
         );
         if (descriptor?.result) return descriptor.result;
@@ -4498,6 +4577,12 @@ export function createHostNativeGovernance({
       const trustedManualMergeReadback = candidateManualMergeReadback &&
         manualMergeReadbackSignatureValid(candidateManualMergeReadback, signing) &&
         manualMergeRefreshLineageValid(
+          candidateManualMergeReadback,
+          initial,
+          signing,
+          nowValue,
+        ) &&
+        postReleaseAttestationValid(
           candidateManualMergeReadback,
           initial,
           signing,
@@ -4860,12 +4945,29 @@ export function createHostNativeGovernance({
             const github = manualMergeReadback.github_readback;
             coreJoin = initial.core_join_verdicts[manualMergeReadback.core_join_verdict_id];
             const joinExpiresAt = Date.parse(coreJoin?.verdict?.expires_at || "");
-            const refreshedManualMerge = Boolean(manualMergeReadback.refresh_lineage);
+            const postReleaseManualMerge = Boolean(
+              manualMergeReadback.post_release_attestation,
+            );
+            const refreshedManualMerge = Boolean(
+              manualMergeReadback.refresh_lineage || postReleaseManualMerge,
+            );
             const coreJoinVerified = refreshedManualMerge
               ? coreJoinRecordSignatureValid(coreJoin, signing)
               : governance.verifyCoreJoinVerdict(coreJoin);
-            if (refreshedManualMerge && (!trusted.software_closure_digest ||
-                !trusted.software_closure_fresh_until)) {
+            if (refreshedManualMerge && (
+                !trusted.software_closure_digest ||
+                !trusted.software_closure_fresh_until ||
+                trusted.software_closure_digest !==
+                  coreJoin?.claim?.software_closure_digest ||
+                trusted.software_closure_fresh_until !==
+                  coreJoin?.claim?.software_closure_fresh_until ||
+                (postReleaseManualMerge && !postReleaseAttestationValid(
+                  manualMergeReadback,
+                  initial,
+                  signing,
+                  nowValue,
+                ))
+              )) {
               fail("owner_manual_merge_refresh_software_cognition_invalid");
             }
             if (
@@ -4953,6 +5055,14 @@ export function createHostNativeGovernance({
                 refresh_lineage: clone(manualMergeReadback.refresh_lineage),
                 refresh_lineage_digest: hostNativeDigest(
                   manualMergeReadback.refresh_lineage,
+                ),
+              } : {}),
+              ...(manualMergeReadback.post_release_attestation ? {
+                post_release_attestation: clone(
+                  manualMergeReadback.post_release_attestation,
+                ),
+                post_release_attestation_digest: hostNativeDigest(
+                  manualMergeReadback.post_release_attestation,
                 ),
               } : {}),
               retrospective_ticket_issued: false,
@@ -5419,7 +5529,9 @@ export function createHostNativeGovernance({
       const receipt = state.owner_manual_merge_readbacks?.[receiptId];
       const coreJoin = state.core_join_verdicts?.[verdictId];
       const nowValue = nowMillis(now);
-      const refreshed = Boolean(receipt?.refresh_lineage);
+      const refreshed = Boolean(
+        receipt?.refresh_lineage || receipt?.post_release_attestation,
+      );
       if (
         !receipt ||
         receipt.tenant_id !== tenantId || receipt.work_id !== workId ||
@@ -5429,7 +5541,8 @@ export function createHostNativeGovernance({
         coreJoin.manual_merge_readback_receipt_digest !== receipt.receipt_digest ||
         !manualMergeReadbackSignatureValid(receipt, signing) ||
         (refreshed
-          ? !manualMergeRefreshLineageValid(receipt, state, signing, nowValue)
+          ? !manualMergeRefreshLineageValid(receipt, state, signing, nowValue) ||
+            !postReleaseAttestationValid(receipt, state, signing, nowValue)
           : !governance.verifyCoreJoinVerdict(coreJoin))
       ) fail("owner_manual_merge_authority_invalid");
 
@@ -5464,8 +5577,13 @@ export function createHostNativeGovernance({
         core_join_verdict_id: verdictId,
         manual_merge_readback_id: receiptId,
         manual_merge_readback_digest: receipt.receipt_digest,
-        ...(refreshed ? {
+        ...(receipt.refresh_lineage ? {
           refresh_lineage_digest: hostNativeDigest(receipt.refresh_lineage),
+        } : {}),
+        ...(receipt.post_release_attestation ? {
+          post_release_attestation_digest: hostNativeDigest(
+            receipt.post_release_attestation,
+          ),
         } : {}),
         ...(ticketId ? { ticket_id: ticketId } : {}),
       };

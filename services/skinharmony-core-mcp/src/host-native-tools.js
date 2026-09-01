@@ -666,6 +666,31 @@ export const HOST_NATIVE_TOOLS = [
     { ownerConfirmationRequired: true },
   ),
   tool(
+    "host_native_post_release_readback_attest",
+    "Attest one historical release readback",
+    "After a release was already merged and deployed, ask Universal Core to verify the exact historical GitHub merge against a fresh Core Join and persist a signed evidence-only attestation. The attestation can authorize only one render.observe readback; it cannot merge, deploy, roll back or mutate the provider.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      repository,
+      core_join_verdict_id: coreJoinVerdictId,
+      pull_request: { type: "integer", minimum: 1 },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 160,
+      },
+    }, [
+      "work_id",
+      "intent_anchor_digest",
+      "repository",
+      "core_join_verdict_id",
+      "pull_request",
+      "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
     "host_native_action_authorize",
     "Authorize one exact host action",
     "Consume only bounded delegation budget and issue a signed, short-lived, one-use Core ticket for one exact native-agent, Git, GitHub or Render action. The server binds the authenticated host session.",

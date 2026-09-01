@@ -15,6 +15,7 @@ import {
   hostNativeDigest,
   hostNativeGithubDiffDigest,
 } from "../src/hostNativeGovernance.js";
+import { softwareAuthoritySnapshotDigest } from "../src/softwareCognition.js";
 
 const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);
@@ -557,6 +558,154 @@ test("owner-scoped manual merge route persists evidence only from selector input
       deniedKey.json.key,
     );
     assert.equal(denied.status, 403);
+  });
+});
+
+test("post-release readback route derives the attestation and Software closure server-side", async () => {
+  const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const verdictId = `hnj_${G("4")}`;
+  const freshUntil = new Date(Date.now() + 60_000).toISOString();
+  const graph = { revision: 7, source_digest: H("a"), nodes: [], edges: [] };
+  const snapshot = {
+    project: { digest: "project" }, work: { digest: "work" },
+    change: { digest: "change" }, obligations: [], evidence: [],
+    icf: { digest: "icf" }, graph,
+    native_plan: { digest: "plan" }, latest_native_plan_id: "plan-current",
+    native_closure: { digest: "native" }, challenges: [], artifacts: {},
+    db_now: new Date().toISOString(),
+  };
+  const closure = {
+    project_id: "project-a",
+    payload: {
+      verdict: "RELEASE_READY", authoritative_transition_performed: false,
+      graph_revision: graph.revision, graph_digest: graph.source_digest,
+      change_id: "change-a", plan_id: "plan-current",
+      authority_snapshot_digest: softwareAuthoritySnapshotDigest(snapshot),
+      evidence_fresh_until: freshUntil,
+      closure_digest: H("c"),
+    },
+  };
+  const claim = {
+    schema_version: "host_native_core_join_claim_v2",
+    tenant_id: "tenant-host-native", work_id: workId,
+    software_closure_digest: closure.payload.closure_digest,
+    software_closure_fresh_until: freshUntil,
+  };
+  const claimDigest = hostNativeDigest(claim);
+  const record = {
+    tenant_id: "tenant-host-native", verdict_id: verdictId, state: "active",
+    claim, claim_digest: claimDigest,
+    verdict: {
+      schema_version: "host_native_core_join_v2",
+      tenant_id: "tenant-host-native", work_id: workId,
+      claim_digest: claimDigest,
+      software_closure_digest: closure.payload.closure_digest,
+      software_closure_fresh_until: freshUntil,
+      issued_at: new Date().toISOString(),
+    },
+  };
+  let capturedInput;
+  let capturedTrusted;
+  const governance = {
+    required_checks_policy_resolver_configured: true,
+    closure_attestation_verifier_configured: true,
+    async readCoreJoinVerdict() { return record; },
+    verifyCoreJoinVerdict() { return true; },
+    async recordOwnerManualMergeReadback(input, trusted) {
+      capturedInput = structuredClone(input);
+      capturedTrusted = structuredClone(trusted);
+      return {
+        schema_version: "host_native_owner_manual_merge_readback_v1",
+        receipt_id: `hnmmr_${H("1").slice(0, 40)}`,
+        receipt_digest: H("2"), tenant_id: input.tenant_id,
+        work_id: input.work_id, core_join_verdict_id: input.core_join_verdict_id,
+        pull_request: input.pull_request, authority: "refresh_closure_only",
+        provider_execution: false,
+      };
+    },
+  };
+  const softwareStore = {
+    async withClosureAuthorityLock(_scope, operation) {
+      return operation({
+        readReleaseReadyClosure: async () => closure,
+        readGraph: async () => graph,
+        readClosureSnapshot: async () => snapshot,
+        assertClosureFresh: async () => true,
+      });
+    },
+  };
+  const softwareRuntime = {
+    initialize: async () => ({ ready: true }),
+    invoke: async () => ({}),
+  };
+  await fixture({
+    hostNativeGovernanceEnabled: true,
+    hostNativeGovernance: governance,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+    softwareCognitionMode: "ENFORCED",
+    softwareCognitionStore: softwareStore,
+    softwareCognitionRuntime: softwareRuntime,
+  }, async (request) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const health = await request("GET", "/healthz");
+      if (health.json.software_cognition?.state === "ready") break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const ownerKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native", key_type: "connector",
+      allowed_scopes: ["read:decision", "owner:assertion"],
+    });
+    const selector = {
+      work_id: workId, intent_anchor_digest: H("3"), repository: "owner/repo",
+      core_join_verdict_id: verdictId, pull_request: 390,
+      idempotency_key: "post-release-readback-pr-390",
+      owner_confirmed: true,
+      confirmation_reference: "owner confirmed historical readback",
+    };
+    const body = {
+      ...selector,
+      owner_context: signedOwnerContext(
+        OWNER_CONTEXT_SIGNING_SECRET,
+        "tenant-host-native",
+        selector,
+        "host_native_post_release_readback_attest",
+      ),
+    };
+    const response = await request(
+      "POST", "/v1/host-native/actions/post-release/readback-attest",
+      body, ownerKey.json.key,
+    );
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.post_release_readback_attestation.authority,
+      "refresh_closure_only");
+    assert.deepEqual(Object.keys(capturedInput).sort(), [
+      "core_join_verdict_id", "idempotency_key", "intent_anchor_digest",
+      "owner_confirmation", "pull_request", "repository", "tenant_id", "work_id",
+    ]);
+    assert.equal(capturedInput.owner_confirmation.purpose,
+      "host_native_post_release_readback_attest");
+    assert.deepEqual(capturedTrusted, {
+      software_closure_fresh_until: freshUntil,
+      software_closure_digest: closure.payload.closure_digest,
+      post_release_attestation: true,
+    });
+
+    const injectedSelector = { ...selector, post_release_attestation: true };
+    const injected = await request(
+      "POST", "/v1/host-native/actions/post-release/readback-attest",
+      {
+        ...injectedSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          injectedSelector,
+          "host_native_post_release_readback_attest",
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(injected.status, 400);
+    assert.equal(injected.json.error, "post_release_attestation_internal_only");
   });
 });
 

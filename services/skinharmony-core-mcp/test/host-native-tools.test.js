@@ -33,6 +33,24 @@ test("host-native work automation remains zero-provider and single-builder", () 
     assert.equal(Object.hasOwn(manualMerge.inputSchema.properties, callerFact), false,
       `${callerFact} must be resolved by Core rather than accepted from the caller`);
   }
+  const postRelease = HOST_NATIVE_TOOLS.find(
+    (tool) => tool.name === "host_native_post_release_readback_attest",
+  );
+  assert.ok(postRelease);
+  assert.deepEqual(postRelease.inputSchema.required, [
+    "work_id", "intent_anchor_digest", "repository", "core_join_verdict_id",
+    "pull_request", "idempotency_key",
+  ]);
+  assert.equal(postRelease.inputSchema.additionalProperties, false);
+  assert.equal(postRelease._meta["skinharmony/ownerConfirmationRequired"], true);
+  assert.equal(postRelease.annotations.destructiveHint, false);
+  for (const internalFact of [
+    "post_release_attestation", "software_closure_digest",
+    "software_closure_fresh_until", "merge_commit", "checks", "health",
+  ]) {
+    assert.equal(Object.hasOwn(postRelease.inputSchema.properties, internalFact), false,
+      `${internalFact} must remain server-derived`);
+  }
   const closureReceipt = HOST_NATIVE_TOOLS.find(
     (tool) => tool.name === "host_native_action_closure_receipt",
   );

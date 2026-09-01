@@ -3157,6 +3157,39 @@ export function createCoreHandlers(config, options = {}) {
       });
       return dedicatedCoreTextResult(payload, route);
     },
+    host_native_post_release_readback_attest: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const route = "/v1/host-native/actions/post-release/readback-attest";
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        repository: args.repository,
+        core_join_verdict_id: args.core_join_verdict_id,
+        pull_request: args.pull_request,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_post_release_readback_attest",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_post_release_readback_attest",
+              requestBody,
+            ),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
     host_native_action_authorize: async (args, identity, nativeClaim = null) => {
       const route = "/v1/host-native/actions/authorize";
       if (nativeClaim && identity?.nativePrecommitClaimIssuer !== true) {
