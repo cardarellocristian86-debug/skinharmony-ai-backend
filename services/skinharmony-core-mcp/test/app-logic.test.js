@@ -46,7 +46,19 @@ test("routes only the retired governed continuation name to the opaque current c
     resolveConnectorToolName("skinharmony_nyra_core.nyra_governed_continue", TOOLS),
     "nyra_continue",
   );
-  assert.equal(resolveConnectorToolName("unknown_governed_continue", TOOLS), null);
+  for (const lookalike of [
+    "unknown_governed_continue",
+    "nyra_governed_continue ",
+    "NYRA_GOVERNED_CONTINUE",
+    "constructor",
+    "toString",
+    "skinharmony_nyra_core.nyra_governed_continue.extra",
+    ["nyra_governed_continue"],
+    [["nyra_governed_continue"]],
+    ["skinharmony_nyra_core.nyra_governed_continue"],
+  ]) {
+    assert.equal(resolveConnectorToolName(lookalike, TOOLS), null);
+  }
 
   const normalized = normalizeLegacyNyraContinueArguments({
     operation: "review_work_bootstrap",
