@@ -197,9 +197,10 @@ const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
   evaluate: "nyra_v2_evaluate",
 });
 
-function tenantContextHeader(tenantId, signingSecret) {
+function tenantContextHeader(tenantId, signingSecret, nativePrecommitClaim = null) {
   if (Buffer.byteLength(String(signingSecret || ""), "utf8") < 32) return "";
-  const context = { version: "mcp_tenant_context_v1", tenant_id: tenantId, issued_at: new Date().toISOString() };
+  const context = { version: "mcp_tenant_context_v1", tenant_id: tenantId, issued_at: new Date().toISOString(),
+    ...(nativePrecommitClaim ? { native_precommit_claim: nativePrecommitClaim } : {}) };
   const canonical = JSON.stringify(context);
   const assertion = `mtc_${crypto.createHmac("sha256", signingSecret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
   return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
@@ -427,6 +428,9 @@ function compactWorkPreflight(preflight) {
     governance: preflight.governance,
     memory_first: preflight.memory_first,
     gate: preflight.gate,
+    canonical_intent_binding: preflight.canonical_intent_binding || null,
+    semantic_escalation: preflight.semantic_escalation || null,
+    core_orchestration_verdict: preflight.core_orchestration_verdict || null,
     core_research: preflight.core_research,
     tool_routing: preflight.tool_routing?.preferred_route
       ? { preferred_route: preflight.tool_routing.preferred_route }
@@ -906,6 +910,7 @@ export function createCoreHandlers(config, options = {}) {
     preservePolicyRegistryDomainPackId = false,
     strictTransport = false,
     timeoutMs = POLICY_REGISTRY_CORE_TIMEOUT_MS,
+    nativePrecommitClaim = null,
     maxResponseBytes = POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId });
@@ -927,6 +932,7 @@ export function createCoreHandlers(config, options = {}) {
       const context = tenantContextHeader(
         tenantId,
         config.tenantContextSigningSecret,
+        nativePrecommitClaim,
       );
       if (!context) {
         throw new Error("core_tenant_context_signing_unavailable");
@@ -2706,6 +2712,9 @@ export function createCoreHandlers(config, options = {}) {
       ) {
         throw new Error("standing_release_auto_claim_binding_mismatch");
       }
+      if (claim.action?.kind === "github.merge") {
+        throw new Error("standing_release_manual_merge_only");
+      }
       // A reserve replay returns the authoritative current ticket. Once the
       // first attempt has marked it reconciliation_required or completed, do
       // not mint another worker attempt from the freshly signed replay claim.
@@ -2777,7 +2786,7 @@ export function createCoreHandlers(config, options = {}) {
       const execution = workerPayload?.execution;
       const result = execution?.result;
       const actionKind = String(claim.action?.kind || "");
-      const commitAction = ["git.push.branch", "github.merge"].includes(actionKind);
+      const commitAction = actionKind === "git.push.branch";
       const pullRequestAction = ["github.draft_pr", "github.ready"].includes(actionKind);
       if (
         workerPayload?.ok !== true ||
@@ -2982,6 +2991,9 @@ export function createCoreHandlers(config, options = {}) {
       return dedicatedCoreTextResult(payload, route);
     },
     host_native_standing_release_github_execute: async (args, identity) => {
+      if (args.claim?.action?.kind === "github.merge") {
+        throw new Error("github_worker_manual_merge_only");
+      }
       const persistedIntent = await persistedStandingReleaseIntent(identity, args.work_id, args.intent_anchor_digest);
       if (String(args.claim?.tenant_id || "") !== String(identity.tenantId || "") ||
           String(args.claim?.work_id || "").toLowerCase() !== persistedIntent.work_id ||
@@ -3145,11 +3157,53 @@ export function createCoreHandlers(config, options = {}) {
       });
       return dedicatedCoreTextResult(payload, route);
     },
-    host_native_action_authorize: async (args, identity) => {
+    host_native_action_authorize: async (args, identity, nativeClaim = null) => {
       const route = "/v1/host-native/actions/authorize";
+      if (nativeClaim && identity?.nativePrecommitClaimIssuer !== true) {
+        throw new Error("native_precommit_claim_internal_only");
+      }
+      const nativeClaimFields = ["schema_version", "claim_id", "work_id", "continuation_ref",
+        "request_digest", "delegation_id", "action_digest", "gate_projection_digest",
+        "host_session_fingerprint", "idempotency_key", "replay", "claim_digest"];
+      if (nativeClaim && (typeof nativeClaim !== "object" || Array.isArray(nativeClaim) ||
+          Object.keys(nativeClaim).sort().join("\0") !== nativeClaimFields.sort().join("\0") ||
+          nativeClaim.schema_version !== "precommit_ticket_gate_claim_v1" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(nativeClaim.claim_id) ||
+          typeof nativeClaim.replay !== "boolean" || nativeClaim.work_id !== args.work_id ||
+          nativeClaim.delegation_id !== args.delegation_id ||
+          nativeClaim.action_digest !== crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical(args.action))).digest("hex") ||
+          nativeClaim.gate_projection_digest !== args.evidence_digest ||
+          nativeClaim.host_session_fingerprint !== hostNativeSessionFingerprint(identity) ||
+          nativeClaim.idempotency_key !== args.idempotency_key ||
+          nativeClaim.claim_digest !== crypto.createHash("sha256").update(JSON.stringify(stableCanonical(
+            Object.fromEntries(Object.entries(nativeClaim).filter(([key]) => key !== "claim_digest")),
+          ))).digest("hex"))) {
+        throw new Error("native_precommit_claim_invalid");
+      }
+      const nativePrecommitClaim = nativeClaim ? Object.freeze({
+        schema_version: "native_precommit_claim_attestation_v1",
+        claim_id: nativeClaim.claim_id,
+        claim_digest: nativeClaim.claim_digest,
+        claim_replay: nativeClaim.replay,
+        gate_projection_digest: nativeClaim.gate_projection_digest,
+        continuation_ref: nativeClaim.continuation_ref,
+        request_digest: nativeClaim.request_digest,
+        tenant_id: identity.tenantId,
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        delegation_id: args.delegation_id,
+        repository: args.repository,
+        action_digest: crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical(args.action))).digest("hex"),
+        evidence_digest: args.evidence_digest,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+      }) : null;
       const payload = await coreRequest(route, identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
+        nativePrecommitClaim,
         body: {
           delegation_id: args.delegation_id,
           work_id: args.work_id,
@@ -3394,6 +3448,9 @@ export function createCoreHandlers(config, options = {}) {
           : {}),
         ...(args.work_binding && typeof args.work_binding === "object"
           ? { work_binding: args.work_binding }
+          : {}),
+        ...(args.canonical_intent && typeof args.canonical_intent === "object"
+          ? { canonical_intent: args.canonical_intent }
           : {}),
         owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
         ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
@@ -4149,6 +4206,9 @@ export function createCoreHandlers(config, options = {}) {
         ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+        ...(args.canonical_intent && typeof args.canonical_intent === "object"
+          ? { canonical_intent: args.canonical_intent }
+          : {}),
         tenant_id: identity.tenantId
         }
       });
@@ -4718,6 +4778,86 @@ export function createCoreHandlers(config, options = {}) {
   // non-enumerable prevents it from becoming an MCP capability by accident.
   Object.defineProperty(handlers, "nyraWorkAutomationCoreRequest", {
     value: coreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  // Internal Nyra handoff: after Nyra has independently validated the issued
+  // Core ticket readback, consume the existing standing-release coordinator.
+  // This is deliberately not an MCP tool and never accepts merge/ready kinds.
+  Object.defineProperty(handlers, "coordinateNyraDraftPullRequest", {
+    value: async ({
+      action_request: request,
+      action_ticket: record,
+      materialization,
+      idempotency_key: idempotencyKey,
+    } = {}, identity) => {
+      const ticket = record?.ticket;
+      if (!ticket || ticket.action?.kind !== "github.draft_pr" ||
+          request?.action?.kind !== "github.draft_pr" ||
+          standingReleaseAutoDigest(ticket.action) !== standingReleaseAutoDigest(request.action) ||
+          ticket.ticket_id !== record.ticket?.ticket_id ||
+          ticket.delegation_id !== request.delegation_id ||
+          ticket.work_id !== request.work_id ||
+          ticket.intent_anchor_digest !== request.intent_anchor_digest ||
+          ticket.repository !== request.repository ||
+          config.standingReleaseAutoCoordinatorConfigurationValid === false ||
+          config.standingReleaseAutoCoordinatorEnabled !== true ||
+          !config.githubStandingReleaseWorkerUrl) {
+        throw new Error("nyra_pull_request_coordinator_binding_invalid");
+      }
+      if (!materialization || typeof materialization !== "object" || Array.isArray(materialization) ||
+          Object.keys(materialization).length !== 2 ||
+          typeof materialization.title !== "string" || typeof materialization.body !== "string" ||
+          materialization.title.length < 1 || materialization.title.length > 256 ||
+          materialization.body.length > 20_000 ||
+          crypto.createHash("sha256").update(materialization.title).digest("hex") !== ticket.action.title_digest ||
+          crypto.createHash("sha256").update(materialization.body).digest("hex") !== ticket.action.body_digest) {
+        throw new Error("nyra_pull_request_coordinator_materialization_invalid");
+      }
+      const keyDigest = crypto.createHash("sha256")
+        .update(String(idempotencyKey || "")).digest("hex").slice(0, 32);
+      const started = await handlers.host_native_standing_release_run_start({
+        delegation_id: ticket.delegation_id,
+        work_id: ticket.work_id,
+        intent_anchor_digest: ticket.intent_anchor_digest,
+        idempotency_key: `nyra-pr-start-${keyDigest}`,
+      }, identity);
+      const startedBody = started?.structuredContent || {};
+      const startedRecord = startedBody.standing_release_run;
+      const run = startedRecord?.run || startedRecord;
+      const runId = run?.run_id || startedRecord?.run_id;
+      const startVersion = Number(run?.version ?? startedRecord?.version);
+      if (!/^srr_[a-f0-9]{40}$/.test(String(runId || "")) ||
+          !Number.isSafeInteger(startVersion) || startVersion < 1) {
+        throw new Error("nyra_pull_request_coordinator_start_invalid");
+      }
+      const bound = await handlers.host_native_standing_release_run_bind_ticket({
+        run_id: runId,
+        work_id: ticket.work_id,
+        intent_anchor_digest: ticket.intent_anchor_digest,
+        ticket_id: ticket.ticket_id,
+        expected_version: startVersion,
+        idempotency_key: `nyra-pr-bind-${keyDigest}`,
+      }, identity);
+      const boundBody = bound?.structuredContent || {};
+      const boundRecord = boundBody.standing_release_run;
+      const boundRun = boundRecord?.run || boundRecord;
+      const boundRunId = boundRun?.run_id || boundRecord?.run_id;
+      const boundVersion = Number(boundRun?.version ?? boundRecord?.version);
+      if (boundRunId !== runId || !Number.isSafeInteger(boundVersion) || boundVersion <= startVersion) {
+        throw new Error("nyra_pull_request_coordinator_bind_invalid");
+      }
+      return handlers.host_native_standing_release_run_reserve({
+        run_id: runId,
+        work_id: ticket.work_id,
+        intent_anchor_digest: ticket.intent_anchor_digest,
+        ticket_id: ticket.ticket_id,
+        expected_version: boundVersion,
+        materialization,
+        idempotency_key: `nyra-pr-reserve-${keyDigest}`,
+      }, identity);
+    },
     enumerable: false,
     configurable: false,
     writable: false,

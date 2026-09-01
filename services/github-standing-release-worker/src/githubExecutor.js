@@ -48,6 +48,7 @@ export function createGitHubExecutor({ installation_token, fetch_impl = fetch } 
 
   return async function execute(claim, { materialization = null } = {}) {
     const action = claim.action;
+    if (action?.kind === "github.merge") fail("github_worker_manual_merge_only");
     safeAction(action);
     const token = await installation_token({ tenant_id: claim.tenant_id, repository: claim.repository });
     const root = `https://api.github.com/repos/${claim.repository}`;
@@ -122,21 +123,6 @@ export function createGitHubExecutor({ installation_token, fetch_impl = fetch } 
         fail("github_worker_ready_readback_mismatch");
       }
       return { outcome: "success", result_pull_request: pullNumber, idempotent: false };
-    }
-
-    if (action.kind === "github.merge") {
-      exactKeys(materialization || {}, new Set(), "github_worker_materialization_invalid");
-      if (pull.merged === true) {
-        return { outcome: "success", result_commit: sha(pull.merge_commit_sha, "github_worker_merge_readback_mismatch"), idempotent: true };
-      }
-      if (pull.draft !== false || action.merge_method !== "merge" || action.checks_verified !== true ||
-          action.checks_commit !== action.head_commit) fail("github_worker_merge_precondition_invalid");
-      const merged = await json(await call(`${root}/pulls/${pullNumber}/merge`, {
-        method: "PUT",
-        body: JSON.stringify({ sha: action.head_commit, merge_method: "merge" }),
-      }), "github_worker_merge_failed");
-      if (merged?.merged !== true) fail("github_worker_merge_readback_mismatch");
-      return { outcome: "success", result_commit: sha(merged.sha, "github_worker_merge_readback_mismatch"), idempotent: false };
     }
 
     fail("github_worker_action_not_supported");

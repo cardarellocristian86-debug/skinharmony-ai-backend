@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   WORK_CONTINUITY_SCHEMA_VERSION,
   WORK_EVENT_TYPES,
+  buildIntentAnchor,
   buildImpactMap,
   createWorkContinuityRuntime,
   digest,
@@ -18,6 +19,76 @@ import {
   tenantWorkCoordinationTarget,
 } from "../src/work-continuity-tools.js";
 import { validateToolArguments } from "../src/schema-validation.js";
+import { coreOrchestrationVerdictDigest } from "../../shared/nyra-core-orchestration-verdict.mjs";
+
+test("the immutable Work Intent anchor preserves the pre-Work canonical Intent binding", () => {
+  const turnBindingMaterial = {
+    schema_version: "nyra_canonical_intent_binding_v1",
+    intent_digest: "a".repeat(64),
+    raw_text_digest: "c".repeat(64),
+    operation_class: "READ_ONLY",
+    work_requirement: "NEW",
+    consequential_intent: false,
+    ambiguity: false,
+  };
+  const turnBinding = { ...turnBindingMaterial, binding_digest: digest(turnBindingMaterial) };
+  const verdictMaterial = {
+    schema_version: "core_orchestration_verdict_v1",
+    authority: "UNIVERSAL_CORE",
+    verdict: "HOLD",
+    reason_codes: ["new_work_identity_required"],
+    canonical_intent_binding: turnBinding,
+    required_nyra_branches: [],
+    denied_nyra_branches: [],
+    required_roles: ["memory_curator", "planner", "executor_specialist", "independent_verifier"],
+    task_graph_digest: "d".repeat(64),
+    maximum_parallel_assignments: 2,
+    independent_verifier_required: true,
+    nyra_materializes_branches: true,
+    core_join_required: true,
+    permitted_progress: ["ANALYSIS", "PLANNING", "EVIDENCE", "BOUNDED_WORKSPACE"],
+    external_execution_authorized: false,
+  };
+  const coreVerdict = {
+    ...verdictMaterial,
+    verdict_digest: coreOrchestrationVerdictDigest(verdictMaterial),
+  };
+  const canonicalBinding = {
+    schema_version: "nyra_work_canonical_intent_binding_v1",
+    canonical_intent_digest: "a".repeat(64),
+    core_orchestration_verdict_digest: coreVerdict.verdict_digest,
+    core_orchestration_verdict: coreVerdict,
+    intent_anchor_materialization: "intent_anchor_v1_from_governed_bootstrap",
+    immutable: true,
+    authority: "DESCRIPTIVE_ONLY",
+  };
+  const input = {
+    project_id: "project-a",
+    session_id: "session-a",
+    initial_message: "Crea un nuovo Work per il ripristino Nyra.",
+    idea: "Ripristinare Nyra",
+    objective: "Preservare Intent e continuità tra sessioni",
+    acceptance_criteria: ["Intent canonico persistito"],
+    constraints: ["Core resta authority"],
+    architecture: { host_binding: { canonical_intent_binding: canonicalBinding } },
+  };
+  const anchored = buildIntentAnchor(input);
+
+  assert.deepEqual(anchored.anchor.canonical_intent_binding, canonicalBinding);
+  assert.match(anchored.intent_digest, /^[a-f0-9]{64}$/);
+  assert.notEqual(anchored.intent_digest, buildIntentAnchor({
+    ...input,
+    architecture: {},
+  }).intent_digest);
+  assert.throws(() => buildIntentAnchor({
+    ...input,
+    architecture: {
+      host_binding: {
+        canonical_intent_binding: { ...canonicalBinding, authority: "EXECUTE" },
+      },
+    },
+  }), /intent_anchor_canonical_binding_invalid/);
+});
 
 test("work continuity advertises explicit automation report stages", () => {
   const report = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_native_report");

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTINUATION_REF = /^nyc1_[A-Za-z0-9_-]{32,80}$/;
@@ -38,6 +39,7 @@ export const NYRA_GOVERNED_CONTINUATION_SCHEMA = `
     intent_digest char(64),
     context_digest char(64),
     work_bootstrap_request_digest char(64),
+    core_orchestration_verdict jsonb,
     state varchar(24) NOT NULL DEFAULT 'OPEN',
     record_digest char(64) NOT NULL,
     issued_at timestamptz NOT NULL,
@@ -56,6 +58,8 @@ export const NYRA_GOVERNED_CONTINUATION_SCHEMA = `
     ) WHERE state='OPEN';
   CREATE INDEX IF NOT EXISTS nyra_governed_continuation_expiry_idx
     ON nyra_governed_continuation (expires_at);
+  ALTER TABLE nyra_governed_continuation
+    ADD COLUMN IF NOT EXISTS core_orchestration_verdict jsonb;
 
   CREATE TABLE IF NOT EXISTS nyra_governed_continuation_operation (
     tenant_id varchar(64) NOT NULL,
@@ -181,6 +185,7 @@ function canonicalRecord(record) {
     intent_digest: record.intent_digest,
     context_digest: record.context_digest,
     work_bootstrap_request_digest: record.work_bootstrap_request_digest,
+    core_orchestration_verdict: record.core_orchestration_verdict || null,
     issued_at: new Date(record.issued_at).toISOString(),
     expires_at: new Date(record.expires_at).toISOString(),
   };
@@ -196,7 +201,9 @@ function openingBindingMatches(record, candidate) {
     "ticket_state", "candidate_kind", "action_class", "merge_policy", "work_id", "project_id",
     "work_revision", "intent_digest", "context_digest", "work_bootstrap_request_digest",
   ];
-  return fields.every((field) => record[field] === candidate[field]);
+  return fields.every((field) => record[field] === candidate[field]) &&
+    digest(record.core_orchestration_verdict || null) ===
+      digest(candidate.core_orchestration_verdict || null);
 }
 
 function normalizeOpen(input, identity, now, ttlMs) {
@@ -236,18 +243,55 @@ function normalizeOpen(input, identity, now, ttlMs) {
         common.action_class !== "WORK_BOOTSTRAP") {
       fail("nyra_continuation_bootstrap_binding_invalid", 409);
     }
+    const canonicalIntentDigest = nullableDigest(
+      rawBinding.canonical_intent_digest,
+      "nyra_continuation_canonical_intent_binding_invalid",
+    );
+    const coreOrchestrationVerdictDigest = nullableDigest(
+      rawBinding.core_orchestration_verdict_digest,
+      "nyra_continuation_core_verdict_binding_invalid",
+    );
+    if (!canonicalIntentDigest || !coreOrchestrationVerdictDigest) {
+      fail("nyra_continuation_bootstrap_binding_invalid", 409);
+    }
+    const canonicalIntentBindingDigest = nullableDigest(
+      rawBinding.canonical_intent_binding_digest,
+      "nyra_continuation_canonical_intent_binding_invalid",
+    );
+    if (!canonicalIntentBindingDigest) {
+      fail("nyra_continuation_bootstrap_binding_invalid", 409);
+    }
+    let coreOrchestrationVerdict;
+    try {
+      coreOrchestrationVerdict = validateCoreOrchestrationVerdict(
+        input?.core_orchestration_verdict,
+        {
+          canonicalIntentDigest,
+          canonicalIntentBindingDigest,
+        },
+      );
+    } catch {
+      fail("nyra_continuation_core_verdict_binding_invalid", 409);
+    }
+    if (coreOrchestrationVerdict.verdict_digest !== coreOrchestrationVerdictDigest) {
+      fail("nyra_continuation_core_verdict_binding_invalid", 409);
+    }
     return {
       ...common,
       work_id: null,
       work_revision: null,
-      intent_digest: null,
-      context_digest: null,
+      // Before a Work exists these two existing integrity columns bind the
+      // turn-level canonical Intent and the Core orchestration verdict. For a
+      // work_action they retain their established Work-anchor meanings.
+      intent_digest: canonicalIntentDigest,
+      context_digest: coreOrchestrationVerdictDigest,
       work_bootstrap_request_digest: exactString(
         ticket.work_bootstrap_request_digest,
         SHA256,
         "nyra_continuation_bootstrap_digest_invalid",
         64,
       ),
+      core_orchestration_verdict: coreOrchestrationVerdict,
     };
   }
   const workId = nullableWorkId(rawBinding.work_id, "nyra_continuation_work_binding_invalid");
@@ -264,6 +308,7 @@ function normalizeOpen(input, identity, now, ttlMs) {
     intent_digest: intentDigest,
     context_digest: contextDigest,
     work_bootstrap_request_digest: null,
+    core_orchestration_verdict: null,
   };
 }
 
@@ -354,10 +399,26 @@ export function createNyraGovernedContinuationStore({
           to_regclass('nyra_governed_continuation') IS NOT NULL AS continuation_table,
           to_regclass('nyra_governed_continuation_operation') IS NOT NULL AS operation_table,
           to_regclass('nyra_governed_continuation_open_binding_idx') IS NOT NULL AS open_index,
-          to_regclass('nyra_governed_continuation_operation_state_idx') IS NOT NULL AS operation_index
+          to_regclass('nyra_governed_continuation_operation_state_idx') IS NOT NULL AS operation_index,
+          EXISTS (
+            SELECT 1
+            FROM pg_attribute
+            WHERE attrelid=to_regclass('nyra_governed_continuation')
+              AND attname='core_orchestration_verdict'
+              AND atttypid='jsonb'::regtype
+              AND attnum > 0
+              AND NOT attisdropped
+              AND NOT attnotnull
+          ) AS core_verdict_column
       `);
       const row = verification.rows?.[0];
-      if (!row?.continuation_table || !row?.operation_table || !row?.open_index || !row?.operation_index) {
+      if (
+        !row?.continuation_table ||
+        !row?.operation_table ||
+        !row?.open_index ||
+        !row?.operation_index ||
+        !row?.core_verdict_column
+      ) {
         throw new Error("nyra_continuation_schema_unverified");
       }
       initialized = true;
@@ -415,9 +476,10 @@ export function createNyraGovernedContinuationStore({
             tenant_id,continuation_ref,app_id,host_kind,host_registry_revision,subject_digest,
             session_fingerprint,directive_id,directive_request_digest,ticket_request_digest,
             ticket_state,candidate_kind,action_class,merge_policy,work_id,project_id,work_revision,
-            intent_digest,context_digest,work_bootstrap_request_digest,state,record_digest,issued_at,expires_at
+            intent_digest,context_digest,work_bootstrap_request_digest,core_orchestration_verdict,
+            state,record_digest,issued_at,expires_at
           ) VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23,$24,$25
           ) ON CONFLICT (tenant_id,app_id,session_fingerprint,directive_id,ticket_request_digest)
             WHERE state='OPEN' DO NOTHING
           RETURNING *`, [
@@ -426,8 +488,9 @@ export function createNyraGovernedContinuationStore({
           record.directive_id, record.directive_request_digest, record.ticket_request_digest,
           record.ticket_state, record.candidate_kind, record.action_class, record.merge_policy,
           record.work_id, record.project_id, record.work_revision, record.intent_digest,
-          record.context_digest, record.work_bootstrap_request_digest, record.state,
-          record.record_digest, record.issued_at, record.expires_at,
+          record.context_digest, record.work_bootstrap_request_digest,
+          record.core_orchestration_verdict ? JSON.stringify(record.core_orchestration_verdict) : null,
+          record.state, record.record_digest, record.issued_at, record.expires_at,
         ]);
         record = rowToRecord(inserted.rows[0]);
         if (!record) {

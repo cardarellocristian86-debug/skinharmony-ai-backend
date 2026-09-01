@@ -5,6 +5,7 @@ import {
   authenticatedHostKind,
   publicHostPrincipal,
 } from "./host-app-registry.js";
+import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 
 const PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,127}$/;
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,127}$/;
@@ -138,6 +139,9 @@ export function materializeGovernedWorkBootstrapRequest({
   spec,
   identity,
   projectId,
+  canonicalIntentDigest = null,
+  coreOrchestrationVerdictDigest = null,
+  coreOrchestrationVerdict = null,
 } = {}) {
   const normalized = normalizeGovernedWorkBootstrapSpec(spec);
   const project_id = String(projectId || "").trim();
@@ -147,6 +151,31 @@ export function materializeGovernedWorkBootstrapRequest({
   const principal = publicHostPrincipal(identity);
   if (principal?.registered !== true) fail("registered_host_principal_required", 403);
   const host_type = authenticatedHostKind(identity);
+  const canonical_intent_digest = canonicalIntentDigest === null || canonicalIntentDigest === undefined
+    ? null : String(canonicalIntentDigest).trim().toLowerCase();
+  const core_orchestration_verdict_digest = coreOrchestrationVerdictDigest === null ||
+    coreOrchestrationVerdictDigest === undefined
+    ? null : String(coreOrchestrationVerdictDigest).trim().toLowerCase();
+  if ((canonical_intent_digest && !/^[a-f0-9]{64}$/.test(canonical_intent_digest)) ||
+      (core_orchestration_verdict_digest && !/^[a-f0-9]{64}$/.test(core_orchestration_verdict_digest)) ||
+      Boolean(canonical_intent_digest) !== Boolean(core_orchestration_verdict_digest)) {
+    fail("nyra_work_bootstrap_canonical_binding_invalid", 409);
+  }
+  let core_orchestration_verdict = null;
+  if (canonical_intent_digest) {
+    try {
+      core_orchestration_verdict = validateCoreOrchestrationVerdict(coreOrchestrationVerdict, {
+        canonicalIntentDigest: canonical_intent_digest,
+      });
+    } catch {
+      fail("nyra_work_bootstrap_core_verdict_invalid", 409);
+    }
+    if (core_orchestration_verdict.verdict_digest !== core_orchestration_verdict_digest) {
+      fail("nyra_work_bootstrap_core_verdict_invalid", 409);
+    }
+  } else if (coreOrchestrationVerdict !== null && coreOrchestrationVerdict !== undefined) {
+    fail("nyra_work_bootstrap_core_verdict_invalid", 409);
+  }
   return bindWorkBootstrapRequestToAuthenticatedHost({
     identity,
     request: {
@@ -169,6 +198,17 @@ export function materializeGovernedWorkBootstrapRequest({
           nyra_first: true,
           universal_core_final_authority: true,
           provider_execution: false,
+          ...(canonical_intent_digest ? {
+            canonical_intent_binding: Object.freeze({
+              schema_version: "nyra_work_canonical_intent_binding_v1",
+              canonical_intent_digest,
+              core_orchestration_verdict_digest,
+              core_orchestration_verdict,
+              intent_anchor_materialization: "intent_anchor_v1_from_governed_bootstrap",
+              immutable: true,
+              authority: "DESCRIPTIVE_ONLY",
+            }),
+          } : {}),
         }),
       }),
       next_action: normalized.next_action,

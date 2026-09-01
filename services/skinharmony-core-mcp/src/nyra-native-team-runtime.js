@@ -296,7 +296,8 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
   // MCP tool. It lets Nyra's Work Autopilot materialize only the specialists
   // selected for one existing Work, while keeping the owner-gated package
   // enablement and every zero-privilege property intact.
-  async function materializeForWork(identity, input = {}) {
+  async function materializeForWorkInTransaction(client, identity, input = {}) {
+    if (!client || typeof client.query !== "function") throw new Error("nyra_native_team_transaction_client_required");
     const tenantId = tenant(identity?.tenantId);
     const workId = uuid(input.work_id, "work_id");
     const projectId = identifier(input.project_id, "project_id");
@@ -304,8 +305,7 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     const key = idempotencyKey(input.idempotency_key);
     const blueprints = selectedBlueprints(input.blueprint_ids || NYRA_NATIVE_TEAM_BLUEPRINTS.map((item) => item.blueprint_id));
     const context = { tenantId, workId, projectId, actor };
-    return transaction(async (client) => {
-      const work = await client.query(`SELECT project_id,status FROM core_continuity_works
+    const work = await client.query(`SELECT project_id,status FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
       if (!work.rows[0]) throw new Error("continuity_work_not_found");
       if (work.rows[0].project_id !== projectId) throw new Error("nyra_native_team_project_mismatch");
@@ -385,8 +385,11 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
       await client.query(`INSERT INTO core_nyra_native_team_idempotency
         (tenant_id,work_id,idempotency_key,request_digest,result) VALUES ($1,$2,$3,$4,$5::jsonb)`,
       [tenantId, workId, key, digest(request), JSON.stringify(result)]);
-      return result;
-    });
+    return result;
+  }
+
+  async function materializeForWork(identity, input = {}) {
+    return transaction((client) => materializeForWorkInTransaction(client, identity, input));
   }
 
   return {
@@ -444,6 +447,9 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     },
 
     materializeForWork,
+    // Internal composition surface: callers must already own the transaction.
+    // It is intentionally absent from the MCP tool registry.
+    materializeForWorkInTransaction,
 
     async read(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);

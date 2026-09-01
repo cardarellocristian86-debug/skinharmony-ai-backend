@@ -9,7 +9,6 @@ const ALLOWED_ACTIONS = new Set([
   "git.push.branch",
   "github.draft_pr",
   "github.ready",
-  "github.merge",
 ]);
 
 function fail(code) {

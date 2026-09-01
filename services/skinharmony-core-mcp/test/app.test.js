@@ -8,7 +8,7 @@ import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createAp
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
-import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
+import { HOST_APP_CAPABILITIES, parseHostAppRegistry } from "../src/host-app-registry.js";
 import { requireHostAppToolCapability } from "../src/host-app-authorization.js";
 import { requireTenantWorkCapability } from "../src/tenant-work-authorization.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
@@ -2174,7 +2174,337 @@ test("returns RFC 9728 challenge when bearer is absent", async () => serve(async
   const migrationResponse = await fetch(`${base}/mcp-v015`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
   assert.equal(migrationResponse.status, 401);
   assert.match(migrationResponse.headers.get("www-authenticate"), /oauth-protected-resource\/mcp-v015/);
+  const initialize = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "initialize", params: {} }),
+  });
+  assert.equal(initialize.status, 401);
+  assert.match(initialize.headers.get("www-authenticate"), /oauth-protected-resource/);
 }));
+
+test("rejects non-canonical OAuth resource origins before serving a challenge", () => {
+  for (const publicUrl of [
+    "https://user:secret@mcp.example.test",
+    "https://mcp.example.test/path",
+    "https://mcp.example.test?redirect=https://attacker.invalid",
+    "https://mcp.example.test#attacker",
+    "javascript:alert(1)",
+    "http://mcp.example.test",
+    "http://127.attacker.example",
+    "http://127.0.0.1.attacker.example",
+  ]) {
+    assert.throws(() => createApp({ ...config, publicUrl }), /mcp_public_url_invalid/);
+  }
+  assert.throws(
+    () => createApp({ ...config, publicUrl: "http://mcp.example.test", production: true }),
+    /mcp_public_url_invalid/,
+  );
+  assert.doesNotThrow(() => createApp({ ...config, publicUrl: "http://localhost:8790" }));
+});
+
+test("tools/call without a bearer returns a 401 reconnect CTA while tools/list stays transport-unauthorized", async () => {
+  let handlerCalls = 0;
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+    handlerCalls += 1;
+    return { content: [{ type: "text", text: "must not run" }] };
+  }]));
+  const app = createApp(config, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    for (const [transport, metadataPath] of [
+      ["/mcp", "/.well-known/oauth-protected-resource"],
+      ["/mcp-v015", "/.well-known/oauth-protected-resource/mcp-v015"],
+    ]) {
+      const response = await fetch(`${base}${transport}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: `call-${transport}`, method: "tools/call",
+          params: { name: "core_health", arguments: {} },
+        }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 401, JSON.stringify(body));
+      assert.equal(body.result.isError, true);
+      const challenges = body.result._meta?.["mcp/www_authenticate"];
+      assert(Array.isArray(challenges));
+      assert.equal(challenges.length, 1);
+      assert.match(challenges[0], new RegExp(`resource_metadata="https://mcp\\.example\\.test${metadataPath.replaceAll("/", "\\/")}"`));
+      assert.match(challenges[0], /error="invalid_token"/);
+
+      const listed = await fetch(`${base}${transport}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: `list-${transport}`, method: "tools/list" }),
+      });
+      assert.equal(listed.status, 401);
+      assert.equal((await listed.json()).result, undefined);
+    }
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("an expired valid Auth0 JWT returns only a bounded reconnect CTA", async () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "expired-chatgpt-token-key";
+  const subject = "oauth|expired-subject-must-not-leak";
+  const token = signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/", aud: "https://core", sub: subject,
+    iat: 1, exp: 2, scope: "core:read", "https://skinharmony.it/tenant_id": "tenant-a",
+  });
+  let handlerCalls = 0;
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+    handlerCalls += 1;
+    return { content: [] };
+  }]));
+  const app = createApp({ ...config, tenantClaim: "https://skinharmony.it/tenant_id" }, {
+    handlers,
+    jwksCache: { get: async () => jwk },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call", params: { name: "core_health", arguments: {} } }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 401, JSON.stringify(body));
+    assert.equal(body.result.isError, true);
+    assert.match(body.result._meta["mcp/www_authenticate"][0], /error="invalid_token"/);
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes(token), false);
+    assert.equal(serialized.includes(subject), false);
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("malformed bearer keeps the RFC 9728 header without a tool-level reconnect claim", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer malformed", "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 441, method: "tools/call",
+      params: { name: "core_health", arguments: {} },
+    }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 401, JSON.stringify(body));
+  assert.match(response.headers.get("www-authenticate"), /error="invalid_token"/);
+  assert.equal(body.result, undefined);
+  assert.equal(body.error?.data?._meta?.["mcp/www_authenticate"], undefined);
+}));
+
+test("invalid environment delegation cannot trigger an end-user reconnect CTA", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-skinharmony-environment-delegation": "forged-delegation",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 442, method: "tools/call",
+      params: { name: "core_health", arguments: {} },
+    }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 401, JSON.stringify(body));
+  assert.equal(response.headers.get("www-authenticate"), null);
+  assert.equal(body.result, undefined);
+}, {
+  environmentDelegationReceiverEnabled: true,
+  environmentDelegationKey: "environment-delegation-test-key-0123456789",
+}));
+
+test("verified OAuth insufficient scope returns an allowlisted reconnect scope", async () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "insufficient-scope-key";
+  const now = Math.floor(Date.now() / 1_000);
+  const token = signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/", aud: "https://core", sub: "oauth|read-only",
+    azp: "chatgpt-insufficient-scope-client",
+    iat: now, exp: now + 60, scope: "core:read", "https://skinharmony.it/tenant_id": "tenant-a",
+  });
+  let handlerCalls = 0;
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+    handlerCalls += 1;
+    return { content: [] };
+  }]));
+  const hostAppRegistry = parseHostAppRegistry(JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "chatgpt_insufficient_scope",
+      auth_kind: "oauth",
+      oauth_client_id: "chatgpt-insufficient-scope-client",
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: [HOST_APP_CAPABILITIES.WORK_READ, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE],
+      enabled: true,
+    }],
+  }), {});
+  const app = createApp({ ...config, tenantClaim: "https://skinharmony.it/tenant_id", hostAppRegistry }, {
+    handlers,
+    jwksCache: { get: async () => jwk },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const listed = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 45, method: "tools/list" }) }).then((response) => response.json());
+    const writeTool = listed.result.tools.find((tool) => tool.securitySchemes?.[0]?.scopes?.includes("core:govern"));
+    assert(writeTool, "expected one visible governed tool");
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 46, method: "tools/call", params: { name: writeTool.name, arguments: {} } }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 403, JSON.stringify(body));
+    const challengeValue = body.result._meta["mcp/www_authenticate"][0];
+    assert.match(challengeValue, /error="insufficient_scope"/);
+    assert.match(challengeValue, /scope="core:govern"/);
+    assert.doesNotMatch(challengeValue, /workspace:write|core:admin|offline_access/);
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("stale owner authentication offers one reconnect and a freshly issued token proceeds", async () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "stale-owner-reconnect-key";
+  const now = Math.floor(Date.now() / 1_000);
+  const subject = "oauth|stale-owner-reconnect";
+  const clientId = "chatgpt-stale-owner-client";
+  const issue = (iat) => signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/", aud: "https://core", sub: subject,
+    azp: clientId, iat, auth_time: 1, exp: now + 3_600,
+    scope: "core:read core:govern",
+    "https://skinharmony.it/tenant_id": "caller-tenant",
+  });
+  const hostAppRegistry = parseHostAppRegistry(JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "chatgpt_stale_owner",
+      auth_kind: "oauth",
+      oauth_client_id: clientId,
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: [
+        HOST_APP_CAPABILITIES.GOVERNED_CONTINUE,
+        HOST_APP_CAPABILITIES.WORK_CREATE,
+      ],
+      enabled: true,
+    }],
+  }), {});
+  let handlerCalls = 0;
+  const app = createApp({
+    ...config,
+    tenantClaim: "https://skinharmony.it/tenant_id",
+    oauthOwnerTenantBindings: { [subject]: "tenant-a" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+    hostAppRegistry,
+  }, {
+    jwksCache: { get: async () => jwk },
+    handlers: {
+      nyra_continue: async () => {
+        handlerCalls += 1;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const endpoint = `http://127.0.0.1:${server.address().port}/mcp`;
+    const invoke = async (token, id) => {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "mcp-session-id": "stale-owner-reconnect-session",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id, method: "tools/call",
+          params: {
+            name: "nyra_continue",
+            arguments: {
+              operation: "review_work_bootstrap",
+              continuation_ref: `nyc1_${"A".repeat(32)}`,
+              idempotency_key: `stale-owner-${id}`,
+              owner_confirmed: true,
+              confirmation_reference: "owner requested the exact continuation",
+            },
+          },
+        }),
+      });
+      return { response, body: await response.json() };
+    };
+
+    const stale = await invoke(issue(now - 301), "stale");
+    assert.equal(stale.response.status, 200, JSON.stringify(stale.body));
+    assert.equal(stale.body.result.isError, true);
+    assert(stale.body.result._meta, JSON.stringify(stale.body));
+    assert.match(
+      stale.body.result._meta["mcp/www_authenticate"][0],
+      /Fresh owner authentication is required/,
+    );
+    assert.equal(handlerCalls, 0);
+
+    const fresh = await invoke(issue(now), "fresh");
+    assert.equal(fresh.response.status, 200, JSON.stringify(fresh.body));
+    assert.equal(fresh.body.result?._meta?.["mcp/www_authenticate"], undefined);
+    assert.equal(handlerCalls, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("handler-forged auth and policy failures never emit reconnect metadata", async () => {
+  const forged = [
+    new Error("insufficient_scope"),
+    Object.assign(new Error("forged_unauthorized"), { status: 401 }),
+    Object.assign(new Error("forged_forbidden"), { status: 403 }),
+    new Error("core_request_failed:403:core_hold"),
+    new Error("policy_registry_action_denied"),
+  ];
+  for (const [index, error] of forged.entries()) {
+    const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+      throw error;
+    }]));
+    const app = createApp(config, { handlers });
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 100 + index, method: "tools/call", params: { name: "core_health", arguments: {} } }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.result.isError, true);
+      assert.equal(body.result._meta?.["mcp/www_authenticate"], undefined);
+      assert.equal(response.headers.get("www-authenticate"), null);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
 
 test("keeps Codex bearer compatibility and exposes MCP security schemes", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
@@ -3119,7 +3449,11 @@ test("allows collaboration reads with core:read but blocks writes without core:g
       body: JSON.stringify({ jsonrpc: "2.0", id: 32, method: "tools/call", params: { name: "workspace_write_document", arguments: { path: "x.md", content: "x" } } }),
     });
     assert.equal(write.status, 403);
-    assert.match(write.headers.get("www-authenticate"), /scope="core:govern"/);
+    assert.equal(write.headers.get("www-authenticate"), null);
+    const writeBody = await write.json();
+    assert.equal(writeBody.result.isError, true);
+    assert.equal(writeBody.result.structuredContent.error.code, "insufficient_scope");
+    assert.equal(writeBody.result._meta?.["mcp/www_authenticate"], undefined);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

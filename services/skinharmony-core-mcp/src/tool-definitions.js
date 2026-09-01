@@ -817,6 +817,22 @@ const nyraDirectiveActionClass = {
     "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
   ],
 };
+// These are server-produced summaries, not caller input or authority. Keep
+// the connector schema compact by bounding their field counts; internal
+// validators pin every identity, digest and non-executing invariant before
+// projecting the complete closed contracts into this response.
+const nyraCanonicalIntentBindingSchema = {
+  type: "object",
+  maxProperties: 8,
+};
+const nyraCoreOrchestrationVerdictSchema = {
+  type: "object",
+  maxProperties: 18,
+};
+const nyraCoreSemanticEscalationSchema = {
+  type: "object",
+  maxProperties: 10,
+};
 const nyraPrecommitGateBinding = object({
   task_id: { type: "string", format: "uuid" },
   plan_id: { type: "string", format: "uuid" },
@@ -830,35 +846,14 @@ const nyraPrecommitGateBinding = object({
   "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
   "supersession_digest", "reconciliation_digest", "projection_digest",
 ]);
-const nyraPrecommitTicketGate = object({
-  schema_version: { const: "precommit_ticket_gate_v1" },
-  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
-  work_id: { type: "string", format: "uuid" },
-  action_kind: { const: "git.commit" },
-  gate_kind: { const: "ticket_acquisition" },
-  task_id: { type: "string", format: "uuid" },
-  plan_id: { type: "string", format: "uuid" },
-  evaluation_id: { type: "string", format: "uuid" },
-  evaluation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  workspace_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  supersession_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  reconciliation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  legacy_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
-    items: { type: "string", format: "uuid" } },
-  replacement_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
-    items: { type: "string", format: "uuid" } },
-  fulfilled: { type: "boolean" },
-  ticket_id: { type: ["string", "null"], maxLength: 160 },
-  fresh: { type: "boolean" },
-  drift_codes: { type: "array", maxItems: 16, uniqueItems: true, items: nyraDirectiveCode },
-  projection_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-}, [
-  "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind", "task_id",
-  "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
-  "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
-  "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
-  "projection_digest",
-]);
+// The full v1/v2 gate is a server-produced, non-authoritative projection.
+// Runtime validators pin its exact discriminated shape and digest before it
+// can influence a continuation; publishing that large union here would push
+// the compact ChatGPT connector catalog over its import budget.
+const nyraPrecommitTicketGate = {
+  type: "object",
+  maxProperties: 21,
+};
 const nyraDirectiveBinding = object({
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },
   work_id: nyraConverseNullableText(80),
@@ -866,8 +861,12 @@ const nyraDirectiveBinding = object({
   work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
   intent_digest: nyraDirectiveDigest,
   context_digest: nyraDirectiveDigest,
+  canonical_intent_digest: nyraDirectiveDigest,
+  canonical_intent_binding_digest: nyraDirectiveDigest,
+  core_orchestration_verdict_digest: nyraDirectiveDigest,
   precommit_ticket_gate: { anyOf: [{ type: "null" }, nyraPrecommitGateBinding] },
 }, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
+  "canonical_intent_digest", "canonical_intent_binding_digest", "core_orchestration_verdict_digest",
   "precommit_ticket_gate"]);
 const nyraGovernedContinuationSchema = object({
   schema_version: { const: "nyra_continuation_ref_v1" },
@@ -926,7 +925,7 @@ const nyraContinueActionKind = {
   type: "string",
   enum: [
     "git.commit", "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
-    "github.merge", "github.release", "render.deploy", "render.promote",
+    "github.release", "render.deploy", "render.promote",
   ],
 };
 const nyraContinueDelegationRequest = object({
@@ -998,6 +997,10 @@ const nyraContinueActionRequest = object({
   "delegation_id", "work_id", "intent_anchor_digest", "repository", "action",
   "evidence_digest",
 ]);
+const nyraContinuePullRequestMaterialization = object({
+  title: { type: "string", minLength: 1, maxLength: 256 },
+  body: { type: "string", maxLength: 20_000 },
+}, ["title", "body"]);
 const nyraWorkBootstrapSpec = object({
   request_id: { type: "string", minLength: 2, maxLength: 160, pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$" },
   work_name: { type: "string", minLength: 1, maxLength: 1_000 },
@@ -1037,6 +1040,9 @@ const nyraOrchestrationDirectiveSchema = object({
   directive_id: { type: "string", pattern: "^nyra_dir_[a-f0-9]{24}$" },
   request_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
   source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "WORK_GALLERY", "CONTROL_ROOM", "LEGACY_CONNECTOR_HINT"] },
+  canonical_intent_binding: { anyOf: [{ type: "null" }, nyraCanonicalIntentBindingSchema] },
+  core_orchestration_verdict: { anyOf: [{ type: "null" }, nyraCoreOrchestrationVerdictSchema] },
+  semantic_escalation: { anyOf: [{ type: "null" }, nyraCoreSemanticEscalationSchema] },
   problem: {
     anyOf: [
       { type: "null" },
@@ -1183,7 +1189,8 @@ const nyraOrchestrationDirectiveSchema = object({
   ]),
   execution_authorized: { const: false },
 }, [
-  "schema_version", "directive_id", "request_digest", "source", "problem", "core_diagnostics", "needs", "next_actions",
+  "schema_version", "directive_id", "request_digest", "source", "canonical_intent_binding",
+  "core_orchestration_verdict", "semantic_escalation", "problem", "core_diagnostics", "needs", "next_actions",
   "decision", "work_context", "permitted_progress", "can_continue", "ticket_request", "execution_authorized",
 ]);
 // This projection is intentionally separate from the direct Control Room
@@ -1539,7 +1546,7 @@ const nyraControlRoomOutputSchema = object({
 
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
-  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived status for Core domains and, when an exact Work is provided, its closure progress, blockers, next action and allowed control categories. This read never mutates state or grants authority.", object({
+  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived Core and Work status, blockers and next action. Never mutates or grants authority.", object({
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
   }), ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
@@ -1621,8 +1628,8 @@ export const TOOLS = [
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
     continuation_operation: nyraActionContinuationOperation,
-    work_selection_mode: { type: "string", enum: ["list"], description: "Read only: list Work choices without resuming, binding, creating, or changing a Work." },
-    work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Read only: server-issued cursor for the next Work-selection page." },
+    work_selection_mode: { type: "string", enum: ["list"], description: "Read-only Work list." },
+    work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Server-issued read-only page cursor." },
     semantic_intent_hint: {
       ...object({
       schema_version: { const: "nyra_semantic_intent_hint_v1" },
@@ -1647,13 +1654,14 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_continue", "Nyra: continue one governed request", "Continue only the opaque, short-lived continuation_ref returned by nyra_converse. Nyra resolves it server-side and submits its bounded request to Universal Core; the AI never receives a Core candidate attestation. A registered host may request a duplicate review and owner-governed canonical V2 Work bootstrap, one bounded native-host delegation, or one exact action ticket. Work creation is two-phase and private by default; registration never grants owner authority. The tool never reserves or executes a ticket, never calls GitHub/Render, and never performs merge, deploy or publish. Unknown apps, host drift, expired references and durable replays fail closed.", object({
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue a server-bound Nyra ref. A trusted Core draft-PR ticket may dispatch the standing-release worker; merge is always manual.", object({
     operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
     continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
     work_bootstrap: nyraWorkBootstrapSpec,
     review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
     delegation_request: nyraContinueDelegationRequest,
     action_request: nyraContinueActionRequest,
+    pull_request_materialization: nyraContinuePullRequestMaterialization,
     resume_request: nyraContinueResumeRequest,
     native_plan_request: nyraContinueNativePlanRequest,
     native_bind_request: nyraContinueNativeBindRequest,
@@ -1663,8 +1671,8 @@ export const TOOLS = [
     ownerConfirmationRequired: false,
     meta: {
       "skinharmony/dedicatedCoreGate": true,
-      "skinharmony/externalSideEffect": false,
-      "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": true,
+      "skinharmony/providerExecution": true,
       "skinharmony/nyraGovernedContinuation": true,
     },
   }),
@@ -1677,7 +1685,7 @@ export const TOOLS = [
       "skinharmony/externalSideEffect": false,
     },
   }),
-  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
+  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded capabilities by group. Exposes no arbitrary path, secret or authority surface.", object({
     group: identifier,
     capability_id: identifier,
     include_schema: { type: "boolean" },
@@ -1696,7 +1704,7 @@ export const TOOLS = [
       assignment_capability: { type: "string", pattern: "^hnac_[A-Za-z0-9_-]{43}$" },
     }, ["work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability"]),
   }), ["core:read"]),
-  tool("core_branch_registry", "Read Core branch intelligence", "Read the registry, taxonomy, maturity or authenticated authorization view for Core branches. Tenant and entitlements are derived from the Core key.", object({
+  tool("core_branch_registry", "Read Core branch intelligence", "Read Core branch registry, taxonomy, maturity or authenticated authorization view.", object({
     view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },
     branches: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
   }), ["core:read"]),
@@ -1722,7 +1730,7 @@ export const TOOLS = [
     intent: { type: "string", maxLength: 240 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
   }), ["core:read"]),
-  tool("core_capability_read", "Read a dynamic Core capability", "Invoke one server-registered read-only capability by exact capability id and catalog revision. Routes, methods, tenant identity and authorization are resolved only server-side.", object({
+  tool("core_capability_read", "Read a dynamic Core capability", "Invoke an exact server-registered read capability; Core resolves routing, identity and authorization.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
@@ -1731,7 +1739,7 @@ export const TOOLS = [
     // is consumed by the gateway only and is never forwarded to `arguments`.
     session_id: identifier,
   }, ["capability_id", "catalog_revision"]), ["core:read"]),
-  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. Bounded post-delegation actions use their signed Core gate without another owner prompt; only a target explicitly marked owner-confirmed may consume one fresh owner confirmation.", object({
+  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke an exact server-registered mutation. Core resolves identity, scope, gate and owner confirmation.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },

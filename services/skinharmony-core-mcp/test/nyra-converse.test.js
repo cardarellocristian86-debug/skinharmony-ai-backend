@@ -18,6 +18,7 @@ import {
 import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
 import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { projectNyraControlRoomStatus } from "../src/nyra-control-room.js";
+import { classifyNyraIntent } from "../src/nyra-intent-router.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
@@ -263,6 +264,54 @@ function interpretationFixture(tenantId = "tenant-a", preferredReply = "Sì, son
   };
 }
 
+function corePreflightForTurn(args, tenantId) {
+  return buildWorkPreflight({
+    tenantId,
+    requestText: args.message,
+    operationType: "nyra.converse",
+    toolName: "nyra_converse",
+    availableCapabilities: ["nyra_converse", "skinharmony_core_mcp"],
+    memoryContext: {
+      tenant_id: tenantId,
+      revision: 9,
+      relevant_memories: [],
+      pending_handoffs: [],
+    },
+    galleryContext: {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: tenantId,
+      available: true,
+      state: "ready",
+      work_count: 1,
+      works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
+    },
+    canonicalIntent: args.canonical_intent,
+  });
+}
+
+function bindFixtureToTurn(fixture, args, tenantId, { interpretation = false } = {}) {
+  const copy = structuredClone(fixture);
+  const generated = corePreflightForTurn(args, tenantId);
+  if (interpretation) {
+    const supplied = copy.structuredContent.result?.work_preflight || {};
+    copy.structuredContent.result.work_preflight = {
+      ...generated,
+      ...supplied,
+      canonical_intent_binding: generated.canonical_intent_binding,
+      core_orchestration_verdict: generated.core_orchestration_verdict,
+    };
+    return copy;
+  }
+  const supplied = copy.structuredContent.work_preflight || {};
+  copy.structuredContent.work_preflight = {
+    ...generated,
+    ...supplied,
+    canonical_intent_binding: generated.canonical_intent_binding,
+    core_orchestration_verdict: generated.core_orchestration_verdict,
+  };
+  return copy;
+}
+
 function directiveContextFixture({
   tenantId = "tenant-a",
   projectId = "nyra_core",
@@ -335,6 +384,32 @@ function precommitTicketGateFixture({ fresh = true, fulfilled = false } = {}) {
   return { ...material, projection_digest: canonicalDigest(material) };
 }
 
+function nativePrecommitTicketGateFixture(overrides = {}) {
+  const material = {
+    schema_version: "precommit_ticket_gate_v2",
+    gate_source: "native_closure_evaluation",
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    action_kind: "git.commit",
+    gate_kind: "ticket_acquisition",
+    task_id: TASK_ID,
+    plan_id: PRECOMMIT_PLAN_ID,
+    evaluation_id: PRECOMMIT_EVALUATION_ID,
+    evaluation_digest: "3".repeat(64),
+    workspace_digest: "4".repeat(64),
+    supersession_digest: "5".repeat(64),
+    reconciliation_digest: "6".repeat(64),
+    legacy_evidence_ids: [],
+    replacement_evidence_ids: [],
+    fulfilled: false,
+    ticket_id: null,
+    fresh: true,
+    drift_codes: [],
+    ...overrides,
+  };
+  return { ...material, projection_digest: canonicalDigest(material) };
+}
+
 function reconciledPrecommitContext(options = {}) {
   const context = directiveContextFixture();
   return {
@@ -389,11 +464,20 @@ function harness({
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
       calls.preflight.push({ args, identity: authenticatedIdentity });
-      return preflightResult || preflightFixture(authenticatedIdentity.tenantId);
+      return bindFixtureToTurn(
+        preflightResult || preflightFixture(authenticatedIdentity.tenantId),
+        args,
+        authenticatedIdentity.tenantId,
+      );
     },
     interpret: async (args, authenticatedIdentity) => {
       calls.interpret.push({ args, identity: authenticatedIdentity });
-      return interpretationResult || interpretationFixture(authenticatedIdentity.tenantId);
+      return bindFixtureToTurn(
+        interpretationResult || interpretationFixture(authenticatedIdentity.tenantId),
+        args,
+        authenticatedIdentity.tenantId,
+        { interpretation: true },
+      );
     },
     readControlContext: persistedContext === undefined ? null : async (authenticatedIdentity, args) => {
       calls.readControlContext.push({ args, identity: authenticatedIdentity });
@@ -584,6 +668,27 @@ test("reads tenant lessons and bounded anonymized platform blocks without Work",
   assert.equal(payload.intent_routing.route.intent, "distilled_lessons_read");
   assert.match(payload.host_response_contract.reply_seed, /Pattern anonimi di piattaforma/);
   assert.match(payload.host_response_contract.reply_seed, /non espongono dati di altri tenant/);
+});
+
+test("keeps a future-only effect descriptive without Work, Core or a ticket", async () => {
+  const { handler, calls } = harness();
+  const response = await handler({
+    message: "Quando avremo finito faremo deploy.",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(payload.intent_routing.route.intent, "analysis");
+  assert.equal(payload.intent_routing.route.route, "ADVISORY_READ");
+  assert.deepEqual(payload.intent_routing.route.canonical_intent.requested_now, []);
+  assert.ok(payload.intent_routing.route.canonical_intent.future_goals.includes("deploy"));
+  assert.equal(payload.intent_routing.route.canonical_intent.ambiguity, false);
+  assert.equal(payload.action_policy.consequential_request_detected, false);
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.orchestration_directive.ticket_request.required, false);
+  assert.equal(payload.execution_authorized, false);
 });
 
 test("records zero Core routing latency for a fresh global advisory turn", async (t) => {
@@ -930,8 +1035,10 @@ test("runs exactly one Core preflight for an explicit action and preserves its e
   const response = await handler({ message: "Autorizza il deploy" }, identity());
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.interpret.length, 1);
-  assert.deepEqual(calls.interpret[0].args.work_preflight,
-    preflightFixture().structuredContent.work_preflight);
+  assert.equal(calls.interpret[0].args.work_preflight.canonical_intent_binding.intent_digest,
+    calls.preflight[0].args.canonical_intent.intent_digest);
+  assert.equal(calls.interpret[0].args.work_preflight.core_orchestration_verdict.authority,
+    "UNIVERSAL_CORE");
   assert.equal(response.structuredContent.execution_authorized, false);
 });
 
@@ -1240,13 +1347,20 @@ test("honors the persisted recovery diagnosis on a pure resume", async () => {
 });
 
 test("keeps a requested merge manual for the owner and gives the registered host bounded preparation work", async () => {
+  let continuationOpenCalls = 0;
   const interpretation = interpretationFixture();
   interpretation.structuredContent.result.selected_by_core.primary_action_id = "action:deployment_runbook";
   interpretation.structuredContent.result.selected_by_core.primary_action_label = "Prepare release runbook";
   interpretation.structuredContent.result.selected_by_core.requires_owner_confirmation = true;
   interpretation.structuredContent.result.automation_plan.next_step = "Prepare the PR and attach CI evidence";
   interpretation.structuredContent.result.automation_plan.owner_confirmation_required = true;
-  const response = await harness({ interpretationResult: interpretation }).handler({
+  const response = await harness({
+    interpretationResult: interpretation,
+    openContinuation: async () => {
+      continuationOpenCalls += 1;
+      throw new Error("automated_merge_continuation_forbidden");
+    },
+  }).handler({
     message: "Nyra, prepara il lavoro ma il merge lo faccio io manualmente",
     work_id: WORK_ID,
     project_id: "nyra_core",
@@ -1265,8 +1379,41 @@ test("keeps a requested merge manual for the owner and gives the registered host
   assert.equal(payload.orchestration_directive.next_actions[0].status, "READY");
   assert.equal(payload.orchestration_directive.next_actions[2].mode, "MANUAL");
   assert.equal(payload.orchestration_directive.ticket_request.merge_policy, "MANUAL_ONLY");
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.available, false);
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.continuation_ref, null);
+  assert.equal(continuationOpenCalls, 0);
   assert.match(payload.host_response_contract.reply_seed, /il merge resta un'azione manuale tua/i);
   assert.equal(payload.execution_authorized, false);
+});
+
+test("keeps pull request creation current while reserving merge to the owner", async () => {
+  let continuationDirective = null;
+  const payload = (await harness({
+    openContinuation: async ({ directive }) => {
+      continuationDirective = directive;
+      return {
+        schema_version: "nyra_continuation_ref_v1",
+        available: true,
+        continuation_ref: `nyc1_${"a".repeat(40)}`,
+        expires_at: "2026-09-01T01:00:00.000Z",
+        state: "READY",
+        reason: null,
+      };
+    },
+  }).handler({
+    message: "procedi e crea pull il merge lo faccio io",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+
+  assert.equal(payload.action_policy.action_class, "PULL_REQUEST_OPEN");
+  assert.equal(payload.action_policy.merge_requested, false);
+  assert.equal(payload.action_policy.manual_owner_execution_requested, true);
+  assert.deepEqual(payload.intent_routing.route.canonical_intent.requested_now, ["pull_request"]);
+  assert(payload.intent_routing.route.canonical_intent.owner_reserved_actions.includes("merge"));
+  assert.equal(continuationDirective.ticket_request.action_class, "PULL_REQUEST_OPEN");
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.available, true);
 });
 
 test("reports missing evidence as insufficient context while keeping remediation open", async () => {
@@ -1493,7 +1640,13 @@ test("still governs an affirmative action after a read-only boundary", async () 
 });
 
 test("makes every merge manual even when the user does not say manually", async () => {
-  const payload = (await harness().handler({
+  let continuationOpenCalls = 0;
+  const payload = (await harness({
+    openContinuation: async () => {
+      continuationOpenCalls += 1;
+      throw new Error("automated_merge_continuation_forbidden");
+    },
+  }).handler({
     message: "Nyra, prepara il merge",
     work_id: WORK_ID,
     project_id: "nyra_core",
@@ -1508,6 +1661,9 @@ test("makes every merge manual even when the user does not say manually", async 
   assert.equal(payload.orchestration_directive.next_actions.at(-1).mode, "MANUAL");
   assert.equal(payload.orchestration_directive.next_actions.at(-1).external_side_effect, true);
   assert.equal(payload.orchestration_directive.ticket_request.ticket_issued, false);
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.available, false);
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.continuation_ref, null);
+  assert.equal(continuationOpenCalls, 0);
 });
 
 test("turns a server-issued reserve capability hint into an insufficient ticket prerequisite", async () => {
@@ -1724,17 +1880,16 @@ test("does not reintroduce stale V2 prerequisites for a release-ready ticket can
   assert.equal(directive.next_actions.some((item) => item.code === "collect_missing_evidence"), false);
 });
 
-test("emits a deterministic revision-bound manual ticket candidate only after prerequisites are verified", async () => {
+test("emits a deterministic revision-bound manual merge handoff with no continuation path", async () => {
   const ready = directiveContextFixture({
     taskStatus: "completed",
     acceptanceVerified: true,
     evidenceVerified: true,
   });
-  const authorizeArgs = {
+  const mergeArgs = {
     message: "Nyra, prepara il merge",
     work_id: WORK_ID,
     project_id: "nyra_core",
-    continuation_operation: "authorize_action",
     locale: "it",
   };
   const openedContinuations = [];
@@ -1743,9 +1898,9 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     return null;
   };
   const first = await harness({ directiveContext: ready, openContinuation })
-    .handler(authorizeArgs, identity());
+    .handler(mergeArgs, identity());
   const second = await harness({ directiveContext: ready, openContinuation })
-    .handler(authorizeArgs, identity());
+    .handler(mergeArgs, identity());
   const directive = first.structuredContent.orchestration_directive;
 
   assert.equal(directive.decision.disposition, "MANUAL_HANDOFF");
@@ -1759,6 +1914,11 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     work_revision: 4,
     intent_digest: INTENT_DIGEST,
     context_digest: directive.work_context.context_digest,
+    canonical_intent_digest: first.structuredContent.intent_routing.route.canonical_intent.intent_digest,
+    canonical_intent_binding_digest:
+      first.structuredContent.orchestration_directive.canonical_intent_binding.binding_digest,
+    core_orchestration_verdict_digest:
+      first.structuredContent.orchestration_directive.core_orchestration_verdict.verdict_digest,
     precommit_ticket_gate: null,
   });
   assert.match(directive.ticket_request.request_digest, /^[a-f0-9]{64}$/);
@@ -1768,23 +1928,16 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     directive.directive_id,
     second.structuredContent.orchestration_directive.directive_id,
   );
-  const delegation = await harness({ directiveContext: ready, openContinuation }).handler({
-    ...authorizeArgs,
-    continuation_operation: "issue_delegation",
-  }, identity());
-  assert.equal(openedContinuations.length, 3);
-  assert.notEqual(
-    directive.request_digest,
-    delegation.structuredContent.orchestration_directive.request_digest,
-  );
-  assert.notEqual(
-    directive.ticket_request.request_digest,
-    delegation.structuredContent.orchestration_directive.ticket_request.request_digest,
-  );
-  assert.notEqual(
-    directive.directive_id,
-    delegation.structuredContent.orchestration_directive.directive_id,
-  );
+  assert.equal(openedContinuations.length, 0);
+  for (const operation of ["issue_delegation", "authorize_action"]) {
+    await assert.rejects(
+      harness({ directiveContext: ready, openContinuation }).handler({
+        ...mergeArgs,
+        continuation_operation: operation,
+      }, identity()),
+      /nyra_converse_continuation_operation_not_applicable/,
+    );
+  }
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, first.structuredContent), []);
   const changed = await harness({
@@ -1817,6 +1970,8 @@ test("applies the reconciled precommit gate only to the exact local git commit",
   const directive = payload.orchestration_directive;
 
   assert.equal(directive.ticket_request.action_class, "GIT_COMMIT");
+  assert.equal(directive.work_context.precommit_ticket_gate.schema_version,
+    "precommit_ticket_gate_v1");
   assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
   assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
   assert.equal(directive.work_context.pending_required_task_count, 1);
@@ -1842,6 +1997,104 @@ test("applies the reconciled precommit gate only to the exact local git commit",
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
     payload,
   ), []);
+});
+
+test("applies an exact native closure precommit gate without legacy evidence requirements", async () => {
+  const context = directiveContextFixture();
+  context.evidence = context.evidence.map((item) => ({
+    ...item,
+    independently_verified: true,
+  }));
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture();
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+  assert.equal(directive.work_context.precommit_ticket_gate.schema_version,
+    "precommit_ticket_gate_v2");
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
+  assert.equal(directive.work_context.precommit_unverified_required_evidence_count, 0);
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    payload,
+  ), []);
+});
+
+test("holds a native closure gate when new required evidence is unverified", async () => {
+  const context = directiveContextFixture();
+  context.evidence = [{
+    tenant_id: "tenant-a",
+    evidence_id: "f4c8e893-1a86-4ed3-bd85-5150d451af77",
+    work_id: WORK_ID,
+    kind: "test_report",
+    digest: "9".repeat(64),
+    required: true,
+    independently_verified: false,
+  }];
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture();
+  const openedContinuations = [];
+  const payload = (await harness({
+    directiveContext: context,
+    openContinuation: async (request) => { openedContinuations.push(request); },
+  }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.precommit_unverified_required_evidence_count, 1);
+  assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT");
+  assert(directive.ticket_request.prerequisite_codes.includes("required_evidence_unverified"));
+  assert.equal(directive.ticket_request.continuation.available, false);
+  assert.equal(openedContinuations.length, 0);
+});
+
+test("rejects malformed or cross-bound native closure precommit gates", async (t) => {
+  const cases = [
+    ["source", { gate_source: "legacy_reconciliation" }],
+    ["legacy array", { legacy_evidence_ids: [EVIDENCE_ID] }],
+    ["replacement array", { replacement_evidence_ids: [REPLACEMENT_EVIDENCE_ID] }],
+    ["digest", { evaluation_digest: "not-a-digest" }],
+    ["work binding", { work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+  ];
+  for (const [name, overrides] of cases) {
+    await t.test(name, async () => {
+      const context = directiveContextFixture();
+      context.precommit_ticket_gate = nativePrecommitTicketGateFixture(overrides);
+      await assert.rejects(harness({ directiveContext: context }).handler({
+        message: "Nyra, esegui un solo git commit locale",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+        locale: "it",
+      }, identity()), /nyra_converse_precommit_ticket_gate_invalid/);
+    });
+  }
+});
+
+test("does not apply a native closure gate to a different required task", async () => {
+  const context = directiveContextFixture();
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    task_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  });
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  assert.equal(payload.orchestration_directive.work_context.precommit_ticket_gate_applicable, false);
+  assert.equal(payload.orchestration_directive.ticket_request.state, "NEEDS_CONTEXT");
+  assert.equal(payload.orchestration_directive.ticket_request.binding.precommit_ticket_gate, null);
 });
 
 test("keeps precommit fail-closed without reconciliation, after drift, and with other pending requirements", async () => {
@@ -1895,7 +2148,6 @@ test("does not apply a valid precommit reconciliation to push, PR, merge, deploy
       message,
       work_id: WORK_ID,
       project_id: "nyra_core",
-      continuation_operation: "authorize_action",
       locale: "it",
     }, identity())).structuredContent;
     const directive = payload.orchestration_directive;
@@ -2273,6 +2525,46 @@ test("routes an unbound explicit bootstrap to duplicate review instead of auto-b
   assert.deepEqual(calls.continuity, [], "bootstrap review cannot implicitly resume or create a Work");
 });
 
+test("routes a prose NEW intent without auto-binding the sole Gallery Work", async () => {
+  const calls = { catalog: [], preflight: [], continuity: [] };
+  const authenticatedIdentity = identity();
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture(authenticatedIdentity.tenantId);
+    },
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async (...args) => {
+        calls.catalog.push(args);
+        return {
+          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
+          next_cursor: null,
+        };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+  const message = "Nyra, crea un nuovo Work per questa architettura";
+  const canonicalIntent = classifyNyraIntent({
+    message,
+    tenantId: authenticatedIdentity.tenantId,
+  }).canonical_intent;
+
+  await preflight({
+    message,
+    project_id: "nyra_core",
+    canonical_intent: canonicalIntent,
+  }, authenticatedIdentity);
+
+  assert.equal(canonicalIntent.work_requirement, "NEW");
+  assert.deepEqual(calls.catalog, []);
+  assert.equal(calls.preflight[0].work_id, undefined);
+  assert.equal(calls.preflight[0].canonical_intent.intent_digest, canonicalIntent.intent_digest);
+  assert.deepEqual(calls.continuity, []);
+});
+
 test("does not bind a tenant-wide Work from another project during bootstrap", async () => {
   const calls = { catalog: [], intent: [], preflight: [] };
   const authenticatedIdentity = identity();
@@ -2439,10 +2731,9 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(calls.preflight[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.response_mode, "fast");
-  assert.deepEqual(
-    calls.interpret[0].args.work_preflight,
-    preflightFixture(authenticated.tenantId).structuredContent.work_preflight,
-  );
+  assert.equal(calls.interpret[0].args.work_preflight.preflight_id, "preflight-conversation");
+  assert.equal(calls.interpret[0].args.work_preflight.canonical_intent_binding.intent_digest,
+    calls.preflight[0].args.canonical_intent.intent_digest);
   assert.equal(payload.schema_version, "nyra_conversation_turn_v3");
   assert.equal(payload.tenant_id, "tenant-a");
   assert.equal(payload.identity_binding.authenticated, true);
@@ -2504,10 +2795,10 @@ test("consumes the real Universal Core read-only preflight through the productio
 
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.interpret.length, 1);
-  assert.deepEqual(
-    calls.interpret[0].args.work_preflight,
-    preflightResult.structuredContent.work_preflight,
-  );
+  assert.equal(calls.interpret[0].args.work_preflight.governance.execution_allowed_by_preflight,
+    true);
+  assert.equal(calls.interpret[0].args.work_preflight.canonical_intent_binding.intent_digest,
+    calls.preflight[0].args.canonical_intent.intent_digest);
   assert.equal(response.structuredContent.work.preflight_bound, true);
   assert.equal(response.structuredContent.work.work_bound, true);
   assert.equal(response.structuredContent.work.work_id, WORK_ID);
@@ -2636,17 +2927,17 @@ test("rejects unsuccessful and non-ready authenticated preflight states", async 
   failed.structuredContent.ok = false;
   const failedHarness = harness({ preflightResult: failed });
   await assert.rejects(
-    failedHarness.handler({ message: "Parlami" }, identity()),
+    failedHarness.handler({ message: "Autorizza il deploy" }, identity()),
     /nyra_converse_work_preflight_binding_invalid/,
   );
   assert.equal(failedHarness.calls.interpret.length, 0);
 
-  for (const state of ["memory_recall_required", "routed_waiting_for_core_verdict", "unavailable", "error"]) {
+  for (const state of ["memory_recall_required", "unavailable", "error"]) {
     const nonReady = preflightFixture();
     nonReady.structuredContent.work_preflight.state = state;
     const nonReadyHarness = harness({ preflightResult: nonReady });
     await assert.rejects(
-      nonReadyHarness.handler({ message: "Parlami" }, identity()),
+      nonReadyHarness.handler({ message: "Autorizza il deploy" }, identity()),
       /nyra_converse_work_preflight_binding_invalid/,
     );
     assert.equal(nonReadyHarness.calls.interpret.length, 0);
@@ -2843,8 +3134,12 @@ test("keeps an explicit structured bootstrap ahead of merge or deploy words in i
     capabilities: ["work.read", "work.create", "governed_continue"],
   };
   const handler = createNyraConverseHandler({
-    preflight: async () => preflight,
-    interpret: async () => interpretationFixture(),
+    preflight: async (args, authenticatedIdentity) => bindFixtureToTurn(
+      preflight, args, authenticatedIdentity.tenantId,
+    ),
+    interpret: async (args, authenticatedIdentity) => bindFixtureToTurn(
+      interpretationFixture(), args, authenticatedIdentity.tenantId, { interpretation: true },
+    ),
   });
   const response = await handler({
     message: "Crea un nuovo Work; dopo la review potremo fare merge e deploy.",

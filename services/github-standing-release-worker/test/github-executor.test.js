@@ -48,7 +48,7 @@ test("draft PR accepts only title and body bound by the Core digests", async () 
   await assert.rejects(execute({ ...base, action }, { materialization: { title: "changed", body } }), /digest_mismatch/);
 });
 
-test("ready and merge stay bound to exact PR head and normal merge", async () => {
+test("ready stays bound to the exact PR head while merge is manual-only", async () => {
   const pull = { number: 12, node_id: "PR_node", draft: true, merged: false, head: { sha: "a".repeat(40), ref: "agent/change" }, base: { sha: "b".repeat(40), ref: "main" } };
   let calls = 0;
   const execute = createGitHubExecutor({
@@ -63,10 +63,16 @@ test("ready and merge stay bound to exact PR head and normal merge", async () =>
   const readyAction = { ...common, kind: "github.ready", head_branch: "agent/change", base_branch: "main", pull_request: 12, head_commit: "a".repeat(40), expected_base_commit: "b".repeat(40), draft_before: true, ready_for_review: true };
   assert.equal((await execute({ ...base, action: readyAction })).result_pull_request, 12);
 
-  calls = 0;
-  pull.draft = false;
   const mergeAction = { ...common, kind: "github.merge", head_branch: "agent/change", base_branch: "main", pull_request: 12, head_commit: "a".repeat(40), expected_base_commit: "b".repeat(40), checks_commit: "a".repeat(40), checks_verified: true, merge_method: "merge", induced_effects: [] };
-  assert.equal((await execute({ ...base, action: mergeAction })).result_commit, "c".repeat(40));
+  let mergeTokenCalls = 0;
+  let mergeFetchCalls = 0;
+  const mergeExecutor = createGitHubExecutor({
+    installation_token: async () => { mergeTokenCalls += 1; return "must-not-run"; },
+    fetch_impl: async () => { mergeFetchCalls += 1; return response({ merged: true }); },
+  });
+  await assert.rejects(mergeExecutor({ ...base, action: mergeAction }), /github_worker_manual_merge_only/);
+  assert.equal(mergeTokenCalls, 0);
+  assert.equal(mergeFetchCalls, 0);
 });
 
 test("reconciliation proves an exact effect without repeating it", async () => {

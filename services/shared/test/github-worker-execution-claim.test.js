@@ -51,4 +51,8 @@ test("execution claim is exact, signed, short lived and one action only", () => 
     allow_expired_for_reconciliation: true,
   }).ticket_id, "hnt_ticket_1");
   assert.throws(() => signGitHubWorkerExecutionClaim({ ...claim(), action: { ...action, kind: "provider.api.call" } }, { signing_secret: secret }), /action_invalid/);
+  const mergeAction = { ...action, kind: "github.merge" };
+  assert.throws(() => signGitHubWorkerExecutionClaim({
+    ...claim(), action: mergeAction, action_digest: githubWorkerActionDigest(mergeAction),
+  }, { signing_secret: secret }), /action_invalid/);
 });

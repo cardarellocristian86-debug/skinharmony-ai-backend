@@ -2,10 +2,100 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createNyraAutopilotRuntime,
+  nyraAutopilotCoreEvidence,
   NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT,
   NYRA_AUTOPILOT_SCHEMA_VERSION,
+  validateNyraAutopilotBranchMaterialization,
+  validateNyraAutopilotMaterialization,
 } from "../src/nyra-autopilot-runtime.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
+import { digest } from "../src/work-continuity-runtime.js";
+
+const ATOMIC_WORK_ID = "a7448d84-3113-4c4f-9ff6-0b0a436f19c9";
+
+function atomicVerdict() {
+  const bindingMaterial = {
+    schema_version: "nyra_canonical_intent_binding_v1",
+    intent_digest: "a".repeat(64), raw_text_digest: "b".repeat(64),
+    operation_class: "EXTERNAL_MUTATION", work_requirement: "NEW",
+    consequential_intent: true, ambiguity: false,
+  };
+  const material = {
+    schema_version: "core_orchestration_verdict_v1", authority: "UNIVERSAL_CORE", verdict: "HOLD",
+    reason_codes: ["new_work_identity_required"],
+    canonical_intent_binding: { ...bindingMaterial, binding_digest: digest(bindingMaterial) },
+    required_nyra_branches: [
+      { id: "execution_planning", work_phase: "implementation", core_branch_bindings: ["workspace.write"] },
+      { id: "quality_verification", work_phase: "verification", core_branch_bindings: ["test.read"] },
+    ],
+    denied_nyra_branches: [], required_roles: ["planner", "independent_verifier"],
+    task_graph_digest: "c".repeat(64), maximum_parallel_assignments: 2,
+    independent_verifier_required: true, nyra_materializes_branches: true, core_join_required: true,
+    permitted_progress: ["ANALYSIS", "PLANNING", "EVIDENCE", "BOUNDED_WORKSPACE"],
+    external_execution_authorized: false,
+  };
+  return { ...material, verdict_digest: digest(material) };
+}
+
+function atomicHarness({ failOnBranch = 0, failAssignment = false } = {}) {
+  const committed = [];
+  const verdict = atomicVerdict();
+  let staged = [];
+  let branchCount = 0;
+  const client = {
+    async query(sql) {
+      const statement = String(sql).trim();
+      if (statement === "BEGIN") { staged = []; return { rows: [] }; }
+      if (statement === "COMMIT") { committed.push(...staged); staged = []; return { rows: [] }; }
+      if (statement === "ROLLBACK") { staged = []; return { rows: [] }; }
+      if (statement.includes("FROM core_nyra_autopilot_tenants")) return { rows: [{ status: "active", policy_version: "v1" }] };
+      if (statement.includes("FROM core_continuity_works w JOIN core_continuity_intent_anchors")) return { rows: [{
+        project_id: "skinharmony-ai-backend", idea: "Bound work", objective: "Implement and verify",
+        current_version: 1,
+        anchor: { canonical_intent_binding: {
+          canonical_intent_digest: "a".repeat(64),
+          core_orchestration_verdict_digest: verdict.verdict_digest,
+          core_orchestration_verdict: verdict,
+        } },
+        intent_digest: "a".repeat(64),
+      }] };
+      if (statement.includes("SELECT tenant_id,work_id,run_id")) return { rows: [] };
+      if (statement.includes("SELECT status FROM core_nyra_autopilot_runs")) return { rows: [{ status: "pending" }] };
+      if (statement.includes("INSERT INTO core_continuity_branches")) {
+        branchCount += 1;
+        if (failOnBranch === branchCount) throw new Error("injected_branch_failure");
+        const branchKey = branchCount === 1 ? "execution_planning" : "quality_verification";
+        staged.push(`branch:${branchKey}`);
+        return { rows: [{ branch_id: `${branchCount}`.repeat(8) + "-1111-4111-8111-111111111111", branch_key: branchKey, status: "active" }] };
+      }
+      if (statement.includes("INSERT INTO core_nyra_autopilot_assignments")) {
+        if (failAssignment) throw new Error("injected_assignment_failure");
+        staged.push("assignment");
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const pool = {
+    query: async (sql) => String(sql).includes("FROM core_nyra_autopilot_tenants")
+      ? ({ rows: [{ status: "active", policy_version: "v1" }] })
+      : ({ rows: [] }),
+    connect: async () => client,
+    end() {},
+  };
+  const teamRuntime = {
+    schemaSql: "",
+    async materializeForWorkInTransaction(receivedClient, _identity, input) {
+      assert.equal(receivedClient, client);
+      staged.push("team");
+      return { instances: input.blueprint_ids.map((blueprint_id, index) => ({
+        blueprint_id, agent_instance_id: `agent-${index}`,
+      })) };
+    },
+  };
+  return { pool, teamRuntime, committed };
+}
 
 test("Nyra Autopilot persists tenant and Work scoped plans, assignments and append-only receipts", () => {
   const runtime = createNyraAutopilotRuntime({}, {
@@ -81,3 +171,91 @@ test("Nyra Autopilot activation adopts already active Work without granting exec
     execution_authorized: false,
   });
 });
+
+test("Autopilot materialization requires the exact Core role set without missing, extra or duplicate instances", () => {
+  const plan = {
+    required_roles: [{ blueprint_id: "planner" }, { blueprint_id: "independent_verifier" }],
+  };
+  const exact = {
+    instances: [
+      { blueprint_id: "independent_verifier", agent_instance_id: "verifier" },
+      { blueprint_id: "planner", agent_instance_id: "planner" },
+    ],
+  };
+  assert.equal(validateNyraAutopilotMaterialization(plan, exact).size, 2);
+  for (const instances of [
+    exact.instances.slice(0, 1),
+    [...exact.instances, { blueprint_id: "researcher", agent_instance_id: "extra" }],
+    [exact.instances[0], exact.instances[0]],
+  ]) {
+    assert.throws(() => validateNyraAutopilotMaterialization(plan, { instances }),
+      /nyra_autopilot_materialization_set_mismatch/);
+  }
+});
+
+test("Autopilot persists exactly the Nyra branches selected by Core", () => {
+  const plan = {
+    required_nyra_branches: [
+      { id: "execution_planning" },
+      { id: "quality_verification" },
+    ],
+  };
+  const exact = [
+    { branch_id: "11111111-1111-4111-8111-111111111111", branch_key: "quality_verification", status: "active" },
+    { branch_id: "22222222-2222-4222-8222-222222222222", branch_key: "execution_planning", status: "active" },
+  ];
+  assert.equal(validateNyraAutopilotBranchMaterialization(plan, exact).length, 2);
+  for (const materialized of [
+    exact.slice(0, 1),
+    [...exact, { branch_id: "33333333-3333-4333-8333-333333333333", branch_key: "risk_governance", status: "active" }],
+    [{ ...exact[0], status: "closed" }, exact[1]],
+  ]) {
+    assert.throws(() => validateNyraAutopilotBranchMaterialization(plan, materialized),
+      /nyra_autopilot_branch_materialization_set_mismatch/);
+  }
+});
+
+test("Autopilot task and receipt evidence preserve Core verdict, canonical binding and exact branches", () => {
+  const branches = [{
+    id: "quality_verification",
+    work_phase: "verification",
+    core_branch_bindings: ["test.read"],
+  }];
+  const evidence = nyraAutopilotCoreEvidence({
+    core_orchestration: {
+      verdict_digest: "a".repeat(64),
+      canonical_intent_digest: "c".repeat(64),
+      canonical_intent_binding_digest: "b".repeat(64),
+    },
+    required_nyra_branches: branches,
+  });
+  assert.deepEqual(evidence, {
+    core_orchestration_verdict_digest: "a".repeat(64),
+    canonical_intent_digest: "c".repeat(64),
+    canonical_intent_binding_digest: "b".repeat(64),
+    required_nyra_branches: branches,
+  });
+  branches[0].id = "tampered";
+  assert.equal(evidence.required_nyra_branches[0].id, "quality_verification");
+});
+
+for (const [name, failure] of [
+  ["during the second branch materialization", { failOnBranch: 2 }],
+  ["after team materialization", { failAssignment: true }],
+]) {
+  test(`Autopilot rolls back branches, team and assignments ${name}`, async () => {
+    const harness = atomicHarness(failure);
+    const runtime = createNyraAutopilotRuntime({}, {
+      pool: harness.pool,
+      teamRuntime: harness.teamRuntime,
+    });
+    const result = await runtime.reconcile({ tenantId: "codexai", subject: "owner" }, {
+      work_id: ATOMIC_WORK_ID,
+      project_id: "skinharmony-ai-backend",
+      trigger_type: "work_created",
+      core_orchestration_verdict: atomicVerdict(),
+    });
+    assert.equal(result.status, "deferred");
+    assert.equal(harness.committed.some((entry) => /^(branch:|team|assignment)/.test(entry)), false);
+  });
+}
