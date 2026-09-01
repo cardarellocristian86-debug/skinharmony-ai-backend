@@ -100,6 +100,7 @@ function emptyState() {
     events: [],
     memories: [],
     checkpoints: [],
+    distilled_lessons: [],
     handoffs: [],
     handoff_quarantines: [],
     audit: [],
@@ -108,7 +109,7 @@ function emptyState() {
 
 function normalizeState(value) {
   const state = value && typeof value === "object" && !Array.isArray(value) ? value : emptyState();
-  for (const key of ["events", "memories", "checkpoints", "handoffs", "handoff_quarantines", "audit"]) {
+  for (const key of ["events", "memories", "checkpoints", "distilled_lessons", "handoffs", "handoff_quarantines", "audit"]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
   state.schema_version = "tenant_memory_fabric_v1";
@@ -161,6 +162,7 @@ function pruneState(state, now = Date.now()) {
   state.events = state.events.filter(active).slice(-5_000);
   state.memories = state.memories.filter(active).slice(-2_000);
   state.checkpoints = state.checkpoints.filter(active).slice(-500);
+  state.distilled_lessons = state.distilled_lessons.filter(active).slice(-1_000);
   state.handoffs = state.handoffs.filter(active).slice(-1_000);
   state.handoff_quarantines = state.handoff_quarantines.filter(active).slice(-1_000);
   state.audit = state.audit.slice(-5_000);
@@ -279,7 +281,7 @@ function searchState(state, input = {}) {
   const projectId = safeId(input.project_id, "project", { optional: true });
   const sessionId = safeId(input.session_id, "session", { optional: true });
   const limit = boundedNumber(input.limit, 10, 1, 50);
-  const records = [...state.memories, ...state.checkpoints];
+  const records = [...state.memories, ...state.checkpoints, ...state.distilled_lessons];
   return records
     // Lifecycle checkpoints are surfaced deterministically as latest_checkpoint
     // and recent_activity; keep free-text recall focused on user/agent knowledge.
@@ -336,6 +338,11 @@ function safeAutomaticDetails(toolName, args = {}, result = null) {
       : [],
   };
   return details;
+}
+
+function failureCode(error) {
+  const candidate = String(error?.code || error?.error_code || "").trim().toLowerCase();
+  return ID_PATTERN.test(candidate) ? candidate : "unclassified_failure";
 }
 
 export function createMemoryFabric(config, options = {}) {
@@ -473,6 +480,11 @@ export function createMemoryFabric(config, options = {}) {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, 20)
       .map(publicRecord);
+    const lessons = state.distilled_lessons
+      .filter(matchesScope)
+      .sort((a, b) => Number(b.importance || 0) - Number(a.importance || 0) || b.last_observed_at.localeCompare(a.last_observed_at))
+      .slice(0, 10)
+      .map(publicRecord);
     const recent = state.events.filter(matchesScope).slice(-boundedNumber(input.activity_limit, 20, 1, 50)).reverse().map(publicRecord);
     return {
       schema_version: "tenant_memory_context_v1",
@@ -482,6 +494,7 @@ export function createMemoryFabric(config, options = {}) {
       session_id: sessionId || null,
       latest_checkpoint: checkpoints[0] ? publicRecord(checkpoints[0]) : null,
       pending_handoffs: pending,
+      distilled_lessons: lessons,
       relevant_memories: relevant,
       recent_activity: recent,
       policy: {
@@ -489,6 +502,7 @@ export function createMemoryFabric(config, options = {}) {
         raw_prompts_stored_automatically: false,
         secrets_storable: false,
         customer_personal_requires_consent: true,
+        distilled_lessons_are_candidate_only: true,
       },
     };
   }
@@ -541,6 +555,51 @@ export function createMemoryFabric(config, options = {}) {
       if (!existing) {
         state.checkpoints.push(lifecycleRecord);
         state.events.push({ ...lifecycleRecord, id: `evt_${crypto.randomUUID()}`, checkpoint_id: lifecycleRecord.id });
+      }
+      // A failure becomes one compact, searchable candidate lesson. It keeps
+      // only server-observed tool + reason-code metadata, never raw prompts or
+      // error messages. The next AI can avoid a blind retry, but a candidate
+      // never changes policy, authorizes action or trains model weights.
+      if (error) {
+        const code = failureCode(error);
+        const lessonKey = `failure_lesson:${details.project_id || "tenant"}:${toolName}:${code}`;
+        const existingLesson = state.distilled_lessons.find((item) => item.idempotency_key === lessonKey);
+        if (existingLesson) {
+          existingLesson.occurrence_count = Math.min(Number(existingLesson.occurrence_count || 1) + 1, 10_000);
+          existingLesson.last_observed_at = timestamp;
+          existingLesson.importance = Math.min(100, Math.max(Number(existingLesson.importance || 80), 80));
+        } else {
+          const lesson = normalizeMemoryInput({
+            kind: "learning",
+            title: `Failure lesson: ${toolName}`,
+            summary: `Do not blindly retry ${toolName} until the recorded failure code is understood and addressed.`,
+            facts: [`Failure code: ${code}`, `Source tool: ${toolName}`],
+            decisions: ["Candidate lesson only; it does not authorize an action or change policy."],
+            actions: ["Read the relevant Work, evidence and structured failure before retrying."],
+            outcomes: ["failure_observed"],
+            next_steps: ["Use this lesson as a guardrail, then verify the corrective path independently."],
+            tags: ["distilled_lesson", "failure", toolName, code],
+            importance: 80,
+            data_classification: "internal",
+            project_id: details.project_id,
+            session_id: details.session_id,
+            agent_id: agentId,
+            logical_agent_id: presence.agent_id,
+            agent_signature: presence.signature,
+            agent_signature_version: presence.signature_version,
+            client_type: presence.client_type,
+            session_fingerprint: presence.session_fingerprint,
+            source: "mcp_failure_distillation",
+            idempotency_key: lessonKey,
+          }, identity, config, "learning");
+          lesson.lesson_state = "candidate";
+          lesson.failure_code = code;
+          lesson.source_tool = toolName;
+          lesson.occurrence_count = 1;
+          lesson.last_observed_at = timestamp;
+          state.distilled_lessons.push(lesson);
+          state.events.push({ ...lesson, id: `evt_${crypto.randomUUID()}`, lesson_id: lesson.id });
+        }
       }
       state.events.push({
         id: `evt_${crypto.randomUUID()}`,
