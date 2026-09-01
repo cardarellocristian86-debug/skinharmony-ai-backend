@@ -666,6 +666,14 @@ class ContinuityPool {
         .map((row) => ({ task_id: row.task_id, status: row.status }));
       return { rows, rowCount: rows.length };
     }
+    if (q === "SELECT (clock_timestamp() + interval '1 hour') AS lease_expires_at") {
+      return {
+        rows: [{
+          lease_expires_at: new Date(this.clock().getTime() + 60 * 60 * 1_000).toISOString(),
+        }],
+        rowCount: 1,
+      };
+    }
     if (q.startsWith("SELECT task_id,agent_id,host_type,host_task_id,task_digest,")) {
       const [tenantId, planId, taskId, agentId, hostTaskId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
@@ -721,6 +729,7 @@ class ContinuityPool {
           coordinator_session_fingerprint: row.coordinator_session_fingerprint,
           assignment_capability_digest: row.assignment_capability_digest,
           lease_expires_at: row.lease_expires_at,
+          lease_active: new Date(row.lease_expires_at).getTime() > this.clock().getTime(),
           plan_status: plan.status,
         }] : [],
         rowCount: row && plan ? 1 : 0,
@@ -758,6 +767,7 @@ class ContinuityPool {
       return {
         rows: row && plan ? [{
           ...row,
+          lease_active: new Date(row.lease_expires_at).getTime() > this.clock().getTime(),
           plan: plan.plan,
           plan_status: plan.status,
         }] : [],
@@ -2306,10 +2316,11 @@ test("only a bound independent verifier can read redacted persisted acceptance c
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {
   let instant = new Date("2026-07-29T13:10:00.000Z");
   const clock = () => new Date(instant);
+  const skewedHostClock = () => new Date(instant.getTime() + 2 * 60 * 60 * 1_000);
   const pool = new ContinuityPool(clock);
   const runtime = createWorkContinuityRuntime({
     dttAgentIdentitySigningSecret: "d".repeat(32),
-  }, { pool, now: clock });
+  }, { pool, now: skewedHostClock });
   const legacyFallbackOnlyRuntime = createWorkContinuityRuntime({
     agentSignatureSecret: "a".repeat(32),
     ownerContextSigningSecret: "o".repeat(32),
@@ -2394,10 +2405,13 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
     host_task_id: `/root/${taskId}`,
   });
   const builderBinding = await bind("build", "codex-builder");
+  assert.equal(
+    builderBinding.binding.lease_expires_at,
+    "2026-07-29T14:10:00.000Z",
+  );
   await assert.rejects(bind("research", "codex-researcher"), /native_agent_parallel_limit_reached/);
 
-  instant = new Date("2026-07-29T14:11:00.000Z");
-  const expiredBuilderIdentity = {
+  const builderIdentity = {
     ...identity,
     agentPresence: {
       agent_id: "codex-builder",
@@ -2409,12 +2423,45 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       transport_bound: true,
     },
   };
-  await assert.rejects(runtime.reportNativeAgent(expiredBuilderIdentity, {
+  const builderReportInput = {
     work_id: work.work_id,
     plan_id: planned.plan.plan_id,
     native_agent_id: "codex-builder",
     host_task_id: "/root/build",
     assignment_capability: builderBinding.assignment_capability,
+  };
+  await runtime.admitNativeAgentReport(builderIdentity, builderReportInput);
+  await runtime.reportNativeAgent(builderIdentity, {
+    ...builderReportInput,
+    status: "completed",
+    report: {
+      summary: "On-time result under forward host clock skew.",
+      commit_sha: "d".repeat(40),
+      tests: [{ name: "forward-skew", passed: true }],
+      evidence_refs: ["clock:database-authoritative"],
+    },
+  });
+  const researchBinding = await bind("research", "codex-researcher");
+
+  instant = new Date("2026-07-29T14:11:00.000Z");
+  const expiredResearchIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "codex-researcher",
+      client_type: "codex",
+      session_fingerprint: "1".repeat(64),
+      host_transport_session_fingerprint: "1".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"1".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(expiredResearchIdentity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "codex-researcher",
+    host_task_id: "/root/research",
+    assignment_capability: researchBinding.assignment_capability,
     status: "completed",
     report: {
       summary: "Late result.",
@@ -2423,10 +2470,10 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       evidence_refs: ["late:result"],
     },
   }), /native_agent_binding_expired_replan_required/);
-  const expiredBuilder = pool.nativeAgents.get(
-    key("tenant-a", planned.plan.plan_id, "build"),
+  const expiredResearcher = pool.nativeAgents.get(
+    key("tenant-a", planned.plan.plan_id, "research"),
   );
-  assert.equal(expiredBuilder.status, "expired");
+  assert.equal(expiredResearcher.status, "expired");
   assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "blocked");
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "blocked");
   assert.match(
