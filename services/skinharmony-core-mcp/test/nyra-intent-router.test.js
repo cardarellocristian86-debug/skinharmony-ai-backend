@@ -468,4 +468,11 @@ test("fails closed on read-shaped consequential smuggling and keeps owner action
   assert.ok(accentedOwner.canonical_intent.owner_reserved_actions.includes("deploy"));
   assert.ok(accentedOwner.canonical_intent.requested_now.includes("destructive"));
 });
-\n\ntest("routes distilled lesson reads without binding or creating a Work", () => {\n  const route = classify("Nyra, mostrami le lezioni distillate disponibili");\n  assert.equal(route.intent, "distilled_lessons_read");\n  assert.equal(route.route, "ADVISORY_READ");\n  assert.equal(route.execution_authorized, false);\n});\n
+
+
+test("routes distilled lesson reads without binding or creating a Work", () => {
+  const route = classify("Nyra, mostrami le lezioni distillate disponibili");
+  assert.equal(route.intent, "distilled_lessons_read");
+  assert.equal(route.route, "ADVISORY_READ");
+  assert.equal(route.execution_authorized, false);
+});
