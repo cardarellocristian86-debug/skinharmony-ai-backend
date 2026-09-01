@@ -2705,6 +2705,12 @@ test("accepts only exact connector namespace aliases for visible registered tool
       "skinharmony_nyra_core.not_registered",
       "skinharmony_nyra_core_evil.core_health",
       "skinharmony_nyra_core.skinharmony_nyra_core.core_health",
+      "skinharmony_nyra_core.nyra_governed_continue.extra",
+      "nyra_governed_continue ",
+      "constructor",
+      ["nyra_governed_continue"],
+      [["nyra_governed_continue"]],
+      ["skinharmony_nyra_core.nyra_governed_continue"],
     ].entries()) {
       const body = await fetch(`${base}/mcp`, {
         method: "POST",

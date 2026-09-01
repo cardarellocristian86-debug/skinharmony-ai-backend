@@ -502,8 +502,13 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
   });
 }
 
+const RETIRED_CONNECTOR_TOOL_ALIASES = Object.freeze(Object.assign(Object.create(null), {
+  nyra_governed_continue: "nyra_continue",
+}));
+
 function resolveConnectorToolName(value, tools = []) {
-  const requested = String(value || "");
+  if (typeof value !== "string") return null;
+  const requested = value;
   const visibleNames = new Set(tools.map((tool) => tool.name));
   const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
   const candidate = requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
@@ -511,7 +516,9 @@ function resolveConnectorToolName(value, tools = []) {
   // a connector upgrade. Route only that retired name to the current compact
   // contract; argument normalization and the canonical strict schema remain
   // mandatory before the handler can run.
-  const canonical = candidate === "nyra_governed_continue" ? "nyra_continue" : candidate;
+  const canonical = Object.hasOwn(RETIRED_CONNECTOR_TOOL_ALIASES, candidate)
+    ? RETIRED_CONNECTOR_TOOL_ALIASES[candidate]
+    : candidate;
   return visibleNames.has(canonical) ? canonical : null;
 }
 
@@ -559,7 +566,8 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "nyra_work_assignment_submit",
 ]);
 function connectorToolCandidate(value) {
-  const requested = String(value || "");
+  if (typeof value !== "string") return "";
+  const requested = value;
   const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
   return requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
 }
