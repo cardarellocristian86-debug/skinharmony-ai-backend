@@ -76,8 +76,9 @@ export function createSharedMemoryBootstrap(store, options = {}) {
   const cache = new Map();
 
   return {
-    async load(identity) {
+    async load(identity, input = {}) {
       const tenantId = safeTenant(identity?.tenantId);
+      const projectId = /^[a-z0-9][a-z0-9_-]{1,63}$/i.test(String(input.project_id || "")) ? String(input.project_id) : "";
       if (!store || typeof store.inspectBySourcePaths !== "function" || typeof store.fetchBySourcePaths !== "function") {
         return failed(tenantId, [...SHARED_MEMORY_BOOTSTRAP_PATHS], "cloud_memory_unavailable");
       }
@@ -97,7 +98,7 @@ export function createSharedMemoryBootstrap(store, options = {}) {
         // next AI turn immediately, rather than waiting for the five-minute
         // shared-state cache to expire.
         if (typeof store.listDistilledLessons !== "function") return cached.value;
-        return { ...cached.value, distilled_lessons: await store.listDistilledLessons(tenantId, "", 10) };
+        return { ...cached.value, distilled_lessons: await store.listDistilledLessons(tenantId, projectId, 10) };
       }
 
       const records = await store.fetchBySourcePaths(tenantId, SHARED_MEMORY_BOOTSTRAP_PATHS);
@@ -124,7 +125,7 @@ export function createSharedMemoryBootstrap(store, options = {}) {
         recent_tasks: Array.isArray(tasks.tasks) ? tasks.tasks.slice(0, RECENT_LIMIT).map(compactTask) : [],
         recent_artifacts: Array.isArray(artifacts.artifacts) ? artifacts.artifacts.slice(0, RECENT_LIMIT).map(compactArtifact) : [],
         distilled_lessons: typeof store.listDistilledLessons === "function"
-          ? await store.listDistilledLessons(tenantId, "", 10)
+          ? await store.listDistilledLessons(tenantId, projectId, 10)
           : [],
         checksum: manifestSignature,
         cache_ttl_seconds: Math.floor(cacheTtlMs / 1000),
