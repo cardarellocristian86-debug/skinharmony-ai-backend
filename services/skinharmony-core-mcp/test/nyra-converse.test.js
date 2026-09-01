@@ -2027,7 +2027,7 @@ test("applies an exact native closure precommit gate without legacy evidence req
   ), []);
 });
 
-test("holds a native closure gate when new required evidence is unverified", async () => {
+test("uses receipt-bound native closure evidence instead of superseded legacy evidence", async () => {
   const context = directiveContextFixture();
   context.evidence = [{
     tenant_id: "tenant-a",
@@ -2042,7 +2042,17 @@ test("holds a native closure gate when new required evidence is unverified", asy
   const openedContinuations = [];
   const payload = (await harness({
     directiveContext: context,
-    openContinuation: async (request) => { openedContinuations.push(request); },
+    openContinuation: async (request) => {
+      openedContinuations.push(request);
+      return {
+        schema_version: "nyra_continuation_ref_v1",
+        available: true,
+        continuation_ref: `nyc1_${"a".repeat(40)}`,
+        expires_at: "2026-09-01T01:00:00.000Z",
+        state: "READY",
+        reason: null,
+      };
+    },
   }).handler({
     message: "Nyra, esegui un solo git commit locale",
     work_id: WORK_ID,
@@ -2052,11 +2062,12 @@ test("holds a native closure gate when new required evidence is unverified", asy
   }, identity())).structuredContent;
   const directive = payload.orchestration_directive;
   assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
-  assert.equal(directive.work_context.precommit_unverified_required_evidence_count, 1);
-  assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT");
-  assert(directive.ticket_request.prerequisite_codes.includes("required_evidence_unverified"));
-  assert.equal(directive.ticket_request.continuation.available, false);
-  assert.equal(openedContinuations.length, 0);
+  assert.equal(directive.work_context.unverified_required_evidence_count, 1);
+  assert.equal(directive.work_context.precommit_unverified_required_evidence_count, 0);
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.ticket_request.continuation.available, true);
+  assert.equal(openedContinuations.length, 1);
 });
 
 test("rejects malformed or cross-bound native closure precommit gates", async (t) => {

@@ -928,7 +928,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     : new Set();
   const precommitUnverifiedEvidence = precommitTicketGateApplicable &&
     precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-    ? unverifiedEvidence
+    ? []
     : unverifiedEvidence.filter((item) => !mappedLegacyEvidenceIds.has(item.evidence_id));
   const closureProjection = value.closure_verification &&
     typeof value.closure_verification === "object" &&
