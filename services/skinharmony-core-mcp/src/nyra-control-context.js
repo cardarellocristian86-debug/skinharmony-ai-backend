@@ -25,7 +25,11 @@ function firstReadyAssignment(autopilot = {}) {
   // assignment might already be expired or belong to that other worker, so
   // only a fresh offered assignment may be surfaced as actionable here. The
   // claimant receives its exact assignment directly from the claim result.
-  const assignment = assignments.find((item) => item?.status === "offered") || null;
+  const states = new Map(assignments.map((item) => [`${item?.run_id || ""}:${item?.assignment_key || ""}`, item?.status]));
+  const assignment = assignments.find((item) => item?.status === "offered" &&
+    (Array.isArray(item.dependencies) ? item.dependencies : []).every((dependency) =>
+      ["submitted", "verified"].includes(states.get(`${item?.run_id || ""}:${dependency}`)),
+    )) || null;
   if (!assignment) return null;
   return {
     assignment_id: clean(assignment.assignment_id, 64) || null,

@@ -1210,6 +1210,25 @@ const nyraConversationControlRoomReadbackSchema = object({
   domains: { type: "array", minItems: 6, maxItems: 6, items: object({
     id: { type: "string", enum: ["nyra_dialogue", "entity_360", "semantic_scope_guard", "work_continuity", "research_airlock", "policy_registry"] },
     state: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$" },
+    coordination: { anyOf: [{ type: "null" }, object({
+      available: { type: "boolean" },
+      active_session_count: { type: "integer", minimum: 0, maximum: 100 },
+      active_logical_agent_count: { type: "integer", minimum: 0, maximum: 100 },
+      sessions: { type: "array", maxItems: 100, items: object({
+        session_id: { type: "string", minLength: 1, maxLength: 240 },
+        agent_id: { type: "string", minLength: 1, maxLength: 160 },
+        client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] },
+        transport_bound: { type: "boolean" }, state: { type: "string", enum: ["ONLINE", "WORKING"] },
+        joined_at: { type: "string", format: "date-time" }, active_lease_count: { type: "integer", minimum: 0 },
+        work_memberships_truncated: { type: "boolean" },
+        last_heartbeat_at: { type: "string", format: "date-time" }, presence_expires_at: { type: "string", format: "date-time" },
+        work_memberships: { type: "array", minItems: 1, maxItems: 100, items: object({
+          work_id: { type: "string", format: "uuid" }, project_id: { type: ["string", "null"], maxLength: 160 },
+          work_status: { type: ["string", "null"], maxLength: 40 }, branch_id: { type: ["string", "null"], maxLength: 160 },
+          active_lease_count: { type: "integer", minimum: 0 },
+        }, ["work_id", "project_id", "work_status", "branch_id", "active_lease_count"]) },
+      }, ["session_id", "agent_id", "client_type", "transport_bound", "state", "joined_at", "last_heartbeat_at", "presence_expires_at", "active_lease_count", "work_memberships_truncated", "work_memberships"]) },
+    }, ["available", "active_session_count", "active_logical_agent_count", "sessions"])] },
     allowed_actions: { type: "array", minItems: 1, maxItems: 3, items: nyraConversationControlRoomActionSchema },
   }, ["id", "state", "allowed_actions"]) },
   work_progress: object({

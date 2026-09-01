@@ -954,7 +954,9 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   const coreHealth = upstream?.payload?.generic_work_core_join;
   const upstreamAvailable = upstream?.responseOk === true && coreHealth !== null && typeof coreHealth === "object";
   const upstreamEnabled = upstreamAvailable && coreHealth.enabled === true;
-  const upstreamBackend = coreHealth?.backend === "postgresql" ? "postgresql" : "unavailable";
+  const upstreamBackend = coreHealth?.backend === "postgres_append_only_v1"
+    ? "postgres_append_only_v1"
+    : "unavailable";
   const upstreamRestartDurable = coreHealth?.restart_durable === true;
   const upstreamDistributed = coreHealth?.distributed === true;
   const upstreamSignerState = new Set([
@@ -983,7 +985,7 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     && coreHealth?.algorithm === "Ed25519"
     && coreHealth?.required === required
     && coreHealth?.ready === true
-    && upstreamBackend === "postgresql"
+    && upstreamBackend === "postgres_append_only_v1"
     && upstreamRestartDurable
     && upstreamDistributed
     && upstreamSignerState === "ready";
@@ -1006,7 +1008,7 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   } else if (!upstreamEnabled) {
     state = upstreamState;
     reason = upstreamReason || "generic_work_core_join_disabled";
-  } else if (upstreamBackend !== "postgresql") {
+  } else if (upstreamBackend !== "postgres_append_only_v1") {
     state = "durability_or_signing_unavailable";
     reason = upstreamReason || "generic_work_core_join_postgres_unavailable";
   } else if (!upstreamRestartDurable) {

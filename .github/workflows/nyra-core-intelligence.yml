@@ -568,14 +568,14 @@ jobs:
             }
           generic_join_mcp_contract = {
             "GENERIC_WORK_CORE_JOIN_ENABLED" => {
-              "key" => "GENERIC_WORK_CORE_JOIN_ENABLED", "value" => "false",
+              "key" => "GENERIC_WORK_CORE_JOIN_ENABLED", "value" => "true",
             },
             "GENERIC_WORK_CORE_JOIN_REQUIRED" => {
-              "key" => "GENERIC_WORK_CORE_JOIN_REQUIRED", "value" => "false",
+              "key" => "GENERIC_WORK_CORE_JOIN_REQUIRED", "value" => "true",
             },
             "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID" => {
               "key" => "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
-              "value" => "generic-work-core-join-production-v1",
+              "value" => "universal-core-generic-join-v1",
             },
             "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY" => {
               "key" => "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY", "sync" => false,
@@ -630,7 +630,7 @@ jobs:
             abort("#{key}: must remain a manually provisioned value") unless
               core_env[key] == { "key" => key, "sync" => false }
           end
-          abort("Generic Join remote signer key id must identify the remote signer, not Core-MCP's verifier") unless
+          abort("Generic Join remote signer key id must match Core-MCP's pinned verifier identity") unless
             core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID"] == {
               "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID",
               "value" => "universal-core-generic-join-v1",

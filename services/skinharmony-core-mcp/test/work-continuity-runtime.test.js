@@ -628,6 +628,46 @@ test("continuity schema is persistent, tenant-scoped and append-only", () => {
   assert.ok(WORK_EVENT_TYPES.has("memory_verified"));
 });
 
+test("coordination overview deduplicates one physical session and derives working only from an active lease", async () => {
+  const workA = "11111111-1111-4111-8111-111111111111";
+  const workB = "22222222-2222-4222-8222-222222222222";
+  let overviewQueries = 0;
+  const pool = { async query(sql, parameters = []) {
+    if (!sql.includes("WITH active_participants AS")) return { rows: [] };
+    overviewQueries += 1;
+    assert.deepEqual(parameters.slice(0, 2), ["tenant-a", [workA, workB]]);
+    return { rows: [{
+      session_id: "session-1", agent_id: "codex-1", client_type: "codex",
+      transport_session_fingerprint: "f".repeat(64), joined_at: "2026-09-01T00:00:00.000Z",
+      last_seen_at: "2026-09-01T00:01:00.000Z", expires_at: "2026-09-01T00:02:00.000Z",
+      active_lease_count: 1, membership_total: 2,
+      work_memberships: [
+        { work_id: workA, project_id: "project-a", work_status: "active", branch_id: null, active_lease_count: 1 },
+        { work_id: workB, project_id: "project-a", work_status: "active", branch_id: null, active_lease_count: 0 },
+      ],
+    }] };
+  }, async end() {} };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.coordinationOverviewAuthorized({ tenantId: "tenant-a" }, {}, {
+    schema_version: "legacy_work_read_authorization_v1", server_derived: true,
+    tenant_id: "tenant-a", work_ids: [workA, workB],
+  });
+  assert.equal(overviewQueries, 1);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0].agent_id, "codex-1");
+  assert.equal(result.sessions[0].state, "WORKING");
+  assert.equal(result.sessions[0].transport_bound, true);
+  assert.equal(result.sessions[0].work_memberships.length, 2);
+  assert.equal(result.sessions[0].work_memberships_truncated, false);
+  assert.equal("signature_verified" in result.sessions[0], false);
+  assert.equal("opaque_agent_id" in result.sessions[0], false);
+  assert.match(runtime.coordinationOverviewAuthorized.toString(), /sum\(active_lease_count\) OVER/);
+  await assert.rejects(runtime.coordinationOverviewAuthorized({ tenantId: "tenant-b" }, {}, {
+    schema_version: "legacy_work_read_authorization_v1", server_derived: true,
+    tenant_id: "tenant-a", work_ids: [workA],
+  }), /continuity_work_read_authorization_invalid/);
+});
+
 test("authoritative Work events invoke the Gallery projector in the same transaction", async () => {
   const calls = [];
   const pool = {

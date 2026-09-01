@@ -207,6 +207,18 @@ export const WORK_CONTINUITY_TOOLS = [
       query: { type: "string", maxLength: 240 },
       limit: { type: "integer", minimum: 1, maximum: 200 },
     }), true),
+  tool("tenant_work_coordination_read", "Read verified Work coordination",
+    "Read the exact tenant-scoped participant sessions, freshness and leases for one Work without joining, renewing or mutating it.",
+    object({
+      work_id: uuid,
+      include_inactive: { type: "boolean" },
+    }, ["work_id"]), true),
+  tool("tenant_work_coordination_overview", "Read active AI coordination overview",
+    "List verified participant sessions and leases across the caller's authorized Work Gallery without joining or mutating any Work.",
+    object({
+      project_id: identifier,
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+    }), true),
   tool("tenant_work_gallery_join", "Join shared tenant work",
     "Join an existing tenant work as a temporary participant session; no user or agent becomes permanent owner.",
     object({
