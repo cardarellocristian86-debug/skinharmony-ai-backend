@@ -2199,8 +2199,13 @@ async function advisoryConversationResult({
     }
   }
   let lessons = [];
+  let platformBlocks = [];
   if (route.intent === "distilled_lessons_read" && typeof readDistilledLessons === "function") {
-    try { lessons = await readDistilledLessons({ project_id: projectId }, identity); } catch { lessons = []; }
+    try {
+      const readback = await readDistilledLessons({ project_id: projectId }, identity);
+      lessons = Array.isArray(readback) ? readback : readback?.tenant_lessons || [];
+      platformBlocks = Array.isArray(readback?.platform_blocks) ? readback.platform_blocks : [];
+    } catch { lessons = []; platformBlocks = []; }
   }
   const telemetry = buildNyraRoutingTelemetry({
     route, preflightInvoked: false, context: null, catalog,
@@ -2216,9 +2221,15 @@ async function advisoryConversationResult({
     : introspectionRead
     ? introspectionReplySeed(english ? "en" : "it", route.intent, selfModel, selfModelReadback)
     : route.intent === "distilled_lessons_read"
-    ? (lessons.length
-      ? `Ho trovato ${lessons.length} lezioni candidate: ${lessons.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count})`).join("; ")}. Sono guardrail: non autorizzano alcuna azione.`
-      : "Non risultano lezioni distillate disponibili per questo progetto.")
+    ? (() => {
+      const local = lessons.length
+        ? `Ho trovato ${lessons.length} lezioni del progetto: ${lessons.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count})`).join("; ")}.`
+        : "Non risultano lezioni del progetto.";
+      const platform = platformBlocks.length
+        ? ` Pattern anonimi di piattaforma: ${platformBlocks.map((item) => `${item.source_tool}: ${item.failure_code} (${item.occurrence_count}, ${item.corroborating_tenant_count} contesti)`).join("; ")}.`
+        : " Nessun pattern anonimo di piattaforma è ancora corroborato.";
+      return `${local}${platform} Sono guardrail advisory: non autorizzano alcuna azione e non espongono dati di altri tenant.`;
+    })()
     : route.intent === "command_catalog"
     ? catalog
       ? (english
