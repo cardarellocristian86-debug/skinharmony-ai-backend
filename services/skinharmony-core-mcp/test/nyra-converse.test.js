@@ -379,11 +379,12 @@ function harness({
   readCommandCatalog,
   readControlRoomStatus,
   readNyraSelfModel,
+  readDistilledLessons,
   dialogueEnabled = true,
 } = {}) {
   const calls = {
     preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [],
-    listWorkChoices: [], readCommandCatalog: [], readControlRoomStatus: [], readNyraSelfModel: [],
+    listWorkChoices: [], readCommandCatalog: [], readControlRoomStatus: [], readNyraSelfModel: [], readDistilledLessons: [],
   };
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
@@ -426,6 +427,12 @@ function harness({
       return typeof readNyraSelfModel === "function"
         ? readNyraSelfModel(args, authenticatedIdentity)
         : readNyraSelfModel;
+    },
+    readDistilledLessons: readDistilledLessons === undefined ? null : async (args, authenticatedIdentity) => {
+      calls.readDistilledLessons.push({ args, identity: authenticatedIdentity });
+      return typeof readDistilledLessons === "function"
+        ? readDistilledLessons(args, authenticatedIdentity)
+        : readDistilledLessons;
     },
     dialogueEnabled,
   });
@@ -551,6 +558,32 @@ test("routes fresh advisory chat through the global read plane without Work or C
   assert.equal(payload.execution_authorized, false);
   assert.deepEqual(validateToolArguments(
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("reads tenant lessons and bounded anonymized platform blocks without Work", async () => {
+  const { handler, calls } = harness({
+    readDistilledLessons: {
+      tenant_lessons: [{ source_tool: "nyra_converse", failure_code: "agent_instance_conflict", occurrence_count: 1 }],
+      platform_blocks: [{
+        source_tool: "nyra_converse", failure_code: "agent_instance_conflict",
+        occurrence_count: 5, corroborating_tenant_count: 2, scope: "platform_anonymized",
+        entity_360_reference: { entity_type: "nyra_platform_learning_block" },
+      }],
+    },
+  });
+  const response = await handler({
+    message: "Nyra, mostrami le lezioni distillate disponibili. Non creare Work.",
+    project_id: "nyra-runtime", locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.readDistilledLessons.length, 1);
+  assert.deepEqual(calls.readDistilledLessons[0].args, { project_id: "nyra-runtime" });
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(payload.work.work_bound, false);
+  assert.equal(payload.intent_routing.route.intent, "distilled_lessons_read");
+  assert.match(payload.host_response_contract.reply_seed, /Pattern anonimi di piattaforma/);
+  assert.match(payload.host_response_contract.reply_seed, /non espongono dati di altri tenant/);
 });
 
 test("records zero Core routing latency for a fresh global advisory turn", async (t) => {

@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCloudMemoryStore, redactMemoryText, stableMemoryId } from "../src/cloud-memory-store.js";
+import { createCloudMemoryStore, platformLearningBlockKey, redactMemoryText, stableMemoryId } from "../src/cloud-memory-store.js";
 
 test("cloud memory ids are deterministic and tenant scoped", () => {
   assert.equal(stableMemoryId("tenant-a", "snapshots/state.md"), stableMemoryId("tenant-a", "snapshots/state.md"));
   assert.notEqual(stableMemoryId("tenant-a", "snapshots/state.md"), stableMemoryId("tenant-b", "snapshots/state.md"));
+});
+
+test("platform learning block keys contain only the reusable failure class", () => {
+  assert.equal(
+    platformLearningBlockKey("nyra_converse", "agent_instance_conflict"),
+    platformLearningBlockKey("nyra_converse", "agent_instance_conflict"),
+  );
+  assert.notEqual(
+    platformLearningBlockKey("nyra_converse", "agent_instance_conflict"),
+    platformLearningBlockKey("nyra_converse", "core_unavailable"),
+  );
 });
 
 test("cloud memory redacts common credentials before persistence", () => {
@@ -84,8 +95,30 @@ test("distilled failures persist only structured, tenant-scoped lesson metadata"
     args: { project_id: "nyra-runtime" },
     error: { code: "core unavailable: raw prompt must not persist" },
   });
-  const write = calls.at(-1);
+  const write = calls.find((call) => /INSERT INTO mcp_memory_distilled_lessons/.test(call.sql));
   assert.match(write.sql, /mcp_memory_distilled_lessons/);
   assert.deepEqual(write.params, ["tenant-a", "nyra-runtime", "nyra_converse", "unclassified_failure"]);
   assert.equal(JSON.stringify(write.params).includes("raw prompt"), false);
+  const platformWrite = calls.find((call) => /INSERT INTO mcp_platform_learning_blocks/.test(call.sql));
+  assert.match(platformWrite.sql, /block_key, source_tool, failure_code/);
+  assert.equal(JSON.stringify(platformWrite.params).includes("tenant-a"), false);
+});
+
+test("platform learning reads only bounded anonymized shadow or verified blocks", async () => {
+  const calls = [];
+  const pool = { query: async (sql, params) => {
+    calls.push({ sql, params });
+    return { rows: params ? [{
+      block_key: "a".repeat(64), source_tool: "nyra_converse", failure_code: "agent_instance_conflict",
+      occurrence_count: 4, corroborating_tenant_count: 2, lifecycle_state: "shadow",
+    }] : [] };
+  } };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  const blocks = await store.listPlatformLearningBlocks(99);
+  const read = calls.at(-1);
+  assert.match(read.sql, /lifecycle_state IN \('shadow', 'verified'\)/);
+  assert.deepEqual(read.params, [20]);
+  assert.equal(blocks[0].scope, "platform_anonymized");
+  assert.equal(blocks[0].entity_360_reference.entity_type, "nyra_platform_learning_block");
+  assert.equal(Object.hasOwn(blocks[0], "tenant_id"), false);
 });

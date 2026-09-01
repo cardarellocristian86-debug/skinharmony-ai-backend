@@ -1577,8 +1577,14 @@ const nyraConverseHandler = createNyraConverseHandler({
   // internally; it does not expose a new direct route or materialize state.
   readNyraSelfModel: (args, identity) => coreHandlers.nyra_self_model(args, identity),
   readDistilledLessons: async (args, identity) => cloudMemoryStore
-    ? cloudMemoryStore.listDistilledLessons(identity.tenantId, args.project_id, 10)
-    : [],
+    ? {
+      tenant_lessons: await cloudMemoryStore.listDistilledLessons(identity.tenantId, args.project_id, 10),
+      // Platform blocks are aggregate-only and contain no tenant, project,
+      // prompt or raw failure material. They remain advisory until Core's
+      // separate promotion path can attest a verified lifecycle state.
+      platform_blocks: await cloudMemoryStore.listPlatformLearningBlocks(10),
+    }
+    : { tenant_lessons: [], platform_blocks: [] },
   dialogueEnabled: config.nyraDialogueEnabled === true,
 });
 
