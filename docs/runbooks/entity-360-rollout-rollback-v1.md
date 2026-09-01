@@ -425,3 +425,53 @@ la sequenza causale completa:
 Fino al punto 6, qualsiasi evidenza live è una fotografia verificata ma non una
 attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
 retention dei sistemi owner restano responsabilità dei rispettivi adapter.
+
+### Carrier di attestazione finale
+
+La baseline operativa include la merge E360 della PR `#402` (`6be14320`) e la
+correzione fail-closed del readback manuale della PR `#410` (`24b83c7a`),
+entrambe antenate del `main` corrente. Se `main` avanza dopo un Core Join ma
+prima dell'osservazione, non riusare il target precedente: creare un carrier
+receipt-bound sul nuovo `main`, rieseguire i check exact-head e usare una
+delegation merge a TTL breve seguita da una delegation `render.observe`
+one-shot. La receipt di osservazione deve attestare tutti i servizi del
+manifest sul medesimo commit. Il passo conclusivo governato è
+`host_native_owner_manual_merge_finalize_gallery`, invocato con il
+`ticket_id` del ticket `render.observe` one-shot completato. Quel ticket deve
+essere già collegato al manual-merge readback server-validated e deve avere
+prodotto la closure receipt di osservazione per lo stesso commit live; il
+ticket di merge resta l'antenato della catena e non va passato al finalizer.
+
+Questa sezione documenta il percorso di attestazione e non dichiara il Work
+chiuso: l'unica fonte di verità resta il readback Core `completed` con
+`closure_receipt` e `final_report` persistiti.
+
+### Anchor PR421 e lease DB-authoritative
+
+La PR `#421` lega il source
+`4a518d1950aaa24e5a451e0888817575e92b7527` al base
+`81625edd80fa29174c022f40878937bc5c966d46` e alla merge
+`e133cae1d08d5d9dffc9d79c96ebbed6b0dc350b`. La CI pre-merge
+`33505723411` e la CI post-merge `33505931004` hanno completato con successo i
+quattro gate richiesti (`universal-core`, `core-mcp`, `deployment-parity`,
+`smartdesk`).
+
+Il fix della lease DB-authoritative era provato, prima del revert, dal builder Core receipt
+`202c86e6-3cb7-4973-91d5-5a3cd630d4cd` (report
+`ee3c1830708fa795efff36a013cde8bda27a7d2a932b1ee35a94b91e78c5353c`) e
+dal verifier indipendente receipt `2f3b27ea-94a1-43f6-8249-06e1022c58ef`
+(report `da40a7fdde27a9572ede7761f7da0e4ce894533d32dad38e0a6798236fe659b4`).
+La PR `#424` (`e2f7fba`) ha successivamente rimosso quell'implementazione e i
+relativi test: i receipt di PR421 non provano quindi il carrier corrente. Prima
+di usare la lease DB-authoritative come evidenza di chiusura occorre
+ripristinare sul `main` corrente il calcolo e la validazione tramite clock
+PostgreSQL, rieseguire i test di skew/expiry e ottenere nuovi receipt builder e
+verifier indipendente sul commit exact-head risultante.
+
+Il baseline live osservato è
+`ccebb2f755f1dc64b8420a30720d561184f8b45a`, discendente di `e133cae1`,
+con Universal Core e Core MCP ready e commit-verifiable sullo stesso SHA.
+Questo anchor non chiude il Work: il `main` avanzato rende non riusabile il
+manual-merge readback di PR421. La finalizzazione resta pendente fino a un
+nuovo carrier exact-main, un nuovo Core Join, il readback della merge senza
+drift, l'osservazione live one-shot e la receipt Core finale persistita.
