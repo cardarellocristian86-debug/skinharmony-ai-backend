@@ -68,15 +68,21 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
       ? "codex_native"
       : "chatgpt_native";
   const release = plan.intent?.release === true;
-  const implementation = plan.intent?.implementation === true;
+  const precommit = !release;
   const builderInstruction = [
     `Execute only the bounded Work objective: ${objective}`,
     "Use the server-issued context and exact repository scope; do not rediscover unrelated project state.",
+    precommit
+      ? "For this precommit phase, report server-digested precommit evidence for the exact base, binary diff, and changed files; do not claim a commit SHA."
+      : "For this release phase, report the exact reviewed commit SHA and reproducible release evidence.",
     "Do not merge, deploy, change permissions, or use provider credentials. Return reproducible change and test evidence.",
   ].join(" ");
   const verifierInstruction = [
     "Independently verify the builder evidence, required checks, changed scope, and rollback readiness.",
     "Run in a distinct native agent session; never reuse the builder identity or session.",
+    precommit
+      ? "For this precommit phase, submit matching precommit evidence and acceptance evidence for every server-issued criterion; live verification is deferred to release."
+      : "For this release phase, submit acceptance evidence and live verification after the deployment readback.",
     "Do not edit, merge, deploy, or authorize external actions. Report evidence and any blocking discrepancy.",
   ].join(" ");
   return {
@@ -102,7 +108,10 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
       independent_verifier_required: true,
       tests_required: true,
       evidence_required: true,
-      live_verification_required: release || implementation,
+      // A precommit plan has no deployed artifact to verify. Requiring live
+      // readback here makes the git.commit ticket depend on a later release.
+      // Keep it mandatory only for a plan explicitly classified as release.
+      live_verification_required: release,
     },
     idempotency_key: `nyra_native_${digest({ work_id, plan_digest: autopilot.plan_digest, binding, host_type }).slice(0, 48)}`,
   };

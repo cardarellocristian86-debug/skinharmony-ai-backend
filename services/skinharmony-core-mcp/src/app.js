@@ -1180,6 +1180,14 @@ export function resolveHostTransportPresence({
     : toolName;
   const oauthDttBackedReadCall = toolName === "core_capability_read" &&
     DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(effectiveCapabilityId);
+  // Verified closure is reached through the published Nyra continuation
+  // front door. ChatGPT may rotate the MCP transport between the resume/read
+  // and the owner-confirmed finalize call, so the latter must be allowed to
+  // carry the same server-signed logical presence into Generic Core Join.
+  // Keep the exception operation-exact; other continuation mutations remain
+  // bound to the current transport.
+  const oauthVerifiedFinalizeCall = toolName === "nyra_continue" &&
+    operation === "finalize_verified_work";
   // Assignment hand-off is a bounded Gallery operation, not a general Work
   // mutation. ChatGPT may rotate MCP transports between messages, so an
   // authenticated registered host can carry its server-signed logical
@@ -1201,7 +1209,8 @@ export function resolveHostTransportPresence({
     membership?.tenant_id === identity?.tenantId,
   );
   const oauthLogicalSessionBound = Boolean(
-    (oauthNyraNativeCoordinatorCall || oauthNativePlanCall || oauthDttBackedReadCall) &&
+    (oauthNyraNativeCoordinatorCall || oauthNativePlanCall || oauthDttBackedReadCall ||
+      oauthVerifiedFinalizeCall) &&
     declaredSessionId &&
     agentPresence &&
     identity?.kind === "oauth" &&
@@ -1220,6 +1229,16 @@ export function resolveHostTransportPresence({
     return Object.freeze({
       presence: agentPresence,
       binding_source: "oauth_declared_coordinator",
+    });
+  }
+  // Verified finalization must preserve the owner-bound logical participant
+  // even when ChatGPT supplies a newly rotated MCP transport presence. The
+  // exact operation and OAuth owner gates above keep every other continuation
+  // mutation bound to its current transport.
+  if (oauthVerifiedFinalizeCall && oauthLogicalSessionBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_declared_finalize",
     });
   }
   if (transportAgentPresence) {
