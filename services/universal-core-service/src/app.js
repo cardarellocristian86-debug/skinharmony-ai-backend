@@ -12054,7 +12054,7 @@ export function createUniversalCoreService(options = {}) {
     return wrapped.software_consumer_result;
   };
 
-  const issueHostNativeActionTicket = async (input) => {
+  const issueHostNativeActionTicket = async (input, trustedAuthority = {}) => {
     const verdictId = input?.release_manifest?.verification?.core_join_verdict_id;
     const softwareReleaseAction = ["git.push.protected", "github.merge", "render.deploy", "render.rollback", "render.observe"]
       .includes(input?.action?.kind);
@@ -12063,7 +12063,7 @@ export function createUniversalCoreService(options = {}) {
     }
     if (!verdictId || softwareCognitionMode !== "ENFORCED") {
       if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
-      return hostNativeGovernance.issueActionTicket(input);
+      return hostNativeGovernance.issueActionTicket(input, trustedAuthority);
     }
     if (input?.action?.kind === "render.observe" &&
         Object.hasOwn(input, "manual_merge_readback_id")) {
@@ -12077,6 +12077,7 @@ export function createUniversalCoreService(options = {}) {
       if (manualMergeRefreshAuthority.authority_mode === "refresh_closure_only") {
         return withSoftwareCognitionClosure(input.tenant_id, input.work_id,
           async (softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
+            ...trustedAuthority,
             software_closure_fresh_until:
               softwareClosure.payload.evidence_fresh_until,
             software_closure_digest: softwareClosure.payload.closure_digest,
@@ -12085,6 +12086,7 @@ export function createUniversalCoreService(options = {}) {
       }
       return withEnforcedSoftwareCoreJoin(input.tenant_id, input.work_id, verdictId,
         async (_record, softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
+          ...trustedAuthority,
           software_closure_fresh_until:
             softwareClosure.payload.evidence_fresh_until,
           software_closure_digest: softwareClosure.payload.closure_digest,
@@ -12093,6 +12095,7 @@ export function createUniversalCoreService(options = {}) {
     }
     return withEnforcedSoftwareCoreJoin(input.tenant_id, input.work_id, verdictId,
       async (_record, softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
+        ...trustedAuthority,
         software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
         software_closure_digest: softwareClosure.payload.closure_digest,
       }));
@@ -12515,7 +12518,14 @@ export function createUniversalCoreService(options = {}) {
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {
-        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const {
+          tenant_id: _tenantId,
+          // Only the signed tenant-gateway context may carry this authority.
+          // Strip the homonymous caller field before validation, hashing and
+          // idempotency so an untrusted body cannot poison an exact replay.
+          native_precommit_claim: _callerSuppliedNativePrecommitClaim,
+          ...input
+        } = req.body || {};
         // A standing-release delegation is server-persisted, mandate-bound and
         // independently validated by hostNativeGovernance. All other commit
         // ticket acquisition is claim-gated here.
@@ -12525,6 +12535,7 @@ export function createUniversalCoreService(options = {}) {
           : null;
         const standingReleaseCommit = commitDelegation?.effective_state === "active" &&
           Boolean(commitDelegation?.grant?.standing_release_binding);
+        let nativePrecommitClaim = null;
         if (input.action?.kind === "git.commit" && !standingReleaseCommit) {
           const claim = req.mcpTenantContext?.native_precommit_claim;
           const fields = ["schema_version", "claim_id", "claim_digest", "claim_replay", "gate_projection_digest",
@@ -12555,11 +12566,12 @@ export function createUniversalCoreService(options = {}) {
               })) {
             throw new Error("native_precommit_claim_required");
           }
+          nativePrecommitClaim = Object.freeze({ ...claim });
         }
         const actionTicket = await issueHostNativeActionTicket({
           ...input,
           tenant_id: req.tenantId,
-        });
+        }, nativePrecommitClaim ? { native_precommit_claim: nativePrecommitClaim } : {});
         audit.append("core_host_native_action_ticket_issued", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,

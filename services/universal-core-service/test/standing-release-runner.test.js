@@ -290,6 +290,26 @@ test("happy path coordinates peer adapters and verifies every exact service", ()
   assert.equal(run.observed_services.length, 2);
 });
 
+test("a signed native precommit replacement remains valid for the standing runner", () => {
+  const run = createStandingReleaseRun(input(), { now: NOW });
+  const predecessor = {
+    schema_version: "native_precommit_ticket_predecessor_v1",
+    ticket_id: "hnt_predecessor-00000001",
+    ticket_digest: H("a"),
+  };
+  const replacement = issued(commitAction(G("1"), G("2")), {
+    ticket: { native_precommit_predecessor: predecessor },
+  });
+  assert.equal(bind(run, replacement).state, "ACTION_IN_PROGRESS");
+  assert.throws(() => bind(run, {
+    ...replacement,
+    ticket: {
+      ...replacement.ticket,
+      native_precommit_predecessor: { ...predecessor, ticket_digest: "invalid" },
+    },
+  }), /standing_release_ticket_predecessor_invalid/);
+});
+
 test("two bounded CI repairs are allowed and a third is quarantined", () => {
   let { run, draftTicket } = throughCiWait();
   let head = G("2");

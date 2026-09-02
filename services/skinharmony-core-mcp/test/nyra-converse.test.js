@@ -1797,6 +1797,39 @@ test("lets authoritative release readiness supersede stale V2 task and evidence 
   ), []);
 });
 
+test("derives the exact predecessor context for a fulfilled native precommit gate", () => {
+  const beforeRaw = directiveContextFixture({ taskStatus: "planned", acceptanceVerified: false });
+  beforeRaw.precommit_ticket_gate = nativePrecommitTicketGateFixture();
+  const before = normalizeNyraDirectiveContext(
+    beforeRaw,
+    identity(),
+    { work_id: WORK_ID, project_id: "nyra_core" },
+  );
+
+  const fulfilledRaw = directiveContextFixture({ taskStatus: "completed", acceptanceVerified: true });
+  fulfilledRaw.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    fulfilled: true,
+    ticket_id: `hnt_${"7".repeat(32)}`,
+  });
+  const fulfilled = normalizeNyraDirectiveContext(
+    fulfilledRaw,
+    identity(),
+    { work_id: WORK_ID, project_id: "nyra_core" },
+  );
+  assert.equal(fulfilled.fulfilled_precommit_predecessor_context_digest, before.context_digest);
+  assert.equal(Object.hasOwn(fulfilled, "fulfilled_precommit_predecessor_context_digest"), true);
+  assert.equal(Object.keys(fulfilled).includes("fulfilled_precommit_predecessor_context_digest"), false);
+
+  const driftedRaw = structuredClone(fulfilledRaw);
+  driftedRaw.work.next_action = "Changed independently after fulfillment";
+  const drifted = normalizeNyraDirectiveContext(
+    driftedRaw,
+    identity(),
+    { work_id: WORK_ID, project_id: "nyra_core" },
+  );
+  assert.notEqual(drifted.fulfilled_precommit_predecessor_context_digest, before.context_digest);
+});
+
 test("keeps fresh Core remediation ahead of the release-ready fallback", async () => {
   const preflight = preflightFixture();
   preflight.structuredContent.work_preflight.continuity.state = "release_ready";
