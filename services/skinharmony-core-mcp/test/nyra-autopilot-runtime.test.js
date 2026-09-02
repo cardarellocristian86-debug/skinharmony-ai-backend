@@ -114,6 +114,67 @@ test("Nyra Autopilot persists tenant and Work scoped plans, assignments and appe
   assert.equal(NYRA_AUTOPILOT_SCHEMA_VERSION, "nyra_work_autopilot_v1");
 });
 
+test("a rejected verification atomically reoffers every assignment and replays the same remediation run", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const parentRunId = "22222222-2222-4222-8222-222222222222";
+  const rejectionDigest = "e".repeat(64);
+  const prior = [
+    { assignment_key: "planner", agent_instance_id: "33333333-3333-4333-8333-333333333333",
+      blueprint_id: "planner", role: "planner", task_contract: { plan_digest: "a".repeat(64) },
+      dependencies: [], eligible_client_types: ["codex"] },
+    { assignment_key: "independent_verifier", agent_instance_id: "44444444-4444-4444-8444-444444444444",
+      blueprint_id: "independent_verifier", role: "independent_verifier",
+      task_contract: { plan_digest: "a".repeat(64) }, dependencies: ["planner"],
+      eligible_client_types: ["chatgpt", "codex"] },
+  ];
+  let parentStatus = "materialized";
+  let child = null;
+  const reopened = [];
+  const client = { async query(sql, parameters = []) {
+    const statement = String(sql);
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim()) || statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+    if (statement.includes("SELECT project_id,architecture_version,intent_digest,plan,status")) return { rows: [{
+      project_id: "skinharmony-ai-backend", architecture_version: 1, intent_digest: "b".repeat(64),
+      plan: { schema_version: "nyra_autopilot_plan_v1" }, status: parentStatus,
+    }] };
+    if (statement.includes("plan->'remediation'->>'parent_run_id'")) return { rows: child ? [child] : [] };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_runs")) {
+      child = { run_id: parameters[2], plan_digest: parameters[7], status: "materialized" };
+      return { rows: [] };
+    }
+    if (statement.includes("SELECT assignment_key,agent_instance_id")) return { rows: prior };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_assignments")) {
+      reopened.push({ assignment_id: parameters[3], assignment_key: parameters[4], role: parameters[7],
+        task_contract: JSON.parse(parameters[8]), dependencies: JSON.parse(parameters[9]),
+        eligible_client_types: JSON.parse(parameters[10]), status: "offered" });
+      return { rows: [] };
+    }
+    if (statement.includes("UPDATE core_nyra_autopilot_runs SET status='completed'")) {
+      parentStatus = "completed";
+      return { rows: [] };
+    }
+    if (statement.includes("SELECT sequence_number,receipt_hash")) return { rows: [] };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_receipts")) return { rows: [] };
+    if (statement.includes("SELECT * FROM core_nyra_autopilot_assignments")) return { rows: reopened };
+    return { rows: [] };
+  }, release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const identity = { tenantId: "codexai", subject: "coordinator" };
+  const input = { work_id: workId, run_id: parentRunId, evidence_digest: rejectionDigest };
+  const first = await runtime.remediateRejectedVerification(identity, input);
+  assert.equal(first.idempotent_replay, false);
+  assert.equal(first.assignments.length, 2);
+  assert.deepEqual(first.assignments.map((item) => item.status), ["offered", "offered"]);
+  assert.deepEqual(first.assignments[1].dependencies, ["planner"]);
+  assert.notEqual(first.assignments[0].task_contract.plan_digest, "a".repeat(64));
+  assert.equal(first.assignments[1].task_contract.remediation.rejection_evidence_digest, rejectionDigest);
+  const replay = await runtime.remediateRejectedVerification(identity, input);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.run_id, first.run_id);
+  assert.equal(reopened.length, 2);
+});
+
 test("Nyra Autopilot MCP surface has one owner activation and bounded claim/submit", () => {
   const tools = Object.fromEntries(NYRA_AUTOPILOT_TOOLS.map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), [

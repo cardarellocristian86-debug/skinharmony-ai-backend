@@ -500,6 +500,10 @@ export const WORK_CONTINUITY_TOOLS = [
       "work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability",
     ]),
     true),
+  tool("work_continuity_native_launch_request_read", "Recover Nyra native launch request",
+    "Recover the latest bounded, persisted Nyra launch request for an authorized Work after a reconnect. Returns no plan body, session identity or execution authority.",
+    object({ work_id: uuid }, ["work_id"]),
+    true),
   tool("work_continuity_native_report", "Record native agent evidence",
     "Record one bound native child's terminal report directly from that child's transport-bound MCP session. Coordinator reports, reused sessions and wrong or replayed assignment capabilities fail closed.",
     object({
