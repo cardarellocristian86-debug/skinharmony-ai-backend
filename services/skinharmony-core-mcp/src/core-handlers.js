@@ -670,6 +670,32 @@ export function createCoreHandlers(config, options = {}) {
   // canonical V2 Work context, not from caller data or a second preflight.
   const readControlRoomWorkContext = options.readControlRoomWorkContext;
   const readControlRoomCoordinationOverview = options.readControlRoomCoordinationOverview;
+  const controlRoomCoordinationTimeoutMs = Math.min(Math.max(
+    Number(options.controlRoomCoordinationTimeoutMs || 1_500), 10), 5_000,
+  );
+  async function boundedControlRoomCoordinationRead(identity, args) {
+    if (typeof readControlRoomCoordinationOverview !== "function") return null;
+    let timer;
+    try {
+      return await Promise.race([
+        readControlRoomCoordinationOverview(identity, args),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const error = new Error("nyra_control_room_coordination_timeout");
+            error.code = "nyra_control_room_coordination_timeout";
+            reject(error);
+          }, controlRoomCoordinationTimeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      if (error?.code === "nyra_control_room_coordination_timeout") {
+        return { available: false, active_session_count: 0, active_logical_agent_count: 0, sessions: [] };
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
@@ -2381,7 +2407,7 @@ export function createCoreHandlers(config, options = {}) {
           })
         : null;
       const coordination = typeof readControlRoomCoordinationOverview === "function"
-        ? await readControlRoomCoordinationOverview(identity, {
+        ? await boundedControlRoomCoordinationRead(identity, {
             ...(args.project_id ? { project_id: args.project_id } : {}),
           })
         : null;
