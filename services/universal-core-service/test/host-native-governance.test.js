@@ -766,6 +766,36 @@ async function issueCommitTicket(governance, delegationId, overrides = {}) {
   });
 }
 
+function nativePrecommitClaim(input, { replay }) {
+  const claim = {
+    schema_version: "native_precommit_claim_attestation_v1",
+    claim_id: "11111111-1111-4111-8111-111111111111",
+    claim_digest: "",
+    claim_replay: replay,
+    gate_projection_digest: input.evidence_digest,
+    continuation_ref: "nyc_claim-gated-commit-recovery-0001",
+    request_digest: H("b"),
+    tenant_id: input.tenant_id,
+    work_id: input.work_id,
+    intent_anchor_digest: input.intent_anchor_digest,
+    delegation_id: input.delegation_id,
+    repository: input.repository,
+    action_digest: hostNativeDigest(input.action),
+    evidence_digest: input.evidence_digest,
+    host_session_fingerprint: input.host_session_fingerprint,
+    idempotency_key: input.idempotency_key,
+  };
+  claim.claim_digest = hostNativeDigest({
+    schema_version: "precommit_ticket_gate_claim_v1", claim_id: claim.claim_id,
+    work_id: claim.work_id, continuation_ref: claim.continuation_ref,
+    request_digest: claim.request_digest, delegation_id: claim.delegation_id,
+    action_digest: claim.action_digest, gate_projection_digest: claim.gate_projection_digest,
+    host_session_fingerprint: claim.host_session_fingerprint,
+    idempotency_key: claim.idempotency_key, replay,
+  });
+  return claim;
+}
+
 test("semantic scope guard is correlated at ticket issue and AEC reservation in shadow mode", async () => {
   const guard = createSemanticScopeGuard({ mode: "SHADOW" });
   const subject = harness({
@@ -5423,6 +5453,368 @@ test("brief ticket expires before reservation and cannot be revived", async () =
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
   }), /action_ticket_expired/);
+});
+
+test("an exact replayed native claim replaces only its expired unreserved commit ticket", async () => {
+  const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const input = {
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "claim-recovery-session",
+    action: commitAction(),
+    evidence_digest: H("9"),
+    idempotency_key: "claim-gated-expired-commit",
+  };
+  const first = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  const freshReplay = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(freshReplay.ticket.ticket_id, first.ticket.ticket_id);
+
+  subject.advance(2 * 60 * 1_000 + 1);
+  const replacement = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.notEqual(replacement.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(replacement.state, "issued");
+  assert.equal(replacement.uses, 0);
+  const superseded = await subject.governance.readActionTicket({
+    tenant_id: "codexai", ticket_id: first.ticket.ticket_id,
+  });
+  assert.equal(superseded.state, "superseded");
+  assert.equal(superseded.lifecycle_schema_version, "host_native_action_lifecycle_v2");
+  assert.equal(superseded.superseded_by_ticket_id, replacement.ticket.ticket_id);
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai", ticket_id: first.ticket.ticket_id,
+    host_session_fingerprint: input.host_session_fingerprint,
+  }), /replayed/);
+
+  const convergedReplay = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(convergedReplay.ticket.ticket_id, replacement.ticket.ticket_id);
+  const forged = nativePrecommitClaim(input, { replay: true });
+  forged.host_session_fingerprint = "different-host-session";
+  const denied = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: forged,
+  });
+  assert.equal(denied.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(denied.state, "superseded");
+});
+
+test("native precommit replay canonicalizes the stored action without widening the raw claim", async () => {
+  const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const action = commitAction();
+  delete action.provider_execution;
+  const input = {
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "claim-raw-action-session",
+    action,
+    evidence_digest: H("9"),
+    idempotency_key: "claim-gated-raw-action-expired-commit",
+  };
+  const first = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  assert.equal(Object.hasOwn(input.action, "provider_execution"), false);
+  assert.equal(first.ticket.action.provider_execution, false);
+
+  subject.advance(2 * 60 * 1_000 + 1);
+  const replacement = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.notEqual(replacement.ticket.ticket_id, first.ticket.ticket_id);
+
+  const canonicalClaim = nativePrecommitClaim({
+    ...input,
+    action: { ...input.action, provider_execution: false },
+  }, { replay: true });
+  const denied = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: canonicalClaim,
+  });
+  assert.equal(denied.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(denied.state, "superseded");
+});
+
+test("native precommit replay returns the authoritative reserved and completed successor", async () => {
+  const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const input = {
+    tenant_id: "codexai", delegation_id: delegation.delegation_id,
+    work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+    host_kind: "codex_native", host_session_fingerprint: "claim-terminal-session",
+    action: commitAction(), evidence_digest: H("9"), idempotency_key: "claim-terminal",
+  };
+  await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  subject.advance(2 * 60 * 1_000 + 1);
+  const replacement = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai", ticket_id: replacement.ticket.ticket_id,
+    host_session_fingerprint: input.host_session_fingerprint,
+  });
+  const reservedReplay = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(reservedReplay.ticket.ticket_id, replacement.ticket.ticket_id);
+  assert.equal(reservedReplay.state, "reserved");
+
+  const completed = await subject.governance.completeActionTicket({
+    tenant_id: "codexai", ticket_id: replacement.ticket.ticket_id,
+    reservation_id: reserved.reservation_id,
+    host_session_fingerprint: input.host_session_fingerprint,
+    outcome: "success", result_digest: H("a"),
+  });
+  const completedReplay = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(completedReplay.ticket.ticket_id, replacement.ticket.ticket_id);
+  assert.equal(completedReplay.state, "completed");
+  assert.equal(completedReplay.lifecycle_digest, completed.lifecycle_digest);
+});
+
+test("file governance store preserves native precommit successor convergence across restart", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-native-precommit-successor-"));
+  const base = harness();
+  let clock = base.now();
+  let sequence = 0;
+  const makeGovernance = () => withTestIdempotency(createHostNativeGovernance({
+    store: createFileHostNativeGovernanceStore({ root }),
+    signingSecret: "host-native-precommit-successor-secret-at-least-32-bytes",
+    closureAttestationSigningSecret: CLOSURE_ATTESTATION_SECRET,
+    ticketTtlMs: 2 * 60 * 1_000,
+    now: () => clock,
+    idFactory: () => `precommit-successor-${++sequence}`,
+  }));
+  try {
+    const initial = makeGovernance();
+    const delegation = await initial.issueDelegation(base.delegationInput);
+    const input = {
+      tenant_id: "codexai", delegation_id: delegation.delegation_id,
+      work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+      host_kind: "codex_native", host_session_fingerprint: "claim-file-restart-session",
+      action: commitAction(), evidence_digest: H("9"),
+      idempotency_key: "claim-file-restart",
+    };
+    const first = await initial.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+    });
+    clock += 2 * 60 * 1_000 + 1;
+    const replacement = await makeGovernance().issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    const converged = await makeGovernance().issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    assert.equal(converged.ticket.ticket_id, replacement.ticket.ticket_id);
+    const reserved = await makeGovernance().reserveActionTicket({
+      tenant_id: "codexai", ticket_id: replacement.ticket.ticket_id,
+      host_session_fingerprint: input.host_session_fingerprint,
+    });
+    const reservedReplay = await makeGovernance().issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    assert.equal(reservedReplay.ticket.ticket_id, replacement.ticket.ticket_id);
+    assert.equal(reservedReplay.reservation_id, reserved.reservation_id);
+    assert.equal(reservedReplay.state, "reserved");
+    assert.equal(replacement.ticket.native_precommit_predecessor.ticket_id,
+      first.ticket.ticket_id);
+    const restored = createFileHostNativeGovernanceStore({ root }).readState();
+    assert.equal(restored.native_precommit_ticket_successors[first.ticket.ticket_id]
+      .successor_ticket_id, replacement.ticket.ticket_id);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("claim-gated replacement rejects tampered signed supersession lineage", async (t) => {
+  for (const [name, mutate] of [
+    ["successor pointer", (record) => { record.superseded_by_ticket_id = "hnt_tampered-successor"; }],
+    ["superseded timestamp", (record) => { record.superseded_at = "not-a-timestamp"; }],
+    ["state downgrade", (record) => { record.state = "issued"; }],
+    ["lifecycle proof stripping", (record) => {
+      record.state = "issued";
+      delete record.lifecycle_schema_version;
+      delete record.lifecycle_digest;
+      delete record.lifecycle_signature;
+      delete record.superseded_by_ticket_id;
+      delete record.superseded_at;
+    }],
+  ]) {
+    await t.test(name, async () => {
+      const store = createInMemoryHostNativeGovernanceStore();
+      const subject = harness({ store, ticketTtlMs: 2 * 60 * 1_000 });
+      const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+      const input = {
+        tenant_id: "codexai", delegation_id: delegation.delegation_id,
+        work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+        host_kind: "codex_native", host_session_fingerprint: "claim-lineage-session",
+        action: commitAction(), evidence_digest: H("9"),
+        idempotency_key: `claim-lineage-${name.replace(" ", "-")}`,
+      };
+      const first = await subject.governance.issueActionTicket(input, {
+        native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+      });
+      subject.advance(2 * 60 * 1_000 + 1);
+      await subject.governance.issueActionTicket(input, {
+        native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+      });
+      store.mutate((state) => {
+        mutate(state.tickets[first.ticket.ticket_id]);
+        return null;
+      });
+      const ticketCountBeforeReplay = Object.keys(store.readState().tickets).length;
+      await assert.rejects(subject.governance.issueActionTicket(input, {
+        native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+      }), /action_ticket_lifecycle_invalid/);
+      assert.equal(Object.keys(store.readState().tickets).length, ticketCountBeforeReplay,
+        "tampered lineage cannot mint another successor");
+    });
+  }
+
+  await t.test("successor map entry", async () => {
+    const store = createInMemoryHostNativeGovernanceStore();
+    const subject = harness({ store, ticketTtlMs: 2 * 60 * 1_000 });
+    const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+    const input = {
+      tenant_id: "codexai", delegation_id: delegation.delegation_id,
+      work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+      host_kind: "codex_native", host_session_fingerprint: "claim-lineage-map-session",
+      action: commitAction(), evidence_digest: H("9"), idempotency_key: "claim-lineage-map",
+    };
+    const first = await subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+    });
+    subject.advance(2 * 60 * 1_000 + 1);
+    const replacement = await subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    const alternateInput = { ...input, idempotency_key: "claim-lineage-map-alternate" };
+    const alternate = await subject.governance.issueActionTicket(alternateInput, {
+      native_precommit_claim: nativePrecommitClaim(alternateInput, { replay: false }),
+    });
+    store.mutate((state) => {
+      state.tickets[replacement.ticket.ticket_id] = structuredClone(alternate);
+      return null;
+    });
+    await assert.rejects(subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    }), /action_ticket_lifecycle_invalid/);
+    assert.notEqual(replacement.ticket.ticket_id, alternate.ticket.ticket_id);
+    assert.equal(first.state, "issued");
+  });
+
+  await t.test("missing root record", async () => {
+    const store = createInMemoryHostNativeGovernanceStore();
+    const subject = harness({ store, ticketTtlMs: 2 * 60 * 1_000 });
+    const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+    const input = {
+      tenant_id: "codexai", delegation_id: delegation.delegation_id,
+      work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+      host_kind: "codex_native", host_session_fingerprint: "claim-lineage-root-session",
+      action: commitAction(), evidence_digest: H("9"), idempotency_key: "claim-lineage-root",
+    };
+    const first = await subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+    });
+    subject.advance(2 * 60 * 1_000 + 1);
+    const replacement = await subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    store.mutate((state) => {
+      delete state.tickets[first.ticket.ticket_id];
+      return null;
+    });
+    const ticketCountBeforeReplay = Object.keys(store.readState().tickets).length;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(subject.governance.issueActionTicket(input, {
+        native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+      }), /action_ticket_lifecycle_invalid/);
+    }
+    const finalState = store.readState();
+    assert.equal(Object.keys(finalState.tickets).length, ticketCountBeforeReplay,
+      "missing lineage root cannot mint another successor");
+    assert.equal(finalState.tickets[replacement.ticket.ticket_id].state, "issued");
+  });
+});
+
+test("claim-gated replacement converges across a two-hop signed supersession chain", async () => {
+  const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const input = {
+    tenant_id: "codexai", delegation_id: delegation.delegation_id,
+    work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+    host_kind: "codex_native", host_session_fingerprint: "claim-two-hop-session",
+    action: commitAction(), evidence_digest: H("9"), idempotency_key: "claim-two-hop-chain",
+  };
+  const first = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  subject.advance(2 * 60 * 1_000 + 1);
+  const second = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  subject.advance(2 * 60 * 1_000 + 1);
+  const third = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.notEqual(first.ticket.ticket_id, second.ticket.ticket_id);
+  assert.notEqual(second.ticket.ticket_id, third.ticket.ticket_id);
+  const converged = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(converged.ticket.ticket_id, third.ticket.ticket_id);
+});
+
+test("claim-gated replacement stops before the bounded lineage would overflow", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  const subject = harness({ store, ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const input = {
+    tenant_id: "codexai", delegation_id: delegation.delegation_id,
+    work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+    host_kind: "codex_native", host_session_fingerprint: "claim-depth-session",
+    action: commitAction(), evidence_digest: H("9"), idempotency_key: "claim-depth-bound",
+  };
+  let current = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  for (let depth = 0; depth < 16; depth += 1) {
+    subject.advance(2 * 60 * 1_000 + 1);
+    const successor = await subject.governance.issueActionTicket(input, {
+      native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+    });
+    assert.notEqual(successor.ticket.ticket_id, current.ticket.ticket_id);
+    current = successor;
+  }
+  const converged = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.equal(converged.ticket.ticket_id, current.ticket.ticket_id);
+
+  subject.advance(2 * 60 * 1_000 + 1);
+  const ticketCountBeforeOverflow = Object.keys(store.readState().tickets).length;
+  await assert.rejects(subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  }), /action_ticket_lifecycle_invalid/);
+  assert.equal(Object.keys(store.readState().tickets).length, ticketCountBeforeOverflow,
+    "lineage overflow cannot persist an unreachable successor");
 });
 
 test("expired unreserved release ticket leaves budget and Core join available for same-session recovery", async () => {

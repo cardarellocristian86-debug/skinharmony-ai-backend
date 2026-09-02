@@ -221,11 +221,33 @@ class PrecommitPool {
       const rows = [...this.claims.values()].filter((row) => row.tenant_id === parameters[0] &&
         row.work_id === parameters[1] && (q.includes("c.idempotency_key=$4")
           ? (row.gate_projection_digest === parameters[2] || row.idempotency_key === parameters[3])
-          : row.gate_projection_digest === parameters[2]));
+          : q.includes("c.claim_id=$3")
+            ? row.claim_id === parameters[2]
+            : q.includes("c.continuation_ref=$3")
+              ? row.continuation_ref === parameters[2]
+              : q.includes("$3::boolean IS TRUE")
+                ? Boolean(this.claimFulfillments.get(key(
+                  row.tenant_id, row.work_id, row.gate_projection_digest,
+                )))
+                : row.gate_projection_digest === parameters[2])).filter((row) =>
+        !q.includes("c.request_digest=$4") ||
+        (row.request_digest === parameters[3] && row.delegation_id === parameters[4] &&
+          row.action_digest === parameters[5] && row.host_session_fingerprint === parameters[6]));
       const row = rows[0];
       const fulfillment = row && this.claimFulfillments.get(key(row.tenant_id, row.work_id,
         row.gate_projection_digest));
-      return { rows: row ? [{ ...structuredClone(row), fulfilled_ticket_id: fulfillment?.ticket_id || null }] : [],
+      const locator = row && this.claimReconciliations.get(key(
+        row.tenant_id, row.work_id, row.claim_id, "ticket_locator_received",
+      ));
+      const before = row && this.claimReconciliations.get(key(
+        row.tenant_id, row.work_id, row.claim_id, "before_ticket_locator",
+      ));
+      return { rows: row ? [{ ...structuredClone(row),
+        fulfilled_ticket_id: fulfillment?.ticket_id || null,
+        fulfilled_claim_id: fulfillment?.claim_id || null,
+        fulfilled_claim_digest: fulfillment?.claim_digest || null,
+        reconciled_ticket_id: locator?.ticket_id || null,
+        before_ticket_locator: Boolean(before) }] : [],
         rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_claim WHERE")) {
@@ -727,6 +749,77 @@ test("claim recovery is append-only, exact-replayable and cross-binding closed",
   await assert.rejects(store.reconcilePrecommitTicketGateClaim(identity(), {
     ...recovery, request_digest: "9".repeat(64),
   }), /precommit_claim_reconciliation_claim_invalid/);
+});
+
+test("claim recovery adopts an exact prior continuation and lets verified fulfillment supersede its locator", async () => {
+  const { store, input, pool } = fixture();
+  const gate = await store.reconcilePrecommitTicketGate(identity(), input);
+  const claim = await claimGate(store, gate);
+  const naked = await store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    request_digest: "1".repeat(64), delegation_id: "delegation-1",
+    action_digest: digest({ kind: "git.commit" }), host_session_fingerprint: "a".repeat(64),
+  });
+  assert.equal(naked.recovery_source, "claim");
+  assert.equal(naked.ticket_id, null);
+  assert.equal(naked.gate_claim.continuation_ref, "continuation-1");
+  assert.equal(naked.gate_claim.replay, true);
+  await store.reconcilePrecommitTicketGateClaim(identity(), {
+    work_id: WORK_ID, gate_claim: claim, gate_projection_digest: gate.projection_digest,
+    continuation_ref: "continuation-1", request_digest: "1".repeat(64),
+    idempotency_key: "claim-1", stage: "before_ticket_locator", ticket_id: null,
+    error_code: "core_authorize_unavailable",
+  });
+  const before = await store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    request_digest: "1".repeat(64), delegation_id: "delegation-1",
+    action_digest: digest({ kind: "git.commit" }), host_session_fingerprint: "a".repeat(64),
+  });
+  assert.equal(before.recovery_source, "before_ticket_locator");
+  assert.equal(before.ticket_id, null);
+  assert.equal(before.gate_claim.continuation_ref, "continuation-1");
+  assert.equal(before.gate_claim.replay, true);
+
+  const locator = `hnt_${"c".repeat(32)}`;
+  await store.reconcilePrecommitTicketGateClaim(identity(), {
+    work_id: WORK_ID, gate_claim: claim, gate_projection_digest: gate.projection_digest,
+    continuation_ref: "continuation-1", request_digest: "1".repeat(64),
+    idempotency_key: "claim-1", stage: "ticket_locator_received", ticket_id: locator,
+    error_code: "nyra_continue_commit_ticket_readback_unavailable",
+  });
+  const adopted = await store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    request_digest: "1".repeat(64), delegation_id: "delegation-1",
+    action_digest: digest({ kind: "git.commit" }), host_session_fingerprint: "a".repeat(64),
+  });
+  assert.equal(adopted.recovery_source, "reconciliation");
+  assert.equal(adopted.ticket_id, locator);
+  assert.equal(adopted.gate_claim.continuation_ref, "continuation-1");
+
+  pool.claimFulfillments.set(key("tenant-a", WORK_ID, gate.projection_digest), {
+    tenant_id: "tenant-a", work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    claim_id: claim.claim_id, claim_digest: claim.claim_digest,
+    ticket_id: locator,
+  });
+  const fulfilled = await store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, fulfilled: true, request_digest: "1".repeat(64),
+    delegation_id: "delegation-1", action_digest: digest({ kind: "git.commit" }),
+    host_session_fingerprint: "a".repeat(64),
+  });
+  assert.equal(fulfilled.recovery_source, "fulfillment");
+  assert.equal(fulfilled.ticket_id, locator);
+  pool.claimFulfillments.get(key("tenant-a", WORK_ID, gate.projection_digest)).ticket_id =
+    `hnt_${"d".repeat(32)}`;
+  const replacement = await store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, gate_claim: claim,
+  });
+  assert.equal(replacement.recovery_source, "fulfillment");
+  assert.equal(replacement.ticket_id, `hnt_${"d".repeat(32)}`);
+  await assert.rejects(store.readPrecommitTicketGateClaimRecovery(identity(), {
+    work_id: WORK_ID, gate_projection_digest: gate.projection_digest,
+    request_digest: "1".repeat(64), delegation_id: "delegation-1",
+    action_digest: digest({ kind: "git.commit" }), host_session_fingerprint: "f".repeat(64),
+  }), /precommit_claim_recovery_host_invalid/);
 });
 
 test("materializes one server-owned native closure gate for a canonical promoted V2 bridge", async () => {

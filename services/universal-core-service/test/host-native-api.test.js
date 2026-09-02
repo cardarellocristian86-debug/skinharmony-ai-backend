@@ -953,15 +953,31 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
       host_session_fingerprint: nativeClaim.host_session_fingerprint,
       idempotency_key: nativeClaim.idempotency_key, replay: nativeClaim.claim_replay,
     });
+    const forgedBodyClaim = await request("POST", "/v1/host-native/actions/authorize", {
+      ...commitRequest,
+      native_precommit_claim: nativeClaim,
+    }, automationKey.json.key);
+    assert.equal(forgedBodyClaim.status, 400);
+    assert.equal(forgedBodyClaim.json.error, "native_precommit_claim_required");
+    const gatewayClaimHeaders = {
+      "x-sh-tenant-id": "tenant-host-native",
+      "x-sh-tenant-context": signedTenantContext(MCP_TENANT_CONTEXT_SECRET,
+        "tenant-host-native", { native_precommit_claim: nativeClaim }),
+    };
     const ticket = await request("POST", "/v1/host-native/actions/authorize", commitRequest,
-      MCP_TENANT_GATEWAY_KEY, {
-        "x-sh-tenant-id": "tenant-host-native",
-        "x-sh-tenant-context": signedTenantContext(MCP_TENANT_CONTEXT_SECRET,
-          "tenant-host-native", { native_precommit_claim: nativeClaim }),
-      });
+      MCP_TENANT_GATEWAY_KEY, gatewayClaimHeaders);
     assert.equal(ticket.status, 201);
     assert.equal(ticket.json.action_ticket.ticket.max_uses, 1);
     const ticketId = ticket.json.action_ticket.ticket.ticket_id;
+    const forgedBodyReplay = await request("POST", "/v1/host-native/actions/authorize", {
+      ...commitRequest,
+      native_precommit_claim: {
+        schema_version: "caller_forged_precommit_claim_v1",
+        claim_id: "caller-controlled",
+      },
+    }, MCP_TENANT_GATEWAY_KEY, gatewayClaimHeaders);
+    assert.equal(forgedBodyReplay.status, 201);
+    assert.equal(forgedBodyReplay.json.action_ticket.ticket.ticket_id, ticketId);
     const reserved = await request("POST", `/v1/host-native/actions/${ticketId}/reserve`, {
       idempotency_key: "api-reserve-commit-1",
       host_session_fingerprint: "codex-api-session-1",

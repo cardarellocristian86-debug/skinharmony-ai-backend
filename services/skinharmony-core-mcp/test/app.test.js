@@ -1199,8 +1199,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
     { required: false, fingerprint: "f".repeat(64), status: 200, renderReady: true,
       joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
     { required: false, fingerprint: verifier.public_key_fingerprint, upstreamRequired: true,
-      status: 200, renderReady: true, joinReady: false,
-      reason: "generic_work_core_join_upstream_not_ready" },
+      status: 200, renderReady: true, joinReady: true, reason: null },
     { required: false, fingerprint: verifier.public_key_fingerprint, omitUpstreamRequired: true,
       status: 200, renderReady: true, joinReady: false,
       reason: "generic_work_core_join_upstream_not_ready" },
@@ -1276,7 +1275,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
   }
 });
 
-test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
+test("Generic Join health mirrors fail-closed Universal Core readiness and accepts stronger enforcement", () => {
   const verifier = {
     algorithm: "Ed25519",
     metadata: {
@@ -1332,6 +1331,32 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   assert.equal(ready.restart_durable, true);
   assert.equal(ready.distributed, true);
   assert.equal(ready.signer_state, "ready");
+
+  const strongerUpstream = buildGenericWorkCoreJoinHealth(
+    input.config,
+    input.options,
+    upstream({ required: true }),
+  );
+  assert.equal(strongerUpstream.ready, true);
+
+  const missingUpstreamRequirement = buildGenericWorkCoreJoinHealth(
+    input.config,
+    input.options,
+    upstream({ required: undefined }),
+  );
+  assert.equal(missingUpstreamRequirement.ready, false);
+  assert.equal(
+    missingUpstreamRequirement.reason,
+    "generic_work_core_join_upstream_not_ready",
+  );
+
+  const weakerUpstream = buildGenericWorkCoreJoinHealth(
+    { ...input.config, genericWorkCoreJoinRequired: true },
+    input.options,
+    upstream({ required: false }),
+  );
+  assert.equal(weakerUpstream.ready, false);
+  assert.equal(weakerUpstream.reason, "generic_work_core_join_upstream_not_ready");
 });
 
 test("production readiness fails closed with coded non-secret component blockers", async () => {
