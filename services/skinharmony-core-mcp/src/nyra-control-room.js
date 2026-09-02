@@ -11,7 +11,7 @@ const CONTROL_ROOM_ACTION_IDS = Object.freeze({
   nyra_dialogue: Object.freeze(["READ_STATUS", "REQUEST_CONFIGURATION_CHANGE"]),
   entity_360: Object.freeze(["READ_STATUS", "REQUEST_ENABLE_SHADOW", "REQUEST_DISABLE_SHADOW"]),
   semantic_scope_guard: Object.freeze(["READ_STATUS", "REQUEST_CONFIGURATION_CHANGE"]),
-  work_continuity: Object.freeze(["READ_STATUS"]),
+  work_continuity: Object.freeze(["READ_STATUS", "FINALIZE_VERIFIED_WORK"]),
   research_airlock: Object.freeze(["READ_STATUS"]),
   policy_registry: Object.freeze(["READ_STATUS", "REQUEST_LIFECYCLE_ACTION"]),
 });
@@ -453,6 +453,10 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, coordin
     handler: blocker === null ? handler : null,
   });
   const progress = projectWorkClosureProgress(work);
+  const finalizeAvailable = progress.available === true &&
+    work?.pending_required_task_count === 0 &&
+    work?.unverified_required_evidence_count === 0 &&
+    work?.closure_verified === false;
   const dialogueState = nyraDialogueEnabled === true
     ? "ON"
     : nyraDialogueEnabled === false ? "OFF" : "UNKNOWN";
@@ -506,7 +510,16 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, coordin
       backend: mode(causalContinuity.state, "UNKNOWN"),
       progress,
       coordination,
-    }, [action("READ_STATUS")]),
+    }, [
+      action("READ_STATUS"),
+      action("FINALIZE_VERIFIED_WORK", {
+        availability: finalizeAvailable ? "EXISTING_GOVERNED_HANDLER" : "UNAVAILABLE",
+        execution: finalizeAvailable ? "REQUEST_BOUND_GOVERNED" : "DEPLOYMENT_PREREQUISITE",
+        requiresOwnerConfirmation: true,
+        requiresCoreAuthorization: true,
+        handler: finalizeAvailable ? "nyra_verified_work_finalize" : null,
+      }),
+    ]),
     domain("research_airlock", mode(researchAirlock.mode, "UNKNOWN"), {
       state: mode(researchAirlock.state, readiness(researchAirlock.ready)),
       operational_safe: knownBoolean(researchAirlock.operational_safe),

@@ -3209,6 +3209,10 @@ test("keeps an explicit structured bootstrap ahead of merge or deploy words in i
   assert.equal(response.structuredContent.action_policy.action_class, "WORK_BOOTSTRAP");
   assert.equal(response.structuredContent.action_policy.work_bootstrap_requested, true);
   assert.equal(response.structuredContent.action_policy.consequential_request_detected, true);
+  assert.equal(
+    response.structuredContent.orchestration_directive.ticket_request.continuation.reason,
+    "continuation_store_unavailable",
+  );
   assert.equal(response.structuredContent.execution_authorized, false);
 });
 
@@ -3269,6 +3273,6 @@ test("a stalled continuation store leaves the Nyra turn available and bounded", 
   }, identity());
   assert.equal(response.structuredContent.ok, true);
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
-  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_store_unavailable");
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_operation_not_applicable");
   assert(Date.now() - startedAt < 500, "a non-consequential resume must not call continuation storage");
 });

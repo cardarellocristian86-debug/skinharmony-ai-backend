@@ -1995,14 +1995,23 @@ function toolFailure(error) {
 
 function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
-    POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
-    NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
-    ["nyra_continue", "nyra_governed_continue"].includes(tool.name)) return tool;
+    POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name)) return tool;
+  const environment = { type: "string", enum: ["production", "staging"], description: "Explicit target environment; the gateway never defaults or falls back." };
+  if (NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
+      ["nyra_continue", "nyra_governed_continue"].includes(tool.name)) {
+    return {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: { ...(tool.inputSchema?.properties || {}), environment },
+      },
+    };
+  }
   return {
     ...tool,
     inputSchema: {
       ...tool.inputSchema,
-      properties: { ...(tool.inputSchema?.properties || {}), environment: { type: "string", enum: ["production", "staging"], description: "Explicit target environment; the gateway never defaults or falls back." } },
+      properties: { ...(tool.inputSchema?.properties || {}), environment },
       required: [...new Set([...(tool.inputSchema?.required || []), "environment"])],
     },
   };
