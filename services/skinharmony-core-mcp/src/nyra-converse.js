@@ -811,6 +811,36 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
   });
 }
 
+function fulfilledPrecommitPredecessorContextDigest(compact, gate) {
+  if (
+    gate?.schema_version !== "precommit_ticket_gate_v2" ||
+    gate.fresh !== true || gate.fulfilled !== true ||
+    typeof gate.ticket_id !== "string" || !gate.ticket_id ||
+    compact?.precommit_ticket_gate_applicable !== false
+  ) return null;
+  const fulfilledTasks = compact.tasks.filter((task) => task.task_id === gate.task_id);
+  if (
+    fulfilledTasks.length !== 1 || fulfilledTasks[0].required !== true ||
+    fulfilledTasks[0].status !== "completed" ||
+    fulfilledTasks[0].acceptance_verified !== true
+  ) return null;
+  const { projection_digest: _projectionDigest, ...currentProjection } = gate;
+  const predecessorProjectionDigest = deterministicDigest({
+    ...currentProjection,
+    fulfilled: false,
+    ticket_id: null,
+  });
+  const predecessorTasks = compact.tasks.map((task) => task.task_id === gate.task_id
+    ? Object.freeze({ ...task, status: "planned", acceptance_verified: false })
+    : task);
+  return deterministicDigest({
+    ...compact,
+    tasks: predecessorTasks,
+    precommit_ticket_gate_projection_digest: predecessorProjectionDigest,
+    precommit_ticket_gate_applicable: true,
+  });
+}
+
 function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   if (!value) return unavailableWorkDirectiveContext(workBinding, dialogue);
   const tenantId = requireAuthenticatedIdentity(identity);
@@ -982,7 +1012,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     closure_verified: closureVerified,
     closure_verification_digest: closureVerified ? closureProjection.verification_digest : null,
   };
-  return Object.freeze({
+  const normalized = {
     available: true,
     work_id: workBinding.work_id,
     project_id: workBinding.project_id,
@@ -1005,10 +1035,25 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
           title: pendingRequiredTasks[0].title,
           status: pendingRequiredTasks[0].status,
           acceptance_verified: pendingRequiredTasks[0].acceptance_verified,
-        })
+      })
       : null,
     closure_verified: closureVerified,
-  });
+  };
+  // This internal, non-enumerable proof reconstructs the exact prior Work
+  // context by undoing only a validated native precommit fulfillment. It lets
+  // governed recovery tolerate that one transition while rejecting all other
+  // task, evidence, acceptance, status, or next-action drift.
+  const predecessorContextDigest = fulfilledPrecommitPredecessorContextDigest(
+    compact,
+    precommitTicketGate,
+  );
+  if (predecessorContextDigest) {
+    Object.defineProperty(normalized, "fulfilled_precommit_predecessor_context_digest", {
+      value: predecessorContextDigest,
+      enumerable: false,
+    });
+  }
+  return Object.freeze(normalized);
 }
 
 export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
