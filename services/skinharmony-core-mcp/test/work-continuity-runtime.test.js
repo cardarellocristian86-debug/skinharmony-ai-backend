@@ -661,11 +661,43 @@ test("coordination overview deduplicates one physical session and derives workin
   assert.equal(result.sessions[0].work_memberships_truncated, false);
   assert.equal("signature_verified" in result.sessions[0], false);
   assert.equal("opaque_agent_id" in result.sessions[0], false);
+  assert.equal("transport_session_fingerprint" in result.sessions[0], false);
   assert.match(runtime.coordinationOverviewAuthorized.toString(), /sum\(active_lease_count\) OVER/);
+  assert.doesNotMatch(runtime.coordinationOverviewAuthorized.toString(), /OR EXISTS \(/);
   await assert.rejects(runtime.coordinationOverviewAuthorized({ tenantId: "tenant-b" }, {}, {
     schema_version: "legacy_work_read_authorization_v1", server_derived: true,
     tenant_id: "tenant-a", work_ids: [workA],
   }), /continuity_work_read_authorization_invalid/);
+});
+
+test("persisted native verifier launch request is recoverable through a bounded readback", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  let malformed = false;
+  const pool = { async query(sql) {
+    if (!String(sql).includes("plan->'launch_request' AS launch_request")) return { rows: [] };
+    return { rows: [{
+      plan_id: "22222222-2222-4222-8222-222222222222", plan_digest: "a".repeat(64),
+      status: "planned", plan_version: 3, created_at: new Date("2026-09-02T09:00:00.000Z"),
+      launch_request: malformed ? { action: "START_NATIVE_PLAN" } : {
+        schema_version: "nyra_host_launch_request_v1", requested_by: "nyra",
+        action: "START_NATIVE_PLAN", verifier_task_id: "verify",
+        distinct_session_required: true, host_execution_required: true,
+      },
+    }] };
+  }, async end() {} };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const identity = { tenantId: "tenant-a", subject: "coordinator" };
+  const recovered = await runtime.readNativeLaunchRequest(identity, { work_id: workId });
+  assert.equal(recovered.available, true);
+  assert.equal(recovered.created_at, "2026-09-02T09:00:00.000Z");
+  assert.equal(recovered.launch_request.host_execution_required, true);
+  assert.equal("session_id" in recovered, false);
+  assert.equal("execution_authorized" in recovered, false);
+  malformed = true;
+  const unavailable = await runtime.readNativeLaunchRequest(identity, { work_id: workId });
+  assert.deepEqual(unavailable, {
+    schema_version: "native_agent_launch_request_read_v1", work_id: workId, available: false,
+  });
 });
 
 test("authoritative Work events invoke the Gallery projector in the same transaction", async () => {
