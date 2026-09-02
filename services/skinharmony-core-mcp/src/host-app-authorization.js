@@ -41,6 +41,14 @@ const WORK_ASSIGNMENT_COLLABORATION_TOOLS = new Set([
   "nyra_work_assignment_submit",
 ]);
 
+// Transport visibility only: a conversational Work reader may discover this
+// exact terminal entrypoint, but its handler still requires the authenticated
+// OAuth owner, fresh request-bound confirmation and the dedicated Core gate.
+// Mapping discovery to WORK_READ does not grant closure authority.
+const WORK_OWNER_FINALIZATION_TOOLS = new Set([
+  "nyra_verified_work_finalize",
+]);
+
 const HOST_META_READ_TOOLS = new Set([
   "core_health",
   "nyra_control_room_status",
@@ -282,6 +290,7 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   if (WORK_CREATE_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_CREATE;
   if (WORK_REVIEW_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_REVIEW;
   if (WORK_ASSIGNMENT_COLLABORATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_READ;
+  if (WORK_OWNER_FINALIZATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_READ;
   if (WORK_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   if (CORE_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   // The health-only Control Room is safe as a metadata read, but supplying a
