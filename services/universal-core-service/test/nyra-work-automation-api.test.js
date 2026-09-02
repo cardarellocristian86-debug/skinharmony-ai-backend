@@ -10,6 +10,7 @@ test("Universal Core mounts tenant-authenticated Work Automation v3 routes", () 
     "/v1/nyra/work-automation/:workId/builder-report",
     "/v1/nyra/work-automation/:workId/ci/verify",
     "/v1/nyra/work-automation/:workId/reconcile",
+    "/v1/nyra/work-automation/:workId/reconcile/post-release-complete",
     "/v1/nyra/work-automation/:workId/builder/bind",
     "/v1/nyra/work-automation/:workId/builder/begin",
     "/v1/nyra/work-automation/:workId/commit/attest",
@@ -25,6 +26,8 @@ test("Universal Core mounts tenant-authenticated Work Automation v3 routes", () 
   ]) assert.match(source, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(source, /system_verifier_/);
   assert.match(source, /retried: false/);
+  assert.match(source, /nyra_session_required: false/);
+  assert.match(source, /nyra_authoritative_post_release_reconciliation_v1/);
   for (const dependency of ["builderBindingVerifier", "builderReportIssuer", "criterionEvidenceVerifier", "criterionReadinessIssuer", "finalCriterionIssuer", "actionReceiptVerifier", "coreJoinVerifier", "mergeReadbackResolver", "deploymentReadbackResolver", "serviceObservationResolver", "closureReceiptVerifier", "reconciliationVerifier"]) assert.match(source, new RegExp(dependency));
   const coordinator = fs.readFileSync(new URL("../src/nyraWorkAutomationCoordinator.js", import.meta.url), "utf8");
   assert.match(coordinator, /receipts\.builderPlan\(/);

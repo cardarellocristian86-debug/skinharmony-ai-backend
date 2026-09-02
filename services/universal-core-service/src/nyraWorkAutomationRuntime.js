@@ -53,6 +53,12 @@ function digest(value, code) {
   if (!DIGEST.test(normalized)) fail(code);
   return normalized;
 }
+function normalizeList(value, max = 200) {
+  if (!Array.isArray(value) || value.length > max) fail("nyra_automation_lifecycle_dependency_invalid");
+  const values = value.map((item) => text(item, "nyra_automation_lifecycle_dependency_invalid", 100));
+  if (new Set(values).size !== values.length) fail("nyra_automation_lifecycle_dependency_invalid");
+  return values;
+}
 function sha(value, code) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!SHA.test(normalized)) fail(code);
@@ -71,6 +77,35 @@ function normalizedPaths(values, code, { allowEmpty = false } = {}) {
   const stable = [...new Set(result)].sort();
   if (stable.length !== result.length) fail(code);
   return stable;
+}
+function lifecycleDag(value, allowedPaths) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.schema_version !== "nyra_branch_lifecycle_dag_v1") fail("nyra_automation_lifecycle_dag_invalid");
+  if (!Array.isArray(value.tasks) || value.tasks.length < 2 || value.tasks.length > 200) fail("nyra_automation_lifecycle_dag_invalid");
+  const ids = new Set(); const worktrees = new Set(); const branches = new Set(); const tasks = [];
+  for (const raw of value.tasks) {
+    const task_id = text(raw?.task_id, "nyra_automation_lifecycle_task_invalid", 100);
+    if (!/^[a-z][a-z0-9_-]{1,99}$/.test(task_id) || ids.has(task_id)) fail("nyra_automation_lifecycle_task_invalid");
+    const role = text(raw?.role, "nyra_automation_lifecycle_task_invalid", 30);
+    if (!['builder', 'verifier'].includes(role)) fail("nyra_automation_lifecycle_task_invalid");
+    const branch = text(raw?.branch, "nyra_automation_lifecycle_task_invalid", 240);
+    const worktree_id = text(raw?.worktree_id, "nyra_automation_lifecycle_task_invalid", 160);
+    if (branches.has(branch) || worktrees.has(worktree_id)) fail("nyra_automation_lifecycle_isolation_required");
+    const taskPaths = normalizedPaths(raw?.allowed_paths, "nyra_automation_lifecycle_task_paths_invalid");
+    if (taskPaths.some((file) => !allowedPaths.includes(file) && !allowedPaths.some((allowed) => allowed.endsWith('/**') && (file === allowed.slice(0, -3) || file.startsWith(`${allowed.slice(0, -3)}/`))))) fail("nyra_automation_lifecycle_task_paths_invalid");
+    const depends_on = normalizeList(raw?.depends_on, 200);
+    if (depends_on.includes(task_id)) fail("nyra_automation_lifecycle_cycle");
+    ids.add(task_id); branches.add(branch); worktrees.add(worktree_id);
+    tasks.push({ task_id, role, branch, worktree_id, allowed_paths: taskPaths, depends_on });
+  }
+  if (!tasks.some((task) => task.role === 'builder') || !tasks.some((task) => task.role === 'verifier')) fail("nyra_automation_lifecycle_roles_required");
+  if (tasks.some((task) => task.depends_on.some((id) => !ids.has(id)))) fail("nyra_automation_lifecycle_dependency_invalid");
+  const unresolved = new Map(tasks.map((task) => [task.task_id, new Set(task.depends_on)]));
+  while (unresolved.size) {
+    const ready = [...unresolved.entries()].filter(([, dependencies]) => [...dependencies].every((id) => !unresolved.has(id))).map(([id]) => id);
+    if (!ready.length) fail("nyra_automation_lifecycle_cycle");
+    ready.forEach((id) => unresolved.delete(id));
+  }
+  return { schema_version: "nyra_branch_lifecycle_dag_v1", tasks };
 }
 function clone(value) { return structuredClone(value); }
 function validateRecord(record, workId) {
@@ -245,6 +280,7 @@ export function createNyraWorkAutomationRuntime({ store = createNyraMemoryStore(
       if (allowedPaths.some((file) => SMART_DESK_DENY.some((pattern) => pattern.test(file)))) fail("nyra_automation_smart_desk_denied");
       const skills = [...new Set((input.advisory_capabilities || []).map((item) => text(item, "nyra_automation_capabilities_invalid", 160)))].sort();
       if (skills.length > 6) fail("nyra_automation_capability_budget_exceeded");
+      const orchestrationDag = input.lifecycle_dag ? lifecycleDag(input.lifecycle_dag, allowedPaths) : null;
       return mutate(workId, (state, existing) => {
         if (existing) {
           if (existing.tenant_id !== tenantId || existing.intent_anchor_digest !== intentDigest || existing.task_objective_digest !== taskObjectiveDigest) fail("nyra_automation_idempotency_conflict");
@@ -259,7 +295,7 @@ export function createNyraWorkAutomationRuntime({ store = createNyraMemoryStore(
           base_branch: text(input.base_branch, "nyra_automation_base_branch_invalid", 240),
           delivery_branch: text(input.delivery_branch, "nyra_automation_delivery_branch_invalid", 240),
           base_commit: sha(input.base_commit, "nyra_automation_base_commit_invalid"),
-          allowed_paths: allowedPaths, advisory_capabilities: skills,
+          allowed_paths: allowedPaths, advisory_capabilities: skills, lifecycle_dag: orchestrationDag,
           state: "PLAN_PENDING", active_builder: null, system_verifier: null,
           attempts: {}, consumed_receipt_ids: [], artifacts: { intent_readback: clone(input.intent_readback) }, events: [],
           revision: 0, created_at: at, updated_at: at,
@@ -333,6 +369,35 @@ export function createNyraWorkAutomationRuntime({ store = createNyraMemoryStore(
       const current = Number(typeof now === "function" ? now() : now);
       if (!Number.isFinite(verifiedAt) || verifiedAt > current + 30_000 || current - verifiedAt > 300_000) fail("nyra_automation_authoritative_readback_stale");
       return api.transition({ ...input, artifact_name: verified.artifact_name, artifact: verified.artifact, evidence_digest: verified.artifact?.receipt_digest || verified.artifact?.readback_digest || verified.artifact?.verdict_digest || verified.artifact?.closure_digest, receipt_id: verified.artifact?.receipt_digest });
+    },
+    async completeFromPostReleaseReconciliation(input) {
+      if (typeof reconciliationVerifier !== "function") fail("nyra_automation_reconciliation_verifier_unavailable");
+      const tenantId = text(input.tenant_id, "nyra_automation_tenant_invalid");
+      const workId = text(input.work_id, "nyra_automation_work_invalid");
+      return mutate(workId, async (_state, record) => {
+        if (!record || record.tenant_id !== tenantId) fail("nyra_automation_work_not_found");
+        const verified = await reconciliationVerifier({ ...input, reconciliation_kind: "post_release_completion" }, clone(record));
+        const valid = verified?.schema_version === "nyra_authoritative_post_release_reconciliation_v1" &&
+          verified.authoritative === true && String(verified.verifier_id || "").startsWith("core_server_") &&
+          verified.tenant_id === record.tenant_id && verified.work_id === record.work_id &&
+          verified.intent_anchor_digest === record.intent_anchor_digest && verified.repository === record.repository &&
+          verified.delivery_branch === record.delivery_branch && verified.head_commit === record.artifacts?.commit_attestation?.commit &&
+          SHA.test(String(verified.merge_commit || "")) && verified.live_commit === verified.merge_commit &&
+          verified.final_acceptance_proven === true && Array.isArray(verified.services) && verified.services.length > 0 &&
+          verified.services.every((service) => service?.health_status === "healthy" && service.live_commit === verified.live_commit) &&
+          DIGEST.test(String(verified.reconciliation_digest || "")) && nyraDigest({ ...verified, reconciliation_digest: undefined }) === verified.reconciliation_digest;
+        if (!valid) fail("nyra_automation_post_release_reconciliation_invalid");
+        if (record.state === "COMPLETED") {
+          if (record.artifacts?.post_release_reconciliation?.reconciliation_digest !== verified.reconciliation_digest) fail("nyra_automation_reconciliation_idempotency_conflict");
+          return record;
+        }
+        if (TERMINAL.has(record.state)) fail("nyra_automation_terminal");
+        const previousState = record.state;
+        record.state = "COMPLETED";
+        record.artifacts.post_release_reconciliation = clone(verified);
+        event(record, "post_release_reconciled_and_completed", { from: previousState, reconciliation_digest: verified.reconciliation_digest }, iso(now));
+        return record;
+      });
     },
   };
   return Object.freeze(api);

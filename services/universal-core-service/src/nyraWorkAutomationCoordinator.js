@@ -397,6 +397,10 @@ export function createNyraWorkAutomationCoordinator({
       if (verified?.schema_version !== "nyra_authoritative_closure_receipt_v1" || verified.closed !== true || Object.entries(expected).some(([key, value]) => verified[key] !== value) || !selfDigest(verified, "closure_digest")) fail("nyra_coordinator_trusted_closure_required");
       return runtime.transition({ ...input, expected_state: "CLOSURE_PENDING", next_state: "COMPLETED", evidence_digest: verified.closure_digest, artifact_name: "closure", artifact: verified });
     },
+    async completeFromPostReleaseReconciliation(input) {
+      if (typeof runtime.completeFromPostReleaseReconciliation !== "function") fail("nyra_coordinator_post_release_runtime_unavailable");
+      return runtime.completeFromPostReleaseReconciliation(input);
+    },
     read(input) { return current(input, false); },
   });
 }

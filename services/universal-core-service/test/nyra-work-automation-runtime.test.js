@@ -47,6 +47,42 @@ test("runtime caps advisory capabilities at six", async () => {
   await assert.rejects(runtime.create(input({ advisory_capabilities: ["a", "b", "c", "d", "e", "f", "g"] })), /budget_exceeded/);
 });
 
+test("lifecycle DAG persists isolated builder and verifier worktrees and rejects cycles", async () => {
+  const runtime = createNyraWorkAutomationRuntime();
+  const lifecycle_dag = { schema_version: "nyra_branch_lifecycle_dag_v1", tasks: [
+    { task_id: "build-api", role: "builder", branch: "agent/build-api", worktree_id: "wt-build-api", allowed_paths: ["services/a.js"], depends_on: [] },
+    { task_id: "verify-api", role: "verifier", branch: "agent/verify-api", worktree_id: "wt-verify-api", allowed_paths: ["services/a.js"], depends_on: ["build-api"] },
+  ] };
+  const record = await runtime.create(input({ lifecycle_dag }));
+  assert.deepEqual(record.lifecycle_dag, lifecycle_dag);
+  const cyclic = structuredClone(lifecycle_dag);
+  cyclic.tasks[0].depends_on = ["verify-api"];
+  await assert.rejects(runtime.create(input({ work_id: "cycle", lifecycle_dag: cyclic })), /lifecycle_cycle/);
+});
+
+test("server reconciliation closes a released work without the original Nyra session", async () => {
+  const store = createNyraMemoryStore();
+  const seed = createNyraWorkAutomationRuntime({ store });
+  const created = await seed.create(input());
+  const state = await store.read();
+  const record = state.records.work;
+  record.state = "OBSERVE_PENDING";
+  record.artifacts.commit_attestation = { commit: "c".repeat(40) };
+  record.events = [];
+  record.revision = 0;
+  record.record_digest = nyraDigest({ ...record, record_digest: undefined });
+  const verifier = async (_request, current) => {
+    const unsigned = { schema_version: "nyra_authoritative_post_release_reconciliation_v1", authoritative: true, verifier_id: "core_server_test_reconciliation", tenant_id: current.tenant_id, work_id: current.work_id, intent_anchor_digest: current.intent_anchor_digest, repository: current.repository, delivery_branch: current.delivery_branch, head_commit: "c".repeat(40), merge_commit: "d".repeat(40), live_commit: "d".repeat(40), final_acceptance_proven: true, services: [{ service_id: "core", environment: "production", live_commit: "d".repeat(40), health_status: "healthy" }] };
+    return { ...unsigned, reconciliation_digest: nyraDigest(unsigned) };
+  };
+  const runtime = createNyraWorkAutomationRuntime({ store: createNyraMemoryStore(state), reconciliationVerifier: verifier });
+  const completed = await runtime.completeFromPostReleaseReconciliation({ tenant_id: "tenant", work_id: "work" });
+  assert.equal(completed.state, "COMPLETED");
+  assert.equal(completed.artifacts.post_release_reconciliation.live_commit, "d".repeat(40));
+  const repeated = await runtime.completeFromPostReleaseReconciliation({ tenant_id: "tenant", work_id: "work" });
+  assert.equal(repeated.revision, completed.revision);
+});
+
 test("state machine denies skipping commit readback and caller artifacts", async () => {
   const runtime = createNyraWorkAutomationRuntime();
   await runtime.create(input());
