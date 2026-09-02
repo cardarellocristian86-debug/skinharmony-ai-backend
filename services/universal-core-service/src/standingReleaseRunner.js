@@ -60,7 +60,7 @@ const TICKET_KEYS = new Set([
   "predecessor", "predecessor_chain_digest", "release_manifest_digest",
   "release_manifest_binding", "release_intent_digest", "core_join_verdict_id",
   "core_join_verdict_digest", "release_join_resolution", "release_join_resolution_digest",
-  "bootstrap_release_exception_candidate",
+  "bootstrap_release_exception_candidate", "native_precommit_predecessor",
 ]);
 
 const FINALIZE_AUTHORIZATION_KEYS = new Set([
@@ -386,6 +386,20 @@ function validateTicketRecord(run, record, at, { requireFresh = false } = {}) {
       ticket.max_uses !== 1 || ticket.host_policy_override !== false ||
       ticket.host_policy_must_allow !== true || ticket.provider_execution !== false) {
     fail("standing_release_ticket_binding_mismatch");
+  }
+  if (ticket.native_precommit_predecessor !== undefined) {
+    const predecessor = ticket.native_precommit_predecessor;
+    exactKeys(predecessor, new Set(["schema_version", "ticket_id", "ticket_digest"]),
+      "standing_release_ticket_predecessor_invalid");
+    requiredKeys(predecessor, ["schema_version", "ticket_id", "ticket_digest"],
+      "standing_release_ticket_predecessor_invalid");
+    if (ticket.action?.kind !== "git.commit" ||
+        predecessor.schema_version !== "native_precommit_ticket_predecessor_v1" ||
+        !TICKET_ID.test(String(predecessor.ticket_id || "")) ||
+        predecessor.ticket_id === ticket.ticket_id ||
+        !SHA256.test(String(predecessor.ticket_digest || ""))) {
+      fail("standing_release_ticket_predecessor_invalid");
+    }
   }
   const issued = Date.parse(ticket.issued_at);
   const expires = Date.parse(ticket.expires_at);

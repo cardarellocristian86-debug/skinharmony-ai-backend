@@ -5,6 +5,8 @@ import { SUPPORTED_HOST_NATIVE_KINDS } from "./host-app-authorization.js";
 import { governedWorkBootstrapDigest, materializeGovernedWorkBootstrapRequest } from "./work-bootstrap-contract.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const ACTION_TICKET_ID = /^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/;
+const ACTION_TICKET_SIGNATURE = /^hnt_[a-f0-9]{64}$/;
 const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
 const WORK_BOOTSTRAP_STATE = "WORK_BOOTSTRAP_READY";
 const ACTION_KIND_BY_CLASS = Object.freeze({
@@ -89,6 +91,18 @@ function ensureFreshWorkContext(context, payload) {
   }
 }
 
+function ensureRecoverableFulfilledWorkContext(context, payload) {
+  if (context?.available !== true ||
+      String(context?.work_id || "").toLowerCase() !== String(payload.work_id).toLowerCase() ||
+      context?.project_id !== payload.project_id || Number(context?.work_revision) !== payload.work_revision ||
+      context?.intent_digest !== payload.intent_digest) {
+    fail("nyra_continue_work_drift", 409);
+  }
+  if (["COMPLETED", "CANCELLED", "SUPERSEDED", "ARCHIVED"].includes(String(context.status || "").toUpperCase())) {
+    fail("nyra_continue_work_state_invalid", 409);
+  }
+}
+
 function actionKindAllowed(actionClass, kind) {
   return ACTION_KIND_BY_CLASS[actionClass]?.has(String(kind || "")) === true;
 }
@@ -133,6 +147,39 @@ function commitPrecommitGate(context, payload, request) {
   return gate;
 }
 
+function fulfilledCommitPrecommitGate(context, payload, request) {
+  const gate = context?.precommit_ticket_gate;
+  const nativeFields = [
+    "schema_version", "gate_source", "tenant_id", "work_id", "action_kind", "gate_kind",
+    "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+    "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+    "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
+    "projection_digest",
+  ];
+  const { projection_digest: projectionDigest, ...projection } = gate || {};
+  const originalProjection = { ...projection, fulfilled: false, ticket_id: null };
+  if (context?.precommit_ticket_gate_applicable !== false ||
+      gate?.schema_version !== "precommit_ticket_gate_v2" ||
+      gate.gate_source !== "native_closure_evaluation" ||
+      Object.keys(gate).sort().join("\0") !== nativeFields.sort().join("\0") ||
+      gate.tenant_id !== payload?.tenant_id || gate.work_id !== payload?.work_id ||
+      gate.action_kind !== "git.commit" || gate.gate_kind !== "ticket_acquisition" ||
+      gate.fresh !== true || gate.fulfilled !== true || !ACTION_TICKET_ID.test(String(gate.ticket_id || "")) ||
+      typeof gate.task_id !== "string" || typeof gate.plan_id !== "string" ||
+      typeof gate.evaluation_id !== "string" ||
+      [gate.evaluation_digest, gate.workspace_digest, gate.supersession_digest,
+        gate.reconciliation_digest, projectionDigest].some((value) => !SHA256.test(String(value || ""))) ||
+      !Array.isArray(gate.legacy_evidence_ids) || gate.legacy_evidence_ids.length !== 0 ||
+      !Array.isArray(gate.replacement_evidence_ids) || gate.replacement_evidence_ids.length !== 0 ||
+      !Array.isArray(gate.drift_codes) || gate.drift_codes.length !== 0 ||
+      digest(projection) !== projectionDigest ||
+      request?.evidence_digest !== digest(originalProjection) ||
+      payload?.action_class !== "GIT_COMMIT") {
+    fail("nyra_continue_precommit_evidence_mismatch", 409);
+  }
+  return Object.freeze({ gate, original_projection_digest: request.evidence_digest });
+}
+
 function nativePrecommitClaimBinding(payload, request, gate, identity, continuationRef,
   requestDigestValue, idempotencyKey) {
   return Object.freeze({
@@ -168,7 +215,32 @@ function trustedNativePrecommitClaim(value, binding) {
   return Object.freeze({ ...value });
 }
 
-function trustedIssuedActionTicket(readback, payload, request, identity, gate, currentTime) {
+function trustedRecoveredNativePrecommitClaim(value, binding) {
+  const fields = [
+    "schema_version", "claim_id", "work_id", "continuation_ref", "request_digest",
+    "delegation_id", "action_digest", "gate_projection_digest", "host_session_fingerprint",
+    "idempotency_key", "replay", "claim_digest",
+  ];
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
+      value.schema_version !== "precommit_ticket_gate_claim_v1" ||
+      typeof value.claim_id !== "string" || value.claim_id.length < 8 || value.claim_id.length > 160 ||
+      typeof value.continuation_ref !== "string" || value.continuation_ref.length < 8 ||
+      value.continuation_ref.length > 240 ||
+      typeof value.idempotency_key !== "string" || value.idempotency_key.length < 1 ||
+      value.idempotency_key.length > 160 || value.replay !== true ||
+      Object.entries(binding).some(([key, expected]) => value[key] !== expected)) {
+    fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+  }
+  const { claim_digest: claimDigest, ...material } = value;
+  if (!SHA256.test(String(claimDigest || "")) || digest(material) !== claimDigest) {
+    fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+  }
+  return Object.freeze({ ...value });
+}
+
+function trustedIssuedActionTicket(readback, payload, request, identity, gate, currentTime,
+  { allowPriorIssuedAt = false } = {}) {
   const body = readback?.structuredContent;
   const record = body?.action_ticket;
   const ticket = record?.ticket;
@@ -187,8 +259,8 @@ function trustedIssuedActionTicket(readback, payload, request, identity, gate, c
       record.state !== "issued" || record.uses !== 0 ||
       !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
       ticket.schema_version !== "host_native_action_ticket_v1" ||
-      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.ticket_id || "")) ||
-      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.signature || "")) ||
+      !ACTION_TICKET_ID.test(String(ticket.ticket_id || "")) ||
+      !ACTION_TICKET_SIGNATURE.test(String(ticket.signature || "")) ||
       ticket.delegation_id !== request.delegation_id ||
       ticket.tenant_id !== payload.tenant_id || ticket.work_id !== payload.work_id ||
       ticket.intent_anchor_digest !== payload.intent_digest ||
@@ -201,7 +273,8 @@ function trustedIssuedActionTicket(readback, payload, request, identity, gate, c
         ticket.evidence_digest !== gate.projection_digest)) ||
       !Number.isFinite(currentTime) ||
       !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
-      !Number.isFinite(candidateIssuedAt) || issuedAt < candidateIssuedAt - 30_000 ||
+      !Number.isFinite(candidateIssuedAt) ||
+      (!allowPriorIssuedAt && issuedAt < candidateIssuedAt - 30_000) ||
       issuedAt > currentTime + 30_000 || expiresAt <= currentTime || expiresAt <= issuedAt ||
       expiresAt - issuedAt > 60 * 60_000 || ticket.max_uses !== 1 ||
       ticket.provider_execution !== false || ticket.host_policy_override !== false ||
@@ -403,11 +476,11 @@ export function createNyraGovernedContinueHandler({
         intent_digest: payload.intent_digest,
       };
       const context = normalizeDirectiveContext(await readDirectiveContext(identity, input), identity, input);
-      ensureFreshWorkContext(context, payload);
       if (!SUPPORTED_HOST_NATIVE_KINDS.has(authenticatedHostKind(identity))) {
         fail("nyra_continue_host_kind_not_supported", 403);
       }
       if (args.operation === "issue_delegation") {
+        ensureFreshWorkContext(context, payload);
         const request = args.delegation_request;
         if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE) || !request ||
             args.action_request !== undefined || request.work_id !== payload.work_id ||
@@ -436,17 +509,50 @@ export function createNyraGovernedContinueHandler({
         }
         if (payload.action_class === "GIT_COMMIT") {
           const observedGate = context?.precommit_ticket_gate;
+          let contextValidated = false;
           if (observedGate?.schema_version === "precommit_ticket_gate_v2" &&
-              observedGate.fulfilled === true && typeof readPrecommitTicketGateClaimRecovery === "function") {
+              typeof readPrecommitTicketGateClaimRecovery === "function") {
+            const fulfilledGate = observedGate.fulfilled === true
+              ? fulfilledCommitPrecommitGate(context, payload, request)
+              : null;
+            if (!fulfilledGate) {
+              ensureFreshWorkContext(context, payload);
+              contextValidated = true;
+            }
+            const currentProjectionDigest = fulfilledGate?.original_projection_digest ||
+              commitPrecommitGate(context, payload, request).projection_digest;
             earlyRecovery = await readPrecommitTicketGateClaimRecovery({
-              work_id: payload.work_id, continuation_ref: args.continuation_ref,
+              work_id: payload.work_id,
+              ...(observedGate.fulfilled === true
+                ? { fulfilled: true }
+                : { gate_projection_digest: currentProjectionDigest }),
               request_digest: boundRequestDigest, delegation_id: request.delegation_id,
               action_digest: digest(request.action),
               host_session_fingerprint: String(identity?.agentPresence?.session_fingerprint || "").toLowerCase(),
             }, identity);
+            if (earlyRecovery) {
+              trustedRecoveredNativePrecommitClaim(earlyRecovery.gate_claim, {
+                work_id: payload.work_id,
+                request_digest: boundRequestDigest,
+                delegation_id: request.delegation_id,
+                action_digest: digest(request.action),
+                gate_projection_digest: currentProjectionDigest,
+                host_session_fingerprint: String(identity?.agentPresence?.session_fingerprint || "").toLowerCase(),
+              });
+              if (fulfilledGate &&
+                  (String(earlyRecovery.recovery_source || "fulfillment") !== "fulfillment" ||
+                    earlyRecovery.ticket_id !== fulfilledGate.gate.ticket_id)) {
+                fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+              }
+              if (fulfilledGate) {
+                ensureRecoverableFulfilledWorkContext(context, payload);
+                contextValidated = true;
+              }
+            }
           }
+          if (!contextValidated) ensureFreshWorkContext(context, payload);
           if (!earlyRecovery) commitPrecommitGate(context, payload, request);
-        }
+        } else ensureFreshWorkContext(context, payload);
       }
     };
     const claim = await store.claim({ identity, continuation_ref: args.continuation_ref,
@@ -496,13 +602,41 @@ export function createNyraGovernedContinueHandler({
       const input = { work_id: payload.work_id, project_id: payload.project_id, work_revision: payload.work_revision,
         intent_digest: payload.intent_digest };
       const context = normalizeDirectiveContext(await readDirectiveContext(identity, input), identity, input);
-      ensureFreshWorkContext(context, payload);
-      const precommitGate = earlyRecovery?.gate_claim
-        ? Object.freeze({ schema_version: "precommit_ticket_gate_v2",
-            projection_digest: earlyRecovery.gate_claim.gate_projection_digest })
-        : payload.action_class === "GIT_COMMIT" && args.operation === "authorize_action"
-        ? commitPrecommitGate(context, payload, args.action_request)
-        : null;
+      let precommitGate = null;
+      if (payload.action_class === "GIT_COMMIT" && args.operation === "authorize_action") {
+        if (earlyRecovery?.gate_claim) {
+          const recoverySource = String(earlyRecovery.recovery_source || "fulfillment");
+          if (recoverySource === "fulfillment") {
+            const fulfilledGate = fulfilledCommitPrecommitGate(context, payload, args.action_request);
+            if (earlyRecovery.ticket_id !== fulfilledGate.gate.ticket_id ||
+                earlyRecovery.gate_claim.gate_projection_digest !== fulfilledGate.original_projection_digest) {
+              fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+            }
+            // A completed gate legitimately changes the Work context digest.
+            // Re-read and bind the exact fulfilled ticket/projection instead of
+            // requiring the stale pre-fulfillment digest captured by Nyra.
+            ensureRecoverableFulfilledWorkContext(context, payload);
+            precommitGate = Object.freeze({
+              schema_version: "precommit_ticket_gate_v2",
+              projection_digest: fulfilledGate.original_projection_digest,
+            });
+          } else {
+            // Claims and pre-fulfillment reconciliation are resumable only
+            // while the same unfulfilled gate and Work snapshot still exist.
+            ensureFreshWorkContext(context, payload);
+            const currentGate = commitPrecommitGate(context, payload, args.action_request);
+            if (earlyRecovery.gate_claim.gate_projection_digest !== currentGate.projection_digest) {
+              fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+            }
+            precommitGate = currentGate;
+          }
+        } else {
+          ensureFreshWorkContext(context, payload);
+          precommitGate = commitPrecommitGate(context, payload, args.action_request);
+        }
+      } else {
+        ensureFreshWorkContext(context, payload);
+      }
       if (!SUPPORTED_HOST_NATIVE_KINDS.has(authenticatedHostKind(identity))) fail("nyra_continue_host_kind_not_supported", 403);
       if (args.operation === "issue_delegation") {
         const request = args.delegation_request;
@@ -529,10 +663,17 @@ export function createNyraGovernedContinueHandler({
         const nativeGate = precommitGate?.schema_version === "precommit_ticket_gate_v2";
         let nativeClaim = null;
         let issuedTicketId = null;
+        let recoveryPresent = false;
+        let recoverySource = null;
         if (earlyRecovery?.gate_claim) {
-          const recoveryBinding = nativePrecommitClaimBinding(payload, request, precommitGate, identity,
-            args.continuation_ref, boundRequestDigest, claim.idempotency_key);
-          nativeClaim = trustedNativePrecommitClaim(earlyRecovery.gate_claim, recoveryBinding);
+          nativeClaim = trustedRecoveredNativePrecommitClaim(earlyRecovery.gate_claim, {
+            work_id: payload.work_id,
+            request_digest: boundRequestDigest,
+            delegation_id: request.delegation_id,
+            action_digest: digest(request.action),
+            gate_projection_digest: precommitGate.projection_digest,
+            host_session_fingerprint: String(identity?.agentPresence?.session_fingerprint || "").toLowerCase(),
+          });
         } else if (nativeGate) {
           if (typeof claimPrecommitTicketGate !== "function" ||
               typeof releaseOrReconcilePrecommitTicketGateClaim !== "function") {
@@ -551,19 +692,48 @@ export function createNyraGovernedContinueHandler({
         let trustedReadback;
         let pullRequestHandoffStarted = false;
         try {
-          const recovery = earlyRecovery || (nativeClaim && typeof readPrecommitTicketGateClaimRecovery === "function"
+          // A claim created by this continuation is already authoritative for
+          // its first authorization attempt. Recovery lookup is only for a
+          // replayed claim adopted from an earlier interrupted continuation.
+          const recovery = earlyRecovery || (nativeClaim?.replay === true &&
+            typeof readPrecommitTicketGateClaimRecovery === "function"
             ? await readPrecommitTicketGateClaimRecovery({ work_id: payload.work_id, gate_claim: nativeClaim }, identity)
             : null);
-          const recoveredTicketId = recovery?.schema_version === "precommit_ticket_gate_recovery_v1"
-            && /^hnt_[a-f0-9]{64}$/.test(String(recovery.ticket_id || "")) ? recovery.ticket_id : null;
-          const coreResult = recoveredTicketId ? null : await authorizeAction({
+          recoverySource = recovery?.schema_version === "precommit_ticket_gate_recovery_v1"
+            ? String(recovery.recovery_source || "fulfillment")
+            : null;
+          const recoveredTicketId = ACTION_TICKET_ID.test(String(recovery?.ticket_id || ""))
+            ? recovery.ticket_id : null;
+          const hasRecovery = recoverySource !== null;
+          recoveryPresent = hasRecovery;
+          if (recoverySource && !["fulfillment", "reconciliation", "before_ticket_locator", "claim"].includes(recoverySource)) {
+            fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+          }
+          if ((recoverySource === "fulfillment" || recoverySource === "reconciliation") && !recoveredTicketId) {
+            fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+          }
+          if (["before_ticket_locator", "claim"].includes(recoverySource) && recovery?.ticket_id !== null) {
+            fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+          }
+          if (["reconciliation", "before_ticket_locator", "claim"].includes(recoverySource) && nativeClaim?.replay !== true) {
+            fail("nyra_continue_precommit_claim_recovery_invalid", 502);
+          }
+          // A fulfillment locator is already terminal for the gate. A
+          // reconciliation locator may point at the still-fresh original
+          // ticket or at an expired, never-reserved ticket. Replaying the
+          // exact claim lets Core return the original or atomically replace
+          // only that expired ticket without widening the action binding. A
+          // naked claim means the prior continuation stopped immediately
+          // after the claim CAS, so the same claim and idempotency key resume
+          // the first authorization without creating another claim.
+          const coreResult = recoveredTicketId && recoverySource === "fulfillment" ? null : await authorizeAction({
             ...request,
-            idempotency_key: claim.idempotency_key,
+            idempotency_key: nativeClaim?.idempotency_key || claim.idempotency_key,
           }, identity, nativeClaim);
           const issuedRecord = coreResult?.structuredContent?.action_ticket;
           const issuedTicket = issuedRecord?.ticket || issuedRecord?.action_ticket?.ticket;
-          issuedTicketId = recoveredTicketId || issuedTicket?.ticket_id;
-          if (!/^hnt_[a-f0-9]{64}$/.test(String(issuedTicketId || "")) ||
+          issuedTicketId = issuedTicket?.ticket_id || recoveredTicketId;
+          if (!ACTION_TICKET_ID.test(String(issuedTicketId || "")) ||
               typeof readActionTicket !== "function") {
             fail(precommitGate
               ? "nyra_continue_commit_ticket_readback_unavailable"
@@ -578,13 +748,14 @@ export function createNyraGovernedContinueHandler({
             identity,
             precommitGate,
             current instanceof Date ? current.getTime() : Number(current),
+            { allowPriorIssuedAt: recoveryPresent && nativeClaim?.replay === true },
           );
           if (actionTicket.ticket.ticket_id !== issuedTicketId) {
             fail(precommitGate
               ? "nyra_continue_commit_ticket_readback_invalid"
               : "nyra_continue_action_ticket_readback_invalid", 502);
           }
-          if (precommitGate && !recoveredTicketId) {
+          if (precommitGate && recoverySource !== "fulfillment") {
             if (typeof fulfillPrecommitTicketTask !== "function") {
               fail("nyra_continue_precommit_fulfillment_unavailable", 503);
             }
@@ -607,15 +778,16 @@ export function createNyraGovernedContinueHandler({
             pullRequestHandoffStarted = true;
           }
         } catch (error) {
-          if (nativeClaim) {
+          if (nativeClaim && (!recoveryPresent || recoverySource === "claim") &&
+              typeof releaseOrReconcilePrecommitTicketGateClaim === "function") {
             try {
               await releaseOrReconcilePrecommitTicketGateClaim({
                 work_id: payload.work_id,
                 gate_claim: nativeClaim,
                 gate_projection_digest: precommitGate.projection_digest,
-                continuation_ref: args.continuation_ref,
-                request_digest: boundRequestDigest,
-                idempotency_key: claim.idempotency_key,
+                continuation_ref: nativeClaim.continuation_ref,
+                request_digest: nativeClaim.request_digest,
+                idempotency_key: nativeClaim.idempotency_key,
                 stage: issuedTicketId ? "ticket_locator_received" : "before_ticket_locator",
                 ticket_id: issuedTicketId || null,
                 error_code: /^[a-zA-Z0-9_-]{3,160}$/.test(String(error?.code || ""))

@@ -998,7 +998,8 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     && upstreamEnabled
     && coreHealth?.configuration_valid === true
     && coreHealth?.algorithm === "Ed25519"
-    && coreHealth?.required === required
+    && typeof coreHealth?.required === "boolean"
+    && (required !== true || coreHealth.required === true)
     && coreHealth?.ready === true
     && upstreamBackend === "postgres_append_only_v1"
     && upstreamRestartDurable

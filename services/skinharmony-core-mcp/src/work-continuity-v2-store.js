@@ -3499,7 +3499,15 @@ export function createWorkContinuityV2Store({
     assertPermission(canAdminister, work, actor);
     let gateClaim = input.gate_claim;
     if (!gateClaim) {
-      const continuationRef = text(input.continuation_ref, "precommit_claim_recovery_continuation_invalid", 240);
+      const continuationRef = input.continuation_ref === undefined ? null
+        : text(input.continuation_ref, "precommit_claim_recovery_continuation_invalid", 240);
+      const gateProjectionDigest = input.gate_projection_digest === undefined ? null
+        : digest(input.gate_projection_digest, "precommit_claim_recovery_projection_invalid");
+      const fulfilledRecovery = input.fulfilled === true;
+      if ([continuationRef !== null, gateProjectionDigest !== null, fulfilledRecovery]
+        .filter(Boolean).length !== 1) {
+        fail("precommit_claim_recovery_selector_invalid");
+      }
       const requestDigest = digest(input.request_digest, "precommit_claim_recovery_request_invalid");
       const delegationId = text(input.delegation_id, "precommit_claim_recovery_delegation_invalid", 160);
       const actionDigest = digest(input.action_digest, "precommit_claim_recovery_action_invalid");
@@ -3507,16 +3515,43 @@ export function createWorkContinuityV2Store({
       if (host !== String(identity?.agentPresence?.session_fingerprint || "").toLowerCase()) {
         fail("precommit_claim_recovery_host_invalid");
       }
-      const found = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id
-        FROM tenant_work_precommit_ticket_gate_claim c JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
+      const found = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
+          f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
+          r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator
+        FROM tenant_work_precommit_ticket_gate_claim c
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id AND f.gate_projection_digest=c.gate_projection_digest
-        WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.continuation_ref=$3 AND c.request_digest=$4
+        LEFT JOIN LATERAL (SELECT cr.ticket_id
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation cr
+          WHERE cr.tenant_id=c.tenant_id AND cr.work_id=c.work_id AND cr.claim_id=c.claim_id
+            AND cr.stage='ticket_locator_received' AND cr.ticket_id IS NOT NULL LIMIT 1) r ON true
+        LEFT JOIN LATERAL (SELECT true AS before_ticket_locator
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation cb
+          WHERE cb.tenant_id=c.tenant_id AND cb.work_id=c.work_id AND cb.claim_id=c.claim_id
+            AND cb.stage='before_ticket_locator' LIMIT 1) b ON true
+        WHERE c.tenant_id=$1 AND c.work_id=$2 AND ${gateProjectionDigest
+          ? "c.gate_projection_digest=$3" : continuationRef
+            ? "c.continuation_ref=$3" : "$3::boolean IS TRUE AND f.ticket_id IS NOT NULL"} AND c.request_digest=$4
           AND c.delegation_id=$5 AND c.action_digest=$6 AND c.host_session_fingerprint=$7`,
-      [actor.tenant_id, workId, continuationRef, requestDigest, delegationId, actionDigest, host]);
+      [actor.tenant_id, workId, gateProjectionDigest || continuationRef || true,
+        requestDigest, delegationId, actionDigest, host]);
       if (found.rows.length !== 1) return null;
+      const recovered = found.rows[0];
+      if (recovered.fulfilled_ticket_id &&
+          (recovered.fulfilled_claim_id !== recovered.claim_id ||
+            ![recovered.claim_digest, precommitClaimProjection(recovered, true).claim_digest]
+              .includes(recovered.fulfilled_claim_digest))) {
+        fail("precommit_claim_recovery_fulfillment_invalid");
+      }
+      const recoveredTicketId = recovered.fulfilled_ticket_id || recovered.reconciled_ticket_id || null;
+      const recoverySource = recovered.fulfilled_ticket_id ? "fulfillment"
+        : recovered.reconciled_ticket_id ? "reconciliation"
+          : recovered.before_ticket_locator === true ? "before_ticket_locator" : "claim";
       gateClaim = precommitClaimProjection(found.rows[0], true);
       return Object.freeze({ schema_version: "precommit_ticket_gate_recovery_v1",
-        ticket_id: found.rows[0].fulfilled_ticket_id, gate_claim: gateClaim });
+        ticket_id: recoveredTicketId,
+        recovery_source: recoverySource,
+        gate_claim: gateClaim });
     }
     const material = gateClaim && { ...gateClaim };
     if (material) delete material.claim_digest;
@@ -3524,11 +3559,21 @@ export function createWorkContinuityV2Store({
         objectDigest(material) !== gateClaim.claim_digest || gateClaim.work_id !== workId) {
       fail("precommit_claim_recovery_claim_invalid");
     }
-    const result = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id
+    const result = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
+        f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
+        r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator
       FROM tenant_work_precommit_ticket_gate_claim c
-      JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
+      LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
         ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
           AND f.gate_projection_digest=c.gate_projection_digest
+      LEFT JOIN LATERAL (SELECT cr.ticket_id
+        FROM tenant_work_precommit_ticket_gate_claim_reconciliation cr
+        WHERE cr.tenant_id=c.tenant_id AND cr.work_id=c.work_id AND cr.claim_id=c.claim_id
+          AND cr.stage='ticket_locator_received' AND cr.ticket_id IS NOT NULL LIMIT 1) r ON true
+      LEFT JOIN LATERAL (SELECT true AS before_ticket_locator
+        FROM tenant_work_precommit_ticket_gate_claim_reconciliation cb
+        WHERE cb.tenant_id=c.tenant_id AND cb.work_id=c.work_id AND cb.claim_id=c.claim_id
+          AND cb.stage='before_ticket_locator' LIMIT 1) b ON true
       WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.claim_id=$3`,
     [actor.tenant_id, workId, gateClaim.claim_id]);
     const row = result.rows[0];
@@ -3537,8 +3582,20 @@ export function createWorkContinuityV2Store({
         row.delegation_id !== gateClaim.delegation_id || row.action_digest !== gateClaim.action_digest ||
         row.host_session_fingerprint !== gateClaim.host_session_fingerprint ||
         row.idempotency_key !== gateClaim.idempotency_key) return null;
+    if (row.fulfilled_ticket_id &&
+        (row.fulfilled_claim_id !== row.claim_id ||
+          ![row.claim_digest, precommitClaimProjection(row, true).claim_digest]
+            .includes(row.fulfilled_claim_digest))) {
+      fail("precommit_claim_recovery_fulfillment_invalid");
+    }
+    const recoveredTicketId = row.fulfilled_ticket_id || row.reconciled_ticket_id || null;
+    const recoverySource = row.fulfilled_ticket_id ? "fulfillment"
+      : row.reconciled_ticket_id ? "reconciliation"
+        : row.before_ticket_locator === true ? "before_ticket_locator" : "claim";
     return Object.freeze({ schema_version: "precommit_ticket_gate_recovery_v1",
-      ticket_id: row.fulfilled_ticket_id, gate_claim: gateClaim });
+      ticket_id: recoveredTicketId,
+      recovery_source: recoverySource,
+      gate_claim: gateClaim });
   }
   async function reconcilePrecommitTicketGateClaim(identity, input = {}) {
     await initialize();

@@ -518,6 +518,7 @@ function emptyState() {
     core_join_renewal_successors: {},
     owner_manual_merge_readbacks: {},
     owner_manual_merge_successors: {},
+    native_precommit_ticket_successors: {},
     owner_nonces: {},
     idempotency: {},
     standing_release_mandates: {},
@@ -544,6 +545,10 @@ function normalizeState(input) {
     owner_manual_merge_successors: input.owner_manual_merge_successors &&
       typeof input.owner_manual_merge_successors === "object"
       ? input.owner_manual_merge_successors
+      : {},
+    native_precommit_ticket_successors: input.native_precommit_ticket_successors &&
+      typeof input.native_precommit_ticket_successors === "object"
+      ? input.native_precommit_ticket_successors
       : {},
     owner_nonces: input.owner_nonces && typeof input.owner_nonces === "object" ? input.owner_nonces : {},
     idempotency: input.idempotency && typeof input.idempotency === "object" ? input.idempotency : {},
@@ -782,8 +787,12 @@ function actionLifecycleIdempotencyInput(input = {}) {
 }
 
 function actionTicketLifecycleUnsigned(record) {
+  const schemaVersion = record?.lifecycle_schema_version || "host_native_action_lifecycle_v1";
+  if (!["host_native_action_lifecycle_v1", "host_native_action_lifecycle_v2"].includes(schemaVersion)) {
+    fail("action_ticket_lifecycle_invalid");
+  }
   return {
-    schema_version: "host_native_action_lifecycle_v1",
+    schema_version: schemaVersion,
     ticket_id: record?.ticket?.ticket_id,
     ticket_digest: hostNativeDigest(record?.ticket),
     state: record?.state,
@@ -806,6 +815,10 @@ function actionTicketLifecycleUnsigned(record) {
     quarantine_reason_digest: record?.quarantine_reason_digest ?? null,
     semantic_scope_reservation_digest:
       record?.semantic_scope_at_reservation?.decision_digest ?? null,
+    ...(schemaVersion === "host_native_action_lifecycle_v2" ? {
+      superseded_by_ticket_id: record?.superseded_by_ticket_id ?? null,
+      superseded_at: record?.superseded_at ?? null,
+    } : {}),
   };
 }
 
@@ -2597,6 +2610,58 @@ export function createHostNativeGovernance({
     return record;
   }
 
+  function nativePrecommitSuccessorUnsigned(record) {
+    return {
+      schema_version: record?.schema_version,
+      predecessor_ticket_id: record?.predecessor_ticket_id,
+      predecessor_ticket_digest: record?.predecessor_ticket_digest,
+      successor_ticket_id: record?.successor_ticket_id,
+      successor_ticket_digest: record?.successor_ticket_digest,
+      superseded_at: record?.superseded_at,
+    };
+  }
+
+  function signNativePrecommitSuccessor(predecessor, successor, supersededAt) {
+    const unsigned = {
+      schema_version: "native_precommit_ticket_successor_v1",
+      predecessor_ticket_id: predecessor.ticket.ticket_id,
+      predecessor_ticket_digest: hostNativeDigest(predecessor.ticket),
+      successor_ticket_id: successor.ticket.ticket_id,
+      successor_ticket_digest: hostNativeDigest(successor.ticket),
+      superseded_at: supersededAt,
+    };
+    const successor_digest = hostNativeDigest(unsigned);
+    return {
+      ...unsigned,
+      successor_digest,
+      signature: hmac(
+        "hnpcs",
+        signing,
+        canonical({ ...unsigned, successor_digest }),
+      ),
+    };
+  }
+
+  function verifyNativePrecommitSuccessor(record) {
+    const expectedKeys = [
+      "predecessor_ticket_digest", "predecessor_ticket_id", "schema_version",
+      "signature", "successor_digest", "successor_ticket_digest",
+      "successor_ticket_id", "superseded_at",
+    ];
+    const unsigned = nativePrecommitSuccessorUnsigned(record);
+    const valid = record && typeof record === "object" && !Array.isArray(record) &&
+      Object.keys(record).sort().join("\0") === expectedKeys.join("\0") &&
+      record.schema_version === "native_precommit_ticket_successor_v1" &&
+      hostNativeDigest(unsigned) === record.successor_digest &&
+      Number.isFinite(Date.parse(record.superseded_at || "")) &&
+      safeEqual(
+        record.signature,
+        hmac("hnpcs", signing, canonical({ ...unsigned, successor_digest: record.successor_digest })),
+      );
+    if (!valid) fail("action_ticket_lifecycle_invalid");
+    return record;
+  }
+
   function readDelegationRecord(tenantId, delegationId) {
     const record = store.readState().delegations[String(delegationId || "")];
     if (!record) fail("delegation_not_found");
@@ -3031,6 +3096,155 @@ export function createHostNativeGovernance({
       ensureStandingReleaseDelegationActive(state, delegation, nowValue);
     }
     return clone(current);
+  }
+
+  function claimGatedCommitReplay(state, cached, input, trusted, nowValue) {
+    const claim = trusted?.native_precommit_claim;
+    if (!claim || typeof claim !== "object" || Array.isArray(claim) ||
+        claim.schema_version !== "native_precommit_claim_attestation_v1" ||
+        claim.claim_replay !== true || input?.action?.kind !== "git.commit") {
+      return null;
+    }
+    let currentKey = cached?.ticket?.ticket_id;
+    let current = state.tickets?.[currentKey];
+    const visited = new Set();
+    if (!currentKey || current?.ticket?.ticket_id !== currentKey ||
+        cached?.ticket?.ticket_id !== currentKey ||
+        !governance.verifyActionTicket(cached.ticket) ||
+        !governance.verifyActionTicket(current.ticket) ||
+        hostNativeDigest(cached.ticket) !== hostNativeDigest(current.ticket)) {
+      fail("action_ticket_lifecycle_invalid");
+    }
+    const cachedLifecycleVersion = cached.lifecycle_schema_version;
+    const cachedHasLifecycleProof = cachedLifecycleVersion !== undefined ||
+      cached.lifecycle_digest !== undefined || cached.lifecycle_signature !== undefined;
+    if (cachedHasLifecycleProof) {
+      verifyActionTicketLifecycleRecord(cached);
+      if (cachedLifecycleVersion === "host_native_action_lifecycle_v2" &&
+          hostNativeDigest(cached) !== hostNativeDigest(current)) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+    }
+    while (current) {
+      const currentId = current.ticket?.ticket_id;
+      if (!currentId || currentId !== currentKey ||
+          !governance.verifyActionTicket(current.ticket)) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+      const lifecycleVersion = current.lifecycle_schema_version;
+      const hasLifecycleProof = lifecycleVersion !== undefined ||
+        current.lifecycle_digest !== undefined || current.lifecycle_signature !== undefined;
+      if (hasLifecycleProof) verifyActionTicketLifecycleRecord(current);
+      const hasSupersessionFields = current.superseded_by_ticket_id !== undefined ||
+        current.superseded_at !== undefined;
+      const successorLink = state.native_precommit_ticket_successors?.[currentId];
+      if (successorLink) verifyNativePrecommitSuccessor(successorLink);
+      const signedChildren = Object.values(state.tickets || {}).filter((candidate) =>
+        candidate?.ticket?.native_precommit_predecessor?.ticket_id === currentId);
+      for (const child of signedChildren) {
+        const predecessor = child.ticket.native_precommit_predecessor;
+        if (Object.keys(predecessor).sort().join("\0") !==
+              ["schema_version", "ticket_digest", "ticket_id"].join("\0") ||
+            predecessor.schema_version !== "native_precommit_ticket_predecessor_v1" ||
+            predecessor.ticket_digest !== hostNativeDigest(current.ticket) ||
+            !governance.verifyActionTicket(child.ticket)) {
+          fail("action_ticket_lifecycle_invalid");
+        }
+      }
+      if (current.state === "superseded" || lifecycleVersion === "host_native_action_lifecycle_v2" ||
+          hasSupersessionFields || successorLink || signedChildren.length) {
+        if (current.state !== "superseded" ||
+            lifecycleVersion !== "host_native_action_lifecycle_v2" ||
+            !current.superseded_by_ticket_id ||
+            !Number.isFinite(Date.parse(current.superseded_at || "")) ||
+            !successorLink || signedChildren.length !== 1 ||
+            successorLink.predecessor_ticket_id !== currentId ||
+            successorLink.predecessor_ticket_digest !== hostNativeDigest(current.ticket) ||
+            successorLink.successor_ticket_id !== current.superseded_by_ticket_id ||
+            successorLink.superseded_at !== current.superseded_at ||
+            signedChildren[0].ticket.ticket_id !== successorLink.successor_ticket_id ||
+            successorLink.successor_ticket_digest !== hostNativeDigest(signedChildren[0].ticket)) {
+          fail("action_ticket_lifecycle_invalid");
+        }
+      }
+      if (current.state !== "superseded") break;
+      if (visited.has(currentId) || visited.size >= 16) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+      visited.add(currentId);
+      const successorId = successorLink.successor_ticket_id;
+      const successor = state.tickets?.[successorId];
+      if (!successor || successor.ticket?.ticket_id !== successorId) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+      currentKey = successorId;
+      current = successor;
+    }
+    const ticket = current?.ticket;
+    const delegation = state.delegations?.[ticket?.delegation_id];
+    const claimFields = ["schema_version", "claim_id", "claim_digest", "claim_replay",
+      "gate_projection_digest", "continuation_ref", "request_digest", "tenant_id", "work_id",
+      "intent_anchor_digest", "delegation_id", "repository", "action_digest", "evidence_digest",
+      "host_session_fingerprint", "idempotency_key"];
+    const expiresAt = Date.parse(ticket?.expires_at || "");
+    if (!claim || typeof claim !== "object" || Array.isArray(claim) ||
+        Object.keys(claim).sort().join("\0") !== claimFields.sort().join("\0") ||
+        claim.schema_version !== "native_precommit_claim_attestation_v1" ||
+        claim.claim_replay !== true ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(claim.claim_id || "")) ||
+        !SHA256.test(String(claim.claim_digest || "")) ||
+        !SHA256.test(String(claim.request_digest || "")) ||
+        claim.claim_digest !== hostNativeDigest({
+          schema_version: "precommit_ticket_gate_claim_v1", claim_id: claim.claim_id,
+          work_id: claim.work_id, continuation_ref: claim.continuation_ref,
+          request_digest: claim.request_digest, delegation_id: claim.delegation_id,
+          action_digest: claim.action_digest, gate_projection_digest: claim.gate_projection_digest,
+          host_session_fingerprint: claim.host_session_fingerprint,
+          idempotency_key: claim.idempotency_key, replay: true,
+        }) ||
+        input?.action?.kind !== "git.commit" ||
+        claim.tenant_id !== input.tenant_id || claim.work_id !== input.work_id ||
+        claim.intent_anchor_digest !== input.intent_anchor_digest ||
+        claim.delegation_id !== input.delegation_id || claim.repository !== input.repository ||
+        claim.action_digest !== hostNativeDigest(input.action) ||
+        claim.evidence_digest !== input.evidence_digest ||
+        claim.gate_projection_digest !== input.evidence_digest ||
+        claim.host_session_fingerprint !== input.host_session_fingerprint ||
+        claim.idempotency_key !== input.idempotency_key ||
+        !current ||
+        !ticket || !governance.verifyActionTicket(ticket) ||
+        ticket.action?.kind !== "git.commit" || ticket.tenant_id !== input.tenant_id ||
+        ticket.work_id !== input.work_id || ticket.intent_anchor_digest !== input.intent_anchor_digest ||
+        ticket.delegation_id !== input.delegation_id || ticket.repository !== input.repository ||
+        ticket.host_kind !== input.host_kind ||
+        ticket.host_session_fingerprint !== input.host_session_fingerprint ||
+        hostNativeDigest(ticket.action) !== hostNativeDigest(input.action) ||
+        ticket.evidence_digest !== input.evidence_digest ||
+        !Number.isFinite(expiresAt) ||
+        !delegation || delegation.grant?.standing_release_binding) {
+      return null;
+    }
+    const knownStates = new Set([
+      "issued", "reserved", "completed", "reconciliation_required", "reconciled",
+      "quarantined", "revoked", "observed_unreserved_effect",
+    ]);
+    if (!knownStates.has(current.state)) fail("action_ticket_lifecycle_invalid");
+    if (current.state !== "issued") {
+      if ((current.lifecycle_schema_version || "host_native_action_lifecycle_v1") !==
+            "host_native_action_lifecycle_v1" ||
+          current.lifecycle_digest === undefined ||
+          current.lifecycle_signature === undefined) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+      verifyActionTicketLifecycleRecord(current);
+      return Object.freeze({ ticket: current, expired: false });
+    }
+    if (current.uses !== 0) fail("action_ticket_lifecycle_invalid");
+    const expired = expiresAt <= nowValue;
+    if (expired && visited.size >= 16) {
+      fail("action_ticket_lifecycle_invalid");
+    }
+    return Object.freeze({ ticket: current, expired });
   }
 
   async function resolveCoreJoinRequiredChecksPolicyDigest(input, manifest) {
@@ -4499,9 +4713,15 @@ export function createHostNativeGovernance({
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const initial = store.readState();
       const replay = getIdempotent(initial, tenantId, "issueActionTicket", input);
-      if (replay?.result) return validateStandingReplay(initial, replay.result);
       const action = validateActionShape(input.action);
       const nowValue = nowMillis(now);
+      const claimReplay = replay?.result
+        ? claimGatedCommitReplay(initial, replay.result, input, trusted, nowValue)
+        : null;
+      if (replay?.result) {
+        if (!claimReplay) return validateStandingReplay(initial, replay.result, nowValue);
+        if (!claimReplay.expired) return clone(claimReplay.ticket);
+      }
       const delegation = initial.delegations[String(input.delegation_id || "")];
       if (!delegation) fail("delegation_not_found");
       if (delegation.grant.tenant_id !== tenantId) fail("cross_tenant_delegation_denied");
@@ -5355,12 +5575,19 @@ export function createHostNativeGovernance({
       assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
-        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
+        const currentClaimReplay = descriptor?.result
+          ? claimGatedCommitReplay(state, descriptor.result, input, trusted, nowValue)
+          : null;
+        if (descriptor?.result) {
+          if (!currentClaimReplay) return validateStandingReplay(state, descriptor.result, nowValue);
+          if (!currentClaimReplay.expired) return clone(currentClaimReplay.ticket);
+        }
+        const expiredClaimTicket = currentClaimReplay?.expired ? currentClaimReplay.ticket : null;
         const currentDelegation = state.delegations[String(input.delegation_id || "")];
         if (!currentDelegation || !delegationActive(currentDelegation, nowValue)) fail("delegation_not_active");
         ensureStandingReleaseDelegationActive(state, currentDelegation, nowValue);
         let releaseJoin = null;
-        let supersededTicket = null;
+        let supersededTicket = expiredClaimTicket;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
           releaseJoin = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
           if (releaseJoin) {
@@ -5437,10 +5664,30 @@ export function createHostNativeGovernance({
           releaseJoin.authorized_ticket_id = ticketId;
           releaseJoin.authorized_at = iso(nowValue);
         }
+        let replayRootId = null;
+        let idempotencyRecord = null;
+        if (expiredClaimTicket) {
+          replayRootId = descriptor.result.ticket.ticket_id;
+          idempotencyRecord = state.idempotency[descriptor.key];
+          if (!state.tickets[replayRootId] || !idempotencyRecord ||
+              idempotencyRecord.request_digest !== descriptor.requestDigest) {
+            fail("action_ticket_lifecycle_invalid");
+          }
+        }
+        let supersededAt = null;
+        if (expiredClaimTicket &&
+            state.native_precommit_ticket_successors?.[
+              expiredClaimTicket.ticket.ticket_id
+            ]) {
+          fail("action_ticket_lifecycle_invalid");
+        }
         if (supersededTicket) {
+          supersededAt = iso(nowValue);
           supersededTicket.state = "superseded";
+          supersededTicket.lifecycle_schema_version = "host_native_action_lifecycle_v2";
           supersededTicket.superseded_by_ticket_id = ticketId;
-          supersededTicket.superseded_at = iso(nowValue);
+          supersededTicket.superseded_at = supersededAt;
+          signActionTicketLifecycleRecord(supersededTicket);
         }
         const expiresAt = Math.min(Date.parse(currentDelegation.grant.expires_at), nowValue + ticketTtl);
         const ticketUnsigned = {
@@ -5461,6 +5708,13 @@ export function createHostNativeGovernance({
           host_policy_override: false,
           host_policy_must_allow: true,
           provider_execution: false,
+          ...(expiredClaimTicket ? {
+            native_precommit_predecessor: {
+              schema_version: "native_precommit_ticket_predecessor_v1",
+              ticket_id: expiredClaimTicket.ticket.ticket_id,
+              ticket_digest: hostNativeDigest(expiredClaimTicket.ticket),
+            },
+          } : {}),
           ...(semanticScopeAtIssue ? { semantic_scope_at_issue: semanticScopeAtIssue } : {}),
           ...(predecessor ? { predecessor, predecessor_chain_digest: hostNativeDigest(predecessor) } : {}),
           ...(release_manifest ? {
@@ -5497,6 +5751,14 @@ export function createHostNativeGovernance({
           });
         }
         state.tickets[ticketId] = record;
+        if (expiredClaimTicket) {
+          state.native_precommit_ticket_successors[
+            expiredClaimTicket.ticket.ticket_id
+          ] = signNativePrecommitSuccessor(expiredClaimTicket, record, supersededAt);
+          const replayRoot = state.tickets[replayRootId];
+          idempotencyRecord.result = clone(replayRoot);
+          return record;
+        }
         return saveIdempotent(state, descriptor, record);
       });
     },
