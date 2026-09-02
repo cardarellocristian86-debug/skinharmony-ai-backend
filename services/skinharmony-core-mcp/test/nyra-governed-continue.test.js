@@ -256,6 +256,18 @@ function commitContext(gate = precommitGate()) {
   };
 }
 
+function fulfilledCommitContext(gate, {
+  contextDigest = "9".repeat(64),
+  predecessorContextDigest = CONTEXT_DIGEST,
+} = {}) {
+  return {
+    ...commitContext(gate),
+    context_digest: contextDigest,
+    precommit_ticket_gate_applicable: false,
+    fulfilled_precommit_predecessor_context_digest: predecessorContextDigest,
+  };
+}
+
 function commitRequest(gate = precommitGate()) {
   return {
     work_id: WORK_ID,
@@ -796,7 +808,7 @@ test("native precommit gate is CAS-claimed before authorization and fulfilled fr
   assert.equal(recoveryLookups, 1, "the post-claim path must not recover a newly created claim");
 });
 
-test("native precommit retry after fulfilled recovers the prior ticket without authorize or fulfill", async () => {
+test("native precommit retry after fulfilled replays the prior ticket through Core without fulfill", async () => {
   const originalGate = nativePrecommitGate();
   const request = commitRequest(originalGate);
   const record = commitTicket(request, originalGate);
@@ -804,9 +816,9 @@ test("native precommit retry after fulfilled recovers the prior ticket without a
   let fulfillments = 0;
   const handler = createNyraGovernedContinueHandler({
     store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
-    readDirectiveContext: async () => ({ ...commitContext(nativePrecommitGate({
+    readDirectiveContext: async () => fulfilledCommitContext(nativePrecommitGate({
       fulfilled: true, ticket_id: record.ticket.ticket_id,
-    })), context_digest: "9".repeat(64), precommit_ticket_gate_applicable: false }),
+    })),
     normalizeDirectiveContext: (value) => value,
     issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
     readPrecommitTicketGateClaimRecovery: async (binding) => {
@@ -819,7 +831,10 @@ test("native precommit retry after fulfilled recovers the prior ticket without a
       return { schema_version: "precommit_ticket_gate_recovery_v1", ticket_id: record.ticket.ticket_id,
         gate_claim: { ...claimMaterial, claim_digest: deterministicDigest(claimMaterial) } };
     },
-    authorizeAction: async () => { authorizations += 1; },
+    authorizeAction: async () => {
+      authorizations += 1;
+      return { structuredContent: { action_ticket: record } };
+    },
     readActionTicket: async () => ({ structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } }),
     fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
     now: () => Date.parse("2026-08-28T21:00:20.000Z"),
@@ -827,7 +842,100 @@ test("native precommit retry after fulfilled recovers the prior ticket without a
   const result = await handler({ operation: "authorize_action", continuation_ref: CONTINUATION_REF,
     idempotency_key: "caller-crash-retry", action_request: request }, identity());
   assert.equal(result.structuredContent.ticket_id, record.ticket.ticket_id);
+  assert.equal(authorizations, 1);
+  assert.equal(fulfillments, 0);
+});
+
+test("native precommit fulfilled recovery rejects unrelated Work context drift", async () => {
+  const originalGate = nativePrecommitGate();
+  const request = commitRequest(originalGate);
+  const record = commitTicket(request, originalGate);
+  let authorizations = 0;
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => fulfilledCommitContext(nativePrecommitGate({
+      fulfilled: true, ticket_id: record.ticket.ticket_id,
+    }), { predecessorContextDigest: "a".repeat(64) }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    readPrecommitTicketGateClaimRecovery: async (binding) => {
+      const { fulfilled: _fulfilled, ...claimBinding } = binding;
+      const claimMaterial = { schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "11111111-1111-4111-8111-111111111111", ...claimBinding,
+        continuation_ref: CONTINUATION_REF,
+        gate_projection_digest: originalGate.projection_digest,
+        idempotency_key: "core_authorize_action", replay: true };
+      return { schema_version: "precommit_ticket_gate_recovery_v1", ticket_id: record.ticket.ticket_id,
+        recovery_source: "fulfillment",
+        gate_claim: { ...claimMaterial, claim_digest: deterministicDigest(claimMaterial) } };
+    },
+    authorizeAction: async () => { authorizations += 1; },
+  });
+  await assert.rejects(handler({ operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-fulfilled-context-drift", action_request: request }, identity()),
+  /nyra_continue_work_drift/);
   assert.equal(authorizations, 0);
+});
+
+test("native precommit fulfilled recovery renews an expired root through the exact replay claim", async () => {
+  const originalGate = nativePrecommitGate();
+  const request = commitRequest(originalGate);
+  const expired = commitTicket(request, originalGate, {
+    issued_at: "2026-08-28T21:00:10.000Z",
+    expires_at: "2026-08-28T21:00:19.000Z",
+  });
+  const successor = commitTicket(request, originalGate, {
+    ticket_id: `hnt_${"e".repeat(32)}`,
+    issued_at: "2026-08-28T21:00:19.000Z",
+    expires_at: "2026-08-28T21:05:19.000Z",
+  });
+  const order = [];
+  let recoveredClaim;
+  let fulfillments = 0;
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => fulfilledCommitContext(nativePrecommitGate({
+      fulfilled: true, ticket_id: expired.ticket.ticket_id,
+    })),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    readPrecommitTicketGateClaimRecovery: async (binding) => {
+      order.push("recover");
+      const { fulfilled: _fulfilled, ...claimBinding } = binding;
+      const material = {
+        schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "11111111-1111-4111-8111-111111111111",
+        ...claimBinding,
+        continuation_ref: CONTINUATION_REF,
+        gate_projection_digest: originalGate.projection_digest,
+        idempotency_key: "core_authorize_action_prior", replay: true,
+      };
+      recoveredClaim = { ...material, claim_digest: deterministicDigest(material) };
+      return {
+        schema_version: "precommit_ticket_gate_recovery_v1",
+        ticket_id: expired.ticket.ticket_id,
+        recovery_source: "fulfillment",
+        gate_claim: recoveredClaim,
+      };
+    },
+    authorizeAction: async (args, _identity, nativeClaim) => {
+      order.push("authorize");
+      assert.equal(args.idempotency_key, recoveredClaim.idempotency_key);
+      assert.deepEqual(nativeClaim, recoveredClaim);
+      return { structuredContent: { action_ticket: successor } };
+    },
+    readActionTicket: async ({ ticket_id }) => {
+      order.push("readback");
+      assert.equal(ticket_id, successor.ticket.ticket_id);
+      return { structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: successor } };
+    },
+    fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  const result = await handler({ operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-fulfilled-expired-retry", action_request: request }, identity());
+  assert.equal(result.structuredContent.ticket_id, successor.ticket.ticket_id);
+  assert.deepEqual(order, ["recover", "authorize", "readback"]);
   assert.equal(fulfillments, 0);
 });
 
