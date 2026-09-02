@@ -848,6 +848,24 @@ test("exact Work resume establishes only the bounded Nyra read binding after ACL
   );
 });
 
+test("verified finalization refreshes its bounded logical lease before entering Core Join", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const continuationStart = serverSource.indexOf("createNyraGovernedContinueHandler({");
+  const continuationEnd = serverSource.indexOf("authorizeNativeCoordination:", continuationStart);
+  const continuation = serverSource.slice(continuationStart, continuationEnd);
+  const binding = continuation.indexOf("ensureFinalizeWorkBinding:");
+  const readLease = continuation.indexOf("ensureNyraReadBinding({", binding);
+  const acl = continuation.indexOf("authorizeRead: requireCanonicalWorkRead", readLease);
+  const finalizer = continuation.indexOf("finalizeVerifiedWork:", acl);
+
+  assert.ok(continuationStart >= 0);
+  assert.ok(continuationEnd > continuationStart);
+  assert.ok(binding >= 0);
+  assert.ok(readLease > binding);
+  assert.ok(acl > readLease);
+  assert.ok(finalizer > acl);
+});
+
 test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
