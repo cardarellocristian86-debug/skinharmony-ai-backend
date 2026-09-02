@@ -6809,6 +6809,34 @@ export function createUniversalCoreService(options = {}) {
           return services;
         });
         const reconciliationVerifier = options.nyraWorkAutomationReconciliationResolver || (async (input, record) => {
+          if (input.reconciliation_kind === "post_release_completion") {
+            const head_commit = record.artifacts?.commit_attestation?.commit;
+            if (!/^[a-f0-9]{40}$/.test(String(head_commit || ""))) throw new Error("nyra_post_release_commit_attestation_required");
+            const [merge, deployment, closure] = await Promise.all([
+              finalizedTicket({ tenant_id: record.tenant_id, ticket_id: input.merge_ticket_id, host_session_fingerprint: input.host_session_fingerprint }),
+              finalizedTicket({ tenant_id: record.tenant_id, ticket_id: input.deployment_ticket_id, host_session_fingerprint: input.host_session_fingerprint }),
+              finalizedTicket({ tenant_id: record.tenant_id, ticket_id: input.closure_ticket_id, host_session_fingerprint: input.host_session_fingerprint }),
+            ]);
+            const mergeCommit = merge.authorization.github_readback?.merge_commit;
+            const services = deployment.authorization.live_services || [];
+            if (
+              merge.ticket.ticket.action.kind !== "github.merge" ||
+              merge.ticket.ticket.repository !== record.repository ||
+              merge.authorization.github_readback?.merged !== true ||
+              merge.authorization.github_readback?.head_commit !== head_commit ||
+              !/^[a-f0-9]{40}$/.test(String(mergeCommit || "")) ||
+              deployment.ticket.ticket.action.kind !== "render.deploy" ||
+              deployment.ticket.ticket.repository !== record.repository ||
+              deployment.authorization.target_commit !== mergeCommit || deployment.authorization.services_verified !== true ||
+              !Array.isArray(services) || !services.length ||
+              closure.ticket.ticket.action.kind !== "render.observe" || closure.ticket.ticket.repository !== record.repository ||
+              closure.authorization.target_commit !== mergeCommit || closure.authorization.services_verified !== true
+            ) throw new Error("nyra_post_release_authoritative_evidence_invalid");
+            const normalizedServices = services.map(({ service_id, environment, live_commit }) => ({ service_id, environment, live_commit, health_status: "healthy" }));
+            if (normalizedServices.some((service) => !service.service_id || !service.environment || service.live_commit !== mergeCommit)) throw new Error("nyra_post_release_service_readback_invalid");
+            const unsigned = { schema_version: "nyra_authoritative_post_release_reconciliation_v1", authoritative: true, verifier_id: "core_server_host_native_post_release_reconciliation_v1", tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, repository: record.repository, delivery_branch: record.delivery_branch, head_commit, merge_commit: mergeCommit, live_commit: mergeCommit, final_acceptance_proven: true, services: normalizedServices, evidence_ticket_ids: { merge: input.merge_ticket_id, deployment: input.deployment_ticket_id, closure: input.closure_ticket_id } };
+            return { ...unsigned, reconciliation_digest: nyraReceipts.digest(unsigned) };
+          }
           let artifact_name;
           let artifact;
           if (input.next_state === "DRAFT_PR_PENDING") {
@@ -11459,6 +11487,18 @@ export function createUniversalCoreService(options = {}) {
       try {
         const record = await nyraWorkAutomation.reconcileUnknown({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId });
         return res.json({ ok: true, tenant_id: req.tenantId, record, retried: false, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
+    },
+  );
+
+  app.post(
+    "/v1/nyra/work-automation/:workId/reconcile/post-release-complete",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation.completeFromPostReleaseReconciliation({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId });
+        return res.json({ ok: true, tenant_id: req.tenantId, record, reconciled_by: "universal_core", nyra_session_required: false, dedicated_core_gate: nyraDedicatedCoreGate });
       } catch (error) { return hostNativeFailure(res, error); }
     },
   );
