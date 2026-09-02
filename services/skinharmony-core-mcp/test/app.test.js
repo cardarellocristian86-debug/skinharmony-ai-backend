@@ -74,6 +74,71 @@ test("binds an authenticated OAuth owner logical session as host transport prese
   assert.equal(resolved.binding_source, "oauth_declared");
 });
 
+test("binds only owner-bound verified finalization to its signed logical presence", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "oauth-owner-finalizer",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const owner = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    oauthOwnerBound: true,
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "tenant_owner",
+    },
+  };
+  const finalized = resolveHostTransportPresence({
+    identity: owner,
+    toolName: "nyra_continue",
+    operation: "finalize_verified_work",
+    declaredSessionId: "logical-owner-finalize-session",
+    agentPresence,
+    transportAgentPresence: null,
+  });
+  assert.equal(finalized.presence, agentPresence);
+  assert.equal(finalized.binding_source, "oauth_declared");
+
+  for (const scenario of [
+    { toolName: "nyra_continue", operation: "authorize_action", identity: owner,
+      declaredSessionId: "logical-owner-finalize-session" },
+    { toolName: "nyra_converse", operation: "finalize_verified_work", identity: owner,
+      declaredSessionId: "logical-owner-finalize-session" },
+    { toolName: "nyra_continue", operation: "finalize_verified_work", identity: owner,
+      declaredSessionId: "" },
+    { toolName: "nyra_continue", operation: "finalize_verified_work",
+      identity: { ...owner, oauthOwnerBound: false },
+      declaredSessionId: "logical-owner-finalize-session" },
+    { toolName: "nyra_continue", operation: "finalize_verified_work", identity: {
+      ...owner,
+      authenticatedTenantMembership: {
+        ...owner.authenticatedTenantMembership,
+        role: "member",
+      },
+    }, declaredSessionId: "logical-owner-finalize-session" },
+    { toolName: "nyra_continue", operation: "finalize_verified_work", identity: {
+      ...owner,
+      authenticatedTenantMembership: {
+        ...owner.authenticatedTenantMembership,
+        tenant_id: "tenant-b",
+      },
+    }, declaredSessionId: "logical-owner-finalize-session" },
+  ]) {
+    const rejected = resolveHostTransportPresence({
+      identity: scenario.identity,
+      toolName: scenario.toolName,
+      operation: scenario.operation,
+      declaredSessionId: scenario.declaredSessionId,
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(rejected.presence, null, scenario.operation);
+    assert.equal(rejected.binding_source, null, scenario.operation);
+  }
+});
+
 test("does not promote caller-declared sessions without an authenticated OAuth owner binding", () => {
   const agentPresence = Object.freeze({
     agent_id: "untrusted-agent",
