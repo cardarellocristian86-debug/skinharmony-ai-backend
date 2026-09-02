@@ -1071,7 +1071,8 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_VERSION, CORE_HEALTH_CONTRACT_VERSION);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_DIGEST, CORE_HEALTH_CONTRACT_DIGEST);
-  assert.equal(health.version, "0.17.0-nyra-conversational-orchestration");
+  assert.equal(health.version, "0.18.0-nyra-finalize-frontdoor");
+  assert.equal(health.tool_contract_revision, "nyra-finalize-published-frontdoor-v1");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -2533,9 +2534,23 @@ test("handler-forged auth and policy failures never emit reconnect metadata", as
 });
 
 test("keeps Codex bearer compatibility and exposes MCP security schemes", async () => serve(async (base) => {
+  const initialized = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  }).then((result) => result.json());
+  assert.equal(initialized.result.serverInfo.version, "0.18.0-nyra-finalize-frontdoor");
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
   assert.equal(response.status, 200);
   const body = await response.json();
+  const nyraContinue = body.result.tools.find((tool) => tool.name === "nyra_continue");
+  assert(nyraContinue);
+  assert(nyraContinue.inputSchema.properties.operation.enum.includes("finalize_verified_work"));
+  assert.equal(nyraContinue.inputSchema.required.includes("continuation_ref"), false);
+  assert(nyraContinue.inputSchema.anyOf.some((branch) =>
+    branch.properties?.operation?.const === "finalize_verified_work"
+    && branch.required?.includes("work_id")
+    && branch.required?.includes("confirmation_reference")));
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
   assert(body.result.tools.every((tool) => tool.securitySchemes.every((scheme) => scheme.type === "oauth2")));
   const readTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === true);

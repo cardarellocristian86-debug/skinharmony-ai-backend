@@ -6,12 +6,14 @@ The repository path and package name retain the historical SkinHarmony name for 
 
 ## Stable dynamic connector surface
 
-Version `0.17.0` keeps the connector registration stable while making Nyra the
-only conversational front door for authenticated conversational clients. An
-unregistered/read-only ChatGPT OAuth client sees only `nyra_converse`; a
-server-registered conversational application with the exact
-`governed_continue` capability sees `nyra_converse` plus the direct
-`nyra_governed_continue` tool. It no longer has to assemble an operational
+Version `0.18.0` keeps the connector registration stable while giving every
+published tool-contract change an explicit MCP server revision. Nyra remains
+the only conversational front door for authenticated conversational clients.
+An unregistered/read-only ChatGPT OAuth client sees the bounded Nyra read
+surface; a server-registered conversational application with the exact
+`governed_continue` capability also sees `nyra_continue`. Verified Work
+finalization is an operation of that existing front door, not a separately
+published mutation tool. The host no longer has to assemble an operational
 answer by calling a preflight, catalog, branch registry or self-model read.
 Codex and registered native-tooling clients retain their bounded native
 surface. Internal capabilities can still evolve behind the governed registry

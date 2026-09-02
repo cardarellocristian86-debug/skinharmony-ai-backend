@@ -43,7 +43,11 @@ import {
 } from "./host-app-authorization.js";
 import { classifyNyraIntent } from "./nyra-intent-router.js";
 
-const SERVER_VERSION = "0.17.0-nyra-conversational-orchestration";
+// ChatGPT uses the MCP server identity while refreshing an installed app's
+// tool descriptors. Keep this revision aligned with every published tool
+// contract change so a reconnect cannot silently retain a stale schema.
+const SERVER_VERSION = "0.18.0-nyra-finalize-frontdoor";
+const TOOL_CONTRACT_REVISION = "nyra-finalize-published-frontdoor-v1";
 const SERVER_INSTRUCTIONS = [
   "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
   "For a bound Work, use nyra_converse only when Nyra Dialogue is advertised as enabled: it resumes, diagnoses or coordinates that Work. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. For functions, controls, runtime state, Work closure percentage, blockers or allowed toggles, use nyra_control_room_status directly; never route that read through a Work. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
@@ -2373,6 +2377,7 @@ export function createApp(config, options = {}) {
     ok: (!readiness.enforced || combinedReady) && !requiredLifecycleUnavailable,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
+    tool_contract_revision: TOOL_CONTRACT_REVISION,
     build: readiness.build,
     mode: readiness.environment,
     render_ready: combinedReady,
