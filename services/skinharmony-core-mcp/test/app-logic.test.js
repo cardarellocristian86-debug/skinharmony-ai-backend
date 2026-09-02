@@ -11,12 +11,19 @@ import {
   resolveConnectorToolName,
   resolveNyraConnectorFrontDoorFallback,
   resolveStaleChatGptReadTool,
+  supportsOAuthOwnerElevation,
   TOOLS,
 } from "../src/app.js";
 import { compactMcpTools } from "../src/dynamic-capability-router.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 import { validateToolArguments } from "../src/schema-validation.js";
+
+test("permits request-bound OAuth owner elevation for verified Nyra closure only", () => {
+  assert.equal(supportsOAuthOwnerElevation("nyra_verified_work_finalize"), true);
+  assert.equal(supportsOAuthOwnerElevation("work_continuity_generic_closure_finalize"), false);
+  assert.equal(supportsOAuthOwnerElevation("work_continuity_generic_core_join"), false);
+});
 
 test("resolves only deployed Nyra front-door descriptors across catalog projection drift", () => {
   assert.equal(resolveNyraConnectorFrontDoorFallback(
