@@ -579,6 +579,7 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   // them to discover Work state, mint a ticket, or execute an external action.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  "nyra_verified_work_finalize",
 ]);
 function connectorToolCandidate(value) {
   if (typeof value !== "string") return "";

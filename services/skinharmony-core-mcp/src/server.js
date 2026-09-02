@@ -2216,6 +2216,62 @@ const baseHandlers = {
     work_continuity_generic_closure_finalize: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.finalizeGenericClosure(withTenantWorkAcl(identity), args),
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
+    nyra_verified_work_finalize: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
+      const aclIdentity = withTenantWorkAcl(identity);
+      const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });
+      const adapter = state.work.work_type;
+      const join = await genericWorkCoreJoinCoordinator({
+        args: {
+          work_id: args.work_id,
+          adapter,
+          idempotency_key: `${args.idempotency_key}:core-join`,
+        },
+        identity,
+        aclIdentity,
+      });
+      const checkpoint = await workContinuityRuntime.checkpoint(identity, {
+        work_id: args.work_id,
+        evidence: state.evidence.map((item) => ({
+          evidence_id: item.evidence_id,
+          digest: item.digest,
+          independently_verified: item.independently_verified === true,
+        })),
+        tests: [],
+        authorizations: [{
+          type: "generic_core_join",
+          verdict_digest: join.verdict?.verdict_digest || null,
+        }],
+        rollback: { mode: "metadata_only_no_external_effect" },
+        next_action: "Verified closure finalized; resume only from the archived Work record.",
+        provenance: {
+          source: "nyra_verified_work_finalize",
+          work_revision: state.work.work_revision,
+          server_derived: true,
+        },
+        supervisor_approved: true,
+        idempotency_key: `${args.idempotency_key}:checkpoint`,
+      });
+      const closure = await workContinuityV2Store.finalizeGenericClosure(aclIdentity, {
+        work_id: args.work_id,
+        adapter,
+        idempotency_key: `${args.idempotency_key}:closure`,
+      });
+      const verification = await workContinuityV2Store.verifyWorkClosure(aclIdentity, {
+        work_id: args.work_id,
+      });
+      return continuityTextResult({
+        ok: true,
+        result: { checkpoint, core_join: join.result, closure, verification },
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/work/core-join-verdicts",
+          server_owned: true,
+        },
+      });
+    },
     work_continuity_native_plan: createNativeContinuityPlan,
     work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_acceptance_contract_read:

@@ -47,11 +47,11 @@ export const NYRA_AUTOPILOT_TOOLS = [
     "Owner recovery command for one existing Work. Normal Work creation and Work changes invoke the same process automatically.",
     object({ work_id: uuid, project_id: identifier }, ["work_id"]), { readOnly: false, ownerRequired: true }),
   tool("nyra_work_assignment_claim", "Claim a bounded Nyra assignment",
-    "Claim one ready Work assignment with an authenticated, transport-bound connected AI presence. It grants no tools, model calls, credentials or external action.",
+    "Claim one ready assignment with transport-bound AI presence.",
     object({ work_id: uuid, assignment_id: uuid, ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 }, idempotency_key: identifier }, ["work_id", "assignment_id", "idempotency_key"]),
     { readOnly: false, bounded: true }),
   tool("nyra_work_assignment_submit", "Submit bounded Nyra assignment evidence",
-    "Submit structured evidence for a claimed assignment. Untrusted control language is quarantined; submission never authorizes an external action.",
+    "Submit bounded evidence for one claimed assignment.",
     object({ work_id: uuid, assignment_id: uuid, result: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["work_id", "assignment_id", "result", "idempotency_key"]),
     { readOnly: false, bounded: true }),
 ];

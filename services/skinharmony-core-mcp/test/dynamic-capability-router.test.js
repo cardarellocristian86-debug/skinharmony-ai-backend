@@ -231,12 +231,14 @@ function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
 }
 
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
-  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS, ...ENTITY_360_TOOLS];
+  const verifiedFinalize = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "nyra_verified_work_finalize");
+  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS, ...ENTITY_360_TOOLS, verifiedFinalize];
   const handlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 16);
+  assert.equal(compact.length, 17);
   assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
   assert(compact.some((tool) => tool.name === "entity_360_shadow_enable"));
@@ -244,6 +246,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   assert(compact.some((tool) => tool.name === "nyra_continue"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
+  assert(compact.some((tool) => tool.name === "nyra_verified_work_finalize"));
   assert.deepEqual([...INTERNAL_ONLY_TOOL_NAMES], ["work_preflight"]);
   assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
@@ -1394,6 +1397,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_precommit_reconcile",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
+    "nyra_verified_work_finalize",
   ].includes(tool.name));
   assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
     "work_continuity_create",
@@ -1415,6 +1419,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
+    "nyra_verified_work_finalize",
     "work_continuity_precommit_reconcile",
   ]);
   assert.equal(dedicatedContinuityTools.every((tool) =>
