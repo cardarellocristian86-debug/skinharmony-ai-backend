@@ -9,6 +9,7 @@ import {
   requiresCanonicalWorkReadAuthorization,
   requiresGenericWorkPreflight,
   resolveConnectorToolName,
+  resolveNyraConnectorFrontDoorFallback,
   resolveStaleChatGptReadTool,
   TOOLS,
 } from "../src/app.js";
@@ -16,6 +17,28 @@ import { compactMcpTools } from "../src/dynamic-capability-router.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 import { validateToolArguments } from "../src/schema-validation.js";
+
+test("resolves only deployed Nyra front-door descriptors across catalog projection drift", () => {
+  assert.equal(resolveNyraConnectorFrontDoorFallback(
+    "skinharmony_nyra_core.nyra_control_room_status", TOOLS,
+  ), "nyra_control_room_status");
+  assert.equal(resolveNyraConnectorFrontDoorFallback(
+    "skinharmony_nyra_core.nyra_converse", TOOLS,
+  ), "nyra_converse");
+  assert.equal(resolveNyraConnectorFrontDoorFallback(
+    "skinharmony_nyra_core.nyra_converse", TOOLS, { dialogueEnabled: false },
+  ), null);
+  for (const name of [
+    "core_health",
+    "core_capability_invoke",
+    "work_continuity_v2_create",
+    "not_registered",
+  ]) {
+    assert.equal(resolveNyraConnectorFrontDoorFallback(
+      `skinharmony_nyra_core.${name}`, TOOLS,
+    ), null, name);
+  }
+});
 
 function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   return {
