@@ -5313,6 +5313,57 @@ export function createWorkContinuityRuntime(config, options = {}) {
     });
   }
 
+  async function resolvePersistedClosureRelease(identity, input) {
+    const context = workContext(identity, input);
+    const planId = uuid(input.plan_id, "plan_id");
+    return transaction(async (client) => {
+      await lockWorkRow(client, context);
+      const latest = await client.query(`SELECT j.release_intent,j.release_intent_digest,
+          j.core_join_record,j.core_join_record_digest,j.verdict_id
+        FROM core_continuity_release_joins j
+        WHERE j.tenant_id=$1 AND j.work_id=$2 AND j.plan_id=$3
+        ORDER BY j.renewal_generation DESC,j.created_at DESC,j.verdict_id DESC
+        LIMIT 1 FOR UPDATE`,
+      [context.tenantId, context.workId, planId]);
+      const row = latest.rows[0];
+      if (!row) throw new Error("continuity_persisted_release_not_found");
+      const releaseIntent = requireObject(row.release_intent, "core_release_intent");
+      const coreJoinRecord = requireObject(row.core_join_record, "core_join_record");
+      const claim = requireObject(coreJoinRecord.claim, "core_join_claim");
+      const unsignedReleaseIntent = Object.fromEntries(Object.entries(releaseIntent)
+        .filter(([key]) => key !== "release_intent_digest"));
+      const releaseIntentDigest = digest(unsignedReleaseIntent);
+      if (
+        row.core_join_record_digest !== digest(coreJoinRecord) ||
+        row.release_intent_digest !== releaseIntentDigest ||
+        releaseIntent.release_intent_digest !== releaseIntentDigest ||
+        coreJoinRecord.tenant_id !== context.tenantId ||
+        coreJoinRecord.verdict_id !== row.verdict_id ||
+        claim.tenant_id !== context.tenantId ||
+        claim.work_id !== context.workId ||
+        claim.release_intent_digest !== releaseIntentDigest
+      ) throw new Error("continuity_persisted_release_integrity_failed");
+      return Object.freeze({
+        schema_version: "continuity_persisted_release_v1",
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        release_intent_digest: releaseIntentDigest,
+        release: Object.freeze({
+          base_branch: releaseIntent.base_branch,
+          delivery_branch: releaseIntent.delivery_branch,
+          base_commit: releaseIntent.base_commit,
+          head_commit: releaseIntent.head_commit,
+          tree_sha: releaseIntent.tree_sha,
+          diff_digest: releaseIntent.diff_digest,
+          changed_files: releaseIntent.changed_files,
+          delivery: releaseIntent.delivery,
+          rollback: releaseIntent.rollback,
+        }),
+      });
+    });
+  }
+
   async function bindCoreJoinVerdict(identity, input, options = {}) {
     const context = workContext(identity, input);
     const planId = uuid(input.plan_id, "plan_id");
@@ -6935,6 +6986,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readNativeLaunchRequest,
     reportNativeAgent,
     evaluateClosure,
+    resolvePersistedClosureRelease,
     prepareEffectiveCoreJoinEvaluation,
     bindCoreJoinVerdict,
     finalizeClosure,

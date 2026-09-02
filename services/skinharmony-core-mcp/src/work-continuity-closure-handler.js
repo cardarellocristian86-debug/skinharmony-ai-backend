@@ -22,7 +22,7 @@ export function createWorkContinuityClosureEvaluateHandler({
     throw new Error("work_continuity_closure_core_handlers_required");
   }
 
-  return async (args, identity) => {
+  async function evaluateAndJoin(args, identity, { releaseSource = "caller" } = {}) {
     const initialEvaluation = await runtime.evaluateClosure(identity, args);
     if (initialEvaluation.closed !== true) {
       return textResult({ ok: true, result: initialEvaluation });
@@ -81,10 +81,39 @@ export function createWorkContinuityClosureEvaluateHandler({
       ok: true,
       result: {
         ...publicEvaluation,
+        ...(releaseSource === "persisted_immutable"
+          ? { release_source: "persisted_immutable" }
+          : {}),
         release_ready: coreJoin.release_ready === true,
         release_intent_digest: coreJoin.release_intent_digest,
         core_join: coreJoin,
       },
+    });
+  }
+
+  return evaluateAndJoin;
+}
+
+export function createWorkContinuityClosureRejoinPersistedReleaseHandler({
+  runtime,
+  coreHandlers,
+  textResult = defaultTextResult,
+} = {}) {
+  if (typeof runtime?.resolvePersistedClosureRelease !== "function") {
+    throw new Error("work_continuity_persisted_release_runtime_required");
+  }
+  const evaluateAndJoin = createWorkContinuityClosureEvaluateHandler({
+    runtime,
+    coreHandlers,
+    textResult,
+  });
+  return async (args, identity) => {
+    const persisted = await runtime.resolvePersistedClosureRelease(identity, {
+      work_id: args.work_id,
+      plan_id: args.plan_id,
+    });
+    return evaluateAndJoin({ ...args, release: persisted.release }, identity, {
+      releaseSource: "persisted_immutable",
     });
   };
 }

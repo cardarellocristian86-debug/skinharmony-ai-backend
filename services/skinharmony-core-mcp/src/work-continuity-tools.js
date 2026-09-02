@@ -671,6 +671,18 @@ export const WORK_CONTINUITY_TOOLS = [
       idempotency_key: text(160),
     }, ["work_id", "plan_id", "idempotency_key"]),
     false, { ownerConfirmationRequired: false }),
+  tool("work_continuity_closure_rejoin_persisted_release", "Rejoin persisted release closure",
+    "Re-evaluate a closed Work and renew its Universal Core Join using only the immutable release intent already persisted for that exact Work and plan. The caller cannot supply commits, manifest, services or rollback data.",
+    object({
+      work_id: uuid,
+      plan_id: uuid,
+      idempotency_key: text(160),
+    }, ["work_id", "plan_id", "idempotency_key"]),
+    false, {
+      ownerConfirmationRequired: false,
+      dedicatedCoreGate: true,
+      serverOwnedGovernance: true,
+    }),
   tool("work_continuity_closure_finalize", "Finalize verified live work",
     "Complete work only from a fresh authenticated Universal Core receipt for the exact completed action ticket. Commit, CI, live health, rollback and host-policy facts are read server-side and cannot be supplied by the caller.",
     object({
