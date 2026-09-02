@@ -5509,6 +5509,46 @@ test("an exact replayed native claim replaces only its expired unreserved commit
   assert.equal(denied.state, "superseded");
 });
 
+test("native precommit replay canonicalizes the stored action without widening the raw claim", async () => {
+  const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const action = commitAction();
+  delete action.provider_execution;
+  const input = {
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "claim-raw-action-session",
+    action,
+    evidence_digest: H("9"),
+    idempotency_key: "claim-gated-raw-action-expired-commit",
+  };
+  const first = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: false }),
+  });
+  assert.equal(Object.hasOwn(input.action, "provider_execution"), false);
+  assert.equal(first.ticket.action.provider_execution, false);
+
+  subject.advance(2 * 60 * 1_000 + 1);
+  const replacement = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: nativePrecommitClaim(input, { replay: true }),
+  });
+  assert.notEqual(replacement.ticket.ticket_id, first.ticket.ticket_id);
+
+  const canonicalClaim = nativePrecommitClaim({
+    ...input,
+    action: { ...input.action, provider_execution: false },
+  }, { replay: true });
+  const denied = await subject.governance.issueActionTicket(input, {
+    native_precommit_claim: canonicalClaim,
+  });
+  assert.equal(denied.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(denied.state, "superseded");
+});
+
 test("native precommit replay returns the authoritative reserved and completed successor", async () => {
   const subject = harness({ ticketTtlMs: 2 * 60 * 1_000 });
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
