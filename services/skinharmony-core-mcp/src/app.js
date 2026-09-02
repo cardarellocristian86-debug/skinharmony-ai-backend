@@ -1124,6 +1124,10 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "work_continuity_create",
   "work_continuity_start_or_resume",
   "work_continuity_v2_create",
+  // This front-door closure performs no caller-selected external action, but
+  // it still requires a fresh request-bound OAuth owner confirmation before
+  // its handler may ask Core to checkpoint and close the verified Work.
+  "nyra_verified_work_finalize",
   "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
   "entity_360_shadow_enable",
@@ -1133,6 +1137,10 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   // it can adopt active Work records.
   "nyra_autopilot_enable",
 ]);
+
+export function supportsOAuthOwnerElevation(toolName) {
+  return OAUTH_OWNER_ELEVATION_TOOLS.has(toolName);
+}
 
 function inferClientType(identity) {
   const authenticated = authenticatedClientType(identity);
@@ -2699,7 +2707,7 @@ export function createApp(config, options = {}) {
         });
         if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
           identity.environmentDelegationBound !== true &&
-          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
+          supportsOAuthOwnerElevation(tool.name) && rawArgs.owner_confirmed === true) {
           identity = authenticate.elevateOAuthOwner(identity, {
             confirmed: true,
             confirmationReference: rawArgs.confirmation_reference,
@@ -2958,7 +2966,7 @@ export function createApp(config, options = {}) {
         // continuity bootstrap tools additionally accept a fresh, server-bound
         // OAuth tenant-owner elevation.
         const explicitOAuthOwnerConfirmation =
-          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) &&
+          supportsOAuthOwnerElevation(tool.name) &&
           (identity.oauthOwnerElevated === true ||
             identity.environmentDelegatedOwnerConfirmation?.verified === true) &&
           args.owner_confirmed === true;
