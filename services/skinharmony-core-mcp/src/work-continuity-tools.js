@@ -426,6 +426,10 @@ export const WORK_CONTINUITY_TOOLS = [
     object({ work_id: uuid, adapter: { type: "string", enum: ["software_git", "software_non_git", "deployment", "research", "document", "commercial_crm", "hardware", "generic"] },
       idempotency_key: text(160) }, ["work_id", "adapter", "idempotency_key"]),
     false, { ownerConfirmationRequired: false, dedicatedCoreGate: true, serverOwnedGovernance: true }),
+  tool("nyra_verified_work_finalize", "Finalize a verified Nyra Work",
+    "Create a server-derived checkpoint and close an already verified Work through Core.",
+    object({ work_id: uuid, idempotency_key: text(120) }, ["work_id", "idempotency_key"]),
+    false, { ownerConfirmationRequired: true, dedicatedCoreGate: true, serverOwnedGovernance: true }),
   tool("work_continuity_native_plan", "Plan host-native agents",
     "Create a bounded Nyra/Core plan that the ChatGPT or Codex coordinator materializes with native agents. This path performs zero provider calls and requires no API key.",
     object({

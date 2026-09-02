@@ -1625,14 +1625,14 @@ export const TOOLS = [
     compiler_input: policyRegistryCompilerInput,
     ...policyRegistryOwnerProperties,
   }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "compiler_input", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
-  tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request rollback to one exact previously activated snapshot digest. Universal Core remains the final authority; caller-supplied proof, identity, preflight, receipt, attestation and key material are rejected.", object({
+  tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request Core-governed rollback to one exact activated snapshot.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,
     domain_pack_id: policyRegistryDomainPackId,
     target_snapshot_digest: policyRegistrySha256,
     ...policyRegistryOwnerProperties,
   }, ["work_id", "operation_id", "domain_pack_id", "target_snapshot_digest", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
-  tool("nyra_policy_registry_reconcile", "Reconcile a governed Nyra policy operation", "Reconcile one exact in-progress Policy Registry operation after a fail-closed interruption. This never authorizes provider execution and accepts no caller-supplied proof or authority context.", object({
+  tool("nyra_policy_registry_reconcile", "Reconcile a governed Nyra policy operation", "Reconcile one exact interrupted Policy Registry operation.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,
     ...policyRegistryOwnerProperties,
@@ -1673,7 +1673,7 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_continue", "Nyra: continue one governed request", "Continue a server-bound Nyra ref. A trusted Core draft-PR ticket may dispatch the standing-release worker; merge is always manual.", object({
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue one server-bound Nyra reference.", object({
     operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
     continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
     work_bootstrap: nyraWorkBootstrapSpec,
@@ -1704,7 +1704,7 @@ export const TOOLS = [
       "skinharmony/externalSideEffect": false,
     },
   }),
-  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded capabilities by group. Exposes no arbitrary path, secret or authority surface.", object({
+  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded capabilities by group.", object({
     group: identifier,
     capability_id: identifier,
     include_schema: { type: "boolean" },
@@ -1749,7 +1749,7 @@ export const TOOLS = [
     intent: { type: "string", maxLength: 240 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
   }), ["core:read"]),
-  tool("core_capability_read", "Read a dynamic Core capability", "Invoke an exact server-registered read capability; Core resolves routing, identity and authorization.", object({
+  tool("core_capability_read", "Read a dynamic Core capability", "Invoke one registered read capability.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
@@ -1758,7 +1758,7 @@ export const TOOLS = [
     // is consumed by the gateway only and is never forwarded to `arguments`.
     session_id: identifier,
   }, ["capability_id", "catalog_revision"]), ["core:read"]),
-  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke an exact server-registered mutation. Core resolves identity, scope, gate and owner confirmation.", object({
+  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one Core-governed mutation.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
