@@ -1671,6 +1671,8 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         workContinuityV2Store.fulfillPrecommitTicketTask(
           withTenantWorkAcl(identity), request,
         ),
+      finalizeVerifiedWork: (request, identity) =>
+        handlers.nyra_verified_work_finalize(request, identity),
       authorizeNativeCoordination: (request, identity) => {
         const actionType = request.operation === "create_native_plan"
           ? "native_agent.plan"

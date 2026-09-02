@@ -94,6 +94,48 @@ const REGISTRY_REVISION = "c".repeat(64);
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const CONTINUATION_REF = `nyc1_${"z".repeat(40)}`;
 
+test("finalizes a verified Work through the published Nyra continuation front door", async () => {
+  const finalized = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: {
+      claim: async () => { throw new Error("continuation store must not be used"); },
+      complete: unused,
+      readCompletedOperation: unused,
+    },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    finalizeVerifiedWork: async (args, caller) => {
+      finalized.push({ args, caller });
+      return { structuredContent: { ok: true, result: { closure_verified: true } }, content: [] };
+    },
+  });
+
+  const result = await handler({
+    operation: "finalize_verified_work",
+    work_id: WORK_ID,
+    idempotency_key: "finalize-through-front-door",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-finalize",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.closure_verified, true);
+  assert.deepEqual(finalized.map(({ args }) => args), [{
+    work_id: WORK_ID,
+    idempotency_key: "finalize-through-front-door",
+  }]);
+  await assert.rejects(handler({
+    operation: "finalize_verified_work",
+    work_id: WORK_ID,
+    idempotency_key: "finalize-without-owner",
+    owner_confirmed: false,
+  }, identity({ ownerConfirmed: false })), /nyra_continue_verified_finalize_binding_mismatch/);
+});
+
 function identity(overrides = {}) {
   return {
     kind: "oauth",

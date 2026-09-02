@@ -7,6 +7,10 @@ function matchesType(value, type) {
 }
 
 function validateNode(schema, value, path, errors) {
+  if (schema === false) {
+    errors.push({ path, code: "forbidden", message: "is not allowed" });
+    return;
+  }
   if (!schema || typeof schema !== "object") return;
   if (Array.isArray(schema.anyOf)) {
     const matched = schema.anyOf.some((candidate) => {
@@ -15,7 +19,11 @@ function validateNode(schema, value, path, errors) {
       return candidateErrors.length === 0;
     });
     if (!matched) errors.push({ path, code: "any_of", message: "must match one allowed shape" });
-    return;
+  }
+  if (schema.not && typeof schema.not === "object") {
+    const rejectedErrors = [];
+    validateNode(schema.not, value, path, rejectedErrors);
+    if (rejectedErrors.length === 0) errors.push({ path, code: "not", message: "matches a forbidden shape" });
   }
   if (Object.prototype.hasOwnProperty.call(schema, "const") && value !== schema.const) {
     errors.push({ path, code: "const", message: `must equal ${JSON.stringify(schema.const)}` });

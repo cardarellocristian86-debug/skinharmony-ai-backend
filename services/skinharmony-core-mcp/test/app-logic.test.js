@@ -25,6 +25,32 @@ test("permits request-bound OAuth owner elevation for verified Nyra closure only
   assert.equal(supportsOAuthOwnerElevation("work_continuity_generic_core_join"), false);
 });
 
+test("publishes operation-exact Nyra continuation requirements", () => {
+  const schema = TOOLS.find((tool) => tool.name === "nyra_continue").inputSchema;
+  assert(validateToolArguments(schema, {
+    operation: "review_work_bootstrap",
+    idempotency_key: "missing-reference",
+  }).some((item) => item.code === "any_of"));
+  assert(validateToolArguments(schema, {
+    operation: "finalize_verified_work",
+    work_id: "11111111-1111-4111-8111-111111111111",
+    idempotency_key: "finalize-exact-work",
+    owner_confirmed: true,
+    confirmation_reference: "owner-finalize-exact-work",
+  }).length === 0);
+  for (const omitted of ["work_id", "owner_confirmed", "confirmation_reference"]) {
+    const request = {
+      operation: "finalize_verified_work",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      idempotency_key: "finalize-exact-work",
+      owner_confirmed: true,
+      confirmation_reference: "owner-finalize-exact-work",
+    };
+    delete request[omitted];
+    assert(validateToolArguments(schema, request).some((item) => item.code === "any_of"), omitted);
+  }
+});
+
 test("resolves only deployed Nyra front-door descriptors across catalog projection drift", () => {
   assert.equal(resolveNyraConnectorFrontDoorFallback(
     "skinharmony_nyra_core.nyra_control_room_status", TOOLS,
@@ -113,8 +139,7 @@ test("routes only the retired governed continuation name to the opaque current c
     TOOLS.find((tool) => tool.name === "nyra_continue").inputSchema,
     ambiguous,
   );
-  assert(violations.some((item) =>
-    item.path === "$.candidate_attestation" && item.code === "additional_property"));
+  assert(violations.some((item) => ["any_of", "additional_property"].includes(item.code)));
 });
 
 test("keeps claim-only and unregistered conversational hosts on the Nyra front door plus read-only status", () => {
