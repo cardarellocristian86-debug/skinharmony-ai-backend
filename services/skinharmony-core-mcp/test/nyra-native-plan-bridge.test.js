@@ -47,3 +47,17 @@ test("Nyra turns a materialized Autopilot proposal into one idempotent native bu
   assert.equal(request.closure_requirements.live_verification_required, true);
   assert.match(request.idempotency_key, /^nyra_native_[a-f0-9]{48}$/);
 });
+
+test("implementation plans defer live readback until the separately classified release phase", () => {
+  const request = buildNyraNativePlanRequest({
+    identity: { agentPresence: { client_type: "codex" } },
+    work,
+    intent: { anchor: { objective: "Prepare a bounded implementation safely." } },
+    autopilot: { plan_digest: "b".repeat(64), plan: { intent: { implementation: true, release: false } } },
+    binding: bindings[0],
+  });
+
+  assert.equal(request.closure_requirements.live_verification_required, false);
+  assert.match(request.tasks[0].instruction, /precommit evidence/);
+  assert.match(request.tasks[1].instruction, /live verification is deferred to release/);
+});
