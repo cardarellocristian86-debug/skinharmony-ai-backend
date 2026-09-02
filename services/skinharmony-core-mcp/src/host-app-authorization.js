@@ -94,6 +94,7 @@ const HOST_NATIVE_DELEGATION_TOOLS = new Set([
 const HOST_NATIVE_OPERATE_TOOLS = new Set([
   "work_continuity_native_report",
   "work_continuity_closure_evaluate",
+  "work_continuity_closure_rejoin_persisted_release",
   "work_continuity_closure_finalize",
 ]);
 

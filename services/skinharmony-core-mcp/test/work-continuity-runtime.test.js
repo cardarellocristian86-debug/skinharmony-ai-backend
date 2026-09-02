@@ -103,7 +103,11 @@ test("native report schema admits exact server-digested precommit evidence", () 
   assert.deepEqual(precommit.required,
     ["schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files"]);
   const closure = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_closure_evaluate");
+  const persistedRejoin = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_closure_rejoin_persisted_release");
   assert.deepEqual(closure.inputSchema.required, ["work_id", "plan_id", "idempotency_key"]);
+  assert.deepEqual(persistedRejoin.inputSchema.required, ["work_id", "plan_id", "idempotency_key"]);
+  assert.equal(Object.hasOwn(persistedRejoin.inputSchema.properties, "release"), false);
 });
 
 test("precommit evidence is deterministic, ordered and rejects extra authority-shaped fields", () => {

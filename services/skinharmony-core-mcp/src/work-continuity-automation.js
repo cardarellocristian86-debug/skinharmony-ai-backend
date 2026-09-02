@@ -10,6 +10,7 @@ const OPERATIONAL_FAILURE_TOOLS = new Set([
   "work_continuity_native_bind",
   "work_continuity_native_report",
   "work_continuity_closure_evaluate",
+  "work_continuity_closure_rejoin_persisted_release",
   "work_continuity_closure_finalize",
 ]);
 const AUTOMATED_TOOLS = new Set([
@@ -168,7 +169,8 @@ function operationalFailure(event) {
       code = "NATIVE_TEST_FAILED";
     }
   } else if (
-    event.toolName === "work_continuity_closure_evaluate" &&
+    (event.toolName === "work_continuity_closure_evaluate" ||
+      event.toolName === "work_continuity_closure_rejoin_persisted_release") &&
     payload.closed === false
   ) {
     code = "NATIVE_CLOSURE_GAPS";

@@ -19,7 +19,10 @@ import {
   authorizeGenericWorkCoreJoinExactWorkRead,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
-import { createWorkContinuityClosureEvaluateHandler } from "./work-continuity-closure-handler.js";
+import {
+  createWorkContinuityClosureEvaluateHandler,
+  createWorkContinuityClosureRejoinPersistedReleaseHandler,
+} from "./work-continuity-closure-handler.js";
 import {
   createGenericWorkCoreJoinMcpCoordinator,
   createGenericWorkCoreJoinVerifier,
@@ -154,6 +157,7 @@ const hostNativeContinuityTools = new Set([
   "work_continuity_native_report",
   "work_continuity_precommit_reconcile",
   "work_continuity_closure_evaluate",
+  "work_continuity_closure_rejoin_persisted_release",
   "work_continuity_closure_finalize",
 ]);
 TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
@@ -2362,6 +2366,12 @@ const baseHandlers = {
       coreHandlers,
       textResult: continuityTextResult,
     }),
+    work_continuity_closure_rejoin_persisted_release:
+      createWorkContinuityClosureRejoinPersistedReleaseHandler({
+        runtime: workContinuityRuntime,
+        coreHandlers,
+        textResult: continuityTextResult,
+      }),
     work_continuity_closure_finalize: async (args, identity) => {
       const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
         ticket_id: args.action_ticket_id,
