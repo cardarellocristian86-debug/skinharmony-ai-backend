@@ -177,7 +177,9 @@ import {
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
   DTT_WORK_CONTEXT_HEADER,
+  DTT_WORK_READ_CONTEXT_HEADER,
   verifyDttWorkContext,
+  verifyDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
 import {
   GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
@@ -7841,6 +7843,12 @@ export function createUniversalCoreService(options = {}) {
     && typeof options.resolveDttWorkBinding === "function"
     ? options.resolveDttWorkBinding
     : null;
+  const injectedDttWorkReadBindingResolver = process.env.NODE_ENV !== "production"
+    && options.allowTestDttWorkBindingResolver === true
+    && (typeof options.resolveDttWorkReadBinding === "function"
+      || typeof options.resolveDttWorkBinding === "function")
+    ? options.resolveDttWorkReadBinding || options.resolveDttWorkBinding
+    : null;
   const dttStatusForError = (code, fallback = 400) => {
     if (["task_tree_not_found", "dtt_node_not_found", "dtt_verifier_assignment_node_invalid"].includes(code)) return 404;
     if (["cross_tenant_task_tree_denied", "cross_work_task_tree_denied"].includes(code)) return 403;
@@ -7864,6 +7872,7 @@ export function createUniversalCoreService(options = {}) {
     ].includes(code)) return 500;
     if ([
       "dtt_work_binding_unavailable",
+      "dtt_work_read_binding_unavailable",
       "dtt_work_context_signing_unavailable",
       "dtt_join_finalization_pending",
       "dtt_join_verdict_ledger_unavailable",
@@ -7927,6 +7936,67 @@ export function createUniversalCoreService(options = {}) {
         dttStatusForError(code, 403),
         code,
       );
+    }
+  };
+
+  const dttWorkReadAuth = async (req, res, next) => {
+    try {
+      let binding;
+      const requestContext = {
+        tenant_id: req.tenantId,
+        method: req.method,
+        path: req.path,
+        body: req.body,
+      };
+      if (injectedDttWorkReadBindingResolver) {
+        binding = await injectedDttWorkReadBindingResolver({ ...requestContext, request: req });
+      } else {
+        if (!isMcpTenantGatewayRecord(req.coreKey)) {
+          throw new Error("dtt_work_read_gateway_required");
+        }
+        if (!dttAgentIdentitySecret) throw new Error("dtt_work_read_binding_unavailable");
+        binding = verifyDttWorkReadContext({
+          token: req.get(DTT_WORK_READ_CONTEXT_HEADER),
+          secret: dttAgentIdentitySecret,
+          expected_tenant_id: req.tenantId,
+          method: req.method,
+          path: req.path,
+          body: req.body,
+        });
+      }
+      const workId = String(binding?.work_id || "").trim();
+      const injectedSchemaAllowed = Boolean(
+        injectedDttWorkReadBindingResolver
+        && binding?.schema_version === "dtt_work_context_v1",
+      );
+      if (
+        (!injectedSchemaAllowed && binding?.schema_version !== "dtt_work_read_context_v1")
+        || binding?.tenant_id !== req.tenantId
+        || binding?.execution_authorized !== false
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId)
+      ) {
+        throw new Error("dtt_work_read_context_invalid");
+      }
+      const claimedWorkId = req.body?.work_id ?? req.query?.work_id;
+      if (claimedWorkId !== undefined && String(claimedWorkId) !== workId) {
+        throw new Error("cross_work_task_tree_denied");
+      }
+      req.workId = workId;
+      req.dttWorkReadBinding = Object.freeze(structuredClone(binding));
+      return next();
+    } catch (error) {
+      const reason = String(error?.message || "dtt_work_read_context_invalid");
+      const code = reason === "cross_work_task_tree_denied"
+        || /^dtt_work_read_[a-z0-9_]+$/.test(reason)
+        ? reason
+        : "dtt_work_read_context_invalid";
+      audit.append("dtt_work_read_binding_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey?.key_id || null,
+        path: req.path,
+        reason: code,
+      });
+      return publicError(res, dttStatusForError(code, 403), code);
     }
   };
 
@@ -14287,7 +14357,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), dttWorkReadAuth, async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
@@ -14312,7 +14382,7 @@ export function createUniversalCoreService(options = {}) {
   // evidence flow. It reports only durable progress and the exact governed
   // next step; it never turns a draft, a receipt or a queue assignment into
   // execution authority.
-  app.get("/v1/orchestration/dtt/:treeId/verification-readiness", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId/verification-readiness", coreAuth(SCOPES.READ_DECISION), dttWorkReadAuth, async (req, res) => {
     try {
       const readiness = await dynamicTaskTreeRuntime.inspectVerificationReadiness({
         tenant_id: req.tenantId,
@@ -14511,7 +14581,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), dttWorkReadAuth, async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,

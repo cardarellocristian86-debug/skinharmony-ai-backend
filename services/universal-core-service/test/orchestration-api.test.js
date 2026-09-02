@@ -8,7 +8,12 @@ import { createUniversalCoreService } from "../src/app.js";
 import { buildVerificationEvidenceContract } from "../src/verificationEvidenceContract.js";
 import { createFileDynamicTaskTreeJoinVerdictStore } from "../src/dynamicTaskTreeJoinVerdictStore.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
-import { DTT_WORK_CONTEXT_HEADER, issueDttWorkContext } from "../../shared/dtt-work-context.js";
+import {
+  DTT_WORK_CONTEXT_HEADER,
+  DTT_WORK_READ_CONTEXT_HEADER,
+  issueDttWorkContext,
+  issueDttWorkReadContext,
+} from "../../shared/dtt-work-context.js";
 
 const DTT_WORK_A = "11111111-1111-4111-8111-111111111111";
 const DTT_WORK_B = "22222222-2222-4222-8222-222222222222";
@@ -523,7 +528,7 @@ test("a direct tenant Core key cannot substitute for an authenticated DTT Work c
   }
 });
 
-test("the production DTT boundary verifies a request-bound gateway Work context", async () => {
+test("the production DTT boundary separates lease-bound mutations from ACL-bound durable reads", async () => {
   const tenantId = "tenant-dtt-work-context";
   const gatewayKey = "dtt-work-context-gateway-key-01234567890123456789";
   const tenantSecret = "dtt-work-tenant-context-secret-01234567890123456789";
@@ -602,6 +607,80 @@ test("the production DTT boundary verifies a request-bound gateway Work context"
     assert.equal(valid.status, 200);
     assert.equal(valid.json.work_id, DTT_WORK_A);
     assert.equal(valid.json.execution_authorized, false);
+
+    const readPath = `/v1/orchestration/dtt/${valid.json.tree_id}/verification-readiness`;
+    const readBinding = {
+      schema_version: "dtt_work_acl_read_binding_v1",
+      authorization_source: "tenant_work_v2_acl",
+      tenant_id: tenantId,
+      work_id: DTT_WORK_A,
+      execution_authorized: false,
+    };
+    const readTokenFor = (overrides = {}) => issueDttWorkReadContext({
+      secret: workSecret,
+      tenant_id: tenantId,
+      work_id: DTT_WORK_A,
+      read_binding: readBinding,
+      agent_presence: presence,
+      method: "GET",
+      path: readPath,
+      now_ms: nowMs,
+      ...overrides,
+    });
+    const durableRead = await request(base, "GET", readPath, undefined, gatewayKey, {
+      ...gatewayHeaders,
+      [DTT_WORK_READ_CONTEXT_HEADER]: readTokenFor(),
+    });
+    assert.equal(durableRead.status, 200);
+    assert.equal(durableRead.json.work_id, DTT_WORK_A);
+    assert.equal(durableRead.json.execution_authorized, false);
+
+    const leaseTokenDeniedOnRead = await request(base, "GET", readPath, undefined, gatewayKey, {
+      ...gatewayHeaders,
+      [DTT_WORK_CONTEXT_HEADER]: tokenFor({ method: "GET", path: readPath, body: undefined }),
+    });
+    assert.equal(leaseTokenDeniedOnRead.status, 403);
+    assert.equal(leaseTokenDeniedOnRead.json.error, "dtt_work_read_context_token_invalid");
+
+    const readTokenDeniedOnMutation = await request(base, "POST", pathname, body, gatewayKey, {
+      ...gatewayHeaders,
+      [DTT_WORK_READ_CONTEXT_HEADER]: issueDttWorkReadContext({
+        secret: workSecret,
+        tenant_id: tenantId,
+        work_id: DTT_WORK_A,
+        read_binding: readBinding,
+        agent_presence: presence,
+        method: "POST",
+        path: pathname,
+        body,
+        now_ms: nowMs,
+      }),
+    });
+    assert.equal(readTokenDeniedOnMutation.status, 403);
+    assert.equal(readTokenDeniedOnMutation.json.error, "dtt_work_context_token_invalid");
+
+    const expiredRead = await request(base, "GET", readPath, undefined, gatewayKey, {
+      ...gatewayHeaders,
+      [DTT_WORK_READ_CONTEXT_HEADER]: readTokenFor({ now_ms: nowMs - 10_000, ttl_ms: 1_000 }),
+    });
+    assert.equal(expiredRead.status, 403);
+    assert.equal(expiredRead.json.error, "dtt_work_read_context_expired");
+
+    const crossWorkRead = await request(base, "GET", readPath, undefined, gatewayKey, {
+      ...gatewayHeaders,
+      [DTT_WORK_READ_CONTEXT_HEADER]: issueDttWorkReadContext({
+        secret: workSecret,
+        tenant_id: tenantId,
+        work_id: DTT_WORK_B,
+        read_binding: { ...readBinding, work_id: DTT_WORK_B },
+        agent_presence: presence,
+        method: "GET",
+        path: readPath,
+        now_ms: nowMs,
+      }),
+    });
+    assert.equal(crossWorkRead.status, 403);
+    assert.equal(crossWorkRead.json.error, "cross_work_task_tree_denied");
 
     const missing = await request(base, "POST", pathname, body, gatewayKey, gatewayHeaders);
     assert.equal(missing.status, 403);

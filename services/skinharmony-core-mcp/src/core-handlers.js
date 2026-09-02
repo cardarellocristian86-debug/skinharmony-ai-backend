@@ -39,8 +39,10 @@ import {
 } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import {
   DTT_WORK_CONTEXT_HEADER,
+  DTT_WORK_READ_CONTEXT_HEADER,
   canonicalDttWorkContextBody,
   issueDttWorkContext,
+  issueDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
 import {
   GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
@@ -663,6 +665,7 @@ export function createCoreHandlers(config, options = {}) {
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
+  const resolveDttWorkReadBinding = options.resolveDttWorkReadBinding;
   const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
   // The MCP handler owns no Work database projection.  The server injects
@@ -933,6 +936,7 @@ export function createCoreHandlers(config, options = {}) {
     useTenantGateway = false,
     allowFailurePayload = false,
     dttWorkContext = null,
+    dttWorkReadContext = null,
     genericWorkCoreJoinContext = null,
     preservePolicyRegistryDomainPackId = false,
     strictTransport = false,
@@ -966,6 +970,9 @@ export function createCoreHandlers(config, options = {}) {
       }
       headers["x-sh-tenant-context"] = context;
     }
+    if (dttWorkContext && dttWorkReadContext) {
+      throw new Error("dtt_work_context_ambiguous");
+    }
     if (dttWorkContext) {
       if (useTenantGateway !== true) throw new Error("dtt_work_context_tenant_gateway_required");
       headers[DTT_WORK_CONTEXT_HEADER] = issueDttWorkContext({
@@ -979,8 +986,25 @@ export function createCoreHandlers(config, options = {}) {
         body: sanitizedBody,
       });
     }
+    if (dttWorkReadContext) {
+      if (useTenantGateway !== true) {
+        throw new Error("dtt_work_read_context_tenant_gateway_required");
+      }
+      headers[DTT_WORK_READ_CONTEXT_HEADER] = issueDttWorkReadContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: dttWorkReadContext.work_id,
+        read_binding: dttWorkReadContext.read_binding,
+        agent_presence: dttWorkReadContext.agent_presence,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
     if (genericWorkCoreJoinContext) {
-      if (dttWorkContext) throw new Error("generic_work_core_join_context_ambiguous");
+      if (dttWorkContext || dttWorkReadContext) {
+        throw new Error("generic_work_core_join_context_ambiguous");
+      }
       if (useTenantGateway !== true) {
         throw new Error("generic_work_core_join_context_tenant_gateway_required");
       }
@@ -1000,7 +1024,7 @@ export function createCoreHandlers(config, options = {}) {
       ? undefined
       : genericWorkCoreJoinContext
         ? canonicalGenericWorkCoreJoinContextBody(sanitizedBody)
-        : dttWorkContext
+        : dttWorkContext || dttWorkReadContext
           ? canonicalDttWorkContextBody(sanitizedBody)
           : JSON.stringify(sanitizedBody);
     const endpoint = `${config.universalCoreUrl}${path}`;
@@ -1178,6 +1202,29 @@ export function createCoreHandlers(config, options = {}) {
       dttWorkContext: {
         work_id: workId,
         lease_binding: leaseBinding,
+        agent_presence: identity.agentPresence,
+      },
+    });
+  }
+
+  async function dttReadCoreRequest(path, args, identity, request = {}) {
+    if (typeof resolveDttWorkReadBinding !== "function") {
+      throw new Error("dtt_work_read_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+      throw new Error("dtt_work_id_invalid");
+    }
+    const readBinding = await resolveDttWorkReadBinding(identity, workId);
+    if (!readBinding || readBinding.execution_authorized !== false) {
+      throw new Error("dtt_work_read_binding_required");
+    }
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      useTenantGateway: true,
+      dttWorkReadContext: {
+        work_id: workId,
+        read_binding: readBinding,
         agent_presence: identity.agentPresence,
       },
     });
@@ -3893,12 +3940,12 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_read: async (args, identity) => textResult(await dttCoreRequest(
+    orchestration_dtt_read: async (args, identity) => textResult(await dttReadCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}`,
       args,
       identity,
     )),
-    orchestration_dtt_verification_readiness: async (args, identity) => textResult(await dttCoreRequest(
+    orchestration_dtt_verification_readiness: async (args, identity) => textResult(await dttReadCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/verification-readiness`,
       args,
       identity,
@@ -4021,7 +4068,7 @@ export function createCoreHandlers(config, options = {}) {
         body: { reason: args.reason },
       },
     )),
-    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await dttCoreRequest(
+    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await dttReadCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/retry-fallback`,
       args,
       identity,

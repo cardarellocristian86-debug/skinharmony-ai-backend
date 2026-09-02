@@ -386,6 +386,42 @@ async function resolveDttWorkBinding(identity, workId) {
   }
 }
 
+async function resolveDttWorkReadBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityV2Store?.readWork !== "function") {
+    throw new Error("dtt_work_read_binding_unavailable");
+  }
+  try {
+    const authorized = await authorizeDttExactWorkRead({
+      store: workContinuityV2Store,
+      identity: withTenantWorkAcl(identity),
+      tenant_id: identity.tenantId,
+      work_id: workId,
+    });
+    if (identity?.agentPresence?.transport_bound !== true) {
+      throw new Error("dtt_work_signed_presence_required");
+    }
+    return Object.freeze({
+      schema_version: "dtt_work_acl_read_binding_v1",
+      authorization_source: "tenant_work_v2_acl",
+      tenant_id: authorized.tenant_id,
+      work_id: authorized.work_id,
+      execution_authorized: false,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if ([
+      "dtt_work_acl_denied",
+      "dtt_work_signed_presence_required",
+    ].includes(reason)) {
+      throw error;
+    }
+    const unavailable = new Error("dtt_work_read_binding_unavailable");
+    unavailable.code = "dtt_work_read_binding_unavailable";
+    throw unavailable;
+  }
+}
+
 async function resolveStandingReleaseIntentBinding(identity, workId) {
   requireTenantWorkCapability(identity, "read");
   if (
@@ -475,6 +511,7 @@ const coreHandlers = createCoreHandlers(config, {
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,
   resolveDttWorkBinding,
+  resolveDttWorkReadBinding,
   resolveStandingReleaseIntentBinding,
   resolveGenericWorkCoreJoinBinding,
   genericWorkCoreJoinVerifierMetadata,

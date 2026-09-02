@@ -4,12 +4,15 @@ import { createCoreHandlers } from "../src/core-handlers.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import {
   DTT_WORK_CONTEXT_HEADER,
+  DTT_WORK_READ_CONTEXT_HEADER,
   verifyDttWorkContext,
+  verifyDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
 
 test("orchestration MCP tools expose accurate mutation hints and map to tenant-and-Work-bound Core routes", async () => {
   const calls = [];
   const bindingRequests = [];
+  const readBindingRequests = [];
   const workId = "11111111-1111-4111-8111-111111111111";
   const leaseId = "22222222-2222-4222-8222-222222222222";
   const dttSigningSecret = "dtt-work-context-test-signing-secret-0001";
@@ -38,6 +41,16 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
         presence_signature: identity.agentPresence.signature,
         opaque_agent_id: identity.agentPresence.opaque_agent_id,
         actor_provenance: identity.agentPresence.actor_provenance,
+        execution_authorized: false,
+      };
+    },
+    resolveDttWorkReadBinding: async (identity, requestedWorkId) => {
+      readBindingRequests.push(requestedWorkId);
+      return {
+        schema_version: "dtt_work_acl_read_binding_v1",
+        authorization_source: "tenant_work_v2_acl",
+        tenant_id: identity.tenantId,
+        work_id: requestedWorkId,
         execution_authorized: false,
       };
     },
@@ -180,10 +193,32 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
   assert.equal(new URL(calls[0].url).searchParams.get("view"), "virtual");
   assert(calls.slice(0, 2).every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert(calls.slice(2).every((call) => call.init.headers.authorization === `Bearer ${gatewayKey}`));
-  assert.deepEqual(bindingRequests, Array(bindingRequests.length).fill(workId));
-  for (const call of calls.slice(2)) {
+  assert.deepEqual(bindingRequests, Array(10).fill(workId));
+  assert.deepEqual(readBindingRequests, Array(3).fill(workId));
+  const durableReadIndexes = new Set([3, 4, 13]);
+  for (const [index, call] of calls.entries()) {
+    if (index < 2) continue;
     const path = new URL(call.url).pathname;
     const body = call.init.body === undefined ? undefined : JSON.parse(call.init.body);
+    if (durableReadIndexes.has(index)) {
+      assert.equal(call.init.headers[DTT_WORK_CONTEXT_HEADER], undefined);
+      const binding = verifyDttWorkReadContext({
+        token: call.init.headers[DTT_WORK_READ_CONTEXT_HEADER],
+        secret: dttSigningSecret,
+        expected_tenant_id: "tenant-a",
+        expected_work_id: workId,
+        method: call.init.method || "GET",
+        path,
+        body,
+      });
+      assert.equal(binding.schema_version, "dtt_work_read_context_v1");
+      assert.equal(binding.work_id, workId);
+      assert.equal(binding.authorization.authorization_source, "tenant_work_v2_acl");
+      assert.equal(Object.hasOwn(binding, "lease"), false);
+      assert.equal(binding.execution_authorized, false);
+      continue;
+    }
+    assert.equal(call.init.headers[DTT_WORK_READ_CONTEXT_HEADER], undefined);
     const binding = verifyDttWorkContext({
       token: call.init.headers[DTT_WORK_CONTEXT_HEADER],
       secret: dttSigningSecret,

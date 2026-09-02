@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   canonicalDttWorkContextBody,
   issueDttWorkContext,
+  issueDttWorkReadContext,
   verifyDttWorkContext,
+  verifyDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
 import {
   authorizeDttExactWorkRead,
@@ -65,6 +67,38 @@ function issue({ body = { z: 2, nested: { b: true, a: "bound" } }, presence = ag
     now_ms: NOW_MS,
     ttl_ms: 120_000,
     random_bytes: () => Buffer.alloc(18, 7),
+  });
+}
+
+function readBinding(overrides = {}) {
+  return {
+    schema_version: "dtt_work_acl_read_binding_v1",
+    authorization_source: "tenant_work_v2_acl",
+    tenant_id: TENANT_ID,
+    work_id: WORK_ID,
+    execution_authorized: false,
+    ...overrides,
+  };
+}
+
+function issueRead({
+  path = "/v1/orchestration/dtt/dtt_test/verification-readiness",
+  presence = agentPresence(),
+  binding = readBinding(),
+  nowMs = NOW_MS,
+  ttlMs = 60_000,
+} = {}) {
+  return issueDttWorkReadContext({
+    secret: SECRET,
+    tenant_id: TENANT_ID,
+    work_id: WORK_ID,
+    read_binding: binding,
+    agent_presence: presence,
+    method: "GET",
+    path,
+    now_ms: nowMs,
+    ttl_ms: ttlMs,
+    random_bytes: () => Buffer.alloc(18, 9),
   });
 }
 
@@ -135,6 +169,74 @@ test("DTT Work context fails closed on request, signature, expiry, or principal 
   assert.throws(
     () => issueDttWorkContext({}),
     /dtt_work_context_signing_unavailable/,
+  );
+});
+
+test("DTT durable read context is exact-Work ACL-derived and does not contain a lease", () => {
+  const path = "/v1/orchestration/dtt/dtt_test/verification-readiness";
+  const token = issueRead({ path });
+  const binding = verifyDttWorkReadContext({
+    token,
+    secret: SECRET,
+    expected_tenant_id: TENANT_ID,
+    expected_work_id: WORK_ID,
+    method: "GET",
+    path,
+    now_ms: NOW_MS,
+  });
+
+  assert.equal(binding.schema_version, "dtt_work_read_context_v1");
+  assert.equal(binding.work_id, WORK_ID);
+  assert.deepEqual(binding.authorization, {
+    schema_version: "dtt_work_acl_read_binding_v1",
+    authorization_source: "tenant_work_v2_acl",
+  });
+  assert.equal(binding.execution_authorized, false);
+  assert.equal(Object.hasOwn(binding, "lease"), false);
+  assert.equal(Object.isFrozen(binding), true);
+  assert.equal(Object.isFrozen(binding.authorization), true);
+});
+
+test("DTT durable read context fails closed on request, tenant, Work, expiry, or forged ACL binding", () => {
+  const path = "/v1/orchestration/dtt/dtt_test";
+  const token = issueRead({ path });
+  const verification = {
+    token,
+    secret: SECRET,
+    expected_tenant_id: TENANT_ID,
+    expected_work_id: WORK_ID,
+    method: "GET",
+    path,
+    now_ms: NOW_MS,
+  };
+
+  assert.throws(
+    () => verifyDttWorkReadContext({ ...verification, path: `${path}/verification-readiness` }),
+    /dtt_work_read_context_request_mismatch/,
+  );
+  assert.throws(
+    () => verifyDttWorkReadContext({ ...verification, method: "POST" }),
+    /dtt_work_read_context_request_mismatch/,
+  );
+  assert.throws(
+    () => verifyDttWorkReadContext({ ...verification, expected_tenant_id: "tenant-b" }),
+    /dtt_work_read_context_tenant_mismatch/,
+  );
+  assert.throws(
+    () => verifyDttWorkReadContext({ ...verification, expected_work_id: LEASE_ID }),
+    /dtt_work_read_context_work_mismatch/,
+  );
+  assert.throws(
+    () => verifyDttWorkReadContext({ ...verification, now_ms: NOW_MS + 60_000 }),
+    /dtt_work_read_context_expired/,
+  );
+  assert.throws(
+    () => issueRead({ binding: readBinding({ tenant_id: "tenant-b" }) }),
+    /dtt_work_read_context_authorization_invalid/,
+  );
+  assert.throws(
+    () => issueRead({ binding: leaseBinding() }),
+    /dtt_work_read_context_authorization_invalid/,
   );
 });
 
