@@ -120,6 +120,13 @@ function actor(identity, fallback = "nyra_autopilot") {
 }
 function shortKey(prefix, value) { return `${prefix}_${digest(value).slice(0, 48)}`; }
 
+function isoTimestamp(value, field, { nullable = false } = {}) {
+  if ((value === null || value === undefined) && nullable) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error(`${field}_invalid`);
+  return date.toISOString();
+}
+
 function publicAssignment(row) {
   return {
     assignment_id: row.assignment_id,
@@ -131,7 +138,7 @@ function publicAssignment(row) {
     dependencies: Array.isArray(row.dependencies) ? row.dependencies : [],
     eligible_client_types: Array.isArray(row.eligible_client_types) ? row.eligible_client_types : [],
     status: row.status,
-    claim_expires_at: row.claim_expires_at || null,
+    claim_expires_at: isoTimestamp(row.claim_expires_at, "nyra_assignment_claim_expires_at", { nullable: true }),
     submitted: Boolean(row.submitted_result),
     quarantined: Boolean(row.quarantine),
     execution_authorized: false,
@@ -483,7 +490,10 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const assignments = await pool.query(`SELECT assignment_id,run_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
         FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at,assignment_key`, [tenantId, workId]);
       return { schema_version: NYRA_AUTOPILOT_SCHEMA_VERSION, tenant_id: tenantId, work_id: workId,
-        runs: runs.rows.map((row) => ({ ...row, execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
+        runs: runs.rows.map((row) => ({ ...row,
+          created_at: isoTimestamp(row.created_at, "nyra_autopilot_run_created_at"),
+          updated_at: isoTimestamp(row.updated_at, "nyra_autopilot_run_updated_at"),
+          execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
     },
     async remediateRejectedVerification(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
