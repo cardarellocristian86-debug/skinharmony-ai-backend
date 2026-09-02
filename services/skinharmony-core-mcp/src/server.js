@@ -524,7 +524,10 @@ const coreHandlers = createCoreHandlers(config, {
         active_logical_agent_count: new Set(sessions.map((item) => item.agent_id)).size,
         sessions,
       };
-    } catch {
+    } catch (error) {
+      if (/acl|authorization|membership|capability/i.test(String(error?.code || error?.message || ""))) {
+        throw error;
+      }
       return { available: false, active_session_count: 0, active_logical_agent_count: 0, sessions: [] };
     }
   },

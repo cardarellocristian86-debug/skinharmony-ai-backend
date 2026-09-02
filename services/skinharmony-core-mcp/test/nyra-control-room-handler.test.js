@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createCoreHandlers } from "../src/core-handlers.js";
+import { projectNyraConversationControlRoomReadback } from "../src/nyra-control-room.js";
 
 const WORK_ID = "9fd0c7f0-d796-4d95-93d0-f5388f55c507";
 
@@ -87,4 +88,76 @@ test("Control Room preserves the tenant-bound V2 reader denial", async () => {
     () => handlers.nyra_control_room_status({ work_id: WORK_ID }, { tenantId: "tenant-a" }),
     /continuity_work_acl_denied/,
   );
+});
+
+test("Control Room degrades a stalled coordination read without hiding Core health", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify(health()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    readControlRoomCoordinationOverview: async () => new Promise(() => {}),
+    controlRoomCoordinationTimeoutMs: 10,
+  });
+  const started = Date.now();
+  const result = await handlers.nyra_control_room_status({}, { tenantId: "tenant-a" });
+  assert.equal(result.structuredContent.ok, true);
+  const continuity = result.structuredContent.control_room.domains
+    .find((domain) => domain.id === "work_continuity");
+  assert.equal(continuity.detail.coordination.available, false);
+  assert(Date.now() - started < 500);
+});
+
+test("Control Room never converts a coordination ACL denial into unavailable", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify(health()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    readControlRoomCoordinationOverview: async () => {
+      const error = new Error("continuity_work_acl_denied");
+      error.code = "continuity_work_acl_denied";
+      throw error;
+    },
+    controlRoomCoordinationTimeoutMs: 10,
+  });
+  await assert.rejects(
+    () => handlers.nyra_control_room_status({}, { tenantId: "tenant-a" }),
+    /continuity_work_acl_denied/,
+  );
+});
+
+test("conversational Control Room exposes coordination counts without participant identifiers", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify(health()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    readControlRoomCoordinationOverview: async () => ({
+      available: true, active_session_count: 1, active_logical_agent_count: 1,
+      sessions: [{
+        session_id: "private-session", agent_id: "private-agent", client_type: "chatgpt",
+        transport_bound: true, state: "WORKING", joined_at: "2026-09-02T09:00:00.000Z",
+        last_heartbeat_at: "2026-09-02T09:01:00.000Z",
+        presence_expires_at: "2026-09-02T10:00:00.000Z", active_lease_count: 1,
+        work_memberships_truncated: false,
+        work_memberships: [{ work_id: WORK_ID, project_id: "private-project", work_status: "active", branch_id: null, active_lease_count: 1 }],
+      }],
+    }),
+  });
+  const direct = await handlers.nyra_control_room_status({}, { tenantId: "tenant-a" });
+  const conversational = projectNyraConversationControlRoomReadback(direct.structuredContent.control_room);
+  const serialized = JSON.stringify(conversational);
+  assert.match(serialized, /"active_session_count":1/);
+  assert.doesNotMatch(serialized, /private-session|private-agent|private-project/);
+  assert.doesNotMatch(serialized, /transport_session_fingerprint|work_memberships/);
 });

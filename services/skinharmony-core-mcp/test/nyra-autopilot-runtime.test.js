@@ -114,6 +114,35 @@ test("Nyra Autopilot persists tenant and Work scoped plans, assignments and appe
   assert.equal(NYRA_AUTOPILOT_SCHEMA_VERSION, "nyra_work_autopilot_v1");
 });
 
+test("Autopilot public readback canonicalizes PostgreSQL timestamps and rejects invalid dates", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const run = {
+    tenant_id: "tenant-a", work_id: workId, run_id: "22222222-2222-4222-8222-222222222222",
+    project_id: "project-a", trigger_type: "reconcile", architecture_version: 1,
+    intent_digest: "a".repeat(64), plan: {}, plan_digest: "b".repeat(64), status: "materialized",
+    created_at: new Date("2026-09-02T09:00:00.000Z"), updated_at: new Date("2026-09-02T09:01:00.000Z"),
+  };
+  const assignment = {
+    assignment_id: "33333333-3333-4333-8333-333333333333", run_id: run.run_id,
+    assignment_key: "research", blueprint_id: "researcher", role: "researcher", task_contract: {},
+    dependencies: [], eligible_client_types: ["chatgpt"], status: "claimed",
+    claim_expires_at: new Date("2026-09-02T10:00:00.000Z"), submitted_result: null, quarantine: null,
+  };
+  const pool = { async query(sql) {
+    if (String(sql).includes("FROM core_nyra_autopilot_runs")) return { rows: [run] };
+    if (String(sql).includes("FROM core_nyra_autopilot_assignments")) return { rows: [assignment] };
+    return { rows: [] };
+  }, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const result = await runtime.readWork({ tenantId: "tenant-a" }, { work_id: workId });
+  assert.equal(result.runs[0].created_at, "2026-09-02T09:00:00.000Z");
+  assert.equal(result.runs[0].updated_at, "2026-09-02T09:01:00.000Z");
+  assert.equal(result.assignments[0].claim_expires_at, "2026-09-02T10:00:00.000Z");
+  run.updated_at = new Date("invalid");
+  await assert.rejects(runtime.readWork({ tenantId: "tenant-a" }, { work_id: workId }),
+    /nyra_autopilot_run_updated_at_invalid/);
+});
+
 test("a rejected verification atomically reoffers every assignment and replays the same remediation run", async () => {
   const workId = "11111111-1111-4111-8111-111111111111";
   const parentRunId = "22222222-2222-4222-8222-222222222222";
