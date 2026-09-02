@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   ADDITIVE_SCHEMA_SQL,
   actorFromIdentity,
+  buildNyraAutopilotVerificationReplay,
   canAdminister,
   canClose,
   canContributeEvidence,
@@ -153,6 +154,16 @@ test("a rejected Nyra verification records bounded failure scope without complet
   });
   assert.equal(result.verdict, "rejected");
   assert.deepEqual(result.verified_work_task_ids, [taskB]);
+});
+
+test("idempotent Nyra verification projection preserves remediation evidence", () => {
+  const replay = buildNyraAutopilotVerificationReplay({
+    work_id: "11111111-1111-4111-8111-111111111111",
+    verification: { verdict: "rejected" },
+  }, "a".repeat(64));
+  assert.equal(replay.evidence_digest, "a".repeat(64));
+  assert.equal(replay.task_projection, "not_applied");
+  assert.equal(replay.idempotent_replay, true);
 });
 
 function canonicalDigest(value) {

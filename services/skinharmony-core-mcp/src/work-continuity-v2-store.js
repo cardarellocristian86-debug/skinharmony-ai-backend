@@ -340,6 +340,15 @@ export function normalizeNyraAutopilotVerificationResult(value, {
   });
 }
 
+export function buildNyraAutopilotVerificationReplay(candidate, evidenceDigest) {
+  return Object.freeze({
+    ...candidate,
+    evidence_digest: evidenceDigest,
+    idempotent_replay: true,
+    ...(candidate.verification.verdict === "rejected" ? { task_projection: "not_applied" } : {}),
+  });
+}
+
 const CLOSURE_VERIFICATION_SCHEMA_VERSION = "tenant_work_closure_verification_v1";
 const CLOSURE_EVENT_PAYLOAD_FIELDS = Object.freeze([
   "adapter",
@@ -2572,21 +2581,20 @@ export function createWorkContinuityV2Store({
       const eventType = candidate.verification.verdict === "approved"
         ? "nyra_autopilot_verification_projected_v1"
         : "nyra_autopilot_verification_rejected_v1";
+      const evidenceDigest = objectDigest({
+        verification: candidate.verification,
+        source_digests: candidate.source_digests,
+      });
       const existing = await client.query(`SELECT payload FROM tenant_work_event
         WHERE tenant_id=$1 AND work_id=$2 AND event_type=$3
           AND payload->>'assignment_id'=$4
         ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, eventType, assignmentId]);
       if (existing.rows[0]) {
-        if (existing.rows[0].payload?.evidence_digest !== objectDigest({
-          verification: candidate.verification,
-          source_digests: candidate.source_digests,
-        })) fail("nyra_autopilot_verification_projection_conflict");
-        return Object.freeze({ ...candidate, idempotent_replay: true });
+        if (existing.rows[0].payload?.evidence_digest !== evidenceDigest) {
+          fail("nyra_autopilot_verification_projection_conflict");
+        }
+        return buildNyraAutopilotVerificationReplay(candidate, evidenceDigest);
       }
-      const evidenceDigest = objectDigest({
-        verification: candidate.verification,
-        source_digests: candidate.source_digests,
-      });
       if (candidate.verification.verdict === "rejected") {
         const event = await appendV2Event(client, actor, workId, eventType, {
           assignment_id: assignmentId,
