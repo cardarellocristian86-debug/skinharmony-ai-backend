@@ -3771,12 +3771,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_participants p
         JOIN core_continuity_works w ON w.tenant_id=p.tenant_id AND w.work_id=p.work_id
         WHERE p.tenant_id=$1 AND p.work_id=ANY($2::uuid[])
-          AND ((p.status='active' AND p.expires_at>now()) OR EXISTS (
-            SELECT 1 FROM core_continuity_leases live_lease
-            WHERE live_lease.tenant_id=p.tenant_id AND live_lease.work_id=p.work_id
-              AND live_lease.session_id=p.session_id AND live_lease.status='active'
-              AND live_lease.expires_at>now()
-          ))
+          AND p.status='active' AND p.expires_at>now()
           AND ($3::varchar IS NULL OR w.project_id=$3)
       ), ranked_participants AS (
         SELECT active_participants.*,
