@@ -255,11 +255,21 @@ test("keeps governed Entity 360 transitions reachable only for Core-operate hold
 });
 
 test("routes stale conversational Core read descriptors to Nyra", () => {
+  const serverTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
   const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
+  const controlRoom = TOOLS.find((tool) => tool.name === "nyra_control_room_status");
+  const assignmentClaim = serverTools.find((tool) => tool.name === "nyra_work_assignment_claim");
+  const assignmentSubmit = serverTools.find((tool) => tool.name === "nyra_work_assignment_submit");
   const health = TOOLS.find((tool) => tool.name === "core_health");
   const routedNyra = configureToolForRuntime(nyra, { environmentRoutingRequired: true });
+  const routedControlRoom = configureToolForRuntime(controlRoom, { environmentRoutingRequired: true });
+  const routedAssignmentClaim = configureToolForRuntime(assignmentClaim, { environmentRoutingRequired: true });
+  const routedAssignmentSubmit = configureToolForRuntime(assignmentSubmit, { environmentRoutingRequired: true });
   const routedHealth = configureToolForRuntime(health, { environmentRoutingRequired: true });
-  assert.equal(routedNyra.inputSchema.required.includes("environment"), false);
+  for (const tool of [routedNyra, routedControlRoom, routedAssignmentClaim, routedAssignmentSubmit]) {
+    assert.equal(tool.inputSchema.required.includes("environment"), false, tool.name);
+    assert.equal(tool.inputSchema.properties.environment, undefined, tool.name);
+  }
   assert.equal(routedHealth.inputSchema.required.includes("environment"), true);
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", tenantBoundChatGptCompatibilityIdentity(), [nyra]),

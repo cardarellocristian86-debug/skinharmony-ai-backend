@@ -1986,7 +1986,7 @@ function toolFailure(error) {
 function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
     POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
-    tool.name === "nyra_converse" ||
+    NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
     ["nyra_continue", "nyra_governed_continue"].includes(tool.name)) return tool;
   return {
     ...tool,
