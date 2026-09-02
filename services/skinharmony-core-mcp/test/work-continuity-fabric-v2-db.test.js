@@ -816,6 +816,29 @@ class ContinuityPool {
         .map((row) => ({ ...row }));
       return { rows, rowCount: rows.length };
     }
+    if (q.startsWith("SELECT j.release_intent,j.release_intent_digest,")) {
+      const joins = [...this.releaseJoins.values()]
+        .filter((candidate) =>
+          candidate.tenant_id === parameters[0] &&
+          candidate.work_id === parameters[1] &&
+          candidate.plan_id === parameters[2])
+        .sort((left, right) =>
+          Number(right.renewal_generation || 0) - Number(left.renewal_generation || 0) ||
+          String(right.created_at).localeCompare(String(left.created_at)) ||
+          String(right.verdict_id).localeCompare(String(left.verdict_id)));
+      const join = joins[0];
+      if (!join) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{
+          release_intent: join.release_intent,
+          release_intent_digest: join.release_intent_digest,
+          core_join_record: join.core_join_record,
+          core_join_record_digest: join.core_join_record_digest,
+          verdict_id: join.verdict_id,
+        }],
+        rowCount: 1,
+      };
+    }
     if (q.startsWith("SELECT p.plan,p.plan_digest,p.status, e.evaluation_id")) {
       const plan = this.plans.get(key(parameters[0], parameters[2]));
       const joins = [...this.releaseJoins.values()]
@@ -3547,6 +3570,22 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
   assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
   assert.equal(pool.releaseJoins.size, 1);
+  const persistedRelease = await runtime.resolvePersistedClosureRelease(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+  });
+  assert.equal(persistedRelease.release_intent_digest, releaseIntent.release_intent_digest);
+  assert.deepEqual(persistedRelease.release, releaseInput);
+  const persistedJoin = pool.releaseJoins.get(key("tenant-a", evaluation.evaluation_id, 0));
+  persistedJoin.core_join_record_digest = "0".repeat(64);
+  await assert.rejects(
+    runtime.resolvePersistedClosureRelease(identity, {
+      work_id: work.work_id,
+      plan_id: planId,
+    }),
+    /continuity_persisted_release_integrity_failed/,
+  );
+  persistedJoin.core_join_record_digest = digest(persistedJoin.core_join_record);
   const activeReplayEvaluation = await runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,

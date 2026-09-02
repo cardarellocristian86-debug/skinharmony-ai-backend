@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWorkContinuityClosureEvaluateHandler } from "../src/work-continuity-closure-handler.js";
+import {
+  createWorkContinuityClosureEvaluateHandler,
+  createWorkContinuityClosureRejoinPersistedReleaseHandler,
+} from "../src/work-continuity-closure-handler.js";
 
 const DIGEST = (character) => character.repeat(64);
 const identity = { tenantId: "tenant-a" };
@@ -173,4 +176,59 @@ test("closure handler fails closed when Core knows the expired predecessor was c
     return true;
   });
   assert.deepEqual(calls, ["evaluate", "prepare", "release", "issue"]);
+});
+
+test("persisted rejoin resolves the immutable release server-side and ignores caller release", async () => {
+  const calls = [];
+  const { material, releaseIntent, coreJoinRecord } = renewalFixture();
+  const persistedRelease = {
+    base_branch: "main",
+    delivery_branch: "main",
+    base_commit: "a".repeat(40),
+    head_commit: "b".repeat(40),
+    tree_sha: "c".repeat(40),
+    diff_digest: DIGEST("d"),
+    changed_files: ["src/nyra.js"],
+    delivery: { method: "github_protected_push_auto_deploy", services: [] },
+    rollback: { mode: "forward_revert", target_commit: "a".repeat(40), ready: true },
+  };
+  const runtime = {
+    async resolvePersistedClosureRelease(receivedIdentity, input) {
+      calls.push("resolve");
+      assert.equal(receivedIdentity, identity);
+      assert.deepEqual(input, { work_id: args.work_id, plan_id: args.plan_id });
+      return { release: persistedRelease };
+    },
+    async evaluateClosure(_receivedIdentity, receivedArgs) {
+      calls.push("evaluate");
+      assert.equal(receivedArgs.release, persistedRelease);
+      return { closed: true, evaluation_id: "fresh-evaluation" };
+    },
+    async prepareEffectiveCoreJoinEvaluation(_receivedIdentity, input) {
+      calls.push("prepare");
+      assert.equal(input.release, persistedRelease);
+      return { closed: true, evaluation_id: "effective-evaluation", core_join_material: material };
+    },
+    async bindCoreJoinVerdict() {
+      calls.push("bind");
+      return { release_ready: true, release_intent_digest: releaseIntent.release_intent_digest };
+    },
+  };
+  const coreHandlers = {
+    async host_native_release_intent_build() {
+      calls.push("release");
+      return { structuredContent: { tenant_id: identity.tenantId,
+        dedicated_core_gate: { authorized: true }, release_intent: releaseIntent } };
+    },
+    async host_native_core_join_issue() {
+      calls.push("issue");
+      return { structuredContent: { tenant_id: identity.tenantId,
+        dedicated_core_gate: { authorized: true }, core_join_verdict: coreJoinRecord } };
+    },
+  };
+  const handler = createWorkContinuityClosureRejoinPersistedReleaseHandler({ runtime, coreHandlers });
+  const response = await handler({ ...args, release: { attacker: "controlled" } }, identity);
+
+  assert.deepEqual(calls, ["resolve", "evaluate", "prepare", "release", "issue", "bind"]);
+  assert.equal(response.structuredContent.result.release_source, "persisted_immutable");
 });

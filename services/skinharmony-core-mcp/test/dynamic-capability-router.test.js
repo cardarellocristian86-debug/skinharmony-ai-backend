@@ -1397,6 +1397,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_precommit_reconcile",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
+    "work_continuity_closure_rejoin_persisted_release",
     "nyra_verified_work_finalize",
   ].includes(tool.name));
   assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
@@ -1421,6 +1422,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_generic_closure_finalize",
     "nyra_verified_work_finalize",
     "work_continuity_precommit_reconcile",
+    "work_continuity_closure_rejoin_persisted_release",
   ]);
   assert.equal(dedicatedContinuityTools.every((tool) =>
     tool._meta?.["skinharmony/serverOwnedGovernance"] === true &&
