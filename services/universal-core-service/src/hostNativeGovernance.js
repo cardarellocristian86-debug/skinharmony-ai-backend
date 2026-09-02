@@ -3098,7 +3098,7 @@ export function createHostNativeGovernance({
     return clone(current);
   }
 
-  function claimGatedCommitReplay(state, cached, input, trusted, nowValue) {
+  function claimGatedCommitReplay(state, cached, input, trusted, nowValue, normalizedAction) {
     const claim = trusted?.native_precommit_claim;
     if (!claim || typeof claim !== "object" || Array.isArray(claim) ||
         claim.schema_version !== "native_precommit_claim_attestation_v1" ||
@@ -3218,7 +3218,7 @@ export function createHostNativeGovernance({
         ticket.delegation_id !== input.delegation_id || ticket.repository !== input.repository ||
         ticket.host_kind !== input.host_kind ||
         ticket.host_session_fingerprint !== input.host_session_fingerprint ||
-        hostNativeDigest(ticket.action) !== hostNativeDigest(input.action) ||
+        hostNativeDigest(ticket.action) !== hostNativeDigest(normalizedAction) ||
         ticket.evidence_digest !== input.evidence_digest ||
         !Number.isFinite(expiresAt) ||
         !delegation || delegation.grant?.standing_release_binding) {
@@ -4716,7 +4716,7 @@ export function createHostNativeGovernance({
       const action = validateActionShape(input.action);
       const nowValue = nowMillis(now);
       const claimReplay = replay?.result
-        ? claimGatedCommitReplay(initial, replay.result, input, trusted, nowValue)
+        ? claimGatedCommitReplay(initial, replay.result, input, trusted, nowValue, action)
         : null;
       if (replay?.result) {
         if (!claimReplay) return validateStandingReplay(initial, replay.result, nowValue);
@@ -5576,7 +5576,7 @@ export function createHostNativeGovernance({
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
         const currentClaimReplay = descriptor?.result
-          ? claimGatedCommitReplay(state, descriptor.result, input, trusted, nowValue)
+          ? claimGatedCommitReplay(state, descriptor.result, input, trusted, nowValue, action)
           : null;
         if (descriptor?.result) {
           if (!currentClaimReplay) return validateStandingReplay(state, descriptor.result, nowValue);
