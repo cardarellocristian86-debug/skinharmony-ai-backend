@@ -95,6 +95,8 @@ const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const CONTINUATION_REF = `nyc1_${"z".repeat(40)}`;
 
 test("finalizes a verified Work through the published Nyra continuation front door", async () => {
+  const sequence = [];
+  const bindings = [];
   const finalized = [];
   const unused = async () => ({ structuredContent: {} });
   const handler = createNyraGovernedContinueHandler({
@@ -109,7 +111,13 @@ test("finalizes a verified Work through the published Nyra continuation front do
     authorizeAction: unused,
     reviewWorkBootstrap: unused,
     createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async (args, caller) => {
+      sequence.push("binding");
+      bindings.push({ args, caller });
+      return { schema_version: "nyra_read_binding_v1", state: "created" };
+    },
     finalizeVerifiedWork: async (args, caller) => {
+      sequence.push("finalize");
       finalized.push({ args, caller });
       return { structuredContent: { ok: true, result: { closure_verified: true } }, content: [] };
     },
@@ -124,6 +132,8 @@ test("finalizes a verified Work through the published Nyra continuation front do
   }, identity());
 
   assert.equal(result.structuredContent.result.closure_verified, true);
+  assert.deepEqual(sequence, ["binding", "finalize"]);
+  assert.deepEqual(bindings.map(({ args }) => args), [{ work_id: WORK_ID }]);
   assert.deepEqual(finalized.map(({ args }) => args), [{
     work_id: WORK_ID,
     idempotency_key: "finalize-through-front-door",
@@ -134,6 +144,37 @@ test("finalizes a verified Work through the published Nyra continuation front do
     idempotency_key: "finalize-without-owner",
     owner_confirmed: false,
   }, identity({ ownerConfirmed: false })), /nyra_continue_verified_finalize_binding_mismatch/);
+});
+
+test("fails closed before verified finalization when logical lease binding is unavailable", async () => {
+  let finalized = false;
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: {
+      claim: async () => { throw new Error("continuation store must not be used"); },
+      complete: unused,
+      readCompletedOperation: unused,
+    },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    finalizeVerifiedWork: async () => {
+      finalized = true;
+      return { structuredContent: { ok: true }, content: [] };
+    },
+  });
+
+  await assert.rejects(handler({
+    operation: "finalize_verified_work",
+    work_id: WORK_ID,
+    idempotency_key: "finalize-without-logical-lease-binding",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-finalize",
+  }, identity()), /nyra_continue_verified_finalize_lease_binding_unavailable/);
+  assert.equal(finalized, false);
 });
 
 function identity(overrides = {}) {

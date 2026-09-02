@@ -1712,6 +1712,12 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         workContinuityV2Store.fulfillPrecommitTicketTask(
           withTenantWorkAcl(identity), request,
         ),
+      ensureFinalizeWorkBinding: (request, identity) => ensureNyraReadBinding({
+        runtime: workContinuityRuntime,
+        authorizeRead: requireCanonicalWorkRead,
+        identity,
+        continuity: { work_id: request.work_id },
+      }),
       finalizeVerifiedWork: (request, identity) =>
         handlers.nyra_verified_work_finalize(request, identity),
       authorizeNativeCoordination: (request, identity) => {

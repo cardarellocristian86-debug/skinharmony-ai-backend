@@ -433,7 +433,8 @@ export function createNyraGovernedContinueHandler({
   fulfillPrecommitTicketTask, claimPrecommitTicketGate = null,
   releaseOrReconcilePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
-  coordinatePullRequest = null, finalizeVerifiedWork = null, now = () => Date.now(),
+  coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
+  finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
   if (!store || typeof store.claim !== "function" || typeof store.complete !== "function" ||
       typeof store.readCompletedOperation !== "function" || typeof readDirectiveContext !== "function" ||
@@ -453,6 +454,17 @@ export function createNyraGovernedContinueHandler({
           args.pull_request_materialization !== undefined || args.review_decision !== undefined) {
         fail("nyra_continue_verified_finalize_binding_mismatch", 409);
       }
+      if (typeof ensureFinalizeWorkBinding !== "function") {
+        fail("nyra_continue_verified_finalize_lease_binding_unavailable", 503);
+      }
+      // The published front door may be reached over a transport that rotated
+      // after the last Work read. Re-establish the bounded read-only DTT lease
+      // for the exact server-selected logical presence before Generic Core
+      // Join evaluates it. This grants no execution authority and leaves every
+      // owner, Work ACL, Core Join and closure gate inside the finalizer intact.
+      await ensureFinalizeWorkBinding({
+        work_id: String(args.work_id).toLowerCase(),
+      }, identity);
       return finalizeVerifiedWork({
         work_id: String(args.work_id).toLowerCase(),
         idempotency_key: String(args.idempotency_key).trim(),
