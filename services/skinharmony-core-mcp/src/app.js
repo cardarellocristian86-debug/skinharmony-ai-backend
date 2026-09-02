@@ -522,6 +522,21 @@ function resolveConnectorToolName(value, tools = []) {
   return visibleNames.has(canonical) ? canonical : null;
 }
 
+// A connector descriptor can outlive the request-specific catalog projection
+// used by the authenticated runtime. Resolve only Nyra's fixed conversational
+// front door against the deployed compact surface, then run the normal scope,
+// Host App Registry and Core authorization checks below. This prevents a
+// catalog/call projection mismatch from being misreported as `Unknown tool`
+// without making an unadvertised Core capability callable.
+function resolveNyraConnectorFrontDoorFallback(value, tools = [], {
+  dialogueEnabled = true,
+} = {}) {
+  const canonical = resolveConnectorToolName(value, tools);
+  if (!canonical || !NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(canonical)) return null;
+  if (canonical === "nyra_converse" && dialogueEnabled !== true) return null;
+  return canonical;
+}
+
 function normalizeLegacyNyraContinueArguments(value) {
   const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const {
@@ -2621,8 +2636,14 @@ export function createApp(config, options = {}) {
             isLegacyNyraPreflightToolName(params.name));
         const canonicalToolName = staleChatGptReadTool || (staleNyraRead
           ? "nyra_converse"
-          : resolveConnectorToolName(params.name, requestVisibleTools));
+          : resolveConnectorToolName(params.name, requestVisibleTools) ||
+            resolveNyraConnectorFrontDoorFallback(params.name, baseVisibleTools, {
+              dialogueEnabled: config.nyraDialogueEnabled,
+            }));
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
+          (NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(canonicalToolName)
+            ? baseVisibleTools.find((item) => item.name === canonicalToolName)
+            : null) ||
           (hasTenantBoundChatGptReadCompatibility(identity, staleChatGptReadTool)
             ? configureToolForRuntime(
               TOOLS.find((item) => item.name === staleChatGptReadTool),
@@ -3067,4 +3088,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, isLegacyNyraAdvisoryPreflight, normalizeLegacyNyraContinueArguments, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, isLegacyNyraAdvisoryPreflight, normalizeLegacyNyraContinueArguments, resolveConnectorToolName, resolveNyraConnectorFrontDoorFallback, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
