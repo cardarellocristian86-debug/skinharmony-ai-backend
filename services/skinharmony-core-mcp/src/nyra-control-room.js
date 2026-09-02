@@ -517,7 +517,7 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, coordin
         execution: finalizeAvailable ? "REQUEST_BOUND_GOVERNED" : "DEPLOYMENT_PREREQUISITE",
         requiresOwnerConfirmation: true,
         requiresCoreAuthorization: true,
-        handler: finalizeAvailable ? "nyra_verified_work_finalize" : null,
+        handler: finalizeAvailable ? "nyra_continue" : null,
       }),
     ]),
     domain("research_airlock", mode(researchAirlock.mode, "UNKNOWN"), {

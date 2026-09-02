@@ -1563,6 +1563,46 @@ const nyraControlRoomOutputSchema = object({
   }, ["schema_version", "state", "generated_from", "domains", "work_progress"]),
 }, ["ok", "tenant_id", "control_room"]);
 
+const nyraContinueProperties = Object.freeze({
+  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "finalize_verified_work"] },
+  continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
+  work_id: { type: "string", format: "uuid" },
+  work_bootstrap: nyraWorkBootstrapSpec,
+  review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
+  delegation_request: nyraContinueDelegationRequest,
+  action_request: nyraContinueActionRequest,
+  pull_request_materialization: nyraContinuePullRequestMaterialization,
+  resume_request: nyraContinueResumeRequest,
+  native_plan_request: nyraContinueNativePlanRequest,
+  native_bind_request: nyraContinueNativeBindRequest,
+  idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  ...ownerConfirmationProperties,
+});
+const nyraContinueInputSchema = Object.freeze({
+  type: "object",
+  properties: nyraContinueProperties,
+  required: Object.freeze(["operation", "idempotency_key"]),
+  additionalProperties: false,
+  anyOf: Object.freeze([
+    Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
+      }),
+      required: Object.freeze(["continuation_ref"]),
+    }),
+    Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        operation: { const: "finalize_verified_work" },
+        owner_confirmed: { const: true },
+      }),
+      required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),
+      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
+    }),
+  ]),
+});
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
   tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived Core and Work status, blockers and next action. Never mutates or grants authority.", object({
@@ -1673,20 +1713,7 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_continue", "Nyra: continue one governed request", "Continue one server-bound Nyra reference.", object({
-    operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
-    continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
-    work_bootstrap: nyraWorkBootstrapSpec,
-    review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
-    delegation_request: nyraContinueDelegationRequest,
-    action_request: nyraContinueActionRequest,
-    pull_request_materialization: nyraContinuePullRequestMaterialization,
-    resume_request: nyraContinueResumeRequest,
-    native_plan_request: nyraContinueNativePlanRequest,
-    native_bind_request: nyraContinueNativeBindRequest,
-    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
-    ...ownerConfirmationProperties,
-  }, ["operation", "continuation_ref", "idempotency_key"]), ["core:govern"], false, true, {
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue one server-bound Nyra request or finalize one server-verified Work.", nyraContinueInputSchema, ["core:govern"], false, true, {
     ownerConfirmationRequired: false,
     meta: {
       "skinharmony/dedicatedCoreGate": true,

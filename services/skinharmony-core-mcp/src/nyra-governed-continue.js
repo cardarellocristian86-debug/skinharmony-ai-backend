@@ -314,9 +314,12 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) fail("nyra_continue_ref_invalid", 409);
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
+  }
+  if (args.operation !== "finalize_verified_work" &&
+      !/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) {
+    fail("nyra_continue_ref_invalid", 409);
   }
   const callerKey = String(args.idempotency_key || "").trim();
   if (callerKey.length < 8 || callerKey.length > 160) fail("nyra_continue_idempotency_invalid");
@@ -430,7 +433,7 @@ export function createNyraGovernedContinueHandler({
   fulfillPrecommitTicketTask, claimPrecommitTicketGate = null,
   releaseOrReconcilePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
-  coordinatePullRequest = null, now = () => Date.now(),
+  coordinatePullRequest = null, finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
   if (!store || typeof store.claim !== "function" || typeof store.complete !== "function" ||
       typeof store.readCompletedOperation !== "function" || typeof readDirectiveContext !== "function" ||
@@ -440,6 +443,21 @@ export function createNyraGovernedContinueHandler({
   return async function nyraContinue(args = {}, identity = {}) {
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
+    if (args.operation === "finalize_verified_work") {
+      if (typeof finalizeVerifiedWork !== "function") fail("nyra_continue_verified_finalize_unavailable", 503);
+      if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_READ) ||
+          args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(args.work_id || "")) ||
+          args.continuation_ref !== undefined || args.work_bootstrap !== undefined ||
+          args.delegation_request !== undefined || args.action_request !== undefined ||
+          args.pull_request_materialization !== undefined || args.review_decision !== undefined) {
+        fail("nyra_continue_verified_finalize_binding_mismatch", 409);
+      }
+      return finalizeVerifiedWork({
+        work_id: String(args.work_id).toLowerCase(),
+        idempotency_key: String(args.idempotency_key).trim(),
+      }, identity);
+    }
     const boundRequestDigest = requestDigest(args);
     let earlyRecovery = null;
     const validateBeforeClaim = async (payload) => {

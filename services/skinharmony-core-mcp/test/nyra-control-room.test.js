@@ -62,7 +62,7 @@ test("Control Room advertises verified Work finalization only at the closure gat
     .allowed_actions.find((item) => item.id === "FINALIZE_VERIFIED_WORK");
   assert.equal(finalize.availability, "EXISTING_GOVERNED_HANDLER");
   assert.equal(finalize.execution, "REQUEST_BOUND_GOVERNED");
-  assert.equal(finalize.handler, "nyra_verified_work_finalize");
+  assert.equal(finalize.handler, "nyra_continue");
   assert.equal(finalize.requires_owner_confirmation, true);
   assert.equal(finalize.requires_core_authorization, true);
   assert.doesNotThrow(() => normalizeNyraControlRoomReadback(complete));

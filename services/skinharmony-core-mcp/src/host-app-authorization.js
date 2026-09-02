@@ -358,6 +358,7 @@ export function requireHostAppToolCapability({
         bind_native_child: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         issue_delegation: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         authorize_action: HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+        finalize_verified_work: HOST_APP_CAPABILITIES.WORK_READ,
       }[String(args?.operation || "")]
     : null;
   if (governedOperationCapability) requiredCapabilities.push(governedOperationCapability);

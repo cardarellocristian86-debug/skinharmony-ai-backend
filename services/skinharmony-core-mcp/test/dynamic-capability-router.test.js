@@ -238,7 +238,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 17);
+  assert.equal(compact.length, 16);
   assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
   assert(compact.some((tool) => tool.name === "entity_360_shadow_enable"));
@@ -246,7 +246,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   assert(compact.some((tool) => tool.name === "nyra_continue"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
-  assert(compact.some((tool) => tool.name === "nyra_verified_work_finalize"));
+  assert.equal(compact.some((tool) => tool.name === "nyra_verified_work_finalize"), false);
   assert.deepEqual([...INTERNAL_ONLY_TOOL_NAMES], ["work_preflight"]);
   assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);

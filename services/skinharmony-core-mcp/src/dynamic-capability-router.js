@@ -30,9 +30,6 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // never turn them into unbounded Work discovery or release tooling.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
-  // Exact owner/Core-gated terminal operation. It accepts no adapter, ticket,
-  // commit or evidence from the caller; all closure facts are read server-side.
-  "nyra_verified_work_finalize",
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",
