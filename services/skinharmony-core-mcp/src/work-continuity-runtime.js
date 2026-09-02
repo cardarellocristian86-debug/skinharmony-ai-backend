@@ -3324,7 +3324,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     [tenantId, workId, Math.min(Math.max(Number(input.event_limit) || 50, 1), 200)]);
     const branches = await pool.query(`SELECT branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at
       FROM core_continuity_branches WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at`, [tenantId, workId]);
-    const participants = await pool.query(`SELECT session_id,agent_id,client_type,transport_session_fingerprint,branch_id,status,joined_at,last_seen_at,
+    const participants = await pool.query(`SELECT session_id,agent_id,client_type,branch_id,status,joined_at,last_seen_at,
         expires_at,(status='active' AND expires_at>now()) AS active
       FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2 ORDER BY last_seen_at DESC`,
     [tenantId, workId]);
@@ -3771,7 +3771,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_participants p
         JOIN core_continuity_works w ON w.tenant_id=p.tenant_id AND w.work_id=p.work_id
         WHERE p.tenant_id=$1 AND p.work_id=ANY($2::uuid[])
-          AND p.status='active' AND p.expires_at>now()
+          AND ((p.status='active' AND p.expires_at>now()) OR EXISTS (
+            SELECT 1 FROM core_continuity_leases live_lease
+            WHERE live_lease.tenant_id=p.tenant_id AND live_lease.work_id=p.work_id
+              AND live_lease.session_id=p.session_id AND live_lease.status='active'
+              AND live_lease.expires_at>now()
+          ))
           AND ($3::varchar IS NULL OR w.project_id=$3)
       ), ranked_participants AS (
         SELECT active_participants.*,
@@ -3800,9 +3805,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         client_type: row.client_type,
         transport_bound: typeof row.transport_session_fingerprint === "string" && row.transport_session_fingerprint.length >= 16,
         state: Number(row.active_lease_count || 0) > 0 ? "WORKING" : "ONLINE",
-        joined_at: row.joined_at,
-        last_heartbeat_at: row.last_seen_at,
-        presence_expires_at: row.expires_at,
+        joined_at: new Date(row.joined_at).toISOString(),
+        last_heartbeat_at: new Date(row.last_seen_at).toISOString(),
+        presence_expires_at: new Date(row.expires_at).toISOString(),
         active_lease_count: Number(row.active_lease_count || 0),
         work_memberships_truncated: Number(row.membership_total || 0) > 100,
         work_memberships: Array.isArray(row.work_memberships) ? row.work_memberships : [],
@@ -4426,6 +4431,31 @@ export function createWorkContinuityRuntime(config, options = {}) {
       });
       return expired.rows;
     });
+  }
+
+  async function readNativeLaunchRequest(identity, input) {
+    await initialize();
+    const context = workContext(identity, input);
+    const result = await pool.query(`SELECT plan_id,plan_digest,status,plan_version,created_at,plan->'launch_request' AS launch_request
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2 AND plan ? 'launch_request'
+      ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1`,
+    [context.tenantId, context.workId]);
+    const row = result.rows[0];
+    const request = row?.launch_request;
+    if (!row || request?.schema_version !== "nyra_host_launch_request_v1" ||
+        request.requested_by !== "nyra" || request.action !== "START_NATIVE_PLAN" ||
+        request.verifier_task_id !== "verify" || request.distinct_session_required !== true ||
+        request.host_execution_required !== true) {
+      return { schema_version: "native_agent_launch_request_read_v1", work_id: context.workId, available: false };
+    }
+    return { schema_version: "native_agent_launch_request_read_v1", work_id: context.workId,
+      available: true, plan_id: row.plan_id, plan_digest: row.plan_digest,
+      plan_version: Number(row.plan_version), plan_status: row.status,
+      created_at: new Date(row.created_at).toISOString(),
+      launch_request: { schema_version: "nyra_host_launch_request_v1", requested_by: "nyra",
+        action: "START_NATIVE_PLAN", verifier_task_id: "verify",
+        distinct_session_required: true, host_execution_required: true } };
   }
 
   // Example bind input:
@@ -6907,6 +6937,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     bindNativeAgent,
     admitNativeAgentReport,
     readNativeAgentAcceptanceContract,
+    readNativeLaunchRequest,
     reportNativeAgent,
     evaluateClosure,
     prepareEffectiveCoreJoinEvaluation,

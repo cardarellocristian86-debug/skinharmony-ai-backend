@@ -150,6 +150,7 @@ const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
   "work_continuity_native_acceptance_contract_read",
+  "work_continuity_native_launch_request_read",
   "work_continuity_native_report",
   "work_continuity_precommit_reconcile",
   "work_continuity_closure_evaluate",
@@ -514,14 +515,18 @@ const coreHandlers = createCoreHandlers(config, {
     },
   ),
   readControlRoomCoordinationOverview: async (identity, args = {}) => {
-    const overview = await coordinationOverviewAuthorized(identity, { ...args, limit: 100 });
-    const sessions = overview.sessions;
-    return {
-      available: true,
-      active_session_count: sessions.length,
-      active_logical_agent_count: new Set(sessions.map((item) => item.agent_id)).size,
-      sessions,
-    };
+    try {
+      const overview = await coordinationOverviewAuthorized(identity, { ...args, limit: 100 });
+      const sessions = overview.sessions;
+      return {
+        available: true,
+        active_session_count: sessions.length,
+        active_logical_agent_count: new Set(sessions.map((item) => item.agent_id)).size,
+        sessions,
+      };
+    } catch {
+      return { available: false, active_session_count: 0, active_logical_agent_count: 0, sessions: [] };
+    }
   },
 });
 const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === true
@@ -2212,6 +2217,11 @@ const baseHandlers = {
     work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_acceptance_contract_read:
       continuityMethod("readNativeAgentAcceptanceContract"),
+    work_continuity_native_launch_request_read: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      return continuityTextResult({ ok: true,
+        result: await workContinuityRuntime.readNativeLaunchRequest(identity, args) });
+    },
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_precommit_ticket_gate_read: async (args, identity) =>
       continuityTextResult({ ok: true,
@@ -2389,10 +2399,19 @@ const baseHandlers = {
           { work_id: args.work_id, assignment_id: args.assignment_id },
         )
         : null;
+      const remediation = nyraWorkProjection?.verification?.verdict === "rejected" &&
+          typeof nyraAutopilotRuntime?.remediateRejectedVerification === "function"
+        ? await nyraAutopilotRuntime.remediateRejectedVerification(identity, {
+            work_id: args.work_id,
+            run_id: nyraWorkProjection.run_id,
+            evidence_digest: nyraWorkProjection.evidence_digest,
+          })
+        : null;
       const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_submit", { force: true });
       return continuityTextResult({ ok: true, result: {
         ...result,
         ...(nyraWorkProjection ? { nyra_work_projection: nyraWorkProjection } : {}),
+        ...(remediation ? { nyra_remediation: remediation } : {}),
         ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
       } });
     },

@@ -219,15 +219,21 @@ function normalizeCoordinationOverview(value) {
         !Number.isSafeInteger(session.active_lease_count) || session.active_lease_count < 0 ||
         typeof session.work_memberships_truncated !== "boolean" || !Array.isArray(session.work_memberships) ||
         session.work_memberships.length < 1 || session.work_memberships.length > 100) readbackInvalid();
-    for (const key of ["session_id", "agent_id", "joined_at", "last_heartbeat_at", "presence_expires_at"]) {
+    for (const key of ["session_id", "agent_id"]) {
       if (typeof session[key] !== "string" || !session[key]) readbackInvalid();
+    }
+    const timestamps = {};
+    for (const key of ["joined_at", "last_heartbeat_at", "presence_expires_at"]) {
+      const date = session[key] instanceof Date ? session[key] : new Date(session[key]);
+      if (!Number.isFinite(date.getTime())) readbackInvalid();
+      timestamps[key] = date.toISOString();
     }
     const memberships = session.work_memberships.map((membership) => {
       const item = requireExactObject(membership, ["work_id", "project_id", "work_status", "branch_id", "active_lease_count"]);
       if (typeof item.work_id !== "string" || !item.work_id || !Number.isSafeInteger(item.active_lease_count) || item.active_lease_count < 0) readbackInvalid();
       return Object.freeze({ ...item });
     });
-    return Object.freeze({ ...session, work_memberships: Object.freeze(memberships) });
+    return Object.freeze({ ...session, ...timestamps, work_memberships: Object.freeze(memberships) });
   });
   return Object.freeze({ available: raw.available, active_session_count: raw.active_session_count,
     active_logical_agent_count: raw.active_logical_agent_count, sessions: Object.freeze(sessions) });
@@ -279,7 +285,13 @@ export function projectNyraConversationControlRoomReadback(value) {
     domains: Object.freeze(source.domains.map((domain) => Object.freeze({
       id: domain.id,
       state: domain.state,
-      ...(domain.id === "work_continuity" ? { coordination: domain.detail.coordination } : {}),
+      ...(domain.id === "work_continuity" && domain.detail.coordination ? { coordination: Object.freeze({
+        available: domain.detail.coordination.available,
+        active_session_count: domain.detail.coordination.active_session_count,
+        active_logical_agent_count: domain.detail.coordination.active_logical_agent_count,
+        online_session_count: domain.detail.coordination.sessions.filter((item) => item.state === "ONLINE").length,
+        working_session_count: domain.detail.coordination.sessions.filter((item) => item.state === "WORKING").length,
+      }) } : {}),
       allowed_actions: Object.freeze(domain.allowed_actions.map((item) => Object.freeze({
         id: item.id,
         availability: item.availability,

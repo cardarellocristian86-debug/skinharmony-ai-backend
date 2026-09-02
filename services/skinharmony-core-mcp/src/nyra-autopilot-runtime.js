@@ -485,6 +485,78 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       return { schema_version: NYRA_AUTOPILOT_SCHEMA_VERSION, tenant_id: tenantId, work_id: workId,
         runs: runs.rows.map((row) => ({ ...row, execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
     },
+    async remediateRejectedVerification(identity, input = {}) {
+      const tenantId = tenant(identity?.tenantId);
+      const workId = uuid(input.work_id, "work_id");
+      const parentRunId = uuid(input.run_id, "run_id");
+      const rejectionEvidenceDigest = String(input.evidence_digest || "").toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(rejectionEvidenceDigest)) {
+        throw new Error("nyra_autopilot_rejection_evidence_invalid");
+      }
+      await initialize();
+      return transaction(async (client) => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [tenantId, `nyra-remediation:${workId}`]);
+        const parent = await client.query(`SELECT project_id,architecture_version,intent_digest,plan,status
+          FROM core_nyra_autopilot_runs WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`,
+        [tenantId, workId, parentRunId]);
+        if (!parent.rows[0]) throw new Error("nyra_autopilot_rejected_run_not_current");
+        const existing = await client.query(`SELECT run_id,plan_digest,status FROM core_nyra_autopilot_runs
+          WHERE tenant_id=$1 AND work_id=$2
+            AND plan->'remediation'->>'parent_run_id'=$3
+            AND plan->'remediation'->>'rejection_evidence_digest'=$4
+          ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [tenantId, workId, parentRunId, rejectionEvidenceDigest]);
+        if (existing.rows[0]) {
+          const assignments = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
+            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 ORDER BY created_at,assignment_key`,
+          [tenantId, workId, existing.rows[0].run_id]);
+          return { tenant_id: tenantId, work_id: workId, run_id: existing.rows[0].run_id,
+            status: existing.rows[0].status, assignments: assignments.rows.map(publicAssignment),
+            idempotent_replay: true, execution_authorized: false };
+        }
+        if (parent.rows[0].status !== "materialized") {
+          throw new Error("nyra_autopilot_rejected_run_not_current");
+        }
+        const runId = crypto.randomUUID();
+        const plan = { ...clone(parent.rows[0].plan), remediation: {
+          schema_version: "nyra_autopilot_remediation_cycle_v1",
+          parent_run_id: parentRunId,
+          rejection_evidence_digest: rejectionEvidenceDigest,
+          reopen_policy: "all_required_assignments",
+        } };
+        const planDigest = digest(plan);
+        await client.query(`INSERT INTO core_nyra_autopilot_runs
+          (tenant_id,work_id,run_id,project_id,trigger_type,architecture_version,intent_digest,plan,plan_digest,status,created_by)
+          VALUES ($1,$2,$3,$4,'reconcile',$5,$6,$7::jsonb,$8,'materialized',$9)`,
+        [tenantId, workId, runId, parent.rows[0].project_id, Number(parent.rows[0].architecture_version),
+          parent.rows[0].intent_digest, JSON.stringify(plan), planDigest, actor(identity)]);
+        const priorAssignments = await client.query(`SELECT assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types
+          FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3
+          ORDER BY created_at,assignment_key FOR UPDATE`, [tenantId, workId, parentRunId]);
+        for (const previous of priorAssignments.rows) {
+          const taskContract = { ...clone(previous.task_contract), plan_digest: planDigest,
+            remediation: { parent_run_id: parentRunId, rejection_evidence_digest: rejectionEvidenceDigest } };
+          await client.query(`INSERT INTO core_nyra_autopilot_assignments
+            (tenant_id,work_id,run_id,assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb)`,
+          [tenantId, workId, runId, crypto.randomUUID(), previous.assignment_key, previous.agent_instance_id,
+            previous.blueprint_id, previous.role, JSON.stringify(taskContract),
+            JSON.stringify(previous.dependencies || []), JSON.stringify(previous.eligible_client_types || [...CLIENT_TYPES])]);
+        }
+        await client.query(`UPDATE core_nyra_autopilot_runs SET status='completed',updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3`, [tenantId, workId, parentRunId]);
+        const receipt = await appendReceipt(client, tenantId, workId, "nyra_autopilot_remediation_materialized", {
+          run_id: runId, parent_run_id: parentRunId, rejection_evidence_digest: rejectionEvidenceDigest,
+          plan_digest: planDigest, assignment_keys: priorAssignments.rows.map((item) => item.assignment_key),
+          execution_authorized: false,
+        });
+        const assignments = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
+          WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 ORDER BY created_at,assignment_key`, [tenantId, workId, runId]);
+        return { tenant_id: tenantId, work_id: workId, run_id: runId, status: "materialized",
+          assignments: assignments.rows.map(publicAssignment), receipt, idempotent_replay: false,
+          execution_authorized: false };
+      });
+    },
     async inbox(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
       const claimant = presence(identity);
