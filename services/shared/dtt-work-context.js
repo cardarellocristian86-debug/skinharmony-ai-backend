@@ -2,9 +2,15 @@ import crypto from "node:crypto";
 
 export const DTT_WORK_CONTEXT_HEADER = "x-sh-dtt-work-context";
 export const DTT_WORK_CONTEXT_VERSION = "dtt_work_context_v1";
+export const DTT_WORK_READ_CONTEXT_HEADER = "x-sh-dtt-work-read-context";
+export const DTT_WORK_READ_CONTEXT_VERSION = "dtt_work_read_context_v1";
 
 const TOKEN_PREFIX = "dwc";
 const SIGNATURE_DOMAIN = "dtt-work-context-v1";
+const READ_TOKEN_PREFIX = "dwrc";
+const READ_SIGNATURE_DOMAIN = "dtt-work-read-context-v1";
+const READ_AUTHORIZATION_VERSION = "dtt_work_acl_read_binding_v1";
+const READ_AUTHORIZATION_SOURCE = "tenant_work_v2_acl";
 const REQUEST_DIGEST_DOMAIN = "dtt-work-request-v1";
 const DEFAULT_TTL_MS = 60_000;
 const MAX_TTL_MS = 120_000;
@@ -103,9 +109,9 @@ function timingSafeTextEqual(left, right) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-function signature(secret, encoded) {
+function signature(secret, encoded, domain = SIGNATURE_DOMAIN) {
   return crypto.createHmac("sha256", secret)
-    .update(`${SIGNATURE_DOMAIN}\u0000${encoded}`)
+    .update(`${domain}\u0000${encoded}`)
     .digest("hex");
 }
 
@@ -321,5 +327,147 @@ export function verifyDttWorkContext({
     transport_bound: true,
   });
   uuid(payload.lease.lease_id, "dtt_work_context_lease_id");
+  return deepFreeze(payload);
+}
+
+function normalizedReadAuthorization(readBinding = {}, tenantId, workId) {
+  if (
+    readBinding.schema_version !== READ_AUTHORIZATION_VERSION
+    || readBinding.authorization_source !== READ_AUTHORIZATION_SOURCE
+    || readBinding.execution_authorized !== false
+    || readBinding.tenant_id !== tenantId
+    || String(readBinding.work_id || "").toLowerCase() !== workId
+  ) {
+    fail("dtt_work_read_context_authorization_invalid");
+  }
+  return {
+    schema_version: READ_AUTHORIZATION_VERSION,
+    authorization_source: READ_AUTHORIZATION_SOURCE,
+  };
+}
+
+export function issueDttWorkReadContext({
+  secret,
+  tenant_id,
+  work_id,
+  read_binding,
+  agent_presence,
+  method,
+  path,
+  body,
+  now_ms = Date.now(),
+  ttl_ms = DEFAULT_TTL_MS,
+  random_bytes = crypto.randomBytes,
+} = {}) {
+  const key = signingSecret(secret);
+  const tenantId = requiredText(tenant_id, "dtt_work_read_context_tenant_id", 120);
+  const workId = uuid(work_id, "dtt_work_read_context_work_id");
+  const nowMs = integerTimestamp(now_ms, "dtt_work_read_context_issued_at");
+  const principal = normalizedPrincipal(agent_presence);
+  const authorization = normalizedReadAuthorization(read_binding, tenantId, workId);
+  const request = requestBinding(method, path, body);
+  const requestedTtl = Number(ttl_ms);
+  if (!Number.isFinite(requestedTtl) || requestedTtl <= 0) {
+    fail("dtt_work_read_context_ttl_invalid");
+  }
+  const expiresAtMs = nowMs + Math.min(Math.floor(requestedTtl), MAX_TTL_MS);
+  const nonce = random_bytes(18).toString("hex");
+  if (!/^[a-f0-9]{36}$/i.test(nonce)) fail("dtt_work_read_context_nonce_invalid");
+  const payload = {
+    schema_version: DTT_WORK_READ_CONTEXT_VERSION,
+    tenant_id: tenantId,
+    work_id: workId,
+    principal,
+    authorization,
+    request,
+    execution_authorized: false,
+    nonce: nonce.toLowerCase(),
+    issued_at_ms: nowMs,
+    expires_at_ms: expiresAtMs,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return `${READ_TOKEN_PREFIX}_${encoded}.${signature(key, encoded, READ_SIGNATURE_DOMAIN)}`;
+}
+
+export function verifyDttWorkReadContext({
+  token,
+  secret,
+  expected_tenant_id,
+  expected_work_id,
+  method,
+  path,
+  body,
+  now_ms = Date.now(),
+} = {}) {
+  const key = signingSecret(secret);
+  const value = requiredText(token, "dtt_work_read_context_token", 12_000);
+  const separator = value.lastIndexOf(".");
+  if (!value.startsWith(`${READ_TOKEN_PREFIX}_`) || separator <= READ_TOKEN_PREFIX.length + 1) {
+    fail("dtt_work_read_context_invalid");
+  }
+  const encoded = value.slice(READ_TOKEN_PREFIX.length + 1, separator);
+  const suppliedSignature = value.slice(separator + 1);
+  const expectedSignature = signature(key, encoded, READ_SIGNATURE_DOMAIN);
+  if (!timingSafeTextEqual(suppliedSignature, expectedSignature)) {
+    fail("dtt_work_read_context_signature_invalid");
+  }
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    fail("dtt_work_read_context_payload_invalid");
+  }
+  exactKeys(payload, [
+    "schema_version", "tenant_id", "work_id", "principal", "authorization", "request",
+    "execution_authorized", "nonce", "issued_at_ms", "expires_at_ms",
+  ], "dtt_work_read_context_payload_invalid");
+  exactKeys(payload.principal, [
+    "agent_id", "session_id", "session_fingerprint", "host_transport_session_fingerprint",
+    "presence_signature", "opaque_agent_id", "actor_provenance", "client_type",
+  ], "dtt_work_read_context_principal_invalid");
+  exactKeys(payload.authorization, [
+    "schema_version", "authorization_source",
+  ], "dtt_work_read_context_authorization_invalid");
+  exactKeys(payload.request, [
+    "method", "path", "body_sha256", "request_digest",
+  ], "dtt_work_read_context_request_invalid");
+  if (payload.schema_version !== DTT_WORK_READ_CONTEXT_VERSION
+      || payload.execution_authorized !== false
+      || payload.authorization.schema_version !== READ_AUTHORIZATION_VERSION
+      || payload.authorization.authorization_source !== READ_AUTHORIZATION_SOURCE) {
+    fail("dtt_work_read_context_payload_invalid");
+  }
+  const tenantId = requiredText(
+    expected_tenant_id,
+    "dtt_work_read_context_expected_tenant_id",
+    120,
+  );
+  if (payload.tenant_id !== tenantId) fail("dtt_work_read_context_tenant_mismatch");
+  const workId = uuid(payload.work_id, "dtt_work_read_context_work_id");
+  if (expected_work_id !== undefined
+      && workId !== uuid(expected_work_id, "dtt_work_read_context_expected_work_id")) {
+    fail("dtt_work_read_context_work_mismatch");
+  }
+  const expectedRequest = requestBinding(method, path, body);
+  if (!timingSafeTextEqual(payload.request.request_digest, expectedRequest.request_digest)
+      || payload.request.method !== expectedRequest.method
+      || payload.request.path !== expectedRequest.path
+      || !timingSafeTextEqual(payload.request.body_sha256, expectedRequest.body_sha256)) {
+    fail("dtt_work_read_context_request_mismatch");
+  }
+  const nowMs = integerTimestamp(now_ms, "dtt_work_read_context_now");
+  const issuedAtMs = integerTimestamp(payload.issued_at_ms, "dtt_work_read_context_issued_at");
+  const expiresAtMs = integerTimestamp(payload.expires_at_ms, "dtt_work_read_context_expires_at");
+  if (issuedAtMs > nowMs + 5_000) fail("dtt_work_read_context_not_active");
+  if (expiresAtMs <= nowMs) fail("dtt_work_read_context_expired");
+  if (expiresAtMs > issuedAtMs + MAX_TTL_MS) fail("dtt_work_read_context_expiry_invalid");
+  if (!/^[a-f0-9]{36}$/i.test(String(payload.nonce || ""))) {
+    fail("dtt_work_read_context_nonce_invalid");
+  }
+  normalizedPrincipal({
+    ...payload.principal,
+    signature: payload.principal.presence_signature,
+    transport_bound: true,
+  });
   return deepFreeze(payload);
 }
