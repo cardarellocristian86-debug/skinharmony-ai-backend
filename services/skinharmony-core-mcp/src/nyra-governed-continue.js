@@ -92,10 +92,19 @@ function ensureFreshWorkContext(context, payload) {
 }
 
 function ensureRecoverableFulfilledWorkContext(context, payload) {
+  // A continuation opened after fulfillment remains bound to the exact current
+  // context. A continuation opened immediately before fulfillment may use the
+  // server-derived predecessor proof below, but no other context drift.
+  if (context?.context_digest === payload.context_digest) {
+    ensureFreshWorkContext(context, payload);
+    return;
+  }
   if (context?.available !== true ||
       String(context?.work_id || "").toLowerCase() !== String(payload.work_id).toLowerCase() ||
       context?.project_id !== payload.project_id || Number(context?.work_revision) !== payload.work_revision ||
-      context?.intent_digest !== payload.intent_digest) {
+      context?.intent_digest !== payload.intent_digest ||
+      !SHA256.test(String(context?.fulfilled_precommit_predecessor_context_digest || "")) ||
+      context.fulfilled_precommit_predecessor_context_digest !== payload.context_digest) {
     fail("nyra_continue_work_drift", 409);
   }
   if (["COMPLETED", "CANCELLED", "SUPERSEDED", "ARCHIVED"].includes(String(context.status || "").toUpperCase())) {
@@ -718,21 +727,19 @@ export function createNyraGovernedContinueHandler({
           if (["reconciliation", "before_ticket_locator", "claim"].includes(recoverySource) && nativeClaim?.replay !== true) {
             fail("nyra_continue_precommit_claim_recovery_invalid", 502);
           }
-          // A fulfillment locator is already terminal for the gate. A
-          // reconciliation locator may point at the still-fresh original
-          // ticket or at an expired, never-reserved ticket. Replaying the
-          // exact claim lets Core return the original or atomically replace
-          // only that expired ticket without widening the action binding. A
-          // naked claim means the prior continuation stopped immediately
-          // after the claim CAS, so the same claim and idempotency key resume
-          // the first authorization without creating another claim.
-          const coreResult = recoveredTicketId && recoverySource === "fulfillment" ? null : await authorizeAction({
+          // A fulfilled locator proves the original gate transition but never
+          // bypasses Core. Replaying the exact signed claim lets Core return a
+          // fresh original ticket or atomically replace only an expired,
+          // unreserved ticket. A naked claim resumes its interrupted first
+          // authorization without creating another claim.
+          const coreResult = await authorizeAction({
             ...request,
             idempotency_key: nativeClaim?.idempotency_key || claim.idempotency_key,
           }, identity, nativeClaim);
           const issuedRecord = coreResult?.structuredContent?.action_ticket;
           const issuedTicket = issuedRecord?.ticket || issuedRecord?.action_ticket?.ticket;
-          issuedTicketId = issuedTicket?.ticket_id || recoveredTicketId;
+          issuedTicketId = issuedTicket?.ticket_id ||
+            (recoverySource === "fulfillment" ? null : recoveredTicketId);
           if (!ACTION_TICKET_ID.test(String(issuedTicketId || "")) ||
               typeof readActionTicket !== "function") {
             fail(precommitGate
