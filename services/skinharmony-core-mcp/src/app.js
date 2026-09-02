@@ -1231,6 +1231,16 @@ export function resolveHostTransportPresence({
       binding_source: "oauth_declared_coordinator",
     });
   }
+  // Verified finalization must preserve the owner-bound logical participant
+  // even when ChatGPT supplies a newly rotated MCP transport presence. The
+  // exact operation and OAuth owner gates above keep every other continuation
+  // mutation bound to its current transport.
+  if (oauthVerifiedFinalizeCall && oauthLogicalSessionBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_declared_finalize",
+    });
+  }
   if (transportAgentPresence) {
     return Object.freeze({
       presence: transportAgentPresence,

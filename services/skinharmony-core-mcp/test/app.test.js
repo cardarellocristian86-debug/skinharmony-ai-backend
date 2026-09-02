@@ -80,6 +80,11 @@ test("binds only owner-bound verified finalization to its signed logical presenc
     session_fingerprint: "a".repeat(24),
     signature: `ags_${"b".repeat(32)}`,
   });
+  const rotatedTransportPresence = Object.freeze({
+    agent_id: "oauth-owner-finalizer",
+    session_fingerprint: "c".repeat(24),
+    signature: `ags_${"d".repeat(32)}`,
+  });
   const owner = {
     kind: "oauth",
     tenantId: "tenant-a",
@@ -96,10 +101,22 @@ test("binds only owner-bound verified finalization to its signed logical presenc
     operation: "finalize_verified_work",
     declaredSessionId: "logical-owner-finalize-session",
     agentPresence,
-    transportAgentPresence: null,
+    transportAgentPresence: rotatedTransportPresence,
   });
   assert.equal(finalized.presence, agentPresence);
-  assert.equal(finalized.binding_source, "oauth_declared");
+  assert.notEqual(finalized.presence, rotatedTransportPresence);
+  assert.equal(finalized.binding_source, "oauth_declared_finalize");
+
+  const unrelatedContinuation = resolveHostTransportPresence({
+    identity: owner,
+    toolName: "nyra_continue",
+    operation: "authorize_action",
+    declaredSessionId: "logical-owner-finalize-session",
+    agentPresence,
+    transportAgentPresence: rotatedTransportPresence,
+  });
+  assert.equal(unrelatedContinuation.presence, rotatedTransportPresence);
+  assert.equal(unrelatedContinuation.binding_source, "transport");
 
   for (const scenario of [
     { toolName: "nyra_continue", operation: "authorize_action", identity: owner,
