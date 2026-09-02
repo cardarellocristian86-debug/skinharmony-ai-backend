@@ -45,6 +45,54 @@ test("Control Room normalizer accepts the real task acceptance field without inv
   assert.equal(normalized.work_progress.next_action.acceptance_verified, false);
 });
 
+test("Control Room advertises verified Work finalization only at the closure gate", () => {
+  const complete = projectNyraControlRoomStatus({
+    health: { ok: true, causal_continuity: { ok: true, state: "ready" } },
+    work: {
+      available: true,
+      required_task_count: 10,
+      pending_required_task_count: 0,
+      required_evidence_count: 1,
+      unverified_required_evidence_count: 0,
+      closure_verified: false,
+      next_required_task: null,
+    },
+  });
+  const finalize = complete.domains.find((item) => item.id === "work_continuity")
+    .allowed_actions.find((item) => item.id === "FINALIZE_VERIFIED_WORK");
+  assert.equal(finalize.availability, "EXISTING_GOVERNED_HANDLER");
+  assert.equal(finalize.execution, "REQUEST_BOUND_GOVERNED");
+  assert.equal(finalize.handler, "nyra_verified_work_finalize");
+  assert.equal(finalize.requires_owner_confirmation, true);
+  assert.equal(finalize.requires_core_authorization, true);
+  assert.doesNotThrow(() => normalizeNyraControlRoomReadback(complete));
+
+  for (const work of [
+    { ...completeWork(), pending_required_task_count: 1 },
+    { ...completeWork(), unverified_required_evidence_count: 1 },
+    { ...completeWork(), closure_verified: true },
+    null,
+  ]) {
+    const action = projectNyraControlRoomStatus({ health: { ok: true }, work })
+      .domains.find((item) => item.id === "work_continuity")
+      .allowed_actions.find((item) => item.id === "FINALIZE_VERIFIED_WORK");
+    assert.equal(action.availability, "UNAVAILABLE");
+    assert.equal(action.handler, null);
+  }
+});
+
+function completeWork() {
+  return {
+    available: true,
+    required_task_count: 1,
+    pending_required_task_count: 0,
+    required_evidence_count: 1,
+    unverified_required_evidence_count: 0,
+    closure_verified: false,
+    next_required_task: null,
+  };
+}
+
 test("Control Room distinguishes runtime controls from deployment configuration", () => {
   const status = projectNyraControlRoomStatus({
     nyraDialogueEnabled: false,

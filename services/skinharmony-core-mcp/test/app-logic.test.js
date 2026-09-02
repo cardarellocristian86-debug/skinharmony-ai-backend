@@ -275,7 +275,7 @@ test("routes stale conversational Core read descriptors to Nyra", () => {
   const routedHealth = configureToolForRuntime(health, { environmentRoutingRequired: true });
   for (const tool of [routedNyra, routedControlRoom, routedAssignmentClaim, routedAssignmentSubmit]) {
     assert.equal(tool.inputSchema.required.includes("environment"), false, tool.name);
-    assert.equal(tool.inputSchema.properties.environment, undefined, tool.name);
+    assert.deepEqual(tool.inputSchema.properties.environment.enum, ["production", "staging"], tool.name);
   }
   assert.equal(routedHealth.inputSchema.required.includes("environment"), true);
   assert.equal(

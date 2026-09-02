@@ -1198,7 +1198,7 @@ const nyraOrchestrationDirectiveSchema = object({
 // embedded readback has a closed, bounded shape and never carries arbitrary
 // reader fields.
 const nyraConversationControlRoomActionSchema = object({
-  id: { type: "string", enum: ["READ_STATUS", "REQUEST_CONFIGURATION_CHANGE", "REQUEST_ENABLE_SHADOW", "REQUEST_DISABLE_SHADOW", "REQUEST_LIFECYCLE_ACTION"] },
+  id: { type: "string", enum: ["READ_STATUS", "REQUEST_CONFIGURATION_CHANGE", "REQUEST_ENABLE_SHADOW", "REQUEST_DISABLE_SHADOW", "FINALIZE_VERIFIED_WORK", "REQUEST_LIFECYCLE_ACTION"] },
   availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
   execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
   requires_owner_confirmation: { type: "boolean" }, requires_core_authorization: { type: "boolean" }, restart_required: { type: "boolean" },

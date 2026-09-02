@@ -2855,7 +2855,7 @@ export function createNyraConverseHandler({
       continuation_ref: null,
       expires_at: null,
       state: "UNAVAILABLE",
-      reason: "continuation_store_unavailable",
+      reason: "continuation_operation_not_applicable",
     });
     const continuationEligible = intentRoute.intent === "work_create" ||
       (intentRoute.intent === "ticket_or_action" &&
@@ -2874,6 +2874,11 @@ export function createNyraConverseHandler({
           reason: "continuation_open_failed",
         });
       }
+    } else if (continuationEligible) {
+      continuation = Object.freeze({
+        ...continuation,
+        reason: "continuation_store_unavailable",
+      });
     }
     const directive = Object.freeze({
       ...baseDirective,
