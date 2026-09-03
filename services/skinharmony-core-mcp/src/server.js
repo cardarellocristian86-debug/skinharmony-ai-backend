@@ -2328,6 +2328,18 @@ const baseHandlers = {
       return continuityTextResult({ ok: true,
         result: await workContinuityV2Store.archiveWork(withTenantWorkAcl(identity), args) });
     },
+    tenant_work_historical_archive_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireOwnerGovernance(
+        identity,
+        "work.continuity.historical_bridge_archive",
+        args.work_id,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.archiveHistoricalBridgedWork(
+          withTenantWorkAcl(identity), args,
+        ) });
+    },
     tenant_work_reopen_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
