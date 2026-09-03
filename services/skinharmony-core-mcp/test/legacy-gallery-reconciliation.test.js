@@ -101,6 +101,7 @@ class ReconciliationPool {
     }
     this.leases = (readOnlyPresence || spoofedReadOnlyPresence)
       ? [{ session_id: "nyra-read-session", branch_id: null,
+        lease_id: "44444444-4444-4444-8444-444444444444",
         purpose: "Nyra governed read-only Work context",
         nyra_read_binding_attested: readOnlyPresence,
         status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
@@ -164,7 +165,7 @@ class ReconciliationPool {
         q.startsWith("SELECT status,expires_at FROM core_continuity_participants")) {
       return { rows: params[1] === SOURCE ? this.participants.map((row) => ({ ...row })) : [] };
     }
-    if (q.startsWith("SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases") ||
+    if (q.startsWith("SELECT lease_id,session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases") ||
         q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) {
       return { rows: params[1] === SOURCE ? this.leases.map((row) => ({ ...row })) : [] };
     }
@@ -231,6 +232,21 @@ class ReconciliationPool {
       });
       return { rows: [{ ...work }], rowCount: 1 };
     }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='expired'")) {
+      const leaseIds = new Set(params[2]);
+      const released = this.leases.filter((lease) => leaseIds.has(lease.lease_id) &&
+        lease.status === "active" && lease.branch_id == null &&
+        lease.purpose === params[3] && lease.nyra_read_binding_attested === false);
+      for (const lease of released) lease.status = "expired";
+      return { rows: released.map((lease) => ({ lease_id: lease.lease_id, session_id: lease.session_id })), rowCount: released.length };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET expires_at=now()")) {
+      const sessions = new Set(params[2]);
+      const expired = this.participants.filter((participant) => sessions.has(participant.session_id) &&
+        participant.status === "active" && participant.branch_id == null);
+      for (const participant of expired) participant.expires_at = NOW.toISOString();
+      return { rows: expired.map((participant) => ({ session_id: participant.session_id })), rowCount: expired.length };
+    }
     if (q.startsWith("UPDATE core_continuity_works SET status=$3")) {
       const key = `${params[0]}:${params[1]}`;
       const work = this.legacy.get(key);
@@ -291,6 +307,7 @@ test("historical bridged archive is owner-confirmed and never claims a closure",
   assert.equal(tool._meta["skinharmony/ownerConfirmationRequired"], true);
   assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
   assert.deepEqual(tool.inputSchema.properties.expected_classification.enum, ["STALE", "ABANDONED"]);
+  assert.equal(tool.inputSchema.properties.revoke_unattested_read_only_bindings.type, "boolean");
 });
 
 test("historical bridged archive retains the legacy record, requires stale inactivity, and replays exactly", async () => {
@@ -332,6 +349,18 @@ test("historical bridged archive retains the legacy record, requires stale inact
   spoofedReadOnlyPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
   await assert.rejects(store(spoofedReadOnlyPool).archiveHistoricalBridgedWork(identity(), args),
     /historical_bridge_archive_active_work_denied/);
+
+  const ownerRevokedReadOnlyPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", spoofedReadOnlyPresence: true });
+  ownerRevokedReadOnlyPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  const ownerRevokedArchive = await store(ownerRevokedReadOnlyPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    revoke_unattested_read_only_bindings: true,
+    idempotency_key: "archive-historical-bridge-owner-revoke-0001",
+  });
+  assert.equal(ownerRevokedArchive.work.status, "ARCHIVED");
+  assert.equal(ownerRevokedArchive.revoked_unattested_read_only_binding_count, 1);
+  assert.equal(ownerRevokedArchive.revoked_unattested_read_only_session_count, 1);
+  assert.equal(ownerRevokedReadOnlyPool.leases[0].status, "expired");
 
   const branchPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", activeBranch: true });
   branchPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";

@@ -2421,6 +2421,12 @@ export function createWorkContinuityV2Store({
       fail("historical_bridge_archive_expected_classification_invalid");
     }
     const reason = text(input.reason, "historical_bridge_archive_reason_required", 1_000);
+    // Older, server-created Nyra read contexts predate the attestation field.
+    // They remain blockers by default: their public-shaped purpose text alone
+    // cannot prove that they are non-operational.  An owner may explicitly
+    // revoke this narrow class after pausing the sessions; execution leases
+    // and branches remain unconditionally non-revocable through this route.
+    const revokeUnattestedReadOnlyBindings = input.revoke_unattested_read_only_bindings === true;
     const idempotencyKey = galleryIdempotencyKey(
       input.idempotency_key,
       "historical_bridge_archive_idempotency_key_required",
@@ -2431,6 +2437,7 @@ export function createWorkContinuityV2Store({
       work_id: workId,
       expected_classification: expectedClassification,
       reason,
+      revoke_unattested_read_only_bindings: revokeUnattestedReadOnlyBindings,
     });
     const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
     return transaction(async (client) => {
@@ -2472,7 +2479,7 @@ export function createWorkContinuityV2Store({
       const [participants, leases, branches] = await Promise.all([
         client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
-        client.query(`SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
+        client.query(`SELECT lease_id,session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
         client.query(`SELECT branch_id FROM core_continuity_branches
           WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
@@ -2488,11 +2495,88 @@ export function createWorkContinuityV2Store({
           row.branch_id == null && row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE &&
             row.nyra_read_binding_attested === true);
       };
-      const activeExecutionLease = activeLeases.some((row) =>
+      const isReadOnlyBinding = (row) => row.branch_id == null &&
+        row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE;
+      const activeLeasesBySession = new Map();
+      for (const lease of activeLeases) {
+        const sessionLeases = activeLeasesBySession.get(lease.session_id) || [];
+        sessionLeases.push(lease);
+        activeLeasesBySession.set(lease.session_id, sessionLeases);
+      }
+      const activeParticipantSessions = new Set(activeParticipants.map((row) => row.session_id));
+      const onlyReadOnlyBindingsRemain = activeLeases.length > 0 &&
+        activeLeases.every((row) => isReadOnlyBinding(row) &&
+          activeParticipantSessions.has(row.session_id)) &&
+        activeParticipants.every((row) => row.branch_id == null &&
+          (activeLeasesBySession.get(row.session_id) || []).length > 0 &&
+          (activeLeasesBySession.get(row.session_id) || []).every(isReadOnlyBinding));
+      let revokedReadOnlyBindingCount = 0;
+      let revokedReadOnlySessionCount = 0;
+      if (branches.rows.length || !onlyReadOnlyBindingsRemain) {
+        // An active branch, a lease with another purpose/surface, or a
+        // participant without a matching read-only lease is real or
+        // ambiguous execution.  Never auto-clear it, even for an owner.
+        if (branches.rows.length || activeLeases.length || activeParticipants.length) {
+          fail("historical_bridge_archive_active_work_denied");
+        }
+      } else {
+        const unattested = activeLeases.filter((row) => row.nyra_read_binding_attested !== true);
+        if (unattested.length && !revokeUnattestedReadOnlyBindings) {
+          fail("historical_bridge_archive_active_work_denied");
+        }
+        if (unattested.length) {
+          const leaseIds = unattested.map((row) => row.lease_id);
+          const released = await client.query(`UPDATE core_continuity_leases
+            SET status='expired',released_at=coalesce(released_at,now())
+            WHERE tenant_id=$1 AND work_id=$2 AND lease_id=ANY($3::uuid[])
+              AND status='active' AND branch_id IS NULL AND purpose=$4
+              AND nyra_read_binding_attested=false
+            RETURNING lease_id,session_id`, [
+            actor.tenant_id, work.legacy_work_id, leaseIds, NYRA_READ_ONLY_LEASE_PURPOSE,
+          ]);
+          if (released.rows.length !== leaseIds.length) {
+            fail("historical_bridge_archive_read_binding_conflict");
+          }
+          revokedReadOnlyBindingCount = released.rows.length;
+          const releasedSessions = new Set(released.rows.map((row) => row.session_id));
+          const remainingActiveLeases = activeLeases.filter((row) => !releasedSessions.has(row.session_id) ||
+            row.nyra_read_binding_attested === true);
+          const sessionsWithoutRemainingLease = activeParticipants
+            .filter((row) => releasedSessions.has(row.session_id) &&
+              !remainingActiveLeases.some((lease) => lease.session_id === row.session_id))
+            .map((row) => row.session_id);
+          if (sessionsWithoutRemainingLease.length) {
+            const expiredParticipants = await client.query(`UPDATE core_continuity_participants
+              SET expires_at=now()
+              WHERE tenant_id=$1 AND work_id=$2 AND session_id=ANY($3::varchar[])
+                AND status='active' AND branch_id IS NULL
+              RETURNING session_id`, [actor.tenant_id, work.legacy_work_id, sessionsWithoutRemainingLease]);
+            if (expiredParticipants.rows.length !== sessionsWithoutRemainingLease.length) {
+              fail("historical_bridge_archive_read_participant_conflict");
+            }
+            revokedReadOnlySessionCount = expiredParticipants.rows.length;
+          }
+          for (const lease of activeLeases) {
+            if (leaseIds.includes(lease.lease_id)) lease.status = "expired";
+          }
+          for (const participant of activeParticipants) {
+            if (sessionsWithoutRemainingLease.includes(participant.session_id)) participant.status = "expired";
+          }
+        }
+      }
+      const effectiveActiveLeases = activeLeases.filter((row) => row.status === "active");
+      const effectiveActiveParticipants = activeParticipants.filter((row) => row.status === "active");
+      const effectiveHasOnlyReadLease = (sessionId) => {
+        const sessionLeases = effectiveActiveLeases.filter((row) => row.session_id === sessionId);
+        return sessionLeases.length > 0 && sessionLeases.every((row) =>
+          row.branch_id == null && row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE &&
+            row.nyra_read_binding_attested === true);
+      };
+      const activeExecutionLease = effectiveActiveLeases.some((row) =>
         row.branch_id != null || row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE ||
           row.nyra_read_binding_attested !== true);
-      const activeExecutionParticipant = activeParticipants.some((row) =>
-        row.branch_id != null || !hasOnlyReadLease(row.session_id));
+      const activeExecutionParticipant = effectiveActiveParticipants.some((row) =>
+        row.branch_id != null || !effectiveHasOnlyReadLease(row.session_id));
       if (branches.rows.length || activeExecutionLease || activeExecutionParticipant) {
         fail("historical_bridge_archive_active_work_denied");
       }
@@ -2501,7 +2585,7 @@ export function createWorkContinuityV2Store({
       // all execution-capable participation remains in the calculation.
       const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
         participants: participants.rows
-          .filter((row) => !hasOnlyReadLease(row.session_id))
+          .filter((row) => !effectiveHasOnlyReadLease(row.session_id))
           .map((row) => ({ ...row, active: row.status === "active" })),
         leases: leases.rows.filter((row) => row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE ||
           row.nyra_read_binding_attested !== true) }, now());
@@ -2524,6 +2608,8 @@ export function createWorkContinuityV2Store({
         legacy_status: String(legacy.status || "").toLowerCase(),
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
+        revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
+        revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         closure_claimed: false,
         work: normalized,
       });
@@ -2533,6 +2619,8 @@ export function createWorkContinuityV2Store({
         classification: stale.classification,
         legacy_status: String(legacy.status || "").toLowerCase(),
         closure_claimed: false,
+        revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
+        revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         event_hash: event.event_hash,
         idempotent_replay: false,
       };
