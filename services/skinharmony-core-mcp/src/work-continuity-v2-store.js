@@ -2486,6 +2486,23 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, work.legacy_work_id]);
       const legacy = legacyResult.rows[0];
       if (!legacy) fail("historical_bridge_archive_legacy_work_not_found");
+      // BLOCKED_VALID is eligible only when the recent legacy timestamp is
+      // explained by the server-owned Nyra read-binding audit.  A normally
+      // progressing or newly blocked Work must still age into STALE/ABANDONED.
+      let blockedReadAuditEvent = null;
+      if (expectedClassification === "BLOCKED_VALID") {
+        const audit = await client.query(`SELECT event_type,event_hash,created_at FROM core_continuity_events
+          WHERE tenant_id=$1 AND work_id=$2 AND event_type='nyra_read_binding_attested'
+          ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
+        const candidate = audit.rows[0];
+        const legacyUpdatedAt = new Date(legacy.updated_at).getTime();
+        const auditAt = new Date(candidate?.created_at || "").getTime();
+        if (!candidate || !Number.isFinite(legacyUpdatedAt) || !Number.isFinite(auditAt) ||
+            Math.abs(legacyUpdatedAt - auditAt) > 5 * 60 * 1000) {
+          fail("historical_bridge_archive_blocked_audit_required");
+        }
+        blockedReadAuditEvent = candidate;
+      }
       const [participants, leases, branches] = await Promise.all([
         client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
@@ -2616,6 +2633,7 @@ export function createWorkContinuityV2Store({
         classification: stale.classification,
         legacy_work_id: work.legacy_work_id,
         legacy_status: String(legacy.status || "").toLowerCase(),
+        blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
@@ -2629,6 +2647,7 @@ export function createWorkContinuityV2Store({
         classification: stale.classification,
         legacy_status: String(legacy.status || "").toLowerCase(),
         closure_claimed: false,
+        blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         event_hash: event.event_hash,

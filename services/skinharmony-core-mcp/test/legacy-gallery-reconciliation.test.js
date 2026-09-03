@@ -198,8 +198,10 @@ class ReconciliationPool {
         ? [{ ...receipt, ...report, status: work.status }] : [] };
     }
     if (q.startsWith("SELECT event_type,event_hash,created_at FROM core_continuity_events")) {
+      const eventTypes = Array.isArray(params[2]) ? params[2] :
+        q.includes("event_type='nyra_read_binding_attested'") ? ["nyra_read_binding_attested"] : [];
       const row = [...this.legacyEvents].reverse().find((item) => item.tenant_id === params[0] &&
-        item.work_id === params[1] && params[2].includes(item.event_type));
+        item.work_id === params[1] && eventTypes.includes(item.event_type));
       return { rows: row ? [{ event_type: row.event_type, event_hash: row.event_hash,
         created_at: row.created_at }] : [] };
     }
@@ -380,6 +382,8 @@ test("historical bridged archive retains the legacy record, requires stale inact
   const blockedValidPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
   blockedValidPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
   blockedValidPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+  blockedValidPool.legacyEvents.push({ tenant_id: "tenant-a", work_id: SOURCE, sequence_number: 1,
+    event_type: "nyra_read_binding_attested", event_hash: "a".repeat(64), created_at: NOW.toISOString(), payload: {} });
   const blockedValidArchive = await store(blockedValidPool).archiveHistoricalBridgedWork(identity(), {
     ...args,
     expected_classification: "BLOCKED_VALID",
@@ -388,6 +392,7 @@ test("historical bridged archive retains the legacy record, requires stale inact
   assert.equal(blockedValidArchive.work.status, "ARCHIVED");
   assert.equal(blockedValidArchive.classification, "BLOCKED_VALID");
   assert.equal(blockedValidArchive.closure_claimed, false);
+  assert.equal(blockedValidArchive.blocked_read_audit_event_hash, "a".repeat(64));
 });
 
 test("stale cancellation is tenant-scoped, dual-audited, archived and idempotent without completion", async () => {
