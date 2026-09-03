@@ -146,6 +146,7 @@ test("Generic Core Join runtime binds the exact signed participant and active le
     null,
     null,
     null,
+    false,
   ]);
   assert.equal(binding.schema_version, "generic_work_core_join_lease_binding_v1");
   assert.equal(binding.tenant_id, TENANT_ID);

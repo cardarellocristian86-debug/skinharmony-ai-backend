@@ -69,7 +69,8 @@ export async function ensureNyraReadBinding({
   }
   if (!runtime || typeof runtime.resolveDttWorkLeaseBinding !== "function"
       || typeof runtime.rotateNyraReadParticipant !== "function"
-      || typeof runtime.join !== "function" || typeof runtime.acquireLease !== "function") {
+      || typeof runtime.join !== "function" || typeof runtime.acquireLease !== "function"
+      || typeof runtime.attestNyraReadLease !== "function") {
     throw new Error("nyra_read_binding_runtime_unavailable");
   }
   if (!presenceReady(identity)) {
@@ -100,6 +101,7 @@ export async function ensureNyraReadBinding({
     work_id: continuity.work_id,
     required_lease_purpose: READ_LEASE_PURPOSE,
     required_lease_surface: surface,
+    require_server_owned_read_binding: true,
   };
 
   let binding = null;
@@ -164,6 +166,12 @@ export async function ensureNyraReadBinding({
   if (acquired?.acquired !== true && !acquired?.lease?.lease_id) {
     throw new Error("nyra_read_binding_lease_not_acquired");
   }
+  await runtime.attestNyraReadLease(identity, {
+    ...common,
+    lease_id: acquired.lease.lease_id,
+    required_lease_purpose: READ_LEASE_PURPOSE,
+    required_lease_surface: surface,
+  });
   const created = await runtime.resolveDttWorkLeaseBinding(identity, resolveInput);
   return bindingSummary(created, "created");
 }

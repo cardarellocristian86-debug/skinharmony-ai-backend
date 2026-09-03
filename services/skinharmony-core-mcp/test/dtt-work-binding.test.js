@@ -290,6 +290,7 @@ test("MCP resolves a DTT lease only for the exact authenticated participant tran
     null,
     null,
     null,
+    false,
   ]);
   assert.equal(binding.schema_version, "dtt_work_lease_binding_v1");
   assert.equal(binding.presence_signature, presence.signature);
