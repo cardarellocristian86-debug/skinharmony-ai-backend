@@ -5638,11 +5638,35 @@ export function createWorkContinuityV2Store({
     const report = plainRecord(reportRow?.report) ? reportRow.report : null;
     if (!report) fail("work_closure_projection_backfill_invalid");
     const reportDigest = objectDigest(report);
+    const legacyReportDigest = deriveLegacyFinalReportDigest(report);
     let projectionBackfilled = reportRow.report_digest !== reportDigest;
     if (projectionBackfilled) {
-      const legacyReportDigest = deriveLegacyFinalReportDigest(report);
-      if (!legacyReportDigest || reportRow.report_digest !== legacyReportDigest) {
-        fail("work_closure_projection_backfill_invalid");
+      // A JSONB row can have been written by a pre-canonical runtime.  Do not
+      // trust its stored digest merely because it is present: first prove that
+      // replacing it with the current canonical digest leaves every report
+      // invariant intact.  The event is checked separately below, so a known
+      // historical event encoding cannot prevent a safe report-digest repair.
+      // The former JSON serialization is still accepted as a compatibility
+      // projection. Any other stored value must first pass a complete
+      // invariant check with the canonical digest substituted.
+      if (reportRow.report_digest !== legacyReportDigest) {
+        const provisional = deriveTenantWorkClosureVerification({
+          tenant_id: actor.tenant_id,
+          work: state.work,
+          tasks: tasks.rows,
+          evidence: state.evidence,
+          core_join: state.join,
+          closure_receipt: state.receipt,
+          final_report: { ...reportRow, report_digest: reportDigest },
+          closure_event: eventResult.rows[0] || null,
+        }, {
+          verifyCoreJoin: (context) => Boolean(
+            resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(context),
+          ),
+        });
+        if (provisional.failure_codes.some((code) => code !== "closure_event_unverified")) {
+          fail("work_closure_projection_backfill_invalid");
+        }
       }
       await client.query(`UPDATE tenant_work_final_report SET report_digest=$3
         WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId, reportDigest]);
@@ -5666,7 +5690,7 @@ export function createWorkContinuityV2Store({
       projectionBackfilled = true;
     }
 
-    const verification = deriveTenantWorkClosureVerification({
+    let verification = deriveTenantWorkClosureVerification({
       tenant_id: actor.tenant_id,
       work: state.work,
       tasks: tasks.rows,
@@ -5680,6 +5704,43 @@ export function createWorkContinuityV2Store({
         resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(context),
       ),
     });
+    // Historical closures may contain a report that is semantically valid but
+    // an event hashed by an older envelope implementation.  Preserve that
+    // immutable event and append one canonical closure event; verification
+    // always reads the latest closure event.  This repair is available only
+    // when the canonical report and every non-event closure invariant pass.
+    if (!verification.verified &&
+        verification.failure_codes.length === 1 &&
+        verification.failure_codes[0] === "closure_event_unverified") {
+      await appendV2Event(client, actor, workId, "generic_closure_finalized", {
+        adapter,
+        archived: true,
+        closure_receipt_digest: state.receipt?.receipt_digest,
+        core_join_digest: state.join?.core_join_digest,
+        final_evidence_digest: state.work.final_evidence_digest,
+        report_digest: reportDigest,
+      });
+      const correctedEvent = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
+        ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId]);
+      closureEvent = correctedEvent.rows[0] || null;
+      projectionBackfilled = true;
+      verification = deriveTenantWorkClosureVerification({
+        tenant_id: actor.tenant_id,
+        work: state.work,
+        tasks: tasks.rows,
+        evidence: state.evidence,
+        core_join: state.join,
+        closure_receipt: state.receipt,
+        final_report: { ...reportRow, report_digest: reportDigest },
+        closure_event: closureEvent,
+      }, {
+        verifyCoreJoin: (context) => Boolean(
+          resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(context),
+        ),
+      });
+    }
     if (!verification.verified) fail("work_closure_projection_backfill_invalid");
     const releasedLeaseCount = closureEvent?.payload?.released_lease_count;
     const closedParticipantCount = closureEvent?.payload?.closed_participant_count;
