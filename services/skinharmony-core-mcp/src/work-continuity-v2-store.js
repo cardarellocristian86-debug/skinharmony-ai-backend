@@ -2432,7 +2432,7 @@ export function createWorkContinuityV2Store({
     // manufacture a read-binding audit.  This opt-in is deliberately much
     // narrower than a general BLOCKED_VALID archive; its invariants describe
     // the historical bridge anomaly caused by a pre-attestation diagnostic
-    // resume that refreshed only the legacy timestamp.
+    // resume that refreshed only the legacy/V2 projection timestamps.
     const repairUnattestedHistoricalTimestamp = input.repair_unattested_historical_timestamp === true;
     const idempotencyKey = galleryIdempotencyKey(
       input.idempotency_key,
@@ -2502,7 +2502,8 @@ export function createWorkContinuityV2Store({
       // explained by the server-owned Nyra read-binding audit.  A normally
       // progressing or newly blocked Work must still age into STALE/ABANDONED.
       // The sole alternative handles a pre-attestation diagnostic resume:
-      // it is an old, fully verified bridge whose legacy row says
+      // it is a bridge whose latest meaningful V2 completion/evidence
+      // activity is old, and whose legacy row says
       // release_ready while the V2 projection is BLOCKED.  That contradictory
       // state can never represent a current blocked execution, and every
       // predicate is re-read inside this transaction.
@@ -2522,26 +2523,33 @@ export function createWorkContinuityV2Store({
           if (!repairUnattestedHistoricalTimestamp) {
             fail("historical_bridge_archive_blocked_audit_required");
           }
-          const createdAt = new Date(work.created_at).getTime();
-          if (!Number.isFinite(createdAt) || now().getTime() - createdAt < HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS ||
-              work.status !== "BLOCKED" || String(legacy.status || "").toLowerCase() !== "release_ready" ||
+          if (work.status !== "BLOCKED" || String(legacy.status || "").toLowerCase() !== "release_ready" ||
               Number(work.progress_bp) !== 10_000) {
             fail("historical_bridge_archive_timestamp_repair_ineligible");
           }
           const [requiredTasks, requiredEvidence] = await Promise.all([
-            client.query(`SELECT status,acceptance_verified FROM tenant_work_task
+            client.query(`SELECT status,acceptance_verified,completed_at FROM tenant_work_task
               WHERE tenant_id=$1 AND work_id=$2 AND required=true FOR UPDATE`, [actor.tenant_id, workId]),
-            client.query(`SELECT independently_verified FROM tenant_work_evidence
+            client.query(`SELECT independently_verified,verified_by_agent_id,verified_by_session_fingerprint,created_at
+              FROM tenant_work_evidence
               WHERE tenant_id=$1 AND work_id=$2 AND required=true FOR UPDATE`, [actor.tenant_id, workId]),
           ]);
           if (!requiredTasks.rows.length || !requiredEvidence.rows.length ||
               requiredTasks.rows.some((row) => row.status !== "completed" || row.acceptance_verified !== true) ||
-              requiredEvidence.rows.some((row) => row.independently_verified !== true)) {
+              requiredEvidence.rows.some((row) => !independentlyVerifiedGenericEvidence(row, work))) {
+            fail("historical_bridge_archive_timestamp_repair_ineligible");
+          }
+          const verifiedActivityAt = [
+            ...requiredTasks.rows.map((row) => new Date(row.completed_at || "").getTime()),
+            ...requiredEvidence.rows.map((row) => new Date(row.created_at || "").getTime()),
+          ];
+          if (verifiedActivityAt.some((timestamp) => !Number.isFinite(timestamp)) ||
+              now().getTime() - Math.max(...verifiedActivityAt) < HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS) {
             fail("historical_bridge_archive_timestamp_repair_ineligible");
           }
           blockedTimestampRepair = {
             schema_version: "historical_bridge_unattested_timestamp_repair_v1",
-            work_created_at: new Date(createdAt).toISOString(),
+            latest_verified_activity_at: new Date(Math.max(...verifiedActivityAt)).toISOString(),
             minimum_age_hours: HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS / (60 * 60 * 1_000),
             legacy_status: "release_ready",
             verified_required_task_count: requiredTasks.rows.length,

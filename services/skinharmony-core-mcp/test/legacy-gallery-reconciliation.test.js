@@ -207,10 +207,10 @@ class ReconciliationPool {
       return { rows: row ? [{ event_type: row.event_type, event_hash: row.event_hash,
         created_at: row.created_at }] : [] };
     }
-    if (q.startsWith("SELECT status,acceptance_verified FROM tenant_work_task")) {
+    if (q.startsWith("SELECT status,acceptance_verified,completed_at FROM tenant_work_task")) {
       return { rows: this.tasks.map((row) => ({ ...row })) };
     }
-    if (q.startsWith("SELECT independently_verified FROM tenant_work_evidence")) {
+    if (q.startsWith("SELECT independently_verified,verified_by_agent_id,verified_by_session_fingerprint,created_at FROM tenant_work_evidence")) {
       return { rows: this.evidence.map((row) => ({ ...row })) };
     }
     if (q.startsWith("SELECT event_type,event_hash FROM core_continuity_events")) {
@@ -408,8 +408,9 @@ test("historical bridged archive retains the legacy record, requires stale inact
   repairedBlockedWork.work_type = "software_git";
   repairedBlockedWork.progress_bp = 10_000;
   repairedBlockedPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
-  repairedBlockedPool.tasks = [{ status: "completed", acceptance_verified: true }];
-  repairedBlockedPool.evidence = [{ independently_verified: true }];
+  repairedBlockedPool.tasks = [{ status: "completed", acceptance_verified: true, completed_at: OLD }];
+  repairedBlockedPool.evidence = [{ independently_verified: true, verified_by_agent_id: "verifier-a",
+    verified_by_session_fingerprint: "verifier-session-a", created_at: OLD }];
   const repairedBlockedArchive = await store(repairedBlockedPool).archiveHistoricalBridgedWork(identity(), {
     ...args,
     expected_classification: "BLOCKED_VALID",
@@ -426,10 +427,10 @@ test("historical bridged archive retains the legacy record, requires stale inact
   const recentBlockedWork = recentBlockedPool.works.get(`tenant-a:${SOURCE}`);
   recentBlockedWork.work_type = "software_git";
   recentBlockedWork.progress_bp = 10_000;
-  recentBlockedWork.created_at = NOW.toISOString();
   recentBlockedPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
-  recentBlockedPool.tasks = [{ status: "completed", acceptance_verified: true }];
-  recentBlockedPool.evidence = [{ independently_verified: true }];
+  recentBlockedPool.tasks = [{ status: "completed", acceptance_verified: true, completed_at: NOW.toISOString() }];
+  recentBlockedPool.evidence = [{ independently_verified: true, verified_by_agent_id: "verifier-a",
+    verified_by_session_fingerprint: "verifier-session-a", created_at: OLD }];
   await assert.rejects(store(recentBlockedPool).archiveHistoricalBridgedWork(identity(), {
     ...args,
     expected_classification: "BLOCKED_VALID",
@@ -442,13 +443,28 @@ test("historical bridged archive retains the legacy record, requires stale inact
   incompleteRepairWork.work_type = "software_git";
   incompleteRepairWork.progress_bp = 10_000;
   incompleteRepairPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
-  incompleteRepairPool.tasks = [{ status: "completed", acceptance_verified: true }];
-  incompleteRepairPool.evidence = [{ independently_verified: false }];
+  incompleteRepairPool.tasks = [{ status: "completed", acceptance_verified: true, completed_at: OLD }];
+  incompleteRepairPool.evidence = [{ independently_verified: false, verified_by_agent_id: "verifier-a",
+    verified_by_session_fingerprint: "verifier-session-a", created_at: OLD }];
   await assert.rejects(store(incompleteRepairPool).archiveHistoricalBridgedWork(identity(), {
     ...args,
     expected_classification: "BLOCKED_VALID",
     repair_unattested_historical_timestamp: true,
     idempotency_key: "archive-historical-bridge-blocked-timestamp-repair-incomplete-0001",
+  }), /historical_bridge_archive_timestamp_repair_ineligible/);
+
+  const unprovenRepairPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
+  const unprovenRepairWork = unprovenRepairPool.works.get(`tenant-a:${SOURCE}`);
+  unprovenRepairWork.work_type = "software_git";
+  unprovenRepairWork.progress_bp = 10_000;
+  unprovenRepairPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+  unprovenRepairPool.tasks = [{ status: "completed", acceptance_verified: true, completed_at: OLD }];
+  unprovenRepairPool.evidence = [{ independently_verified: true, created_at: OLD }];
+  await assert.rejects(store(unprovenRepairPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    repair_unattested_historical_timestamp: true,
+    idempotency_key: "archive-historical-bridge-blocked-timestamp-repair-unproven-0001",
   }), /historical_bridge_archive_timestamp_repair_ineligible/);
 });
 
