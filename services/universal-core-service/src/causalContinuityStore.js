@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 import { causalDigest, CausalContinuityError, requireText, requireUuid } from "./causalContinuityCanonical.js";
 import { createCausalContinuityMigrator } from "./causalContinuityMigration.js";
 import { createProjectScopeRenderOriginIndexMigrator } from "./projectScopeRenderOriginMigration.js";
@@ -115,7 +115,7 @@ export async function rollbackCausalContinuityMigrations({
 export function createPostgresCausalContinuityStore({ pool, connectionString, now = () => new Date() } = {}) {
   if (!pool && !connectionString) throw new CausalContinuityError("CAUSAL_DATABASE_REQUIRED");
   const ownsPool = !pool;
-  const db = pool || new Pool({ connectionString, max: 6, idleTimeoutMillis: 10_000 });
+  const db = pool || createBoundedPostgresPool({ connectionString, max: 6, idleTimeoutMillis: 10_000 });
   const migrator = createCausalContinuityMigrator({ pool: db });
   const renderOriginIndexMigrator = createProjectScopeRenderOriginIndexMigrator({ pool: db });
   let initialized = false;

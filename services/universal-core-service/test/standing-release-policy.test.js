@@ -1134,7 +1134,7 @@ test("standing merges consume merge budget without consuming push budget, while 
     idempotency_key: "legacy-merge-accounting-delegation",
   });
 
-  const injectReservableMerge = ({ ticketId, joinId, delegationId, workId, intent, session }) => {
+  const injectReservableMerge = ({ ticketId, delegationId, workId, intent, session }) => {
     store.mutate((state) => {
       const standingMerge = delegationId === standing.delegation_id;
       const action = {
@@ -1168,6 +1168,17 @@ test("standing merges consume merge budget without consuming push budget, while 
       const resolution = {
         source_attestation: sourceAttestation,
       };
+      const claim = {
+        tenant_id: "tenant-a",
+        work_id: workId,
+        intent_anchor_digest: intent,
+        repository: "owner/repo",
+        release_intent_digest: H("d"),
+        ...(standingMerge ? { required_checks_policy_digest: H("2") } : {}),
+        provider_execution: false,
+      };
+      const claimDigest = objectDigest(claim);
+      const joinId = `hnj_${claimDigest.slice(0, 40)}`;
       const ticketUnsigned = {
         schema_version: "host_native_action_ticket_v1",
         ticket_id: ticketId,
@@ -1183,10 +1194,7 @@ test("standing merges consume merge budget without consuming push budget, while 
         issued_at: "2026-08-14T10:00:00.000Z",
         expires_at: "2026-08-14T10:30:00.000Z",
         core_join_verdict_id: joinId,
-        core_join_verdict_digest: standingMerge ? objectDigest({
-          release_intent_digest: H("d"),
-          required_checks_policy_digest: H("2"),
-        }) : H("c"),
+        core_join_verdict_digest: claimDigest,
         release_intent_digest: H("d"),
         ...(standingMerge ? {
           release_manifest_binding: {
@@ -1216,20 +1224,24 @@ test("standing merges consume merge budget without consuming push budget, while 
         uses: 0,
         ticket,
       };
-      const claim = standingMerge ? {
-        release_intent_digest: H("d"),
-        required_checks_policy_digest: H("2"),
-      } : { release_intent_digest: H("d") };
-      const claimDigest = standingMerge ? objectDigest(claim) : H("c");
       const verdictUnsigned = {
+        schema_version: "host_native_core_join_v2",
         verdict_id: joinId,
         claim_digest: claimDigest,
+        tenant_id: "tenant-a",
+        work_id: workId,
+        intent_anchor_digest: intent,
+        repository: "owner/repo",
+        release_intent_digest: H("d"),
+        ...(standingMerge ? { required_checks_policy_digest: H("2") } : {}),
+        authority: "universal_core",
         allowed: true,
         provider_execution: false,
         issued_at: "2026-08-14T10:00:00.000Z",
         expires_at: "2026-08-14T10:30:00.000Z",
       };
       state.core_join_verdicts[joinId] = {
+        schema_version: "host_native_core_join_record_v1",
         tenant_id: "tenant-a",
         verdict_id: joinId,
         state: "active",
@@ -1237,16 +1249,21 @@ test("standing merges consume merge budget without consuming push budget, while 
         authorized_ticket_id: ticketId,
         claim_digest: claimDigest,
         claim,
+        release_intent: { release_intent_digest: H("d") },
         verdict: standingMerge ? {
           ...verdictUnsigned,
           signature: signed("hnj", verdictUnsigned),
-        } : { expires_at: "2026-08-14T10:30:00.000Z" },
+        } : {
+          ...verdictUnsigned,
+          signature: signed("hnj", verdictUnsigned),
+        },
+        issued_at: "2026-08-14T10:00:00.000Z",
+        expires_at: "2026-08-14T10:30:00.000Z",
       };
     });
   };
   injectReservableMerge({
     ticketId: "hnt-standing-merge-accounting",
-    joinId: "hnj-standing-merge-accounting",
     delegationId: standing.delegation_id,
     workId: RELEASE_WORK_ID,
     intent: H("3"),
@@ -1254,7 +1271,6 @@ test("standing merges consume merge budget without consuming push budget, while 
   });
   injectReservableMerge({
     ticketId: "hnt-legacy-merge-accounting",
-    joinId: "hnj-legacy-merge-accounting",
     delegationId: legacy.delegation_id,
     workId: "legacy-work",
     intent: H("e"),

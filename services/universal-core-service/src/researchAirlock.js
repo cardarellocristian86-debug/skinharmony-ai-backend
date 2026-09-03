@@ -231,8 +231,20 @@ export function createResearchAirlockRuntime(options = {}) {
   const transport = options.transport || createAirlockTransport(options.transportOptions);
   const shadowMonitorRequired = options.shadowMonitorRequired === true;
   const durableStore = store.kind === "postgresql" && store.restart_durable && store.distributed;
-  const ready = Boolean(signingKey && store.kind === "postgresql" && store.restart_durable && store.distributed && enforced)
+  const configuredReady = Boolean(signingKey && store.kind === "postgresql" && store.restart_durable && store.distributed && enforced)
     || Boolean(options.allowTestStore === true && signingKey && enforced);
+  const storeInitialization = () => {
+    if (typeof store.initializationStatus !== "function") {
+      return { state: "ready", ready: true, error: null };
+    }
+    const status = store.initializationStatus();
+    return {
+      state: String(status?.state || "unknown").slice(0, 40),
+      ready: status?.ready === true,
+      error: status?.error ? String(status.error).slice(0, 80) : null,
+    };
+  };
+  const operationalReady = () => configuredReady && storeInitialization().ready;
   const keyVersion = signingKey ? `airlock_${digest(signingKey).slice(0, 16)}` : null;
   const sign = (value) => crypto.createHmac("sha256", signingKey).update(stableJson(value)).digest("hex");
   const baseEvent = (context, request) => ({
@@ -242,7 +254,7 @@ export function createResearchAirlockRuntime(options = {}) {
   });
 
   async function createPlan(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const allowedUrls = [...new Set((input.source_urls || []).map((value) => {
       const url = normalizedPublicSourceUrl(value);
@@ -291,7 +303,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function createWork(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const plan = parsePlanCapability(input.plan_capability);
     const created = now();
@@ -335,7 +347,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function discover(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const current = await store.getWork(work, baseEvent(context, { operation: "discover", work }));
     if (!current || current.state !== "DISCOVERY_OPEN") throw new Error("research_airlock_discovery_closed");
@@ -410,7 +422,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function seal(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const current = await store.getWork(work, baseEvent(context, { operation: "seal_evidence", work }));
     if (!current || current.state !== "DISCOVERY_OPEN" || !current.evidence.length) throw new Error("research_airlock_not_sealable");
@@ -448,7 +460,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function enterPrivate(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const current = await store.getWork(work, baseEvent(context, { operation: "consume_private_cap", work }));
     if (!current || current.state !== "EVIDENCE_SEALED") throw new Error("research_airlock_private_entry_denied");
@@ -470,10 +482,14 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function authorizeTool(input, context = {}) {
-    if (!ready) return { verdict: "BLOCK", reason: "research_airlock_not_ready" };
+    if (!operationalReady()) return { verdict: "BLOCK", reason: "research_airlock_not_ready" };
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const current = await store.getWork(work, baseEvent(context, { operation: "authorize_tool", work }));
     if (!current) return { verdict: "BLOCK", reason: "research_airlock_work_not_found" };
+    return authorizeCurrentTool(current, input);
+  }
+
+  function authorizeCurrentTool(current, input = {}) {
     const toolName = String(input.tool_name || "").trim();
     if (ALWAYS_ALLOWED_TOOLS.has(toolName)) return { verdict: "ALLOW", state: current.state, nyra_core_boundary_only: true };
     if (current.state === "DISCOVERY_OPEN" && !PUBLIC_PHASE_TOOLS.has(toolName)) {
@@ -490,10 +506,42 @@ export function createResearchAirlockRuntime(options = {}) {
     return { verdict: "ALLOW", state: current.state, nyra_core_boundary_only: true };
   }
 
+  async function authorizeSessionToolReadOnly(input, context = {}) {
+    const tenantId = required(context.tenantId, "research_airlock_tenant_id");
+    const sessionId = required(input.session_id, "research_airlock_session_id");
+    if (typeof store.observeSessionAuthorization !== "function") {
+      return { verdict: "BLOCK", reason: "research_airlock_read_only_authorization_unavailable" };
+    }
+    const initialized = storeInitialization().ready;
+    if (!operationalReady() && !(mode === "shadow" && durableStore && initialized)) {
+      return { verdict: "BLOCK", reason: "research_airlock_not_ready" };
+    }
+    const resolved = await store.observeSessionAuthorization({
+      tenant_id: tenantId,
+      session_id: sessionId,
+      tool_name: input.tool_name,
+      safe_preopen: PREOPEN_SAFE_TOOLS.has(String(input.tool_name || "")),
+      ...baseEvent(context, { operation: "observe_session_tool", tenant_id: tenantId, session_id: sessionId }),
+    });
+    if (!resolved.work) {
+      const observed = resolved.decision;
+      if (mode === "shadow" && observed?.verdict !== "BLOCK") return {
+        verdict: "ALLOW",
+        state: observed.state,
+        shadow_observation: observed.state,
+        nyra_core_boundary_only: true,
+      };
+      return observed;
+    }
+    if (!configuredReady) return { verdict: "BLOCK", reason: "research_airlock_shadow_active_work_closed", state: resolved.work.state };
+    return authorizeCurrentTool(resolved.work, input);
+  }
+
   async function authorizeSessionTool(input, context = {}) {
     const tenantId = required(context.tenantId, "research_airlock_tenant_id");
     const sessionId = required(input.session_id, "research_airlock_session_id");
-    if (!ready && !(mode === "shadow" && durableStore)) {
+    const initialized = storeInitialization().ready;
+    if (!operationalReady() && !(mode === "shadow" && durableStore && initialized)) {
       return { verdict: "BLOCK", reason: "research_airlock_not_ready" };
     }
     const resolved = await store.resolveSessionAuthorization({
@@ -513,7 +561,7 @@ export function createResearchAirlockRuntime(options = {}) {
       };
       return observed;
     }
-    if (!ready) return { verdict: "BLOCK", reason: "research_airlock_shadow_active_work_closed", state: resolved.work.state };
+    if (!configuredReady) return { verdict: "BLOCK", reason: "research_airlock_shadow_active_work_closed", state: resolved.work.state };
     return authorizeTool({
       work_binding: resolved.work,
       tool_name: input.tool_name,
@@ -523,7 +571,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function complete(input, context = {}) {
-    if (!ready) throw new Error("research_airlock_not_ready");
+    if (!operationalReady()) throw new Error("research_airlock_not_ready");
     const work = workIdentity(context.tenantId, input.work_binding || input);
     const closed = await store.closeWork(work, baseEvent(context, input));
     return { verdict: "ALLOW", state: closed.state };
@@ -540,22 +588,35 @@ export function createResearchAirlockRuntime(options = {}) {
 
   async function status(tenantId) {
     const tenant = required(tenantId, "research_airlock_tenant_id");
+    const initialization = storeInitialization();
+    const runtimeReady = configuredReady && initialization.ready;
+    const shadowOperational = mode === "shadow"
+      && (!shadowMonitorRequired || (durableStore && initialization.ready));
     return {
       schema_version: RESEARCH_AIRLOCK_SCHEMA_VERSION,
       policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
       mode,
-      ready,
-      operational_safe: ready || (mode === "shadow" && (!shadowMonitorRequired || durableStore)),
-      accepting_new_work: ready,
+      ready: runtimeReady,
+      state: initialization.state,
+      operational_safe: runtimeReady || shadowOperational,
+      accepting_new_work: runtimeReady,
       key_version: keyVersion,
       state_backend: store.kind,
       restart_durable: store.restart_durable === true,
       distributed: store.distributed === true,
+      initialization,
       raw_content_crosses_model_boundary: false,
       enforcement_overlay: RELEASE_OVERLAY,
       boundary: { nyra_core_tools_enforced: true, chatgpt_host_web_intercepted: false },
       rollback: { mode: "shadow", effect: "new work denied; active capabilities fail closed" },
-      metrics: await store.metrics(tenant),
+      metrics: initialization.ready
+        ? await store.metrics(tenant)
+        : {
+            state_counts: {},
+            verdict_counts: {},
+            preopen_tainted_sessions: 0,
+            plan_counts: { issued: 0, consumed: 0, expired_unconsumed: 0 },
+          },
     };
   }
 
@@ -580,7 +641,7 @@ export function createResearchAirlockRuntime(options = {}) {
   }
 
   async function readSealedEvidence(capsule = {}, context = {}) {
-    if (!ready || !verifyEvidenceCapsule(capsule)) throw new Error("research_airlock_evidence_capsule_invalid");
+    if (!operationalReady() || !verifyEvidenceCapsule(capsule)) throw new Error("research_airlock_evidence_capsule_invalid");
     const work = workIdentity(context.tenantId, capsule.work_binding || {});
     const current = await store.getWork(work, baseEvent(context, { operation: "read_sealed_evidence", work }));
     if (!current || current.state !== "EVIDENCE_SEALED" || current.capsule?.capsule_id !== capsule.capsule_id
@@ -592,8 +653,28 @@ export function createResearchAirlockRuntime(options = {}) {
       execution_authorized: false };
   }
 
-  return { createPlan, createWork, discover, seal, enterPrivate, authorizeTool, authorizeSessionTool, complete, status, safeReplan,
-    verifyFetchProof, verifyEvidenceCapsule, readSealedEvidence, ready, mode, store };
+  return {
+    createPlan,
+    createWork,
+    discover,
+    seal,
+    enterPrivate,
+    authorizeTool,
+    authorizeSessionTool,
+    authorizeSessionToolReadOnly,
+    complete,
+    status,
+    safeReplan,
+    verifyFetchProof,
+    verifyEvidenceCapsule,
+    readSealedEvidence,
+    // This property reports static configuration for the signed bootstrap
+    // guard. Operational readiness, including schema state, is returned by
+    // status() and enforced by every action method above.
+    ready: configuredReady,
+    mode,
+    store,
+  };
 }
 
 export function createAirlockTransport({

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createWorkContinuityClosureFinalizeHandler,
   createWorkContinuityClosureEvaluateHandler,
   createWorkContinuityClosureRejoinPersistedReleaseHandler,
+  replayNyraVerifiedWorkFinalize,
 } from "../src/work-continuity-closure-handler.js";
 
 const DIGEST = (character) => character.repeat(64);
@@ -46,6 +48,116 @@ function renewalFixture() {
   };
   return { renewal, material, releaseIntent, coreJoinRecord };
 }
+
+test("verified finalize replays a persisted terminal closure without checkpoint or Core Join", async () => {
+  const calls = [];
+  const closure = { idempotent_replay: true, receipt: { receipt_id: "receipt-1" } };
+  const verification = { verified: true, failure_codes: [] };
+  const response = await replayNyraVerifiedWorkFinalize({
+    store: {
+      async finalizeGenericClosure(receivedIdentity, input) {
+        calls.push(["finalize", receivedIdentity, input]);
+        return closure;
+      },
+      async verifyWorkClosure(receivedIdentity, input) {
+        calls.push(["verify", receivedIdentity, input]);
+        return verification;
+      },
+    },
+    aclIdentity: identity,
+    args: { work_id: args.work_id, idempotency_key: "fresh-terminal-replay-key" },
+    state: { work: { status: "COMPLETED", work_type: "research" } },
+  });
+
+  assert.deepEqual(calls, [
+    ["finalize", identity, {
+      work_id: args.work_id,
+      adapter: "research",
+      idempotency_key: "fresh-terminal-replay-key:closure",
+    }],
+    ["verify", identity, { work_id: args.work_id }],
+  ]);
+  assert.equal(response.structuredContent.result.checkpoint, null);
+  assert.equal(response.structuredContent.result.core_join, null);
+  assert.equal(response.structuredContent.result.closure, closure);
+  assert.equal(response.structuredContent.result.verification, verification);
+  assert.equal(response.structuredContent.result.terminal_replay, true);
+});
+
+test("verified finalize terminal replay fails closed on corrupt persisted closure", async () => {
+  await assert.rejects(replayNyraVerifiedWorkFinalize({
+    store: {
+      async finalizeGenericClosure() { return { idempotent_replay: true }; },
+      async verifyWorkClosure() { return { verified: false }; },
+    },
+    aclIdentity: identity,
+    args: { work_id: args.work_id, idempotency_key: "fresh-terminal-replay-key" },
+    state: { work: { status: "COMPLETED", work_type: "research" } },
+  }), /tenant_work_terminal_closure_verification_failed/);
+});
+
+test("native terminal finalize replays locally without calling unavailable Core", async () => {
+  const calls = [];
+  const persisted = {
+    work_id: args.work_id,
+    plan_id: args.plan_id,
+    action_ticket_id: "hnt_terminal-ticket",
+    completed: true,
+    idempotent_replay: true,
+  };
+  const handler = createWorkContinuityClosureFinalizeHandler({
+    runtime: {
+      async replayFinalizedClosure(receivedIdentity, receivedArgs) {
+        calls.push(["replay", receivedIdentity, receivedArgs]);
+        return persisted;
+      },
+      async finalizeClosure() {
+        throw new Error("fresh_finalize_must_not_run");
+      },
+    },
+    coreHandlers: {
+      async host_native_action_closure_receipt() {
+        throw new Error("upstream_unavailable_must_not_run");
+      },
+    },
+  });
+  const terminalArgs = {
+    work_id: args.work_id,
+    plan_id: args.plan_id,
+    action_ticket_id: "hnt_terminal-ticket",
+    idempotency_key: "native-terminal-replay",
+  };
+  const response = await handler(terminalArgs, identity);
+  assert.deepEqual(calls, [["replay", identity, terminalArgs]]);
+  assert.equal(response.structuredContent.result, persisted);
+});
+
+test("native terminal finalize conflict fails before calling Core", async () => {
+  let upstreamCalls = 0;
+  const handler = createWorkContinuityClosureFinalizeHandler({
+    runtime: {
+      async replayFinalizedClosure() {
+        throw new Error("idempotency_key_conflict");
+      },
+      async finalizeClosure() {
+        throw new Error("fresh_finalize_must_not_run");
+      },
+    },
+    coreHandlers: {
+      async host_native_action_closure_receipt() {
+        upstreamCalls += 1;
+        throw new Error("upstream_must_not_run");
+      },
+    },
+  });
+  await assert.rejects(handler({
+    work_id: args.work_id,
+    plan_id: args.plan_id,
+    action_ticket_id: "hnt_substituted-ticket",
+    idempotency_key: "native-terminal-replay",
+  }, identity), /idempotency_key_conflict/);
+  assert.equal(upstreamCalls, 0);
+});
 
 test("closure handler renews through the exact production sequence and binds the effective evaluation", async () => {
   const calls = [];

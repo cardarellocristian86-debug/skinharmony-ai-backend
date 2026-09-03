@@ -169,8 +169,7 @@ function operationalFailure(event) {
       code = "NATIVE_TEST_FAILED";
     }
   } else if (
-    (event.toolName === "work_continuity_closure_evaluate" ||
-      event.toolName === "work_continuity_closure_rejoin_persisted_release") &&
+    event.toolName === "work_continuity_closure_rejoin_persisted_release" &&
     payload.closed === false
   ) {
     code = "NATIVE_CLOSURE_GAPS";

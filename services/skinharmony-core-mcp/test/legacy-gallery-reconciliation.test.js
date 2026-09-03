@@ -114,9 +114,11 @@ class ReconciliationPool {
   }
 
   async query(sql, params = []) {
-    const q = String(sql).replace(/\s+/g, " ").trim();
+    const queryText = typeof sql === "string" ? sql : sql.text;
+    const q = queryText.replace(/\s+/g, " ").trim();
+    if (!params.length && Array.isArray(sql?.values)) params = sql.values;
     this.calls.push({ sql: q, params });
-    if (sql === ADDITIVE_SCHEMA_SQL) return { rows: [] };
+    if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [] };
     if (q.startsWith("SELECT work_id,project_id,parent_work_id,idea,objective,status,created_at,updated_at,next_action FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
       return { rows: row ? [{ ...row }] : [] };

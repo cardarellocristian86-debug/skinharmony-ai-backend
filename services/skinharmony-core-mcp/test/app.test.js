@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, isLegacyNyraAdvisoryPreflight, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresCanonicalWorkReadAuthorization, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, isLegacyNyraAdvisoryPreflight, POLICY_REGISTRY_LIFECYCLE_TOOLS, qualifiesForFastReadPath, requiresCanonicalWorkReadAuthorization, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
@@ -511,6 +511,38 @@ test("Control Room status remains discoverable with Nyra Dialogue both OFF and O
   assert.equal(requiresGenericWorkPreflight("nyra_control_room_status"), false);
 });
 
+test("fast read path skips only non-persisting reads without generic preflight", () => {
+  assert.equal(qualifiesForFastReadPath("core_health"), true);
+  assert.equal(qualifiesForFastReadPath("nyra_control_room_status"), true);
+  assert.equal(qualifiesForFastReadPath("core_capability_catalog"), true);
+  assert.equal(qualifiesForFastReadPath("core_branch_registry"), true);
+  assert.equal(qualifiesForFastReadPath("nyra_branch_catalog"), true);
+  assert.equal(qualifiesForFastReadPath("nyra_research_airlock_status"), true);
+  assert.equal(qualifiesForFastReadPath("nyra_converse"), false);
+  assert.equal(qualifiesForFastReadPath("nyra_research_plan"), false);
+  assert.equal(qualifiesForFastReadPath("work_preflight"), false);
+  assert.equal(qualifiesForFastReadPath("core_capability_invoke", {
+    capability_id: "workspace_write_document",
+  }), false);
+  assert.equal(qualifiesForFastReadPath("core_capability_read", {
+    capability_id: "entity_360_snapshot_read",
+  }), false, "DTT-backed reads keep their exact Work gate");
+  assert.equal(qualifiesForFastReadPath("core_capability_read", {
+    capability_id: "orchestration_dtt_plan",
+  }), false, "read-labelled DTT planning persists state and must retain the ledger");
+  assert.equal(qualifiesForFastReadPath("workspace_list"), false,
+    "unreviewed read labels never enter the state-pure allowlist implicitly");
+  const webExecute = TOOLS.find((tool) => tool.name === "web_compatibility_execute");
+  assert.deepEqual(webExecute.scopes, ["core:govern"]);
+  assert.equal(webExecute.annotations.readOnlyHint, false);
+  assert.equal(webExecute.annotations.destructiveHint, false);
+  assert.deepEqual(webExecute.inputSchema.properties.method.enum, ["GET", "HEAD"]);
+  assert.equal(webExecute._meta["skinharmony/ownerConfirmationRequired"], true);
+  assert.equal(webExecute.inputSchema.required.includes("idempotency_key"), true);
+  assert.equal(webExecute.inputSchema.properties.owner_confirmed.type, "boolean");
+  assert.equal(qualifiesForFastReadPath("web_compatibility_execute"), false);
+});
+
 test("binds an OAuth owner logical session only for DTT-backed dynamic reads", () => {
   const identity = {
     kind: "oauth",
@@ -826,6 +858,44 @@ test("orders generic Work subject authorization before every Work side effect", 
   ]) {
     assert.ok(hook.indexOf(effect) > authorization, `${effect} must follow the subject gate`);
   }
+});
+
+test("serializes decision-ledger schema initialization after continuity V2", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const bootstrapStart = serverSource.indexOf("if (config.decisionLedgerRequired === true && decisionLedger)");
+  const bootstrapEnd = serverSource.indexOf("if (nyraGovernedContinuationStore)", bootstrapStart);
+  assert.ok(bootstrapStart >= 0);
+  assert.ok(bootstrapEnd > bootstrapStart);
+  const bootstrap = serverSource.slice(bootstrapStart, bootstrapEnd);
+  assert.match(bootstrap, /initializeStoreAfter\(workContinuityV2StoreReady, decisionLedger\)/);
+  assert.doesNotMatch(bootstrap, /Promise\.resolve\(\)\s*\.then\(\(\) => decisionLedger\.initialize\(\)\)/);
+});
+
+test("capsule resume and start-or-resume use only the bounded Core resume-or-bind contract", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const directStart = serverSource.indexOf("async function resumeExistingContinuityWork");
+  const directEnd = serverSource.indexOf("async function createNativeContinuityPlan", directStart);
+  const startOrResumeStart = serverSource.indexOf("work_continuity_start_or_resume: async");
+  const startOrResumeEnd = serverSource.indexOf("work_continuity_intent_read: async", startOrResumeStart);
+  assert.ok(directStart >= 0);
+  assert.ok(directEnd > directStart);
+  assert.ok(startOrResumeStart >= 0);
+  assert.ok(startOrResumeEnd > startOrResumeStart);
+
+  for (const handler of [
+    serverSource.slice(directStart, directEnd),
+    serverSource.slice(startOrResumeStart, startOrResumeEnd),
+  ]) {
+    assert.match(handler, /requireCanonicalWorkRead|canonicalVisibleWorkIds/);
+    assert.match(handler, /"work\.continuity\.resume_or_bind"/);
+    assert.match(handler, /`\$\{(?:canonicalWork\.project_id|projectId)\}:\$\{sessionId\}`/);
+    assert.match(handler, /identity\.agentPresence\?\.session_id/);
+    assert.doesNotMatch(handler, /"work\.continuity\.resume"/);
+    assert.doesNotMatch(handler, /owner_confirmed|confirmation_reference|owner_confirmed_governed_action/);
+  }
+  const direct = serverSource.slice(directStart, directEnd);
+  assert.match(direct, /args\.idempotency_key/);
+  assert.match(direct, /\{ \.\.\.args, session_id: sessionId \}/);
 });
 
 test("exact Work resume establishes only the bounded Nyra read binding after ACL authorization", () => {
@@ -1171,8 +1241,8 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_VERSION, CORE_HEALTH_CONTRACT_VERSION);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_DIGEST, CORE_HEALTH_CONTRACT_DIGEST);
-  assert.equal(health.version, "0.18.0-nyra-finalize-frontdoor");
-  assert.equal(health.tool_contract_revision, "nyra-finalize-published-frontdoor-v1");
+  assert.equal(health.version, "0.19.0-nyra-nonblocking-fast-path");
+  assert.equal(health.tool_contract_revision, "nyra-risk-tier-fast-path-v1");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -1538,6 +1608,7 @@ test("production on PostgreSQL 18 becomes ready after required runtimes initiali
   const readiness = {
     continuityInitialized: false,
     decisionLedgerInitialized: false,
+    cloudMemoryInitialized: false,
   };
   const productionConfig = {
     ...config,
@@ -1583,9 +1654,11 @@ test("production on PostgreSQL 18 becomes ready after required runtimes initiali
     assert.deepEqual(pending.readiness.reasons, [
       "continuity_not_initialized",
       "decision_ledger_not_initialized",
+      "cloud_memory_not_initialized",
     ]);
     readiness.continuityInitialized = true;
     readiness.decisionLedgerInitialized = true;
+    readiness.cloudMemoryInitialized = true;
     const readyResponse = await fetch(healthUrl);
     const ready = await readyResponse.json();
     assert.equal(readyResponse.status, 200);
@@ -1958,6 +2031,7 @@ test("production MCP readiness rejects PostgreSQL 15 and probe errors", async ()
       readiness: {
         continuityInitialized: true,
         decisionLedgerInitialized: true,
+        cloudMemoryInitialized: true,
       },
       postgresMajorVersionProbe: postgresMajorProbe(serverVersion),
     });
@@ -2040,6 +2114,7 @@ test("host-native security prerequisites are production-and-feature scoped", () 
     readiness: {
       continuityInitialized: true,
       postgresMajorVersion: { major: 16, verified: true },
+      cloudMemoryInitialized: true,
     },
   });
   assert.equal(complete.components.host_native_security.required, true);
@@ -2639,7 +2714,8 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
     headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
   }).then((result) => result.json());
-  assert.equal(initialized.result.serverInfo.version, "0.18.0-nyra-finalize-frontdoor");
+  assert.equal(initialized.result.serverInfo.version, "0.19.0-nyra-nonblocking-fast-path");
+  assert(Buffer.byteLength(initialized.result.instructions, "utf8") < 1_000);
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
   assert.equal(response.status, 200);
   const body = await response.json();
@@ -2752,7 +2828,19 @@ test("production compact mode exposes only the stable connector surface", async 
           TOOLS.some((tool) => tool.name === name) && !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name)));
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
-      assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+      assert(Buffer.byteLength(JSON.stringify(body)) < 32 * 1024);
+      const compactConverse = body.result.tools.find((tool) => tool.name === "nyra_converse");
+      const compactContinue = body.result.tools.find((tool) => tool.name === "nyra_continue");
+      assert(compactConverse.outputSchema);
+      assert.equal(compactConverse.outputSchema.additionalProperties, true);
+      assert(Buffer.byteLength(JSON.stringify(compactConverse)) < 5 * 1024);
+      assert.equal(compactContinue.inputSchema.properties.action_request.additionalProperties, true);
+      assert.equal(
+        TOOLS.find((tool) => tool.name === "nyra_continue")
+          .inputSchema.properties.action_request.additionalProperties,
+        false,
+        "server-side validation must retain the exhaustive closed schema",
+      );
 
       const resources = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
         method: "POST",
@@ -3110,27 +3198,20 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.equal(response.headers.get("mcp-session-id"), "mcp-app-test-session");
   assert.match(body.result.instructions, /nyra_research_plan/);
   assert.match(body.result.instructions, /authenticated host's web tool/);
-  assert.match(body.result.instructions, /never include secrets/i);
-  assert.match(body.result.instructions, /governed MCP connector/);
-  assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
-  assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
-  assert.match(body.result.instructions, /Never call provider tools, open setup panels/);
-  assert.match(body.result.instructions, /Old provider links are retired/);
+  assert.match(body.result.instructions, /tenant-isolated shadow memory/);
+  assert.match(body.result.instructions, /Never ask for API keys/);
+  assert.match(body.result.instructions, /provider tools, setup panels, or retired provider links/);
+  assert.match(body.result.instructions, /Neither bypasses host policy or needs a provider API key/);
+  assert.match(body.result.instructions, /Keep secrets and raw customer data out/);
   assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
   assert.doesNotMatch(body.result.instructions, /provider test/);
   assert.doesNotMatch(body.result.instructions, /manual_dry_run/);
   assert.doesNotMatch(body.result.instructions, /Researcher â Reviewer â Nyra Synthesizer/);
   assert.doesNotMatch(body.result.instructions, /bounded_execution_ready=true/);
-  assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
-  assert.match(body.result.instructions, /AUTOMATIC/);
-  assert.match(body.result.instructions, /NOT AUTOMATIC/);
-  assert.match(body.result.instructions, /HOST-NATIVE MULTI-AGENT/);
-  assert.match(body.result.instructions, /provider_execution=false/);
-  assert.match(body.result.instructions, /provider_api_key_required=false/);
-  assert.match(body.result.instructions, /cannot click, bypass or replace the registered host's approval/i);
-  assert.match(body.result.instructions, /RESEARCH DISTILLATION/);
-  assert.match(body.result.instructions, /tenant-isolated shadow workspace/);
-  assert.match(body.result.instructions, /never invokes a server-side model provider/i);
+  assert.match(body.result.instructions, /Host-native agents use narrow roles and host assignments/);
+  assert.match(body.result.instructions, /automatic coordination never invokes a server-side model provider/i);
+  assert.match(body.result.instructions, /or replaces host approval/);
+  assert.ok(body.result.instructions.length < 1_500, "initialize instructions must stay compact");
 }));
 
 test("keeps native Core-governed controls outside generic shared-memory preflight", () => {
@@ -3271,6 +3352,29 @@ test("requires generic preflight for dynamic invoke except signed presence and W
   );
 });
 
+test("terminal closure entrypoints bypass only generic continuity preflight", () => {
+  const closureEntrypoints = [
+    "nyra_verified_work_finalize",
+    "work_continuity_generic_closure_finalize",
+    "work_continuity_closure_evaluate",
+    "work_continuity_closure_rejoin_persisted_release",
+    "work_continuity_closure_finalize",
+  ];
+  for (const capability_id of closureEntrypoints) {
+    assert.equal(requiresGenericWorkPreflight(capability_id, { work_id: "work-terminal" }), false, capability_id);
+    assert.equal(requiresCanonicalWorkReadAuthorization(capability_id, { work_id: "work-terminal" }), true, capability_id);
+    assert.equal(requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id,
+      arguments: { work_id: "work-terminal" },
+    }), false, `dynamic:${capability_id}`);
+    assert.equal(requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id,
+      arguments: { work_id: "work-terminal" },
+    }), true, `dynamic:${capability_id}`);
+  }
+  assert.equal(requiresGenericWorkPreflight("tenant_work_task_record", { work_id: "work-active" }), true);
+});
+
 test("legacy reconciliation keeps exact Work ACL while bypassing continuity preflight", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const hookStart = serverSource.indexOf("requireTenantWorkRequestAuthorization(identity");
@@ -3341,6 +3445,84 @@ test("dispatches only exact Work bootstrap invokes without injecting generic pre
       required: false,
     })));
     assert.equal(received.length, capabilityIds.length);
+    assert.equal(received.every((args) => args.work_preflight === undefined), true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("MCP terminal closure replay reaches handlers without extending continuity", async () => {
+  const closureEntrypoints = [
+    "nyra_verified_work_finalize",
+    "work_continuity_generic_closure_finalize",
+    "work_continuity_closure_evaluate",
+    "work_continuity_closure_rejoin_persisted_release",
+    "work_continuity_closure_finalize",
+  ];
+  const received = [];
+  const canonicalChecks = [];
+  let genericLifecycleCalls = 0;
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_invoke: async (args) => {
+        received.push(args);
+        return {
+          structuredContent: {
+            ok: true,
+            result: { terminal_replay: true, closed: true, completed: true },
+          },
+          content: [],
+        };
+      },
+    },
+    beforeToolCall: async ({ toolName, args }) => {
+      if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
+        canonicalChecks.push(args.capability_id);
+      }
+      if (requiresGenericWorkPreflight(toolName, args)) {
+        genericLifecycleCalls += 1;
+        throw new Error("terminal_work_must_not_extend_continuity");
+      }
+      return { preflight: null };
+    },
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    for (const [index, capability_id] of closureEntrypoints.entries()) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `mcp-terminal-replay-${index}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `terminal-replay-${index}`,
+          method: "tools/call",
+          params: {
+            name: "core_capability_invoke",
+            arguments: {
+              capability_id,
+              catalog_revision: "a".repeat(64),
+              idempotency_key: `terminal-replay-${index}`,
+              arguments: {
+                work_id: "740915b2-a259-4cd9-b9c7-053854aeb3a5",
+                plan_id: "plan-terminal",
+              },
+            },
+          },
+        }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.result?.structuredContent?.result?.terminal_replay, true, JSON.stringify(body));
+    }
+    assert.equal(genericLifecycleCalls, 0);
+    assert.deepEqual(canonicalChecks, closureEntrypoints);
+    assert.deepEqual(received.map((args) => args.capability_id), closureEntrypoints);
     assert.equal(received.every((args) => args.work_preflight === undefined), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -4304,7 +4486,7 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
   const order = [];
   const app = createApp(config, {
     handlers: {
-      search: async () => {
+      scenario_analysis: async () => {
         order.push("tool");
         return { structuredContent: { documents: [] }, content: [{ type: "text", text: "[]" }] };
       },
@@ -4328,7 +4510,7 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
     const response = await fetch(`${base}/mcp`, {
       method: "POST",
       headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "search", arguments: { query: "current work" } } }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "scenario_analysis", arguments: { question: "current work" } } }),
     });
     const body = await response.json();
     assert.equal(response.status, 200);

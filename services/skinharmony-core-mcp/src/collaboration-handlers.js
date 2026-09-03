@@ -5,6 +5,12 @@ import { createAgentPresence } from "./agent-presence.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 import { authorizePresenceRecovery } from "./presence-recovery.js";
+import {
+  agentIsAfterCursor,
+  compareAgentsNewestFirst,
+  encodeAgentListCursor,
+  normalizeAgentListArgs,
+} from "./agent-list-pagination.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
@@ -458,10 +464,22 @@ export function createCollaborationHandlers(config, options = {}) {
       }, recovery_context ? { context: recovery_context, agentId, customMetadata } : null);
     },
 
-    agent_list: async (_args, identity) => {
-      if (postgres) return postgres.listAgents(identity);
+    agent_list: async (args, identity) => {
+      if (postgres) return postgres.listAgents(args, identity);
       const state = readState(root, identity.tenantId);
-      return textResult({ agents: state.agents.map(publicAgent), revision: state.revision });
+      const { limit, cursor } = normalizeAgentListArgs(args);
+      const available = state.agents
+        .filter((agent) => agentIsAfterCursor(agent, cursor))
+        .sort(compareAgentsNewestFirst);
+      const hasMore = available.length > limit;
+      const page = available.slice(0, limit);
+      return textResult({
+        agents: page.map(publicAgent),
+        revision: state.revision,
+        limit,
+        has_more: hasMore,
+        next_cursor: hasMore && page.length ? encodeAgentListCursor(page.at(-1)) : null,
+      });
     },
 
     message_post: async ({ from_agent_id, to_agent_id = "all", body, thread_id = "", idempotency_key = "" }, identity) => {
@@ -569,7 +587,7 @@ export function createCollaborationHandlers(config, options = {}) {
   // This private hook persists that exact signed session before any work or
   // tenant data is read. It accepts no display name, capability or actor data
   // from a tool payload, so registration cannot be used for privilege gain.
-  return {
+  const runtime = {
     ...handlers,
     registerAuthenticatedPresence: async (identity) => {
       const bound = identity?.agentPresence || {};
@@ -585,6 +603,16 @@ export function createCollaborationHandlers(config, options = {}) {
       }, identity);
     },
   };
+  // Bootstrap controls are intentionally non-enumerable: server.js can start
+  // and observe PostgreSQL DDL before accepting traffic, while the controls
+  // can never become MCP handlers through object spreading.
+  if (postgres) {
+    Object.defineProperties(runtime, {
+      initialize: { value: postgres.initialize, enumerable: false },
+      initializationStatus: { value: postgres.initializationStatus, enumerable: false },
+    });
+  }
+  return runtime;
 }
 
 export { logicalPath, tenantRoot };

@@ -5,6 +5,8 @@ import {
   buildAcceptanceContract,
   buildIntentAnchor,
   buildNativeAgentPlan,
+  buildNativeV2TaskBinding,
+  buildPrecommitAcceptancePolicy,
   digest,
   evaluateNativeClosure,
   evaluateTaskScopedNativeVerifierEvidence,
@@ -75,16 +77,45 @@ function closurePlan() {
       text: criterion.text,
     }),
   }));
+  const acceptanceContract = {
+    schema_version: "intent_acceptance_contract_v1",
+    intent_digest: intent.intent_digest,
+    criteria,
+    criteria_digest: digest(criteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
   return {
     ...plan,
-    acceptance_contract: {
-      schema_version: "intent_acceptance_contract_v1",
-      intent_digest: intent.intent_digest,
-      criteria,
-      criteria_digest: digest(criteria),
-      evidence_required: true,
-      independent_verifier_required: true,
+    acceptance_contract: acceptanceContract,
+    precommit_acceptance_policy: buildPrecommitAcceptancePolicy(acceptanceContract),
+  };
+}
+
+function futureReleasePlan() {
+  const intent = buildIntentAnchor({
+    project_id: "skinharmony",
+    session_id: "continuity-v2-future-release",
+    initial_message: "Prepare the bounded change, then merge and deploy through separate tickets.",
+    idea: "Deadlock-free ticketed release",
+    objective: "Create an independently verified local commit before downstream release effects.",
+    acceptance_criteria: [
+      "The pull request is merged after required checks pass.",
+      "The Render deployment is healthy at the released commit.",
+    ],
+    constraints: ["Do not weaken safety, authorized scope, or test gates."],
+    host_type: "codex_native",
+  });
+  const plan = nativePlan();
+  const acceptanceContract = buildAcceptanceContract(intent.anchor, intent.intent_digest);
+  return {
+    ...plan,
+    closure_requirements: {
+      ...plan.closure_requirements,
+      live_verification_required: true,
     },
+    acceptance_contract: acceptanceContract,
+    precommit_acceptance_policy: buildPrecommitAcceptancePolicy(acceptanceContract),
   };
 }
 
@@ -418,6 +449,140 @@ test("matching precommit evidence becomes commit-ticket ready without closing re
     "verifier_precommit_evidence_mismatch:codex-verifier"));
 });
 
+test("precommit ticket defers future release proof but preserves every explicit safety gate", () => {
+  const plan = futureReleasePlan();
+  const agents = precommitAgents(plan);
+  const deferredCriteria = plan.acceptance_contract.criteria
+    .filter((criterion) => ["objective", "acceptance"].includes(criterion.criterion_kind));
+  const safetyCriterion = plan.acceptance_contract.criteria
+    .find((criterion) => criterion.criterion_kind === "constraint");
+  agents[1].report.acceptance_evidence = plan.acceptance_contract.criteria
+    .filter((criterion) => criterion.criterion_kind === "constraint")
+    .map((criterion) => ({
+      criterion_digest: criterion.criterion_digest,
+      passed: true,
+      evidence_refs: [`precommit:${criterion.criterion_id}`],
+    }));
+
+  const ready = evaluateNativeClosure({ plan, agents });
+  assert.equal(ready.commit_ticket_ready, true);
+  assert.equal(ready.precommit_verification.ready, true);
+  assert.equal(ready.precommit_verification.acceptance_policy_valid, true);
+  assert.equal(ready.closed, false);
+  assert.ok(ready.missing.includes("live_verification_missing"));
+  for (const criterion of deferredCriteria) {
+    assert.ok(ready.missing.includes(`acceptance_evidence_missing:${criterion.criterion_id}`));
+  }
+
+  const fullyProvenAgents = precommitAgents(plan);
+  fullyProvenAgents[1].report.live_verified = true;
+  const missingPolicyPlan = structuredClone(plan);
+  delete missingPolicyPlan.precommit_acceptance_policy;
+  const legacyStrictReady = evaluateNativeClosure({
+    plan: missingPolicyPlan,
+    agents: fullyProvenAgents,
+  });
+  assert.equal(legacyStrictReady.commit_ticket_ready, true);
+  assert.equal(legacyStrictReady.precommit_verification.acceptance_policy_mode, "legacy_strict");
+  assert.equal(legacyStrictReady.precommit_verification.acceptance_policy_valid, null);
+
+  const legacyStrictIncomplete = evaluateNativeClosure({
+    plan: missingPolicyPlan,
+    agents,
+  });
+  assert.equal(legacyStrictIncomplete.commit_ticket_ready, false);
+  assert.ok(legacyStrictIncomplete.missing.includes("live_verification_missing"));
+
+  const tamperedPolicyPlan = structuredClone(plan);
+  tamperedPolicyPlan.precommit_acceptance_policy.deferred_criterion_digests.pop();
+  const tamperedPolicy = evaluateNativeClosure({
+    plan: tamperedPolicyPlan,
+    agents: fullyProvenAgents,
+  });
+  assert.equal(tamperedPolicy.commit_ticket_ready, false);
+  assert.equal(tamperedPolicy.precommit_verification.acceptance_policy_mode, "invalid");
+  assert.equal(tamperedPolicy.precommit_verification.acceptance_policy_valid, false);
+
+  const missingConstraint = structuredClone(agents);
+  missingConstraint[1].report.acceptance_evidence = [{
+    criterion_digest: deferredCriteria[0].criterion_digest,
+    passed: true,
+    evidence_refs: ["precommit:objective"],
+  }];
+  const constraintBlocked = evaluateNativeClosure({ plan, agents: missingConstraint });
+  assert.equal(constraintBlocked.commit_ticket_ready, false);
+  assert.ok(constraintBlocked.missing.includes(
+    `acceptance_evidence_missing:${safetyCriterion.criterion_id}`));
+
+  const explicitDissent = structuredClone(agents);
+  explicitDissent[1].report.acceptance_evidence
+    .find((item) => item.criterion_digest === safetyCriterion.criterion_digest)
+    .passed = false;
+  const dissentBlocked = evaluateNativeClosure({ plan, agents: explicitDissent });
+  assert.equal(dissentBlocked.commit_ticket_ready, false);
+  assert.ok(dissentBlocked.missing.includes(`acceptance_dissent:${safetyCriterion.criterion_id}`));
+
+  const failingTest = structuredClone(agents);
+  failingTest[0].report.tests[0].passed = false;
+  const testBlocked = evaluateNativeClosure({ plan, agents: failingTest });
+  assert.equal(testBlocked.commit_ticket_ready, false);
+  assert.ok(testBlocked.missing.includes("test_failure_present"));
+
+  const mismatchedDiff = structuredClone(agents);
+  mismatchedDiff[1].report.precommit_evidence.diff_digest = "e".repeat(64);
+  const verifierEvidence = { ...mismatchedDiff[1].report.precommit_evidence };
+  delete verifierEvidence.workspace_digest;
+  mismatchedDiff[1].report.precommit_evidence.workspace_digest = digest(verifierEvidence);
+  const mismatchBlocked = evaluateNativeClosure({ plan, agents: mismatchedDiff });
+  assert.equal(mismatchBlocked.commit_ticket_ready, false);
+  assert.ok(mismatchBlocked.missing.includes(
+    "verifier_precommit_evidence_mismatch:codex-verifier"));
+
+  const reusedIdentity = structuredClone(agents);
+  reusedIdentity[1].native_session_fingerprint = reusedIdentity[0].native_session_fingerprint;
+  const independenceBlocked = evaluateNativeClosure({ plan, agents: reusedIdentity });
+  assert.equal(independenceBlocked.commit_ticket_ready, false);
+  assert.ok(independenceBlocked.missing.includes("independent_verifier_missing"));
+  assert.ok(independenceBlocked.missing.includes("native_agent_session_reused"));
+
+  const rejectedVerdict = structuredClone(agents);
+  rejectedVerdict[1].report.verdict = "rejected";
+  const verdictBlocked = evaluateNativeClosure({ plan, agents: rejectedVerdict });
+  assert.equal(verdictBlocked.commit_ticket_ready, false);
+  assert.ok(verdictBlocked.missing.includes("verifier_not_approved:codex-verifier"));
+
+  const missingCoverage = structuredClone(agents);
+  missingCoverage[1].report.verifies_task_ids = [];
+  const coverageBlocked = evaluateNativeClosure({ plan, agents: missingCoverage });
+  assert.equal(coverageBlocked.commit_ticket_ready, false);
+  assert.ok(coverageBlocked.missing.includes("verification_coverage_missing:build"));
+});
+
+test("V2 task bindings canonicalize UUIDs and hash exact persisted titles without leaking them", () => {
+  const input = {
+    tenant_id: "tenant-a",
+    work_id: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+    task_id: "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB",
+    weight: 1,
+    required: true,
+  };
+  const alpha = buildNativeV2TaskBinding({
+    ...input,
+    title: "Deploy token=alpha-secret-value-111",
+  });
+  const beta = buildNativeV2TaskBinding({
+    ...input,
+    title: "Deploy token=beta-secret-value-222",
+  });
+  assert.equal(alpha.work_id, input.work_id.toLowerCase());
+  assert.equal(alpha.task_id, input.task_id.toLowerCase());
+  assert.notEqual(alpha.title_digest, beta.title_digest);
+  assert.notEqual(alpha.v2_task_digest, beta.v2_task_digest);
+  assert.equal(alpha.title_preview, beta.title_preview);
+  assert.match(alpha.title_preview, /\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify(alpha), /alpha-secret-value-111/);
+});
+
 test("task-scoped verifier evidence promotes one V2 task without closing incomplete Work criteria", () => {
   const plan = closurePlan();
   const v2TaskId = "11111111-1111-4111-8111-111111111111";
@@ -485,6 +650,164 @@ test("task-scoped verifier evidence rejects missing coverage, tests, evidence an
     assert.equal(evaluation.promotable, false, label);
     assert.ok(evaluation.missing.includes(expectedMissing), label);
   }
+});
+
+test("task-scoped verifier rejects a peer bound to a different V2 task definition", () => {
+  const plan = closurePlan();
+  const peerPlan = structuredClone(plan);
+  peerPlan.tasks.push({
+    task_id: "verify-peer",
+    kind: "verifier",
+    instruction: "Independently verify the same bound V2 task.",
+    dependencies: ["build"],
+    task_digest: "6".repeat(64),
+  });
+  const v2TaskId = "22222222-2222-4222-8222-222222222222";
+  const agents = completedAgents(plan).map((agent) => ({
+    ...agent,
+    v2_task_id: v2TaskId,
+    v2_task_digest: "4".repeat(64),
+  }));
+  const peer = structuredClone(agents[1]);
+  peer.task_id = "verify-peer";
+  peer.agent_id = "codex-peer-verifier";
+  peer.native_session_fingerprint = "e".repeat(64);
+  peer.native_presence_signature = `ags_${"e".repeat(32)}`;
+  peer.v2_task_digest = "5".repeat(64);
+  const evaluation = evaluateTaskScopedNativeVerifierEvidence({
+    plan: peerPlan,
+    agents: [...agents, peer],
+    verifier_task_id: "verify",
+  });
+  assert.equal(evaluation.promotable, false);
+  assert.ok(evaluation.missing.includes("task_scoped_v2_task_binding_mismatch"));
+  assert.equal(evaluation.scoped_report_bindings.length, 3);
+  const withoutPeer = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.notEqual(evaluation.evaluation_digest, withoutPeer.evaluation_digest);
+
+  const unattestedPeer = structuredClone(agents[1]);
+  unattestedPeer.task_id = "verify-peer";
+  unattestedPeer.agent_id = "codex-peer-verifier";
+  unattestedPeer.native_session_fingerprint = "e".repeat(64);
+  unattestedPeer.native_presence_signature = `ags_${"e".repeat(32)}`;
+  unattestedPeer.report.acceptance_evidence = [];
+  unattestedPeer.report.evidence_refs = ["review:peer-without-task-attestation"];
+  const unattestedPeerBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan: peerPlan,
+    agents: [...agents, unattestedPeer],
+    verifier_task_id: "verify",
+  });
+  assert.equal(unattestedPeerBlocked.promotable, false);
+  assert.ok(unattestedPeerBlocked.missing.includes(
+    "task_scoped_peer_v2_task_attestation_missing:verify-peer"));
+});
+
+test("task-scoped verifier promotes empty acceptance only for exact normalized precommit evidence", () => {
+  const plan = closurePlan();
+  const v2TaskId = "33333333-3333-4333-8333-333333333333";
+  const v2TaskDigest = "4".repeat(64);
+  const agents = precommitAgents(plan).map((agent) => ({
+    ...agent,
+    v2_task_id: v2TaskId,
+    v2_task_digest: v2TaskDigest,
+  }));
+  agents[1].report.acceptance_evidence = [];
+  agents[1].report.evidence_refs.push(`v2-task:${v2TaskDigest}`);
+
+  const accepted = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.equal(accepted.promotable, true);
+  assert.equal(
+    accepted.precommit_workspace_digest,
+    agents[0].report.precommit_evidence.workspace_digest,
+  );
+  assert.equal(accepted.v2_task_digest, v2TaskDigest);
+
+  const missingTaskAttestation = structuredClone(agents);
+  missingTaskAttestation[1].report.evidence_refs = ["review:precommit"];
+  const taskAttestationBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents: missingTaskAttestation,
+    verifier_task_id: "verify",
+  });
+  assert.equal(taskAttestationBlocked.promotable, false);
+  assert.ok(taskAttestationBlocked.missing.includes("task_scoped_v2_task_attestation_missing"));
+
+  const changedTaskBinding = structuredClone(agents);
+  changedTaskBinding[1].v2_task_digest = "5".repeat(64);
+  const changedTaskBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents: changedTaskBinding,
+    verifier_task_id: "verify",
+  });
+  assert.equal(changedTaskBlocked.promotable, false);
+  assert.ok(changedTaskBlocked.missing.includes("task_scoped_precommit_evidence_mismatch"));
+
+  const peerPlan = structuredClone(plan);
+  peerPlan.tasks.push({
+    task_id: "verify-peer",
+    kind: "verifier",
+    instruction: "Independently dissent when the task evidence is insufficient.",
+    dependencies: ["build"],
+    task_digest: "6".repeat(64),
+  });
+  const peerDissent = structuredClone(agents[1]);
+  peerDissent.task_id = "verify-peer";
+  peerDissent.agent_id = "codex-peer-verifier";
+  peerDissent.native_session_fingerprint = "e".repeat(64);
+  peerDissent.native_presence_signature = `ags_${"e".repeat(32)}`;
+  peerDissent.report.verdict = "rejected";
+  const peerDissentBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan: peerPlan,
+    agents: [...agents, peerDissent],
+    verifier_task_id: "verify",
+  });
+  assert.equal(peerDissentBlocked.promotable, false);
+  assert.ok(peerDissentBlocked.missing.includes("task_scoped_peer_verifier_not_approved"));
+
+  const mismatch = structuredClone(agents);
+  mismatch[1].report.precommit_evidence.diff_digest = "e".repeat(64);
+  const verifierEvidence = { ...mismatch[1].report.precommit_evidence };
+  delete verifierEvidence.workspace_digest;
+  mismatch[1].report.precommit_evidence.workspace_digest = digest(verifierEvidence);
+  const mismatchBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents: mismatch,
+    verifier_task_id: "verify",
+  });
+  assert.equal(mismatchBlocked.promotable, false);
+  assert.ok(mismatchBlocked.missing.includes("task_scoped_precommit_evidence_mismatch"));
+
+  const dissent = structuredClone(agents);
+  dissent[1].report.acceptance_evidence = [{
+    criterion_digest: plan.acceptance_contract.criteria[0].criterion_digest,
+    passed: false,
+    evidence_refs: ["dissent:task-scope"],
+  }];
+  const dissentBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents: dissent,
+    verifier_task_id: "verify",
+  });
+  assert.equal(dissentBlocked.promotable, false);
+  assert.ok(dissentBlocked.missing.includes("task_scoped_verifier_evidence_rejected"));
+
+  const failedTest = structuredClone(agents);
+  failedTest[0].report.tests[0].passed = false;
+  const testBlocked = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents: failedTest,
+    verifier_task_id: "verify",
+  });
+  assert.equal(testBlocked.promotable, false);
+  assert.ok(testBlocked.missing.includes("task_scoped_test_failure_present:build"));
 });
 
 test("aggregate Atlas preserves cross-work provenance and stays inside the bounded change cone", () => {

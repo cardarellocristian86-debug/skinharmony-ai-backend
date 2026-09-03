@@ -87,3 +87,141 @@ test("reconciliation proves an exact effect without repeating it", async () => {
   assert.equal(outcome.state, "succeeded");
   assert.equal(outcome.result.reconciled, true);
 });
+
+test("draft PR reconciliation searches bounded pages before proving the exact effect", async () => {
+  const calls = [];
+  const exactPull = {
+    number: 42,
+    head: { sha: "a".repeat(40) },
+    base: { sha: "b".repeat(40) },
+  };
+  const reconciler = createGitHubReconciler({
+    installation_token: async () => "temporary-installation-token",
+    fetch_impl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.includes("page=1")) {
+        return response(Array.from({ length: 20 }, (_, index) => ({
+          number: index + 1,
+          head: { sha: "c".repeat(40) },
+          base: { sha: "b".repeat(40) },
+        })));
+      }
+      return response([exactPull]);
+    },
+  });
+  const outcome = await reconciler({ ...base, action: {
+    ...common,
+    kind: "github.draft_pr",
+    head_branch: "agent/change",
+    base_branch: "main",
+    head_commit: "a".repeat(40),
+    expected_base_commit: "b".repeat(40),
+  }});
+  assert.equal(outcome.state, "succeeded");
+  assert.equal(outcome.result.result_pull_request, 42);
+  assert.equal(calls.length, 2);
+  assert(calls.every(({ options }) => options.method === "GET"));
+});
+
+test("draft PR reconciliation never proves absence from a full bounded result set", async () => {
+  const calls = [];
+  const reconciler = createGitHubReconciler({
+    installation_token: async () => "temporary-installation-token",
+    fetch_impl: async (url, options) => {
+      calls.push({ url, options });
+      return response(Array.from({ length: 20 }, (_, index) => ({
+        number: index + 1,
+        head: { sha: "c".repeat(40) },
+        base: { sha: "b".repeat(40) },
+      })));
+    },
+  });
+  await assert.rejects(reconciler({ ...base, action: {
+    ...common,
+    kind: "github.draft_pr",
+    head_branch: "agent/change",
+    base_branch: "main",
+    head_commit: "a".repeat(40),
+    expected_base_commit: "b".repeat(40),
+  }}), (error) => error.code === "github_worker_reconciliation_ambiguous");
+  assert.equal(calls.length, 5);
+  assert(calls.every(({ options }) => options.method === "GET"));
+});
+
+test("a timed-out GitHub mutation is aborted once and never retried", async () => {
+  const calls = [];
+  let mutationSignal = null;
+  const execute = createGitHubExecutor({
+    installation_token: async () => "temporary-installation-token",
+    request_timeout_ms: 10,
+    fetch_impl: async (url, options) => {
+      calls.push({ url, options });
+      if (calls.length === 1) return response({ object: { sha: "b".repeat(40) } });
+      mutationSignal = options.signal;
+      return new Promise(() => {});
+    },
+  });
+  await assert.rejects(execute({ ...base, action: {
+    ...common, kind: "git.push.branch", branch: "agent/change", source_commit: "a".repeat(40),
+    expected_remote_commit: "b".repeat(40), changed_files: ["src/app.js"], induced_effects: [],
+  }}), (error) => error.code === "github_api_request_timeout" && error.status === 504);
+  assert.equal(calls.length, 2);
+  assert.equal(mutationSignal?.aborted, true);
+});
+
+test("the cold token-read-mutation path shares one shrinking request deadline", async () => {
+  let clock = 0;
+  let tokenBudget = null;
+  let mutationSignal = null;
+  const calls = [];
+  const execute = createGitHubExecutor({
+    request_timeout_ms: 30,
+    request_deadline_ms: 35,
+    deadline_now: () => clock,
+    installation_token: async (_binding, { deadline }) => {
+      tokenBudget = deadline.remainingTimeoutMs(30);
+      clock += 10;
+      return "temporary-installation-token";
+    },
+    fetch_impl: async (url, options) => {
+      calls.push({ url, options });
+      if (calls.length === 1) {
+        clock += 20;
+        return response({ object: { sha: "b".repeat(40) } });
+      }
+      mutationSignal = options.signal;
+      return new Promise(() => {});
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(execute({ ...base, action: {
+    ...common, kind: "git.push.branch", branch: "agent/change", source_commit: "a".repeat(40),
+    expected_remote_commit: "b".repeat(40), changed_files: ["src/app.js"], induced_effects: [],
+  }}), (error) => error.code === "github_api_request_timeout" &&
+    error.execution_outcome === "unknown" && error.mutation_dispatched === true);
+  assert.equal(tokenBudget, 30);
+  assert.equal(calls.length, 2);
+  assert.equal(mutationSignal?.aborted, true);
+  assert(Date.now() - started < 200, "global residual budget must end the cold path promptly");
+});
+
+test("reconciliation rejects an oversized GitHub read without performing a mutation", async () => {
+  const calls = [];
+  const reconciler = createGitHubReconciler({
+    installation_token: async () => "temporary-installation-token",
+    response_limit_bytes: 64,
+    fetch_impl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({ payload: "x".repeat(256) }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await assert.rejects(reconciler({ ...base, action: {
+    ...common, kind: "git.push.branch", branch: "agent/change", source_commit: "a".repeat(40),
+    expected_remote_commit: "b".repeat(40), changed_files: ["src/app.js"], induced_effects: [],
+  }}), (error) => error.code === "github_api_response_too_large" && error.status === 502);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.method, "GET");
+});

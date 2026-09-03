@@ -7,6 +7,9 @@ import {
   digest,
 } from "../src/work-continuity-runtime.js";
 import {
+  createWorkContinuityClosureEvaluateHandler,
+} from "../src/work-continuity-closure-handler.js";
+import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   buildHostReleaseManifestV2,
   buildHostReleaseIntentV1,
@@ -53,7 +56,11 @@ class ContinuityPool {
     this.branches = new Map();
     this.leases = new Map();
     this.plans = new Map();
+    this.coreChanges = new Map();
+    this.softwareChangeConstraintPresent = false;
+    this.nativePlanInsertError = null;
     this.nativeAgents = new Map();
+    this.nativeReceipts = new Map();
     this.evaluations = new Map();
     this.releaseJoins = new Map();
     this.incidents = new Map();
@@ -132,6 +139,84 @@ class ContinuityPool {
         status: work.status,
         next_action: work.next_action,
       }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT project_id,status,next_action FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{
+        project_id: work.project_id,
+        status: work.status,
+        next_action: work.next_action,
+      }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT DISTINCT ON (i.fingerprint)")) {
+      const [tenantId, workId] = parameters;
+      const work = this.works.get(key(tenantId, workId));
+      const events = this.events.get(key(tenantId, workId)) || [];
+      const latest = new Map();
+      for (const event of events) {
+        if (event.event_type !== "incident_recorded") continue;
+        const fingerprint = event.payload?.fingerprint;
+        const incident = this.incidents.get(key(tenantId, work?.project_id, fingerprint));
+        if (incident?.scope?.error_code !== "NATIVE_CLOSURE_GAPS" ||
+            incident?.scope?.deployment_path !== "work_continuity_closure_evaluate" ||
+            incident?.scope?.connector !== "host-native-coordination") continue;
+        const reconciled = events.some((candidate) =>
+          candidate.event_type === "synthetic_incident_reconciled" &&
+          candidate.payload?.fingerprint === fingerprint &&
+          Number(candidate.sequence_number) > Number(event.sequence_number));
+        if (!reconciled && Number(event.sequence_number) >
+            Number(latest.get(fingerprint)?.recorded_sequence_number || 0)) {
+          latest.set(fingerprint, {
+            fingerprint,
+            recorded_sequence_number: Number(event.sequence_number),
+          });
+        }
+      }
+      const rows = [...latest.values()].sort((left, right) =>
+        left.fingerprint.localeCompare(right.fingerprint));
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT count(DISTINCT e.payload->>'fingerprint')::int AS blocker_count")) {
+      const [tenantId, workId] = parameters;
+      const work = this.works.get(key(tenantId, workId));
+      const events = this.events.get(key(tenantId, workId)) || [];
+      const blockers = new Set();
+      for (const event of events) {
+        if (event.event_type !== "incident_recorded") continue;
+        const fingerprint = event.payload?.fingerprint;
+        const incident = this.incidents.get(key(tenantId, work?.project_id, fingerprint));
+        const synthetic = incident?.scope?.error_code === "NATIVE_CLOSURE_GAPS" &&
+          incident?.scope?.deployment_path === "work_continuity_closure_evaluate" &&
+          incident?.scope?.connector === "host-native-coordination";
+        if (!incident || synthetic) continue;
+        const resolved = events.some((candidate) =>
+          ["incident_runbook_verified", "synthetic_incident_reconciled"].includes(
+            candidate.event_type,
+          ) && candidate.payload?.fingerprint === fingerprint &&
+          Number(candidate.sequence_number) > Number(event.sequence_number));
+        if (!resolved) blockers.add(fingerprint);
+      }
+      return { rows: [{ blocker_count: blockers.size }], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT status FROM core_continuity_native_plans")) {
+      if (q.includes("plan_id=$3")) {
+        const plan = this.plans.get(key(parameters[0], parameters[2]));
+        const exact = plan?.work_id === parameters[1] ? plan : null;
+        return {
+          rows: exact ? [{ status: exact.status }] : [],
+          rowCount: exact ? 1 : 0,
+        };
+      }
+      const rows = [...this.plans.values()]
+        .filter((plan) => plan.tenant_id === parameters[0] && plan.work_id === parameters[1])
+        .sort((left, right) => Number(right.plan_version || 0) - Number(left.plan_version || 0) ||
+          String(right.created_at).localeCompare(String(left.created_at)) ||
+          String(right.plan_id).localeCompare(String(left.plan_id)));
+      return { rows: rows[0] ? [{ status: rows[0].status }] : [], rowCount: rows[0] ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT status FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{ status: work.status }] : [], rowCount: work ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO core_continuity_control_contexts")) {
       const [tenantId, workId, projectId, workRevision, contextDigest, payload] = parameters;
@@ -233,6 +318,7 @@ class ContinuityPool {
         previous_event_hash: previousEventHash,
         event_hash: eventHash,
         created_by: createdBy,
+        created_at: this.clock().toISOString(),
       });
       this.events.set(eventKey, rows);
       return { rows: [], rowCount: 1 };
@@ -252,20 +338,96 @@ class ContinuityPool {
             .filter((plan) => plan.tenant_id === tenantId && plan.work_id === work.work_id)
             .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
           const plan = plans[0];
+          const incident = [...(this.events.get(key(tenantId, work.work_id)) || [])]
+            .reverse()
+            .find((event) => [
+              "incident_recorded",
+              "incident_runbook_verified",
+              "incident_runbook_quarantined",
+              "synthetic_incident_reconciled",
+            ].includes(event.event_type));
+          const incidentStatus = incident?.event_type === "incident_runbook_verified"
+            ? "verified"
+            : incident?.event_type === "incident_runbook_quarantined"
+              ? "quarantined"
+              : incident?.event_type === "synthetic_incident_reconciled"
+                ? "reconciled"
+                : incident?.payload?.status || (incident ? "candidate" : null);
           return {
             ...work,
             latest_plan_id: plan?.plan_id || null,
             latest_plan_status: plan?.status || null,
             latest_plan_created_at: plan?.created_at || null,
-            latest_incident_fingerprint: null,
-            latest_incident_status: null,
-            latest_incident_updated_at: null,
+            latest_incident_fingerprint: incident?.payload?.fingerprint || null,
+            latest_incident_status: incidentStatus,
+            latest_incident_updated_at: incident?.created_at || null,
             atlas_revision: null,
             atlas_source_hash: null,
             atlas_updated_at: null,
           };
         });
       return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT * FROM core_continuity_works WHERE")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{ ...work }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT version,architecture,impact_map,architecture_digest,reason,created_at")) {
+      const rows = [...this.architectures.entries()]
+        .filter(([entryKey]) => entryKey.startsWith(`${parameters[0]}\u0000${parameters[1]}\u0000`))
+        .map(([, row]) => ({ ...row }))
+        .sort((left, right) => Number(right.version) - Number(left.version));
+      return { rows: rows.slice(0, 1), rowCount: Math.min(rows.length, 1) };
+    }
+    if (q.startsWith("SELECT capsule_id,architecture_version,capsule,capsule_digest")) {
+      const row = this.capsules.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_at")) {
+      const limit = Number(parameters[2]);
+      const rows = [...(this.events.get(key(parameters[0], parameters[1])) || [])]
+        .sort((left, right) => Number(right.sequence_number) - Number(left.sequence_number))
+        .slice(0, limit)
+        .map((row) => ({ ...row }));
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at")) {
+      const rows = [...this.branches.values()].filter((row) =>
+        row.tenant_id === parameters[0] && row.work_id === parameters[1]);
+      return { rows: rows.map((row) => ({ ...row })), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT session_id,agent_id,client_type,branch_id,status,joined_at,last_seen_at,")) {
+      const rows = [...this.participants.values()].filter((row) =>
+        row.tenant_id === parameters[0] && row.work_id === parameters[1]);
+      return { rows: rows.map((row) => ({
+        ...row,
+        active: row.status === "active" && Date.parse(row.expires_at) > this.clock().getTime(),
+      })), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT l.lease_id,l.session_id,l.branch_id,l.purpose,l.status,l.acquired_at,")) {
+      const rows = [...this.leases.values()].filter((row) =>
+        row.tenant_id === parameters[0] && row.work_id === parameters[1]);
+      return { rows: rows.map((row) => ({ ...row, surfaces: [] })), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT sequence_number,payload,previous_event_hash,event_hash FROM core_continuity_events")) {
+      const row = [...(this.events.get(key(parameters[0], parameters[1])) || [])]
+        .reverse()
+        .find((event) => event.event_type === "closure_finalized");
+      return { rows: row ? [{
+        sequence_number: row.sequence_number,
+        payload: row.payload,
+        previous_event_hash: row.previous_event_hash,
+        event_hash: row.event_hash,
+      }] : [],
+        rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT payload_digest FROM core_continuity_native_receipts")) {
+      const rows = [...this.nativeReceipts.values()].filter((receipt) =>
+        receipt.tenant_id === parameters[0] && receipt.work_id === parameters[1] &&
+        receipt.plan_id === parameters[2] && receipt.receipt_type === "closure_finalized")
+        .sort((left, right) => String(right.receipt_id).localeCompare(String(left.receipt_id)));
+      return { rows: rows[0] ? [{ payload_digest: rows[0].payload_digest }] : [],
+        rowCount: rows[0] ? 1 : 0 };
     }
 
     if (q.startsWith("SELECT operation,request_digest,result FROM core_continuity_idempotency")) {
@@ -284,6 +446,9 @@ class ContinuityPool {
     if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+      return { rows: [], rowCount: 0 };
     }
     if (q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
       const branch = this.branches.get(key(parameters[0], parameters[1], parameters[2]));
@@ -500,6 +665,33 @@ class ContinuityPool {
       lease.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
       return { rows: [{ ...lease }], rowCount: 1 };
     }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='released'") &&
+        q.includes("expires_at=LEAST")) {
+      const rows = [];
+      for (const lease of this.leases.values()) {
+        if (lease.tenant_id === parameters[0] && lease.work_id === parameters[1] &&
+            lease.status === "active") {
+          lease.status = "released";
+          lease.released_at ||= this.clock().toISOString();
+          lease.expires_at = this.clock().toISOString();
+          rows.push({ lease_id: lease.lease_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET status='closed'")) {
+      const rows = [];
+      for (const participant of this.participants.values()) {
+        if (participant.tenant_id === parameters[0] &&
+            participant.work_id === parameters[1] && participant.status === "active") {
+          participant.status = "closed";
+          participant.last_seen_at = this.clock().toISOString();
+          participant.expires_at = this.clock().toISOString();
+          rows.push({ session_id: participant.session_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
     if (q.startsWith("UPDATE core_continuity_leases SET status='released'")) {
       const [tenantId, workId, leaseId, sessionId, agentId, branchId] = parameters;
       const lease = this.leases.get(key(tenantId, workId, leaseId));
@@ -534,14 +726,52 @@ class ContinuityPool {
       } : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
-    if (q.startsWith("SELECT plan_id,plan_version FROM core_continuity_native_plans")) {
+    if (q.startsWith("SELECT plan_id,plan_version,status FROM core_continuity_native_plans")) {
       const rows = [...this.plans.values()]
         .filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
         .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
           String(right.created_at).localeCompare(String(left.created_at)) || String(right.plan_id).localeCompare(String(left.plan_id)));
-      return { rows: rows.length ? [{ plan_id: rows[0].plan_id, plan_version: rows[0].plan_version || 1 }] : [], rowCount: rows.length ? 1 : 0 };
+      return {
+        rows: rows.slice(0, 1).map((row) => ({
+          plan_id: row.plan_id,
+          plan_version: row.plan_version || 1,
+          status: row.status,
+        })),
+        rowCount: rows.length ? 1 : 0,
+      };
+    }
+    if (q.startsWith("SELECT plan_id FROM core_continuity_native_plans") &&
+        q.includes("status='verified'")) {
+      const rows = [...this.plans.values()]
+        .filter((row) => row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1] && row.status === "verified")
+        .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
+          String(right.created_at).localeCompare(String(left.created_at)) ||
+          String(right.plan_id).localeCompare(String(left.plan_id)));
+      return {
+        rows: rows[0] ? [{ plan_id: rows[0].plan_id }] : [],
+        rowCount: rows[0] ? 1 : 0,
+      };
+    }
+    if (q.startsWith("SELECT EXISTS ( SELECT 1 FROM pg_constraint")) {
+      return {
+        rows: [{ enforced: this.softwareChangeConstraintPresent }],
+        rowCount: 1,
+      };
+    }
+    if (q.startsWith("SELECT 1 AS persisted FROM core_changes")) {
+      const row = this.coreChanges.get(key(parameters[0], parameters[1], parameters[2]));
+      return {
+        rows: row ? [{ persisted: 1 }] : [],
+        rowCount: row ? 1 : 0,
+      };
     }
     if (q.startsWith("INSERT INTO core_continuity_native_plans")) {
+      if (this.nativePlanInsertError) {
+        const error = this.nativePlanInsertError;
+        this.nativePlanInsertError = null;
+        throw error;
+      }
       const [tenantId, workId, planId, plan, planDigest, createdBy, changeId, baseStateDigest,
         contractSchema, planVersion, supersedesPlanId] = parameters;
       this.plans.set(key(tenantId, planId), {
@@ -561,7 +791,49 @@ class ContinuityPool {
       });
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("WITH superseded AS ( UPDATE core_continuity_native_plans")) {
+      const supersededPlanIds = [];
+      for (const row of this.plans.values()) {
+        if (row.tenant_id === parameters[0] && row.work_id === parameters[1] &&
+            row.plan_id !== parameters[2] && row.status === "planned") {
+          row.status = "superseded";
+          row.closed_at = this.clock().toISOString();
+          supersededPlanIds.push(row.plan_id);
+        }
+      }
+      const selected = new Set(supersededPlanIds);
+      let supersededAgentCount = 0;
+      for (const row of this.nativeAgents.values()) {
+        if (row.tenant_id === parameters[0] && row.work_id === parameters[1] &&
+            selected.has(row.plan_id) && row.status === "bound") {
+          row.status = "superseded";
+          supersededAgentCount += 1;
+        }
+      }
+      supersededPlanIds.sort();
+      return {
+        rows: [{
+          superseded_count: supersededPlanIds.length,
+          superseded_plan_ids: supersededPlanIds.slice(0, 100),
+          superseded_agent_count: supersededAgentCount,
+        }],
+        rowCount: 1,
+      };
+    }
     if (q.startsWith("INSERT INTO core_continuity_native_receipts")) {
+      const row = {
+        tenant_id: parameters[0],
+        work_id: parameters[1],
+        plan_id: parameters[2],
+        receipt_id: parameters[3],
+        receipt_type: parameters[4],
+        agent_id: parameters[5],
+        payload: JSON.parse(parameters[6]),
+        payload_digest: parameters[7],
+        created_by: parameters[8],
+        created_at: this.clock().toISOString(),
+      };
+      this.nativeReceipts.set(key(row.tenant_id, row.receipt_id), row);
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT plan,status FROM core_continuity_native_plans")) {
@@ -656,6 +928,14 @@ class ContinuityPool {
       }
       return { rows: [], rowCount: 0 };
     }
+    if (q.startsWith("UPDATE core_continuity_works SET status='active',next_action=")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      if (work?.status !== "blocked") return { rows: [], rowCount: 0 };
+      work.status = "active";
+      work.next_action = parameters[2];
+      work.updated_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
     if (q.startsWith("SELECT task_id,status FROM core_continuity_native_agents")) {
       const rows = [...this.nativeAgents.values()]
         .filter((candidate) =>
@@ -686,8 +966,8 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_native_agents")) {
       const [tenantId, workId, planId, taskId, agentId, hostType, hostTaskId,
-        taskKind, taskDigest, v2TaskId, coordinatorFingerprint, assignmentCapabilityDigest,
-        boundBy, leaseExpiresAt] = parameters;
+        taskKind, taskDigest, v2TaskId, v2TaskDigest, coordinatorFingerprint,
+        assignmentCapabilityDigest, boundBy, leaseExpiresAt] = parameters;
       this.nativeAgents.set(key(tenantId, planId, taskId), {
         tenant_id: tenantId,
         work_id: workId,
@@ -699,6 +979,7 @@ class ContinuityPool {
         task_kind: taskKind,
         task_digest: taskDigest,
         v2_task_id: v2TaskId,
+        v2_task_digest: v2TaskDigest,
         coordinator_session_fingerprint: coordinatorFingerprint,
         assignment_capability_digest: assignmentCapabilityDigest,
         native_session_fingerprint: null,
@@ -711,7 +992,7 @@ class ContinuityPool {
       });
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,")) {
+    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.host_type,a.host_task_id,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
         candidate.tenant_id === tenantId &&
@@ -724,6 +1005,7 @@ class ContinuityPool {
           task_id: row.task_id,
           task_digest: row.task_digest,
           v2_task_id: row.v2_task_id,
+          v2_task_digest: row.v2_task_digest,
           host_type: row.host_type,
           host_task_id: row.host_task_id,
           coordinator_session_fingerprint: row.coordinator_session_fingerprint,
@@ -735,7 +1017,7 @@ class ContinuityPool {
         rowCount: row && plan ? 1 : 0,
       };
     }
-    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,")) {
+    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
         candidate.tenant_id === tenantId &&
@@ -749,6 +1031,7 @@ class ContinuityPool {
           task_kind: row.task_kind,
           task_digest: row.task_digest,
           v2_task_id: row.v2_task_id,
+          v2_task_digest: row.v2_task_digest,
           plan: plan.plan,
           plan_digest: plan.plan_digest,
           plan_status: plan.status,
@@ -816,7 +1099,7 @@ class ContinuityPool {
         .map((row) => ({ ...row }));
       return { rows, rowCount: rows.length };
     }
-    if (q.startsWith("SELECT j.release_intent,j.release_intent_digest,")) {
+    if (q.startsWith("SELECT p.status,j.release_intent,j.release_intent_digest,")) {
       const joins = [...this.releaseJoins.values()]
         .filter((candidate) =>
           candidate.tenant_id === parameters[0] &&
@@ -827,9 +1110,11 @@ class ContinuityPool {
           String(right.created_at).localeCompare(String(left.created_at)) ||
           String(right.verdict_id).localeCompare(String(left.verdict_id)));
       const join = joins[0];
-      if (!join) return { rows: [], rowCount: 0 };
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      if (!join || !plan) return { rows: [], rowCount: 0 };
       return {
         rows: [{
+          status: plan.status,
           release_intent: join.release_intent,
           release_intent_digest: join.release_intent_digest,
           core_join_record: join.core_join_record,
@@ -1009,7 +1294,9 @@ class ContinuityPool {
     }
     if (q.startsWith("UPDATE core_continuity_works SET next_action=")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
-      work.next_action = parameters[2];
+      if (!(q.includes("CASE WHEN status='blocked'") && work.status === "blocked")) {
+        work.next_action = parameters[2];
+      }
       work.updated_at = this.clock().toISOString();
       return { rows: [], rowCount: 1 };
     }
@@ -1064,6 +1351,45 @@ class ContinuityPool {
   }
 
   async end() {}
+}
+
+class TransactionalContinuityPool extends ContinuityPool {
+  async connect() {
+    const pool = this;
+    const mapFields = [
+      "works", "architectures", "bindings", "anchors", "events", "idempotency",
+      "participants", "branches", "leases", "plans", "coreChanges", "nativeAgents", "nativeReceipts", "evaluations",
+      "releaseJoins", "incidents", "capsules", "controlContexts",
+    ];
+    let snapshot = null;
+    return {
+      async query(sql, parameters = []) {
+        const queryText = typeof sql === "string" ? sql : sql.text;
+        const q = queryText.replace(/\s+/g, " ").trim();
+        if (q === "BEGIN") {
+          snapshot = Object.fromEntries(mapFields.map((field) => [
+            field,
+            structuredClone(pool[field]),
+          ]));
+          return { rows: [], rowCount: 0 };
+        }
+        if (q === "COMMIT") {
+          snapshot = null;
+          return { rows: [], rowCount: 0 };
+        }
+        if (q === "ROLLBACK") {
+          if (snapshot) {
+            for (const field of mapFields) pool[field] = snapshot[field];
+          }
+          snapshot = null;
+          return { rows: [], rowCount: 0 };
+        }
+        if (q.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
+        return pool.query(queryText, parameters);
+      },
+      release() {},
+    };
+  }
 }
 
 const initialInput = {
@@ -1470,6 +1796,281 @@ test("Gallery admits multiple tenant-scoped participants and rejects session imp
     "participant_joined",
     "participant_joined",
   ]);
+});
+
+test("terminal Work rejects every coordination-extending Gallery mutation", async () => {
+  const clock = () => new Date("2026-07-31T11:10:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "terminal-gallery-owner";
+  const sessionId = "terminal-gallery-session";
+  const agentId = "terminal-gallery-agent";
+  const identity = galleryIdentity(subject, sessionId, agentId, "codex");
+  const created = await runtime.ensure({ tenantId: "tenant-a", subject }, initialInput, {
+    creationAuthorized: true,
+  });
+  const common = {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "codex",
+  };
+  await runtime.join(identity, {
+    ...common,
+    ttl_seconds: 300,
+    idempotency_key: "terminal-gallery-initial-join",
+  });
+  const branch = await runtime.openBranch(identity, {
+    ...common,
+    branch_key: "terminal-gallery-branch",
+    title: "Terminal guard",
+    objective: "Prove no coordination survives closure.",
+    idempotency_key: "terminal-gallery-initial-branch",
+  });
+  const leaseId = "88888888-8888-4888-8888-888888888881";
+  pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: leaseId,
+    session_id: sessionId,
+    branch_id: branch.branch.branch_id,
+    purpose: "Terminal guard lease",
+    status: "active",
+    created_by: agentId,
+    acquired_at: clock().toISOString(),
+    expires_at: "2026-07-31T11:15:00.000Z",
+  });
+  pool.works.get(key("tenant-a", created.work_id)).status = "completed";
+  const eventCount = (pool.events.get(key("tenant-a", created.work_id)) || []).length;
+  const denied = [
+    ["join", {
+      ttl_seconds: 300,
+      idempotency_key: "terminal-gallery-denied-join",
+    }],
+    ["heartbeat", {
+      ttl_seconds: 300,
+      idempotency_key: "terminal-gallery-denied-heartbeat",
+    }],
+    ["openBranch", {
+      branch_key: "terminal-gallery-denied-branch",
+      title: "Denied",
+      objective: "Must not open.",
+      idempotency_key: "terminal-gallery-denied-open-branch",
+    }],
+    ["acquireLease", {
+      branch_id: branch.branch.branch_id,
+      purpose: "Denied terminal lease",
+      surfaces: [{ kind: "file", value: "services/denied.js" }],
+      ttl_seconds: 300,
+      idempotency_key: "terminal-gallery-denied-acquire",
+    }],
+    ["renewLease", {
+      lease_id: leaseId,
+      ttl_seconds: 300,
+      idempotency_key: "terminal-gallery-denied-renew",
+    }],
+  ];
+  for (const [method, input] of denied) {
+    await assert.rejects(runtime[method](identity, { ...common, ...input }),
+      /continuity_work_terminal/, method);
+  }
+  assert.equal((pool.events.get(key("tenant-a", created.work_id)) || []).length, eventCount);
+  assert.equal(pool.leases.get(key(
+    "tenant-a", created.work_id, leaseId,
+  )).status, "active");
+
+  const released = await runtime.releaseLease(identity, {
+    ...common,
+    lease_id: leaseId,
+    idempotency_key: "terminal-gallery-cleanup-release",
+  });
+  assert.equal(released.lease.status, "released");
+});
+
+test("all operational Core writers preserve completed, cancelled, and superseded Work state", async () => {
+  const clock = () => new Date("2026-07-31T11:20:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "terminal-writer-owner",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate"],
+    },
+    agentPresence: {
+      agent_id: "terminal-writer-agent",
+      client_type: "codex",
+      session_fingerprint: "d".repeat(64),
+      host_transport_session_fingerprint: "e".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"f".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+
+  for (const [index, terminalStatus] of ["completed", "cancelled", "superseded"].entries()) {
+    const created = await runtime.ensure(identity, {
+      ...initialInput,
+      session_id: `terminal-writer-session-${index}`,
+    }, { creationAuthorized: true });
+    const workKey = key("tenant-a", created.work_id);
+    pool.works.get(workKey).status = terminalStatus;
+    const before = {
+      work: structuredClone(pool.works.get(workKey)),
+      events: structuredClone(pool.events.get(workKey) || []),
+      architectures: structuredClone(pool.architectures),
+      capsules: structuredClone(pool.capsules),
+      plans: structuredClone(pool.plans),
+      incidents: structuredClone(pool.incidents),
+      controlContexts: structuredClone(pool.controlContexts),
+    };
+    const suffix = `${terminalStatus}-${index}`;
+    const planRequest = {
+      work_id: created.work_id,
+      repository: "owner/repo",
+      host_type: "codex_native",
+      required_checks: ["core-mcp"],
+      tasks: [
+        { task_id: "build", kind: "builder", instruction: "Implement." },
+        { task_id: "verify", kind: "verifier", instruction: "Verify.", dependencies: ["build"] },
+      ],
+      idempotency_key: `terminal-plan-${suffix}`,
+    };
+    const operations = [
+      ["control context", () => runtime.upsertControlContext(identity, {
+        work_id: created.work_id,
+        project_id: initialInput.project_id,
+        context: {
+          schema_version: "nyra_control_context_v1",
+          tenant_id: "tenant-a",
+          work_id: created.work_id,
+          project_id: initialInput.project_id,
+          context_digest: "a".repeat(64),
+        },
+      })],
+      ["record change", () => runtime.recordChange(identity, {
+        work_id: created.work_id,
+        expected_version: 1,
+        architecture: initialInput.architecture,
+        change: { function_id: "terminal-guard", reason: "must not mutate" },
+        next_action: "must remain terminal",
+        idempotency_key: `terminal-change-${suffix}`,
+      })],
+      ["checkpoint", () => runtime.checkpoint(identity, {
+        work_id: created.work_id,
+        evidence: [], tests: [], authorizations: [], rollback: {},
+        next_action: "must remain terminal",
+        idempotency_key: `terminal-checkpoint-${suffix}`,
+      })],
+      ["resume", () => runtime.resume(identity, {
+        work_id: created.work_id,
+        session_id: `terminal-resume-${suffix}`,
+        current_state_hashes: {},
+        idempotency_key: `terminal-resume-${suffix}`,
+      }, { allowed: true, decision_id: `decision-${suffix}` })],
+      ["memory verification", () => runtime.verifyMemory(identity, {
+        work_id: created.work_id,
+        capsule_id: "77777777-7777-4777-8777-777777777777",
+        test_evidence: [],
+        idempotency_key: `terminal-memory-${suffix}`,
+      })],
+      ["native plan", () => runtime.planNativeAgents(identity, planRequest, {
+        corePlan: corePlanFor(created, planRequest),
+      })],
+      ["native bind", () => runtime.bindNativeAgent(identity, {
+        work_id: created.work_id,
+        plan_id: "66666666-6666-4666-8666-666666666666",
+        task_id: "build",
+        native_agent_id: "terminal-writer-agent",
+        host_type: "codex_native",
+        host_task_id: "/root/terminal-build",
+      })],
+      ["native report", () => runtime.reportNativeAgent(identity, {
+        work_id: created.work_id,
+        plan_id: "66666666-6666-4666-8666-666666666666",
+        native_agent_id: "terminal-writer-agent",
+        host_task_id: "/root/terminal-build",
+        assignment_capability: `hnac_${"A".repeat(43)}`,
+        status: "completed",
+        report: { summary: "Must not be persisted." },
+      })],
+      ["Atlas", () => runtime.upsertAtlas(identity, {
+        work_id: created.work_id,
+        nodes: [{ node_id: "terminal-node", kind: "component", summary: "No mutation." }],
+        edges: [],
+        idempotency_key: `terminal-atlas-${suffix}`,
+      })],
+      ["incident", () => runtime.recordIncident(identity, {
+        work_id: created.work_id,
+        project_id: initialInput.project_id,
+        scope: {
+          error_code: "TERMINAL_GUARD",
+          repository: "owner/repo",
+          branch: "main",
+          connector: "test",
+          deployment_path: "terminal-matrix",
+          configuration_digest: "b".repeat(64),
+        },
+        runbook: { title: "Terminal", steps: ["Do not mutate terminal state."] },
+        idempotency_key: `terminal-incident-${suffix}`,
+      })],
+      ["incident verification", () => runtime.verifyIncident(identity, {
+        work_id: created.work_id,
+        project_id: initialInput.project_id,
+        fingerprint: "c".repeat(64),
+        resolved: false,
+      })],
+      ["operational incident", () => runtime.recordOperationalIncident(identity, {
+        work_id: created.work_id,
+        operation: "work_continuity_closure_finalize",
+        error_code: "TERMINAL_GUARD",
+        evidence_digest: "d".repeat(64),
+      })],
+    ];
+
+    for (const [label, operation] of operations) {
+      await assert.rejects(operation(), /continuity_work_terminal/, `${terminalStatus}: ${label}`);
+    }
+    await assert.rejects(runtime.evaluateClosure(identity, {
+      work_id: created.work_id,
+      plan_id: "66666666-6666-4666-8666-666666666666",
+      idempotency_key: `terminal-evaluate-${suffix}`,
+    }), terminalStatus === "completed"
+      ? /continuity_terminal_replay_evidence_invalid/
+      : /continuity_work_terminal/);
+    await assert.rejects(runtime.ensure(identity, {
+      ...initialInput,
+      work_id: created.work_id,
+      session_id: `terminal-new-binding-${suffix}`,
+      resume_existing: true,
+    }, { trustedSessionFollowup: true }), /continuity_work_terminal/);
+    const galleryIdentityForStatus = galleryIdentity(
+      identity.subject,
+      `terminal-gallery-${suffix}`,
+      `terminal-gallery-agent-${index}`,
+      "codex",
+    );
+    await assert.rejects(runtime.join(galleryIdentityForStatus, {
+      work_id: created.work_id,
+      session_id: `terminal-gallery-${suffix}`,
+      agent_id: `terminal-gallery-agent-${index}`,
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `terminal-gallery-${suffix}`,
+    }), /continuity_work_terminal/);
+
+    assert.deepEqual(pool.works.get(workKey), before.work);
+    assert.deepEqual(pool.events.get(workKey) || [], before.events);
+    assert.deepEqual(pool.architectures, before.architectures);
+    assert.deepEqual(pool.capsules, before.capsules);
+    assert.deepEqual(pool.plans, before.plans);
+    assert.deepEqual(pool.incidents, before.incidents);
+    assert.deepEqual(pool.controlContexts, before.controlContexts);
+  }
 });
 
 test("Nyra read transport rotation expires old leases without transferring authority", async () => {
@@ -2023,6 +2624,12 @@ test("first Work Identity fails closed without owner creation authorization", as
 
 test("ensureWithClient preserves the legacy create contract inside a caller-owned transaction", async () => {
   const pool = new ContinuityPool(() => new Date("2026-08-08T10:00:00.000Z"));
+  const observed = [];
+  const query = pool.query.bind(pool);
+  pool.query = async (sql, parameters = []) => {
+    observed.push({ sql: sql.replace(/\s+/g, " ").trim(), parameters: [...parameters] });
+    return query(sql, parameters);
+  };
   const runtime = createWorkContinuityRuntime({}, { pool });
   const created = await runtime.ensureWithClient(pool, { tenantId: "tenant-a", subject: "owner-subject" }, {
     ...initialInput,
@@ -2032,6 +2639,44 @@ test("ensureWithClient preserves the legacy create contract inside a caller-owne
   assert.equal(created.work_id, "55555555-5555-4555-8555-555555555555");
   assert.equal(pool.works.size, 1);
   assert.equal(pool.events.get(key("tenant-a", created.work_id)).length, 2);
+  const namespaceLock = observed.findIndex((call) =>
+    call.sql.startsWith("SELECT pg_advisory_xact_lock") &&
+    call.parameters[0] === "tenant-a" && call.parameters[1] === created.work_id);
+  const v2CollisionRead = observed.findIndex((call) =>
+    call.sql.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work"));
+  const coreInsert = observed.findIndex((call) =>
+    call.sql.startsWith("INSERT INTO core_continuity_works"));
+  assert.ok(namespaceLock >= 0 && namespaceLock < v2CollisionRead && v2CollisionRead < coreInsert,
+    "Core must own the shared namespace lock before checking V2 and inserting");
+});
+
+test("Core creation rejects an unbridged V2 Work UUID under the shared namespace lock", async () => {
+  const pool = new ContinuityPool(() => new Date("2026-08-08T10:00:00.000Z"));
+  const query = pool.query.bind(pool);
+  const collisionId = "56565656-5656-4565-8565-565656565656";
+  pool.query = async (sql, parameters = []) => {
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+      return { rows: [{
+        work_id: collisionId,
+        legacy_work_id: null,
+        work_type: "generic",
+      }], rowCount: 1 };
+    }
+    return query(sql, parameters);
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.ensureWithClient(pool, {
+    tenantId: "tenant-a",
+    subject: "owner-subject",
+  }, {
+    ...initialInput,
+    session_id: "v2-collision-session",
+    work_id: collisionId,
+  }, { creationAuthorized: true }), /continuity_work_v2_id_collision/);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.bindings.size, 0);
+  assert.equal(pool.events.size, 0);
 });
 
 test("native plan replay is deterministic and receipts preserve host policy boundaries", async () => {
@@ -2097,6 +2742,331 @@ test("native plan replay is deterministic and receipts preserve host policy boun
     ...request,
     idempotency_key: "native-plan-no-core",
   }), /core_host_native_work_plan/);
+});
+
+test("native software plans preflight the exact causal change and never leak a raw FK error", async () => {
+  const clock = () => new Date("2026-08-30T10:00:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "software-plan-binding",
+  }, { creationAuthorized: true });
+  const changeId = "10101010-1010-4010-8010-101010101010";
+  const requestFor = (idempotencyKey) => ({
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement the bounded change." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify independently.", dependencies: ["build"] },
+    ],
+    software_contract: {
+      change_id: changeId,
+      // This is the Software Reality Graph digest, deliberately distinct from
+      // the causal change's own base_state_digest.
+      base_state_digest: "9".repeat(64),
+    },
+    idempotency_key: idempotencyKey,
+  });
+
+  pool.softwareChangeConstraintPresent = true;
+  const missing = requestFor("software-plan-missing-change");
+  await assert.rejects(
+    runtime.planNativeAgents(identity, missing, { corePlan: corePlanFor(work, missing) }),
+    /native_agent_software_change_binding_not_found/,
+  );
+  assert.equal(pool.plans.size, 0);
+  assert.equal(pool.idempotency.has(key("tenant-a", work.work_id, missing.idempotency_key)), false);
+
+  pool.coreChanges.set(key("tenant-a", work.work_id, changeId), {
+    base_state_digest: "1".repeat(64),
+  });
+  const valid = requestFor("software-plan-valid-change");
+  const planned = await runtime.planNativeAgents(identity, valid, {
+    corePlan: corePlanFor(work, valid),
+  });
+  const persisted = pool.plans.get(key("tenant-a", planned.plan.plan_id));
+  assert.equal(persisted.change_id, changeId);
+  assert.equal(persisted.base_state_digest, valid.software_contract.base_state_digest);
+  assert.equal(persisted.status, "planned");
+
+  const rawFk = Object.assign(new Error("raw postgres detail must not escape"), {
+    code: "23503",
+    constraint: "core_continuity_native_plans_change_fk",
+  });
+  pool.nativePlanInsertError = rawFk;
+  const raced = requestFor("software-plan-fk-race");
+  await assert.rejects(
+    runtime.planNativeAgents(identity, raced, { corePlan: corePlanFor(work, raced) }),
+    /native_agent_software_change_binding_not_found/,
+  );
+  assert.equal(pool.plans.size, 1);
+  assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "planned");
+  assert.equal(pool.idempotency.has(key("tenant-a", work.work_id, raced.idempotency_key)), false);
+
+  // A Core installation predating the optional Software Cognition FK remains
+  // compatible and can still persist the opaque contract coordinates.
+  pool.softwareChangeConstraintPresent = false;
+  pool.coreChanges.clear();
+  const legacy = requestFor("software-plan-before-fk-migration");
+  const legacyPlanned = await runtime.planNativeAgents(identity, legacy, {
+    corePlan: corePlanFor(work, legacy),
+  });
+  assert.equal(legacyPlanned.plan.software_contract.change_id, changeId);
+  assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "superseded");
+  assert.equal(pool.plans.get(key("tenant-a", legacyPlanned.plan.plan_id)).status, "planned");
+});
+
+test("replacement plans supersede only planned work atomically and close every stale path", async () => {
+  const clock = () => new Date("2026-08-30T10:10:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "r".repeat(32),
+  }, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "b".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "replacement-plan-atomicity",
+  }, { creationAuthorized: true });
+  const requestFor = (idempotencyKey, instruction) => ({
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction },
+      { task_id: "verify", kind: "verifier", instruction: "Verify independently.", dependencies: ["build"] },
+    ],
+    idempotency_key: idempotencyKey,
+  });
+  const firstRequest = requestFor("replacement-plan-first", "Implement revision one.");
+  const first = await runtime.planNativeAgents(identity, firstRequest, {
+    corePlan: corePlanFor(work, firstRequest),
+  });
+  const firstPlanId = first.plan.plan_id;
+  const builderBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    task_id: "build",
+    native_agent_id: "replacement-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/replacement-builder",
+  });
+  const oldEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    idempotency_key: "replacement-old-evaluation",
+  });
+  const eventsBeforeReplacement = (pool.events.get(key("tenant-a", work.work_id)) || []).length;
+  const secondRequest = requestFor("replacement-plan-second", "Implement revision two.");
+
+  const baseQuery = pool.query.bind(pool);
+  let failReplacementReceipt = true;
+  pool.query = async (sql, parameters = []) => {
+    const normalized = (typeof sql === "string" ? sql : sql.text).replace(/\s+/g, " ").trim();
+    if (failReplacementReceipt &&
+        normalized.startsWith("INSERT INTO core_continuity_native_receipts") &&
+        parameters[4] === "plan_created" && parameters[2] !== firstPlanId) {
+      failReplacementReceipt = false;
+      throw new Error("forced_replacement_receipt_failure");
+    }
+    return baseQuery(sql, parameters);
+  };
+  await assert.rejects(
+    runtime.planNativeAgents(identity, secondRequest, {
+      corePlan: corePlanFor(work, secondRequest),
+    }),
+    /forced_replacement_receipt_failure/,
+  );
+  assert.equal(pool.plans.size, 1);
+  assert.equal(pool.plans.get(key("tenant-a", firstPlanId)).status, "planned");
+  assert.equal(pool.nativeAgents.get(key("tenant-a", firstPlanId, "build")).status, "bound");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).length, eventsBeforeReplacement);
+  assert.equal(pool.idempotency.has(key("tenant-a", work.work_id, secondRequest.idempotency_key)), false);
+
+  const second = await runtime.planNativeAgents(identity, secondRequest, {
+    corePlan: corePlanFor(work, secondRequest),
+  });
+  const secondPlanId = second.plan.plan_id;
+  assert.equal(second.superseded_plan_count, 1);
+  assert.deepEqual(second.superseded_plan_ids, [firstPlanId]);
+  assert.equal(second.superseded_plan_ids_truncated, false);
+  assert.equal(second.superseded_agent_count, 1);
+  const secondPlanRow = pool.plans.get(key("tenant-a", secondPlanId));
+  assert.equal(secondPlanRow.plan_version, 2);
+  assert.equal(secondPlanRow.supersedes_plan_id, firstPlanId);
+  assert.equal(pool.plans.get(key("tenant-a", firstPlanId)).status, "superseded");
+  assert.equal(pool.nativeAgents.get(key("tenant-a", firstPlanId, "build")).status, "superseded");
+  assert.equal(secondPlanRow.status, "planned");
+  const replanEvents = (pool.events.get(key("tenant-a", work.work_id)) || [])
+    .filter((event) => event.event_type === "native_plan_superseded");
+  assert.equal(replanEvents.length, 1);
+  assert.equal(replanEvents[0].payload.superseded_plan_count, 1);
+
+  await assert.rejects(
+    runtime.planNativeAgents(identity, firstRequest, {
+      corePlan: corePlanFor(work, firstRequest),
+    }),
+    /native_agent_plan_not_open/,
+  );
+  await assert.rejects(runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    task_id: "verify",
+    native_agent_id: "late-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/late-verifier",
+  }), /native_agent_plan_not_open/);
+  const builderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "replacement-builder",
+      client_type: "codex",
+      session_fingerprint: "c".repeat(64),
+      host_transport_session_fingerprint: "c".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"c".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(builderIdentity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    native_agent_id: "replacement-builder",
+    host_task_id: "/root/replacement-builder",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "This stale report must never advance closure.",
+      commit_sha: "d".repeat(40),
+      tests: [{ name: "stale", passed: true }],
+      evidence_refs: ["stale:replacement"],
+    },
+  }), /native_agent_plan_not_open/);
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    idempotency_key: "replacement-old-evaluation",
+  }), /native_agent_plan_not_open/);
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    idempotency_key: "replacement-old-evaluation-new-key",
+  }), /native_agent_plan_not_open/);
+  await assert.rejects(runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    evaluation_id: oldEvaluation.evaluation_id,
+    release: {},
+  }), /native_agent_plan_not_open/);
+  await assert.rejects(runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    evaluation_id: oldEvaluation.evaluation_id,
+  }, { releaseIntent: {}, coreJoinRecord: {} }), /native_agent_plan_not_open/);
+  pool.releaseJoins.set(key("tenant-a", oldEvaluation.evaluation_id, 0), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+    evaluation_id: oldEvaluation.evaluation_id,
+    verdict_id: "stale-verdict",
+    release_intent: {},
+    release_intent_digest: "0".repeat(64),
+    core_join_record: {},
+    core_join_record_digest: "1".repeat(64),
+    renewal_generation: 0,
+    created_at: clock().toISOString(),
+  });
+  await assert.rejects(runtime.resolvePersistedClosureRelease(identity, {
+    work_id: work.work_id,
+    plan_id: firstPlanId,
+  }), /native_agent_plan_not_release_ready/);
+
+  pool.plans.get(key("tenant-a", secondPlanId)).status = "verified";
+  const thirdRequest = requestFor("replacement-plan-third", "Implement revision three.");
+  await assert.rejects(runtime.planNativeAgents(identity, thirdRequest, {
+    corePlan: corePlanFor(work, thirdRequest),
+  }), /native_agent_plan_replacement_conflict/);
+  assert.equal(pool.plans.size, 2);
+  assert.equal(pool.plans.get(key("tenant-a", secondPlanId)).status, "verified");
+});
+
+test("replacement cleanup is complete while returned stale-plan ids stay bounded", async () => {
+  const clock = () => new Date("2026-08-30T10:20:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "d".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "replacement-plan-bounded",
+  }, { creationAuthorized: true });
+  for (let index = 1; index <= 105; index += 1) {
+    const planId = `20202020-2020-4020-8020-${String(index).padStart(12, "0")}`;
+    pool.plans.set(key("tenant-a", planId), {
+      tenant_id: "tenant-a",
+      work_id: work.work_id,
+      plan_id: planId,
+      plan: {},
+      plan_digest: digest({}),
+      status: "planned",
+      plan_version: index,
+      created_at: clock().toISOString(),
+    });
+  }
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Replace stale plans." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify independently.", dependencies: ["build"] },
+    ],
+    idempotency_key: "replacement-plan-bounded-cleanup",
+  };
+  const replacement = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  assert.equal(replacement.superseded_plan_count, 105);
+  assert.equal(replacement.superseded_plan_ids.length, 100);
+  assert.equal(replacement.superseded_plan_ids_truncated, true);
+  assert.equal([...pool.plans.values()].filter((row) =>
+    row.work_id === work.work_id && row.status === "planned").length, 1);
+  assert.equal(pool.plans.get(key("tenant-a", replacement.plan.plan_id)).status, "planned");
 });
 
 test("native plans bind an exact acceptance amendment from the current architecture version", async () => {
@@ -2578,6 +3548,7 @@ test("precommit-native reports agree on one server-digested workspace before a c
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "precommit-report-session",
+    constraints: [],
   }, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
@@ -2668,11 +3639,6 @@ test("precommit-native reports agree on one server-digested workspace before a c
       transport_bound: true,
     },
   };
-  const acceptanceEvidence = planned.plan.acceptance_contract.criteria.map((criterion) => ({
-    criterion_digest: criterion.criterion_digest,
-    passed: true,
-    evidence_refs: [`verified:${criterion.criterion_id}`],
-  }));
   const verifierInput = {
     work_id: work.work_id,
     plan_id: planId,
@@ -2687,9 +3653,17 @@ test("precommit-native reports agree on one server-digested workspace before a c
       verifies_task_ids: ["build"],
       tests: [{ name: "independent node --test", passed: true }],
       evidence_refs: ["review:tracked-diff"],
-      acceptance_evidence: acceptanceEvidence,
+      acceptance_evidence: [],
     },
   };
+  await assert.rejects(runtime.reportNativeAgent(verifierIdentity, {
+    ...verifierInput,
+    report: {
+      ...verifierInput.report,
+      commit_sha: "c".repeat(40),
+      precommit_evidence: null,
+    },
+  }), /native_agent_acceptance_evidence_invalid/);
   await assert.rejects(runtime.reportNativeAgent(verifierIdentity, {
     ...verifierInput,
     report: {
@@ -2977,6 +3951,350 @@ test("missing native plan during pre-execution closure evaluation records eviden
   assert.equal(result.work_status, "active");
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
   assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).at(-1).event_type, "incident_recorded");
+});
+
+test("closure evaluation reconciles only legacy synthetic gaps on the exact Work", async () => {
+  const clock = () => new Date("2026-07-29T14:27:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "d".repeat(64),
+    },
+  };
+  const prepare = async (sessionId, suffix) => {
+    const work = await runtime.ensure(identity, {
+      ...initialInput,
+      session_id: sessionId,
+    }, { creationAuthorized: true });
+    const request = {
+      work_id: work.work_id,
+      repository: "owner/repo",
+      host_type: "codex_native",
+      required_checks: ["core-mcp"],
+      tasks: [
+        { task_id: "build", kind: "builder", instruction: "Implement." },
+        { task_id: "verify", kind: "verifier", instruction: "Verify.", dependencies: ["build"] },
+      ],
+      idempotency_key: `synthetic-plan-${suffix}`,
+    };
+    const plan = await runtime.planNativeAgents(identity, request, {
+      corePlan: corePlanFor(work, request),
+    });
+    await runtime.recordOperationalIncident(identity, {
+      work_id: work.work_id,
+      operation: "work_continuity_closure_evaluate",
+      error_code: "NATIVE_CLOSURE_GAPS",
+      evidence_digest: suffix.repeat(64),
+      next_action: "Legacy automation blocked an ordinary readiness result.",
+    });
+    return { work, plan };
+  };
+  const primary = await prepare("synthetic-primary", "a");
+  const sibling = await prepare("synthetic-sibling", "b");
+  const planBlocked = await prepare("synthetic-plan-blocked", "d");
+  pool.plans.get(key("tenant-a", planBlocked.plan.plan.plan_id)).status = "blocked";
+  const tenantBIdentity = { ...identity, tenantId: "tenant-b" };
+  const tenantBWork = await runtime.ensure(tenantBIdentity, {
+    ...initialInput,
+    session_id: "synthetic-other-tenant",
+  }, { creationAuthorized: true });
+  await runtime.recordOperationalIncident(tenantBIdentity, {
+    work_id: tenantBWork.work_id,
+    operation: "work_continuity_closure_evaluate",
+    error_code: "NATIVE_CLOSURE_GAPS",
+    evidence_digest: "e".repeat(64),
+    next_action: "Other tenant synthetic blocker.",
+  });
+  assert.equal(pool.works.get(key("tenant-a", primary.work.work_id)).status, "blocked");
+  assert.equal(pool.works.get(key("tenant-a", sibling.work.work_id)).status, "blocked");
+
+  const evaluated = await runtime.evaluateClosure(identity, {
+    work_id: primary.work.work_id,
+    plan_id: primary.plan.plan.plan_id,
+    idempotency_key: "synthetic-evaluate-primary",
+  });
+  assert.equal(evaluated.closed, false);
+  assert.equal(evaluated.synthetic_incident_reconciliation.reconciled_count, 1);
+  assert.equal(evaluated.synthetic_incident_reconciliation.work_reactivated, true);
+  assert.equal(pool.works.get(key("tenant-a", primary.work.work_id)).status, "active");
+  assert.equal(pool.works.get(key("tenant-a", sibling.work.work_id)).status, "blocked");
+  assert.equal(pool.works.get(key("tenant-b", tenantBWork.work_id)).status, "blocked");
+  const catalog = await runtime.listWorks(identity, { limit: 20 });
+  assert.equal(catalog.works.find((item) =>
+    item.work_id === primary.work.work_id).latest_incident.status, "reconciled");
+  assert.equal(catalog.works.find((item) =>
+    item.work_id === sibling.work.work_id).latest_incident.status, "candidate");
+
+  const replay = await runtime.evaluateClosure(identity, {
+    work_id: primary.work.work_id,
+    plan_id: primary.plan.plan.plan_id,
+    idempotency_key: "synthetic-evaluate-primary",
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.synthetic_incident_reconciliation.reconciled_count, 0);
+  assert.equal((pool.events.get(key("tenant-a", primary.work.work_id)) || []).filter(
+    (event) => event.event_type === "synthetic_incident_reconciled",
+  ).length, 1);
+
+  const realIncident = await runtime.recordOperationalIncident(identity, {
+    work_id: sibling.work.work_id,
+    operation: "work_continuity_closure_finalize",
+    error_code: "TRUSTED_READBACK_CHECKS_NOT_READY",
+    evidence_digest: "c".repeat(64),
+    next_action: "Preserve this real readback blocker.",
+  });
+  const siblingEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: sibling.work.work_id,
+    plan_id: sibling.plan.plan.plan_id,
+    idempotency_key: "synthetic-evaluate-sibling",
+  });
+  assert.equal(siblingEvaluation.synthetic_incident_reconciliation.reconciled_count, 1);
+  assert.equal(siblingEvaluation.synthetic_incident_reconciliation.work_reactivated, false);
+  assert.equal(siblingEvaluation.synthetic_incident_reconciliation.other_blocker_count, 1);
+  assert.equal(pool.works.get(key("tenant-a", sibling.work.work_id)).status, "blocked");
+  assert.equal(
+    pool.incidents.get(key("tenant-a", sibling.work.project_id, realIncident.fingerprint)).status,
+    "candidate",
+  );
+
+  const blockedPlanEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: planBlocked.work.work_id,
+    plan_id: planBlocked.plan.plan.plan_id,
+    idempotency_key: "synthetic-evaluate-plan-blocked",
+  });
+  assert.equal(blockedPlanEvaluation.synthetic_incident_reconciliation.reconciled_count, 1);
+  assert.equal(blockedPlanEvaluation.synthetic_incident_reconciliation.work_reactivated, false);
+  assert.equal(blockedPlanEvaluation.synthetic_incident_reconciliation.other_blocker_count, 1);
+  assert.equal(pool.works.get(key("tenant-a", planBlocked.work.work_id)).status, "blocked");
+  assert.equal((pool.events.get(key("tenant-b", tenantBWork.work_id)) || []).some(
+    (event) => event.event_type === "synthetic_incident_reconciled",
+  ), false);
+});
+
+test("synthetic gap reconciliation rolls back atomically and retries once", async () => {
+  const clock = () => new Date("2026-07-29T14:28:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  let failReconciliation = false;
+  const runtime = createWorkContinuityRuntime({}, {
+    pool,
+    now: clock,
+    failureInjector: async (phase) => {
+      if (failReconciliation && phase === "synthetic_incident_reconciled") {
+        throw new Error("forced_synthetic_reconciliation_rollback");
+      }
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "e".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "synthetic-rollback",
+  }, { creationAuthorized: true });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify.", dependencies: ["build"] },
+    ],
+    idempotency_key: "synthetic-rollback-plan",
+  };
+  const plan = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  await runtime.recordOperationalIncident(identity, {
+    work_id: work.work_id,
+    operation: "work_continuity_closure_evaluate",
+    error_code: "NATIVE_CLOSURE_GAPS",
+    evidence_digest: "f".repeat(64),
+    next_action: "Legacy synthetic blocker.",
+  });
+  const input = {
+    work_id: work.work_id,
+    plan_id: plan.plan.plan_id,
+    idempotency_key: "synthetic-rollback-evaluation",
+  };
+
+  failReconciliation = true;
+  await assert.rejects(
+    runtime.evaluateClosure(identity, input),
+    /forced_synthetic_reconciliation_rollback/,
+  );
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "blocked");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).some(
+    (event) => event.event_type === "synthetic_incident_reconciled",
+  ), false);
+  assert.equal(pool.idempotency.has(key(
+    "tenant-a", work.work_id, input.idempotency_key,
+  )), false);
+
+  failReconciliation = false;
+  const recovered = await runtime.evaluateClosure(identity, input);
+  assert.equal(recovered.synthetic_incident_reconciliation.reconciled_count, 1);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "synthetic_incident_reconciled",
+  ).length, 1);
+});
+
+test("native terminal replay handler releases late coordination atomically without rejoining", async () => {
+  const clock = () => new Date("2026-07-29T14:29:00.000Z");
+  const pool = new TransactionalContinuityPool(clock);
+  let failReconciliation = false;
+  const runtime = createWorkContinuityRuntime({}, {
+    pool,
+    now: clock,
+    failureInjector: async (phase) => {
+      if (failReconciliation && phase === "terminal_coordination_reconciled") {
+        throw new Error("forced_native_terminal_reconciliation_rollback");
+      }
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "terminal-replay-atomic",
+  }, { creationAuthorized: true });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify.", dependencies: ["build"] },
+    ],
+    idempotency_key: "terminal-replay-atomic-plan",
+  };
+  const planned = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const planId = planned.plan.plan_id;
+  pool.works.get(key("tenant-a", work.work_id)).status = "completed";
+  pool.plans.get(key("tenant-a", planId)).status = "closed";
+  const finalReceiptDigest = "b".repeat(64);
+  const receiptId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  pool.nativeReceipts.set(key("tenant-a", receiptId), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    plan_id: planId,
+    receipt_id: receiptId,
+    receipt_type: "closure_finalized",
+    payload_digest: finalReceiptDigest,
+    created_at: clock().toISOString(),
+  });
+  const rows = pool.events.get(key("tenant-a", work.work_id)) || [];
+  const sequenceNumber = Number(rows.at(-1)?.sequence_number || 0) + 1;
+  const payload = {
+    plan_id: planId,
+    finalized: true,
+    final_receipt_digest: finalReceiptDigest,
+    released_lease_count: 0,
+    closed_participant_count: 0,
+  };
+  const envelope = {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    sequence_number: sequenceNumber,
+    event_type: "closure_finalized",
+    payload,
+    previous_event_hash: rows.at(-1)?.event_hash || null,
+  };
+  rows.push({
+    event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ...envelope,
+    event_hash: digest(envelope),
+    created_by: "coordinator",
+    created_at: clock().toISOString(),
+  });
+  pool.events.set(key("tenant-a", work.work_id), rows);
+  const leaseId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const sessionId = "terminal-replay-late-session";
+  pool.leases.set(key("tenant-a", work.work_id, leaseId), {
+    tenant_id: "tenant-a", work_id: work.work_id, lease_id: leaseId,
+    session_id: sessionId, status: "active", expires_at: "2026-07-29T15:29:00.000Z",
+  });
+  pool.participants.set(key("tenant-a", work.work_id, sessionId), {
+    tenant_id: "tenant-a", work_id: work.work_id, session_id: sessionId,
+    status: "active", expires_at: "2026-07-29T15:29:00.000Z",
+  });
+  const replayInput = {
+    work_id: work.work_id,
+    plan_id: planId,
+    idempotency_key: "terminal-replay-atomic-reconcile",
+  };
+  let coreHandlerCalls = 0;
+  const handler = createWorkContinuityClosureEvaluateHandler({
+    runtime,
+    coreHandlers: {
+      async host_native_release_intent_build() {
+        coreHandlerCalls += 1;
+        throw new Error("terminal_replay_must_not_build_release_intent");
+      },
+      async host_native_core_join_issue() {
+        coreHandlerCalls += 1;
+        throw new Error("terminal_replay_must_not_issue_core_join");
+      },
+    },
+  });
+
+  failReconciliation = true;
+  await assert.rejects(
+    handler(replayInput, identity),
+    /forced_native_terminal_reconciliation_rollback/,
+  );
+  assert.equal(pool.leases.get(key("tenant-a", work.work_id, leaseId)).status, "active");
+  assert.equal(pool.participants.get(key("tenant-a", work.work_id, sessionId)).status, "active");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 0);
+  assert.equal(pool.idempotency.has(key(
+    "tenant-a", work.work_id, replayInput.idempotency_key,
+  )), false);
+
+  failReconciliation = false;
+  const repairedResponse = await handler(replayInput, identity);
+  assert.equal(repairedResponse.structuredContent.ok, true);
+  const repaired = repairedResponse.structuredContent.result;
+  assert.equal(repaired.terminal_replay, true);
+  assert.equal(repaired.idempotent_replay, false);
+  assert.equal(repaired.terminal_coordination_reconciliation.released_lease_count, 1);
+  assert.equal(repaired.terminal_coordination_reconciliation.closed_participant_count, 1);
+  assert.equal(pool.leases.get(key("tenant-a", work.work_id, leaseId)).status, "released");
+  assert.equal(pool.participants.get(key("tenant-a", work.work_id, sessionId)).status, "closed");
+  assert.equal(pool.idempotency.has(key(
+    "tenant-a", work.work_id, replayInput.idempotency_key,
+  )), true);
+  const second = (await handler(replayInput, identity)).structuredContent.result;
+  assert.equal(second.idempotent_replay, true);
+  assert.equal(second.terminal_coordination_reconciliation.released_lease_count, 0);
+  assert.equal(second.terminal_coordination_reconciliation.closed_participant_count, 0);
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 1);
+  assert.equal(coreHandlerCalls, 0);
 });
 
 test("cross-chat resume preserves same-session plans and supersedes stale coordinator bindings", async () => {
@@ -4288,15 +5606,214 @@ test("local closure becomes release-ready and external completion needs exact Co
       readback_digest: "8".repeat(64),
     }],
   }, "1");
+  for (const index of [1, 2]) {
+    const leaseId = `77777777-7777-4777-8777-${String(index).padStart(12, "0")}`;
+    pool.leases.set(key("tenant-a", work.work_id, leaseId), {
+      tenant_id: "tenant-a",
+      work_id: work.work_id,
+      lease_id: leaseId,
+      session_id: `terminal-session-${index}`,
+      status: "active",
+      expires_at: "2026-07-29T14:30:00.000Z",
+    });
+    pool.participants.set(key("tenant-a", work.work_id, `terminal-session-${index}`), {
+      tenant_id: "tenant-a",
+      work_id: work.work_id,
+      session_id: `terminal-session-${index}`,
+      status: "active",
+      expires_at: "2026-07-29T14:30:00.000Z",
+    });
+  }
+  pool.leases.set(key("tenant-a", "88888888-8888-4888-8888-888888888888", "other"), {
+    tenant_id: "tenant-a",
+    work_id: "88888888-8888-4888-8888-888888888888",
+    lease_id: "other",
+    status: "active",
+    expires_at: "2026-07-29T14:30:00.000Z",
+  });
   const finalized = await runtime.finalizeClosure(identity, {
     ...baseFinalize,
     idempotency_key: "closure-finalize-cross-host",
   }, crossHostAuthorization);
   assert.equal(finalized.completed, true);
+  assert.equal(finalized.released_lease_count, 2);
+  assert.equal(finalized.closed_participant_count, 2);
+  assert.equal(finalized.event.payload.released_lease_count, 2);
+  assert.equal(finalized.event.payload.closed_participant_count, 2);
   assert.equal(finalized.final_receipt.host_type, "codex_native");
   assert.equal(planRow.plan.host_type, "chatgpt_native");
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
   assert.equal(planRow.status, "closed");
+  const closedPlanRelease = await runtime.resolvePersistedClosureRelease(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+  });
+  assert.equal(closedPlanRelease.release_intent_digest, releaseIntentDigest);
+  assert.equal([...pool.leases.values()].filter((row) =>
+    row.work_id === work.work_id && row.status === "released").length, 2);
+  assert.equal([...pool.participants.values()].filter((row) =>
+    row.work_id === work.work_id && row.status === "closed").length, 2);
+  assert.equal(pool.leases.get(key(
+    "tenant-a", "88888888-8888-4888-8888-888888888888", "other",
+  )).status, "active");
+
+  const replay = await runtime.finalizeClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-cross-host",
+  }, crossHostAuthorization);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.released_lease_count, 2);
+  assert.equal(replay.closed_participant_count, 2);
+  assert.equal(replay.terminal_coordination_reconciliation.reconciled, false);
+  assert.equal(replay.terminal_coordination_reconciliation.released_lease_count, 0);
+
+  const lateLeaseId = "99999999-9999-4999-8999-999999999991";
+  const lateSessionId = "terminal-late-session";
+  pool.leases.set(key("tenant-a", work.work_id, lateLeaseId), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    lease_id: lateLeaseId,
+    session_id: lateSessionId,
+    status: "active",
+    expires_at: "2026-07-29T15:30:00.000Z",
+  });
+  pool.participants.set(key("tenant-a", work.work_id, lateSessionId), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    session_id: lateSessionId,
+    status: "active",
+    expires_at: "2026-07-29T15:30:00.000Z",
+  });
+  clockMillis = Date.parse(crossHostAuthorization.expires_at) + 1_000;
+  await assert.rejects(runtime.finalizeClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-cross-host",
+  }, crossHostAuthorization), /continuity_trusted_core_closure_receipt_required/);
+
+  const stateBeforeRead = JSON.stringify({
+    leases: [...pool.leases],
+    participants: [...pool.participants],
+    events: [...pool.events],
+  });
+  const observedRead = await runtime.read(identity, {
+    work_id: work.work_id,
+    event_limit: 200,
+  });
+  assert.equal(observedRead.leases.find((row) => row.lease_id === lateLeaseId).status, "active");
+  assert.equal(JSON.stringify({
+    leases: [...pool.leases],
+    participants: [...pool.participants],
+    events: [...pool.events],
+  }), stateBeforeRead, "read must remain byte/state-pure");
+
+  const repairedReplay = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    idempotency_key: "terminal-reconcile-after-authorization-expiry",
+  });
+  assert.equal(repairedReplay.terminal_replay, true);
+  assert.equal(repairedReplay.terminal_coordination_reconciliation.reconciled, true);
+  assert.equal(repairedReplay.terminal_coordination_reconciliation.released_lease_count, 1);
+  assert.equal(repairedReplay.terminal_coordination_reconciliation.closed_participant_count, 1);
+  assert.equal(pool.leases.get(key("tenant-a", work.work_id, lateLeaseId)).status, "released");
+  assert.equal(pool.participants.get(key("tenant-a", work.work_id, lateSessionId)).status, "closed");
+  const historicalClosureEvent = (pool.events.get(key("tenant-a", work.work_id)) || [])
+    .find((event) => event.event_type === "closure_finalized");
+  assert.equal(historicalClosureEvent.payload.released_lease_count, 2);
+  assert.equal(historicalClosureEvent.payload.closed_participant_count, 2);
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 1);
+
+  const secondReplay = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    idempotency_key: "terminal-reconcile-after-authorization-expiry",
+  });
+  assert.equal(secondReplay.idempotent_replay, true);
+  assert.equal(secondReplay.terminal_coordination_reconciliation.reconciled, false);
+  assert.equal(secondReplay.terminal_coordination_reconciliation.released_lease_count, 0);
+  assert.equal(secondReplay.terminal_coordination_reconciliation.closed_participant_count, 0);
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 1);
+
+  const locallyReplayedLeaseId = "99999999-9999-4999-8999-999999999992";
+  const locallyReplayedSessionId = "terminal-local-replay-session";
+  pool.leases.set(key("tenant-a", work.work_id, locallyReplayedLeaseId), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    lease_id: locallyReplayedLeaseId,
+    session_id: locallyReplayedSessionId,
+    status: "active",
+    expires_at: "2026-07-29T16:30:00.000Z",
+  });
+  pool.participants.set(key("tenant-a", work.work_id, locallyReplayedSessionId), {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    session_id: locallyReplayedSessionId,
+    status: "active",
+    expires_at: "2026-07-29T16:30:00.000Z",
+  });
+  const localTerminalReplay = await runtime.replayFinalizedClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-cross-host",
+  });
+  assert.equal(localTerminalReplay.idempotent_replay, true);
+  assert.equal(localTerminalReplay.released_lease_count, 2,
+    "historical finalize counts must not be rewritten");
+  assert.equal(localTerminalReplay.closed_participant_count, 2,
+    "historical finalize counts must not be rewritten");
+  assert.equal(localTerminalReplay.terminal_coordination_reconciliation.reconciled, true);
+  assert.equal(
+    localTerminalReplay.terminal_coordination_reconciliation.released_lease_count,
+    1,
+  );
+  assert.equal(
+    localTerminalReplay.terminal_coordination_reconciliation.closed_participant_count,
+    1,
+  );
+  assert.equal(pool.leases.get(key(
+    "tenant-a", work.work_id, locallyReplayedLeaseId,
+  )).status, "released");
+  assert.equal(pool.participants.get(key(
+    "tenant-a", work.work_id, locallyReplayedSessionId,
+  )).status, "closed");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 2);
+
+  const secondLocalTerminalReplay = await runtime.replayFinalizedClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-cross-host",
+  });
+  assert.equal(
+    secondLocalTerminalReplay.terminal_coordination_reconciliation.reconciled,
+    false,
+  );
+  assert.equal(
+    secondLocalTerminalReplay.terminal_coordination_reconciliation.released_lease_count,
+    0,
+  );
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).filter(
+    (event) => event.event_type === "terminal_coordination_reconciled",
+  ).length, 2);
+
+  const stateBeforeSubstitution = JSON.stringify({
+    leases: [...pool.leases],
+    participants: [...pool.participants],
+    events: [...pool.events],
+  });
+  await assert.rejects(runtime.replayFinalizedClosure(identity, {
+    ...baseFinalize,
+    action_ticket_id: "hnt_substituted-terminal-ticket",
+    idempotency_key: "closure-finalize-cross-host",
+  }), /idempotency_key_conflict/);
+  assert.equal(JSON.stringify({
+    leases: [...pool.leases],
+    participants: [...pool.participants],
+    events: [...pool.events],
+  }), stateBeforeSubstitution);
 });
 
 test("continuity runtime exposes no parallel delegation authority", () => {

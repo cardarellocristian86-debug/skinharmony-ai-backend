@@ -13,6 +13,10 @@ const {
 const {
   loadCatalog,
 } = require("../lib/nyra-deep-branch-v2");
+const {
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+} = require("../../services/shared/host-native-health-contract.cjs");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
@@ -300,7 +304,7 @@ async function main() {
       NYRA_DEEP_BRANCH_V2_ENABLED: "true",
       NYRA_DEEP_BRANCH_V2_MODE: "shadow",
       NYRA_DEEP_BRANCH_V2_BRANCHES: "context_intelligence",
-      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: "codexai",
+      NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST: "tenant-test,codexai",
       NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED: "true",
       NYRA_DEEP_BRANCH_V2_FEDERATION_TENANT_ALLOWLIST: "codexai",
       NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET: deepV2ServiceKey,
@@ -331,6 +335,9 @@ async function main() {
       commit_sha: "a".repeat(40),
       commit_verifiable: true,
     });
+    assert.equal(health.json.health_contract_version, HOST_NATIVE_HEALTH_CONTRACT_VERSION);
+    assert.equal(health.json.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
+    assert.equal(health.json.render_ready, true);
     const liveness = await request("/livez");
     assert.equal(liveness.status, 200);
     assert.equal(liveness.json.liveness, "process_running");
@@ -345,6 +352,29 @@ async function main() {
       replay_store_durable: true,
       operational_evaluation_enabled: false,
     });
+    const runtimeDescriptor = health.json.deep_branch_v2_runtime;
+    assert.equal(runtimeDescriptor.schema_version, "nyra_deep_branch_v2_runtime_descriptor_v1");
+    assert.equal(runtimeDescriptor.ready, true);
+    assert.equal(runtimeDescriptor.feature_enabled, true);
+    assert.equal(runtimeDescriptor.mode, "shadow");
+    assert.equal(runtimeDescriptor.feature_tenant_configured, true);
+    assert.match(runtimeDescriptor.catalog_fingerprint, /^[a-f0-9]{64}$/);
+    assert.match(runtimeDescriptor.root_binding_hash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(runtimeDescriptor.counts, {
+      branch_count: 24,
+      subbranch_count: 337,
+      node_count: 2022,
+      shard_count: 337,
+    });
+    assert.equal(runtimeDescriptor.branch_ids.length, 24);
+    assert.ok(runtimeDescriptor.branch_ids.includes("context_intelligence"));
+    assert.deepEqual(runtimeDescriptor.effective_branch_allowlist, ["context_intelligence"]);
+    assert.equal(runtimeDescriptor.execution_authorized, false);
+    const renderReadiness = await request("/render-readyz");
+    assert.equal(renderReadiness.status, 200);
+    assert.equal(renderReadiness.json.render_ready, true);
+    assert.equal(renderReadiness.json.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
+    assert.deepEqual(renderReadiness.json.deep_branch_v2_runtime, runtimeDescriptor);
     const serializedHealth = JSON.stringify(health.json);
     assert.equal(serializedHealth.includes(storageRoot), false);
     assert.equal(serializedHealth.includes(deepV2ServiceKey), false);
@@ -358,6 +388,7 @@ async function main() {
     const corruptEmptyStoreHealth = await request("/healthz");
     assert.equal(corruptEmptyStoreHealth.status, 503);
     assert.equal(corruptEmptyStoreHealth.json.ok, false);
+    assert.equal(corruptEmptyStoreHealth.json.render_ready, false);
     assert.equal(corruptEmptyStoreHealth.json.deep_branch_v2_federation.ready, false);
     assert.equal(
       corruptEmptyStoreHealth.json.deep_branch_v2_federation.replay_store_durable,
@@ -379,6 +410,8 @@ async function main() {
           "public_health_durability",
           "public_health_redaction",
           "public_health_corruption_fail_closed",
+          "public_render_readiness_alias",
+          "public_deep_v2_runtime_descriptor",
         ],
       }, null, 2));
       return;

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -166,11 +167,8 @@ export function createPostgresDynamicTaskTreeStateStore({
   now = () => new Date(),
 } = {}) {
   const url = safeConnectionString(connectionString);
-  const db = pool || new Pool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 });
-  let initialized;
-
-  function initialize() {
-    initialized ||= db.query(`
+  const db = pool || createBoundedPostgresPool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 });
+  const initialize = createRetryablePostgresInitializer({ pool: db, sql: `
       CREATE TABLE IF NOT EXISTS dynamic_task_tree_states_v2 (
         tenant_id varchar(120) NOT NULL,
         work_id uuid NOT NULL,
@@ -183,9 +181,7 @@ export function createPostgresDynamicTaskTreeStateStore({
       );
       CREATE INDEX IF NOT EXISTS dynamic_task_tree_states_v2_updated_idx
         ON dynamic_task_tree_states_v2 (tenant_id, work_id, updated_at DESC);
-    `);
-    return initialized;
-  }
+    ` });
 
   async function legacyStateExists(queryable, tenantId, treeId) {
     const relation = await queryable.query(

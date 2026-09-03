@@ -285,6 +285,32 @@ test("agent presence is uniquely signed and conflicting sessions fail closed", a
   );
 });
 
+test("agent list pagination does not lose an unseen agent after its heartbeat", async (t) => {
+  const { handlers } = fixture(t);
+  const identities = new Map();
+  for (const agentId of ["agent-a", "agent-b", "agent-c"]) {
+    const identity = { tenantId: "tenant-a", subject: `auth0|${agentId}` };
+    identities.set(agentId, identity);
+    await register(handlers, agentId, identity);
+  }
+
+  const first = payload(await handlers.agent_list({ limit: 2 }, identities.get("agent-a")));
+  assert.deepEqual(first.agents.map((agent) => agent.id), ["agent-c", "agent-b"]);
+  assert.equal(first.has_more, true);
+  assert.match(first.next_cursor, /^alc_/);
+
+  // This mutable timestamp used to be the keyset boundary. Refreshing the
+  // unseen row could move it ahead of page one and make it disappear.
+  await register(handlers, "agent-a", identities.get("agent-a"));
+  const second = payload(await handlers.agent_list({
+    limit: 2,
+    cursor: first.next_cursor,
+  }, identities.get("agent-a")));
+  assert.deepEqual(second.agents.map((agent) => agent.id), ["agent-a"]);
+  assert.equal(second.has_more, false);
+  assert.equal(second.next_cursor, null);
+});
+
 test("heartbeat metadata requires the owner-confirmed governance path", async (t) => {
   const actions = [];
   const { handlers } = fixture(t, async (action) => {

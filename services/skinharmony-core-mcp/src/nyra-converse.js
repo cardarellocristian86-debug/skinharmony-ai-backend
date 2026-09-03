@@ -768,10 +768,21 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
     "projection_digest",
   ];
   const native = value.schema_version === "precommit_ticket_gate_v2";
-  const fields = native ? [...legacyFields, "gate_source"] : legacyFields;
+  const fields = native
+    ? [...legacyFields, "gate_source", "v2_scope_snapshot_digest", "v2_scope_tasks"]
+    : legacyFields;
+  const nativeScopeTasksValid = !native || (
+    /^[a-f0-9]{64}$/.test(String(value.v2_scope_snapshot_digest || "")) &&
+    Array.isArray(value.v2_scope_tasks) && value.v2_scope_tasks.length <= 128 &&
+    value.v2_scope_tasks.every((task) => task && typeof task === "object" && !Array.isArray(task) &&
+      Object.keys(task).sort().join("\0") === ["revision", "task_id", "v2_task_digest"].join("\0") &&
+      Boolean(boundedWorkId(task.task_id)) && /^[a-f0-9]{64}$/.test(String(task.v2_task_digest || "")) &&
+      Number.isSafeInteger(task.revision) && task.revision >= 1) &&
+    new Set(value.v2_scope_tasks.map((task) => task.task_id)).size === value.v2_scope_tasks.length
+  );
   if (Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
       (!native && value.schema_version !== "precommit_ticket_gate_v1") ||
-      (native && value.gate_source !== "native_closure_evaluation") ||
+      (native && value.gate_source !== "native_closure_evaluation") || !nativeScopeTasksValid ||
       value.tenant_id !== tenantId || boundedWorkId(value.work_id) !== workId ||
       value.action_kind !== "git.commit" || value.gate_kind !== "ticket_acquisition" ||
       !boundedWorkId(value.task_id) || !boundedWorkId(value.plan_id) ||
@@ -807,6 +818,7 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
     ...value,
     legacy_evidence_ids: Object.freeze([...value.legacy_evidence_ids].sort()),
     replacement_evidence_ids: Object.freeze([...value.replacement_evidence_ids].sort()),
+    ...(native ? { v2_scope_tasks: Object.freeze(value.v2_scope_tasks.map((task) => Object.freeze({ ...task }))) } : {}),
     drift_codes: Object.freeze([...value.drift_codes]),
   });
 }

@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
+
 function value(input, field, max = 1_000) {
   const result = String(input || "").trim();
   if (!result || result.length > max) throw new Error(`${field}_invalid`);
@@ -258,9 +260,9 @@ export function createFileDttVerificationTrustStore({ root } = {}) {
 
 export function createPostgresDttVerificationTrustStore({ pool } = {}) {
   if (!pool?.query) throw new Error("dtt_verification_trust_postgres_pool_required");
-  let initialized;
-  async function initialize() {
-    if (!initialized) initialized = pool.query(`
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: `
       CREATE TABLE IF NOT EXISTS dtt_verifier_assignments_v2 (
         assignment_id varchar(80) PRIMARY KEY, tenant_id varchar(120) NOT NULL, work_id uuid NOT NULL,
         tree_id varchar(160) NOT NULL, node_id varchar(120) NOT NULL,
@@ -284,9 +286,8 @@ export function createPostgresDttVerificationTrustStore({ pool } = {}) {
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (tenant_id,work_id,artifact_id,content_digest,source_reference)
       );
-    `);
-    return initialized;
-  }
+    `,
+  });
   return {
     kind: "postgresql_v2",
     distributed: true,

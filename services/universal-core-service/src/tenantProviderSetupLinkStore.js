@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 
 function text(value, field, max = 4_000) {
   const normalized = String(value || "").trim();
@@ -40,7 +40,7 @@ async function withTransaction(db, operation) {
 }
 
 export function createTenantProviderSetupLinkStore({ connectionString, pool = null, now = () => new Date() } = {}) {
-  const db = pool || new Pool({
+  const db = pool || createBoundedPostgresPool({
     connectionString: text(connectionString, "governed_agent_database_url"),
     max: 2,
     idleTimeoutMillis: 10_000,

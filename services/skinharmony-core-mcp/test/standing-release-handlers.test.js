@@ -352,6 +352,64 @@ test("direct GitHub execute rejects merge before Intent resolution or worker fet
   assert.equal(fetches, 0);
 });
 
+test("direct GitHub worker transport caps execute responses and bounds reconciliation", async () => {
+  const claim = {
+    schema_version: "github_worker_execution_claim_v1",
+    tenant_id: "tenant-a",
+    work_id: RELEASE_WORK,
+    repository: "owner/repo",
+    ticket_id: `hnt_${"a".repeat(40)}`,
+    reservation_id: `hnr_${"b".repeat(40)}`,
+    action: { kind: "github.ready" },
+    action_digest: H("c"),
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    nonce: H("d"),
+    provider_execution: false,
+    signature: `gwe_${H("e")}`,
+  };
+  const resolver = trustedResolver(async (_actor, workId) =>
+    intentBinding(workId, RELEASE_DIGEST));
+  const oversized = createCoreHandlers({
+    ...config(),
+    githubStandingReleaseWorkerResponseLimitBytes: 64,
+  }, {
+    resolveStandingReleaseIntentBinding: resolver,
+    fetchImpl: async () => new Response(JSON.stringify({ payload: "x".repeat(256) }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await assert.rejects(oversized.host_native_standing_release_github_execute({
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    claim,
+  }, identity()), (error) => error.code === "github_worker_execution_outcome_unknown" &&
+    error.transportCode === "github_worker_response_too_large" && error.status === 502);
+
+  let reconcileSignal = null;
+  let reconcileCalls = 0;
+  const timed = createCoreHandlers({
+    ...config(),
+    githubStandingReleaseWorkerRequestTimeoutMs: 10,
+  }, {
+    resolveStandingReleaseIntentBinding: resolver,
+    fetchImpl: async (_url, init) => {
+      reconcileCalls += 1;
+      reconcileSignal = init.signal;
+      return new Promise(() => {});
+    },
+  });
+  await assert.rejects(timed.host_native_standing_release_github_reconcile({
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    claim,
+  }, identity()), (error) => error.code === "github_worker_reconciliation_failed" &&
+    error.transportCode === "github_worker_request_timeout" && error.status === 504);
+  assert.equal(reconcileCalls, 1);
+  assert.equal(reconcileSignal?.aborted, true);
+});
+
 test("automatic reserve rejects a merge claim before marker or worker dispatch", async () => {
   const runId = `srr_${"1".repeat(40)}`;
   const ticketId = `hnt_${"2".repeat(64)}`;
@@ -596,7 +654,7 @@ test("reserved GitHub tickets are forwarded once and successful evidence is comp
   assert.equal(readyCalls[3].body.observed_pull_request, 17);
 });
 
-test("uncertain GitHub worker outcomes remain reconciliation-required without blind retry", async () => {
+test("timed-out GitHub worker outcomes abort and remain reconciliation-required without blind retry", async () => {
   const runId = `srr_${"2".repeat(40)}`;
   const ticketId = `hnt_${"3".repeat(40)}`;
   const reservationId = `hnr_${"4".repeat(40)}`;
@@ -617,9 +675,11 @@ test("uncertain GitHub worker outcomes remain reconciliation-required without bl
   };
   const calls = [];
   let ticketState = "reserved";
+  let workerSignal = null;
   const handlers = createCoreHandlers({
     ...config(),
     standingReleaseAutoCoordinatorEnabled: true,
+    githubStandingReleaseWorkerRequestTimeoutMs: 10,
   }, {
     resolveStandingReleaseIntentBinding: trustedResolver(async (_actor, workId) =>
       intentBinding(workId, RELEASE_DIGEST)),
@@ -627,10 +687,8 @@ test("uncertain GitHub worker outcomes remain reconciliation-required without bl
     fetchImpl: async (url, init) => {
       calls.push({ url, path: new URL(url).pathname, method: init.method });
       if (url === "https://github-worker.test/v1/execute") {
-        return new Response(JSON.stringify({
-          error: "github_worker_execution_outcome_unknown",
-          execution: { state: "outcome_unknown" },
-        }), { status: 409, headers: { "content-type": "application/json" } });
+        workerSignal = init.signal;
+        return new Promise(() => {});
       }
       if (new URL(url).pathname.endsWith("/complete")) {
         ticketState = "reconciliation_required";
@@ -663,6 +721,7 @@ test("uncertain GitHub worker outcomes remain reconciliation-required without bl
     expected_version: 2,
     idempotency_key: "auto-reserve-unknown",
   }, identity()), /standing_release_auto_execution_outcome_unknown/);
+  assert.equal(workerSignal?.aborted, true);
   assert.deepEqual(calls.map((call) => [call.method, call.path]), [
     ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/complete`],

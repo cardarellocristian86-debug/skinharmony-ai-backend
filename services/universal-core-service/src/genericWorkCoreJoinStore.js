@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 function fail(code) { throw new Error(code); }
 function clone(value) { return structuredClone(value); }
@@ -40,9 +41,7 @@ export function createMemoryGenericWorkCoreJoinStore() {
 /** PostgreSQL contract for production injection. All writes are append-only. */
 export function createPostgresGenericWorkCoreJoinStore({ pool } = {}) {
   if (!pool || typeof pool.connect !== "function") fail("generic_work_core_join_postgres_unavailable");
-  let initialized;
-  async function init() {
-    initialized ||= pool.query(`
+  const init = createRetryablePostgresInitializer({ pool, sql: `
       CREATE TABLE IF NOT EXISTS generic_work_core_joins (
         tenant_id text NOT NULL, work_id text NOT NULL, adapter text NOT NULL, idempotency_digest char(64) NOT NULL,
         request_canonical text NOT NULL, request_digest char(64) NOT NULL, independent_verifier_receipt_digest char(64) NOT NULL,
@@ -53,9 +52,7 @@ export function createPostgresGenericWorkCoreJoinStore({ pool } = {}) {
         event_id bigserial PRIMARY KEY, tenant_id text NOT NULL, work_id text NOT NULL, adapter text NOT NULL,
         idempotency_digest char(64) NOT NULL, verdict_id text NOT NULL, receipt_digest char(64) NOT NULL,
         event_type text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
-      );`);
-    return initialized;
-  }
+      );` });
   const decode = (row) => row && ({ ...row, verdict: typeof row.verdict === "string" ? JSON.parse(row.verdict) : row.verdict });
   const select = async (client, key) => decode((await client.query(`SELECT tenant_id,work_id,adapter,idempotency_digest,request_canonical,request_digest,independent_verifier_receipt_digest,verifier_nonce,verdict FROM generic_work_core_joins WHERE tenant_id=$1 AND work_id=$2 AND adapter=$3 AND idempotency_digest=$4`, [key.tenant_id, key.work_id, key.adapter, key.idempotency_digest])).rows[0]);
   return {

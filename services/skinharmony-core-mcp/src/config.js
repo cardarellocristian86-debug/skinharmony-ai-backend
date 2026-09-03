@@ -536,6 +536,7 @@ export function loadConfig(env = process.env) {
   // server-derived signed presence in the tenant registry. It is intentionally
   // opt-in so existing development installations are not silently tightened.
   const mandatoryAgentPresenceEnabled = flag(env.MANDATORY_AGENT_PRESENCE_ENABLED, false);
+  const nyraFastReadPathEnabled = flag(env.NYRA_FAST_READ_PATH_ENABLED, false);
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
@@ -665,9 +666,30 @@ export function loadConfig(env = process.env) {
     nyraDialogueEnabled,
     hostNativeAgentProtocolEnabled,
     mandatoryAgentPresenceEnabled,
+    nyraFastReadPathEnabled,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
     collaborationDatabaseSsl: flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production"),
     databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),
+    databaseConnectionTimeoutMs: integer(env.DATABASE_CONNECTION_TIMEOUT_MS, 2_000, 100, 60_000),
+    databaseQueryTimeoutMs: integer(env.DATABASE_QUERY_TIMEOUT_MS, 5_000, 500, 120_000),
+    databaseStatementTimeoutMs: integer(env.DATABASE_STATEMENT_TIMEOUT_MS, 5_000, 500, 120_000),
+    databaseLockTimeoutMs: integer(env.DATABASE_LOCK_TIMEOUT_MS, 2_000, 100, 60_000),
+    databaseIdleTransactionTimeoutMs: integer(env.DATABASE_IDLE_TRANSACTION_TIMEOUT_MS, 15_000, 1_000, 300_000),
+    universalCoreRequestTimeoutMs: integer(env.UNIVERSAL_CORE_REQUEST_TIMEOUT_MS, 8_000, 100, 30_000),
+    universalCoreLongRequestTimeoutMs: integer(env.UNIVERSAL_CORE_LONG_REQUEST_TIMEOUT_MS, 30_000, 1_000, 30_000),
+    universalCoreResponseLimitBytes: integer(env.UNIVERSAL_CORE_RESPONSE_LIMIT_BYTES, 512 * 1024, 64 * 1024, 2 * 1024 * 1024),
+    githubStandingReleaseWorkerRequestTimeoutMs: integer(
+      env.GITHUB_STANDING_RELEASE_WORKER_REQUEST_TIMEOUT_MS,
+      20_000,
+      100,
+      30_000,
+    ),
+    githubStandingReleaseWorkerResponseLimitBytes: integer(
+      env.GITHUB_STANDING_RELEASE_WORKER_RESPONSE_LIMIT_BYTES,
+      256 * 1024,
+      16 * 1024,
+      1024 * 1024,
+    ),
     cloudMemoryMaxDocumentBytes: integer(env.CLOUD_MEMORY_MAX_DOCUMENT_BYTES, 250_000, 1_000, 900_000),
     agentWorkspaceRoot,
     memoryFabricRoot,

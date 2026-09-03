@@ -3,7 +3,14 @@ import healthContract from "../../shared/host-native-health-contract.cjs";
 import { createGitHubInstallationTokenResolver, parseGitHubAppBindings } from "./githubApp.js";
 import { verifyGitHubWorkerExecutionClaim } from "../../shared/github-worker-execution-claim.js";
 import { createFileExecutionLedger } from "./executionLedger.js";
-import { createGitHubExecutor, createGitHubReconciler } from "./githubExecutor.js";
+import {
+  createGitHubExecutor,
+  createGitHubReconciler,
+  githubExecutionErrorCode,
+  githubExecutionMutationDispatched,
+  githubExecutionErrorOutcome,
+} from "./githubExecutor.js";
+import { createWorkerRequestDeadline } from "./requestDeadline.js";
 import {
   GENERIC_WORK_CORE_JOIN_SIGN_ROUTE,
   createGenericWorkCoreJoinSignerEndpoint,
@@ -24,6 +31,13 @@ function positiveInteger(value, code) {
   return parsed;
 }
 
+function boundedPositiveInteger(value, fallback, minimum, maximum, code) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(code);
+  return parsed;
+}
+
 export function createGitHubStandingReleaseWorker({ env = process.env, fetch_impl = fetch } = {}) {
   const enabled = boolean(env.GITHUB_STANDING_RELEASE_WORKER_ENABLED, false);
   const port = positiveInteger(env.PORT || 8792, "github_worker_port_invalid");
@@ -34,9 +48,33 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
   let executor = null;
   let reconciler = null;
   let readinessError = null;
+  let githubApiRequestTimeoutMs = 8_000;
+  let githubWorkerRequestDeadlineMs = 18_000;
+  let githubApiResponseLimitBytes = 1024 * 1024;
   try {
     emergencyStop = boolean(env.GITHUB_STANDING_RELEASE_WORKER_EMERGENCY_STOP, false);
     if (enabled) {
+      githubApiRequestTimeoutMs = boundedPositiveInteger(
+        env.GITHUB_API_REQUEST_TIMEOUT_MS,
+        8_000,
+        100,
+        30_000,
+        "github_api_request_timeout_invalid",
+      );
+      githubWorkerRequestDeadlineMs = boundedPositiveInteger(
+        env.GITHUB_WORKER_REQUEST_DEADLINE_MS,
+        18_000,
+        1_000,
+        19_000,
+        "github_worker_request_deadline_invalid",
+      );
+      githubApiResponseLimitBytes = boundedPositiveInteger(
+        env.GITHUB_API_RESPONSE_LIMIT_BYTES,
+        1024 * 1024,
+        16 * 1024,
+        2 * 1024 * 1024,
+        "github_api_response_limit_invalid",
+      );
       const appId = positiveInteger(env.GITHUB_APP_ID, "github_app_id_invalid");
       const privateKey = String(env.GITHUB_APP_PRIVATE_KEY || "").replaceAll("\\n", "\n");
       const bindings = parseGitHubAppBindings(env.GITHUB_APP_TENANT_BINDINGS_JSON);
@@ -45,13 +83,27 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
         private_key: privateKey,
         bindings,
         fetch_impl,
+        request_timeout_ms: githubApiRequestTimeoutMs,
+        response_limit_bytes: githubApiResponseLimitBytes,
       });
       ledger = createFileExecutionLedger({
         root: String(env.GITHUB_WORKER_LEDGER_ROOT || "/var/data/github-standing-release-worker"),
         signing_secret: String(env.GITHUB_WORKER_LEDGER_SIGNING_SECRET || ""),
       });
-      executor = createGitHubExecutor({ installation_token: resolver, fetch_impl });
-      reconciler = createGitHubReconciler({ installation_token: resolver, fetch_impl });
+      executor = createGitHubExecutor({
+        installation_token: resolver,
+        fetch_impl,
+        request_timeout_ms: githubApiRequestTimeoutMs,
+        request_deadline_ms: githubWorkerRequestDeadlineMs,
+        response_limit_bytes: githubApiResponseLimitBytes,
+      });
+      reconciler = createGitHubReconciler({
+        installation_token: resolver,
+        fetch_impl,
+        request_timeout_ms: githubApiRequestTimeoutMs,
+        request_deadline_ms: githubWorkerRequestDeadlineMs,
+        response_limit_bytes: githubApiResponseLimitBytes,
+      });
       if (String(env.CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET || "").length < 32) {
         throw new Error("github_worker_execution_secret_invalid");
       }
@@ -99,6 +151,12 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
       private_key_configured: enabled && Boolean(env.GITHUB_APP_PRIVATE_KEY),
       tenant_bindings_configured: enabled && Boolean(env.GITHUB_APP_TENANT_BINDINGS_JSON),
       configuration_error: readinessError,
+      github_api_transport: {
+        request_timeout_ms: githubApiRequestTimeoutMs,
+        request_deadline_ms: githubWorkerRequestDeadlineMs,
+        response_limit_bytes: githubApiResponseLimitBytes,
+        automatic_retries: 0,
+      },
       generic_work_core_join_signer: signerHealth,
     });
   });
@@ -114,6 +172,9 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
     if (emergencyStop) {
       return res.status(503).json({ error: "github_worker_emergency_stop" });
     }
+    const requestDeadline = createWorkerRequestDeadline({
+      timeout_ms: githubWorkerRequestDeadlineMs,
+    });
     try {
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) ||
           Object.keys(req.body).some((key) => !new Set(["claim", "materialization"]).has(key))) {
@@ -138,12 +199,26 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
         return res.status(503).json({ error: "github_worker_emergency_stop", execution: stopped });
       }
       try {
-        const result = await executor(claim, { materialization: req.body.materialization ?? null });
+        const result = await executor(claim, {
+          materialization: req.body.materialization ?? null,
+          deadline: requestDeadline,
+        });
         const completed = ledger.finish(claim, { state: "succeeded", result });
         return res.status(200).json({ ok: true, execution: completed, provider_execution: true });
-      } catch {
-        const unknown = ledger.finish(claim, { state: "outcome_unknown", result: null });
-        return res.status(409).json({ error: "github_worker_execution_outcome_unknown", execution: unknown });
+      } catch (error) {
+        if (githubExecutionErrorOutcome(error) === "unknown") {
+          const unknown = ledger.finish(claim, { state: "outcome_unknown", result: null });
+          return res.status(409).json({ error: "github_worker_execution_outcome_unknown", execution: unknown });
+        }
+        const failed = ledger.finish(claim, {
+          state: "failed",
+          result: {
+            outcome: "failure",
+            reason: githubExecutionErrorCode(error),
+            mutation_dispatched: githubExecutionMutationDispatched(error),
+          },
+        });
+        return res.status(409).json({ error: "github_worker_execution_failed", execution: failed });
       }
     } catch (error) {
       return res.status(400).json({ error: String(error?.code || error?.message || "github_worker_request_invalid") });
@@ -151,6 +226,9 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
   });
   app.post("/v1/reconcile", async (req, res) => {
     if (!workerReady()) return res.status(503).json({ error: "github_worker_unavailable" });
+    const requestDeadline = createWorkerRequestDeadline({
+      timeout_ms: githubWorkerRequestDeadlineMs,
+    });
     try {
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body) || Object.keys(req.body).some((key) => key !== "claim")) {
         throw new Error("github_worker_request_invalid");
@@ -165,7 +243,7 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
         return res.status(200).json({ ok: true, execution: existing, provider_execution: false, idempotent: true });
       }
       if (existing.state !== "outcome_unknown") return res.status(409).json({ error: "github_worker_execution_not_reconcilable" });
-      const outcome = await reconciler(claim);
+      const outcome = await reconciler(claim, { deadline: requestDeadline });
       const reconciled = ledger.reconcile(claim, outcome);
       return res.status(200).json({ ok: true, execution: reconciled, provider_execution: false });
     } catch (error) {
@@ -188,6 +266,9 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
     ledger,
     executor,
     reconciler,
+    github_api_request_timeout_ms: githubApiRequestTimeoutMs,
+    github_worker_request_deadline_ms: githubWorkerRequestDeadlineMs,
+    github_api_response_limit_bytes: githubApiResponseLimitBytes,
     readiness_error: readinessError,
   });
 }

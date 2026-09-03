@@ -15,6 +15,7 @@ import {
   createWorkContinuityV2Store,
   deriveLegacyFinalReportDigest,
   deriveAuthenticatedTenantWorkAcl,
+  deriveGenericClosureReadiness,
   deriveTenantWorkClosureVerification,
   normalizeNyraAutopilotVerificationResult,
   verifyGenericCoreJoinVerdict,
@@ -24,6 +25,98 @@ import { buildGenericClosureArtifacts } from "../src/work-continuity-v2.js";
 const acl = ({ user_id = "user-a", tenant_id = "tenant-a", ...rest } = {}) => ({
   server_derived: true, user_id, tenant_id, team_ids: [], managed_team_ids: [],
   is_tenant_owner: false, is_super_admin: false, ...rest,
+});
+
+test("generic evaluator and finalizer readiness includes every required gate", () => {
+  const state = {
+    work: {
+      created_by_agent_id: "builder",
+      created_by_session_fingerprint: "builder-session",
+    },
+    tasks: [{ required: true, status: "planned", acceptance_verified: false }],
+    evidence: [{
+      required: true,
+      independently_verified: true,
+      verified_by_agent_id: "verifier",
+      verified_by_session_fingerprint: "verifier-session",
+    }],
+    join: { core_join_digest: "a".repeat(64) },
+  };
+  const incomplete = deriveGenericClosureReadiness(state);
+  assert.equal(incomplete.ready, false);
+  assert.equal(incomplete.required_tasks_complete, false);
+  assert.equal(incomplete.independent_verification_persisted, true);
+  assert.equal(incomplete.core_join_persisted, true);
+  assert.deepEqual(incomplete.missing, ["required_tasks_incomplete"]);
+
+  state.tasks[0] = { required: true, status: "completed", acceptance_verified: true };
+  const ready = deriveGenericClosureReadiness(state);
+  assert.equal(ready.ready, true);
+  assert.deepEqual(ready.missing, []);
+
+  state.evidence[0].verified_by_session_fingerprint = "builder-session";
+  const selfVerified = deriveGenericClosureReadiness(state);
+  assert.equal(selfVerified.ready, false);
+  assert.deepEqual(selfVerified.missing, ["independent_verification_missing"]);
+});
+
+test("task-scoped native verifier evidence cannot authorize generic Work closure", () => {
+  const state = {
+    work: {
+      created_by_agent_id: "builder",
+      created_by_session_fingerprint: "builder-session",
+    },
+    tasks: [{ required: true, status: "completed", acceptance_verified: true }],
+    evidence: [{
+      required: true,
+      independently_verified: true,
+      verified_by_agent_id: "verifier",
+      verified_by_session_fingerprint: "verifier-session",
+      kind: "native_verifier_terminal_report",
+      // Missing or caller-tampered metadata cannot upgrade this intrinsically
+      // task-scoped evidence kind into Work closure authority.
+      metadata: { authority: "work_wide", execution_authorized: true },
+    }],
+    join: { core_join_digest: "a".repeat(64) },
+  };
+
+  const readiness = deriveGenericClosureReadiness(state);
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.native_task_evidence_only, true);
+  assert.deepEqual(readiness.missing, ["native_closure_required"]);
+
+  state.evidence.push({
+    required: true,
+    independently_verified: true,
+    verified_by_agent_id: "universal_core_owner_manual_merge_release",
+    verified_by_session_fingerprint: "release-session",
+    kind: "owner_manual_merge_release",
+    metadata: { note: "owner_manual_merge", provider_execution: false },
+  });
+  const unboundRelease = deriveGenericClosureReadiness(state);
+  assert.equal(unboundRelease.ready, false);
+  assert.equal(unboundRelease.native_release_authority_persisted, false);
+  assert.deepEqual(unboundRelease.missing, ["native_closure_required"]);
+
+  state.work.tenant_id = "tenant-a";
+  state.work.work_id = "11111111-1111-4111-8111-111111111111";
+  state.evidence[1].metadata = {
+    schema_version: "tenant_work_owner_manual_merge_release_evidence_v1",
+    tenant_id: state.work.tenant_id,
+    work_id: state.work.work_id,
+    note: "owner_manual_merge",
+    provider_execution: false,
+  };
+  state.evidence[1].digest = crypto.createHash("sha256")
+    .update(JSON.stringify(Object.fromEntries(
+      Object.entries(state.evidence[1].metadata).sort(([left], [right]) =>
+        left.localeCompare(right)),
+    )))
+    .digest("hex");
+  const released = deriveGenericClosureReadiness(state);
+  assert.equal(released.ready, true);
+  assert.equal(released.native_release_authority_persisted, true);
+  assert.equal(released.native_task_evidence_only, false);
 });
 
 test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
@@ -440,7 +533,7 @@ test("initialization sends one additive schema statement to the injected pool", 
   const store = createWorkContinuityV2Store({ pool });
   await store.initialize();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0], ADDITIVE_SCHEMA_SQL);
+  assert.equal(calls[0], ADDITIVE_SCHEMA_SQL.trim());
 });
 
 test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {

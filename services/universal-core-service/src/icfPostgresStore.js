@@ -5,6 +5,7 @@ import {
   acquireBoundedMigrationLock,
   ensureCoreSchemaMigrationRegistry,
 } from "./coreSchemaMigrationRegistry.js";
+import { withPostgresMigrationSession } from "../../shared/retryable-postgres-initializer.js";
 import {
   buildIcfEventDigestMetadataV2,
   ICF_EVENT_DIGEST_CONTRACT_LEGACY_V1,
@@ -252,14 +253,17 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
   async function initializeStore() {
     const sql = await readFile(ICF_EVENT_DIGEST_MIGRATION_URL, "utf8");
     const sqlDigest = migrationDigest(sql);
-    const client = await pool.connect();
-    let locked = false;
+    const connection = await pool.connect();
     try {
-      await acquireBoundedMigrationLock(client, ICF_EVENT_DIGEST_MIGRATION_LOCK);
-      locked = true;
-      await client.query(ICF_POSTGRES_SCHEMA);
-      await ensureCoreSchemaMigrationRegistry(client);
-      const existing = (await client.query(
+      return await withPostgresMigrationSession(connection, async ({ query }) => {
+        const client = Object.freeze({ query });
+        let locked = false;
+        try {
+          await acquireBoundedMigrationLock(client, ICF_EVENT_DIGEST_MIGRATION_LOCK);
+          locked = true;
+          await client.query(ICF_POSTGRES_SCHEMA);
+          await ensureCoreSchemaMigrationRegistry(client);
+          const existing = (await client.query(
         `SELECT migration_id,sql_digest,application_state,checkpoint
            FROM core_schema_migrations WHERE migration_id=$1`,
         [ICF_EVENT_DIGEST_MIGRATION_ID],
@@ -320,28 +324,31 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
           })],
         );
       }
-      const verified = await migrationReadback(client, sql);
-      verifyIcfEventDigestV2MigrationReadback(verified, sqlDigest);
-      return verified;
-    } catch (error) {
-      try { await client.query("ROLLBACK"); } catch { /* preserve authoritative failure */ }
-      try {
-        await client.query(
+          const verified = await migrationReadback(client, sql);
+          verifyIcfEventDigestV2MigrationReadback(verified, sqlDigest);
+          return verified;
+        } catch (error) {
+          try { await client.query("ROLLBACK"); } catch { /* preserve authoritative failure */ }
+          try {
+            await client.query(
           `UPDATE core_schema_migrations SET application_state='FAILED'
             WHERE migration_id=$1 AND application_state<>'COMPLETED'`,
           [ICF_EVENT_DIGEST_MIGRATION_ID],
         );
-      } catch { /* the authoritative startup error wins */ }
-      throw error;
+          } catch { /* the authoritative startup error wins */ }
+          throw error;
+        } finally {
+          if (locked) {
+            try {
+              await client.query("SELECT pg_advisory_unlock(hashtext($1))", [
+                ICF_EVENT_DIGEST_MIGRATION_LOCK,
+              ]);
+            } catch { /* disconnect also releases the session lock */ }
+          }
+        }
+      });
     } finally {
-      if (locked) {
-        try {
-          await client.query("SELECT pg_advisory_unlock(hashtext($1))", [
-            ICF_EVENT_DIGEST_MIGRATION_LOCK,
-          ]);
-        } catch { /* disconnect also releases the session lock */ }
-      }
-      client.release();
+      connection.release();
     }
   }
 

@@ -45,9 +45,11 @@ test("PostgreSQL 16 persists and enforces causal lease session binding", {
       VALUES ($1,$2,$3,$4,$5,'test','test','test',$6)`,
     [tenantId, "project-alias", projectId, workId, "logical-session-a", "same-agent"]);
     await pool.query(`INSERT INTO core_continuity_participants
-      (tenant_id,work_id,session_id,actor_subject,agent_id,client_type,expires_at)
-      VALUES ($1,$2,$3,$4,$5,'codex',now()+interval '10 minutes')`,
-    [tenantId, workId, "logical-session-a", identity.subject, "same-agent"]);
+      (tenant_id,work_id,session_id,actor_subject,agent_id,client_type,
+       transport_session_fingerprint,expires_at)
+      VALUES ($1,$2,$3,$4,$5,'codex',$6,now()+interval '10 minutes')`,
+    [tenantId, workId, "logical-session-a", identity.subject, "same-agent",
+      identity.agentPresence.host_transport_session_fingerprint]);
     await pool.query(`CREATE TABLE core_changes (
       tenant_id text NOT NULL,project_id uuid NOT NULL,work_id uuid NOT NULL,change_id uuid NOT NULL,
       PRIMARY KEY (tenant_id,change_id))`);

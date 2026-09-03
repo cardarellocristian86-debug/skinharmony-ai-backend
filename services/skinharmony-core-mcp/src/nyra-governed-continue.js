@@ -131,7 +131,7 @@ function commitPrecommitGate(context, payload, request) {
   const nativeFields = [
     "schema_version", "gate_source", "tenant_id", "work_id", "action_kind", "gate_kind",
     "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
-    "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+    "supersession_digest", "reconciliation_digest", "v2_scope_snapshot_digest", "v2_scope_tasks", "legacy_evidence_ids",
     "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
     "projection_digest",
   ];
@@ -147,7 +147,8 @@ function commitPrecommitGate(context, payload, request) {
       !Array.isArray(gate.legacy_evidence_ids) ||
       !Array.isArray(gate.replacement_evidence_ids) ||
       (legacyGate && (gate.legacy_evidence_ids.length < 1 || gate.replacement_evidence_ids.length < 1)) ||
-      (nativeGate && (!nativeExact || gate.legacy_evidence_ids.length !== 0 ||
+      (nativeGate && (!nativeExact || !SHA256.test(String(gate.v2_scope_snapshot_digest || "")) ||
+        !Array.isArray(gate.v2_scope_tasks) || gate.legacy_evidence_ids.length !== 0 ||
         gate.replacement_evidence_ids.length !== 0 || digest(nativeProjection) !== nativeProjectionDigest)) ||
       request?.evidence_digest !== gate.projection_digest ||
       payload?.action_class !== "GIT_COMMIT") {
@@ -161,7 +162,7 @@ function fulfilledCommitPrecommitGate(context, payload, request) {
   const nativeFields = [
     "schema_version", "gate_source", "tenant_id", "work_id", "action_kind", "gate_kind",
     "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
-    "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+    "supersession_digest", "reconciliation_digest", "v2_scope_snapshot_digest", "v2_scope_tasks", "legacy_evidence_ids",
     "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
     "projection_digest",
   ];
@@ -177,7 +178,9 @@ function fulfilledCommitPrecommitGate(context, payload, request) {
       typeof gate.task_id !== "string" || typeof gate.plan_id !== "string" ||
       typeof gate.evaluation_id !== "string" ||
       [gate.evaluation_digest, gate.workspace_digest, gate.supersession_digest,
+        gate.v2_scope_snapshot_digest,
         gate.reconciliation_digest, projectionDigest].some((value) => !SHA256.test(String(value || ""))) ||
+      !Array.isArray(gate.v2_scope_tasks) ||
       !Array.isArray(gate.legacy_evidence_ids) || gate.legacy_evidence_ids.length !== 0 ||
       !Array.isArray(gate.replacement_evidence_ids) || gate.replacement_evidence_ids.length !== 0 ||
       !Array.isArray(gate.drift_codes) || gate.drift_codes.length !== 0 ||
@@ -432,6 +435,7 @@ export function createNyraGovernedContinueHandler({
   authorizeAction, reviewWorkBootstrap, createWorkBootstrap, readActionTicket,
   fulfillPrecommitTicketTask, claimPrecommitTicketGate = null,
   releaseOrReconcilePrecommitTicketGateClaim = null,
+  abandonInactivePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
   finalizeVerifiedWork = null, now = () => Date.now(),
@@ -578,6 +582,9 @@ export function createNyraGovernedContinueHandler({
                 gate_projection_digest: currentProjectionDigest,
                 host_session_fingerprint: String(identity?.agentPresence?.session_fingerprint || "").toLowerCase(),
               });
+              if (earlyRecovery.recovery_source === "abandonment") {
+                fail("nyra_continue_precommit_claim_abandoned_replan_required", 409);
+              }
               if (fulfilledGate &&
                   (String(earlyRecovery.recovery_source || "fulfillment") !== "fulfillment" ||
                     earlyRecovery.ticket_id !== fulfilledGate.gate.ticket_id)) {
@@ -745,6 +752,9 @@ export function createNyraGovernedContinueHandler({
             ? recovery.ticket_id : null;
           const hasRecovery = recoverySource !== null;
           recoveryPresent = hasRecovery;
+          if (recoverySource === "abandonment") {
+            fail("nyra_continue_precommit_claim_abandoned_replan_required", 409);
+          }
           if (recoverySource && !["fulfillment", "reconciliation", "before_ticket_locator", "claim"].includes(recoverySource)) {
             fail("nyra_continue_precommit_claim_recovery_invalid", 502);
           }
@@ -830,6 +840,20 @@ export function createNyraGovernedContinueHandler({
                 error_code: /^[a-zA-Z0-9_-]{3,160}$/.test(String(error?.code || ""))
                   ? String(error.code)
                   : "precommit_claim_operation_failed",
+              }, identity);
+            } catch {
+              fail("nyra_continue_precommit_claim_recovery_failed", 503);
+            }
+          }
+          if (nativeClaim && !issuedTicketId &&
+              typeof abandonInactivePrecommitTicketGateClaim === "function") {
+            try {
+              // Only Universal Core can declare the delegation inactive. The
+              // store keeps an append-only abandonment receipt; an active or
+              // ambiguous delegation leaves the claim frozen for safe replay.
+              await abandonInactivePrecommitTicketGateClaim({
+                work_id: payload.work_id,
+                gate_claim: nativeClaim,
               }, identity);
             } catch {
               fail("nyra_continue_precommit_claim_recovery_failed", 503);

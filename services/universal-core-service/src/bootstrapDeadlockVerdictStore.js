@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 const MIGRATION_SQL = fs.readFileSync(
   fileURLToPath(new URL("../migrations/20260810_bootstrap_deadlock_verdicts.sql", import.meta.url)),
@@ -258,8 +259,7 @@ export function createBootstrapDeadlockVerdictStore({ pool, allowedFailureCodes 
     fail("bootstrap_deadlock_postgres_pool_required");
   }
   const failurePolicy = normalizedFailurePolicy(allowedFailureCodes);
-  let initialized;
-  const initialize = () => initialized ||= pool.query(MIGRATION_SQL);
+  const initialize = createRetryablePostgresInitializer({ pool, sql: MIGRATION_SQL });
 
   async function transaction(work) {
     await initialize();

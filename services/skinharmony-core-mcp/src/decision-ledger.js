@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
 import { WORK_CONTINUITY_V2_SCHEMA_SQL } from "./work-continuity-v2.js";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 export const DECISION_LEDGER_SCHEMA_VERSION = "core_decision_ledger_v1";
 
@@ -160,11 +162,13 @@ FROM core_decision_events GROUP BY tenant_id, date_trunc('day', occurred_at);
 
 export function createDecisionLedger(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
-  const pool = options.pool || new Pool({ connectionString: config.databaseUrl, ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
-  let ready;
-  const initialize = () => ready ||= pool.query(
-    `${CREATE_SCHEMA_SQL}\n${WORK_CONTINUITY_V2_SCHEMA_SQL}`,
-  );
+  const pool = options.pool || new Pool(postgresPoolConfig(config, {
+    connectionString: config.databaseUrl,
+  }));
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: `${CREATE_SCHEMA_SQL}\n${WORK_CONTINUITY_V2_SCHEMA_SQL}`,
+  });
 
   const causalTools = new Set([
     "project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind",

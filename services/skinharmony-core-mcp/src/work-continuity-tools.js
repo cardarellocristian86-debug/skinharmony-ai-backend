@@ -190,8 +190,11 @@ export const WORK_CONTINUITY_TOOLS = [
     object({ work_id: uuid, event_limit: { type: "integer", minimum: 1, maximum: 200 } }, ["work_id"]), true),
   tool("work_continuity_resume", "Resume verified persistent work",
     "Resume only after capsule digest, drift checks and a fresh Universal Core authorization recalculation.",
-    object({ work_id: uuid, session_id: identifier, current_state_hashes: stateHashes, idempotency_key: text(160) },
+    object({ work_id: uuid, session_id: identifier, current_state_hashes: stateHashes,
+      idempotency_key: coordinationIdempotencyKey },
       ["work_id", "session_id", "current_state_hashes", "idempotency_key"]), false, {
+        ownerConfirmationRequired: false,
+        boundedCollaboration: true,
         dedicatedCoreGate: true,
         serverOwnedGovernance: true,
       }),
@@ -285,6 +288,8 @@ export const WORK_CONTINUITY_TOOLS = [
       repository_hash: hash, policy_hash: hash, live_state_hash: hash,
     }, ["project_id", "session_id", "initial_message", "idea", "objective", "architecture", "next_action"]),
     false, {
+      ownerConfirmationRequired: false,
+      boundedCollaboration: true,
       dedicatedCoreGate: true,
       serverOwnedGovernance: true,
     }),

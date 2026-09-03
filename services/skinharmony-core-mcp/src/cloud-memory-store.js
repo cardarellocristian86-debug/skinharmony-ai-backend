@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
 import { Pool } from "pg";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
+import {
+  createRetryablePostgresInitializer,
+  initializePostgresWithRetry,
+} from "../../shared/retryable-postgres-initializer.js";
 
 const SECRET_PATTERNS = [
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g,
@@ -54,13 +59,10 @@ export function platformLearningBlockKey(toolName, failureCode) {
 
 export function createCloudMemoryStore(config, options = {}) {
   if (!config.databaseUrl) return null;
-  const pool = options.pool || new Pool({
+  const pool = options.pool || new Pool(postgresPoolConfig(config, {
     connectionString: config.databaseUrl,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-    max: config.databasePoolMax || 5,
-  });
-  let ready;
-  const initialize = () => ready ||= pool.query(`
+  }));
+  const migrate = createRetryablePostgresInitializer({ pool, sql: `
     CREATE TABLE IF NOT EXISTS mcp_memory_documents (
       tenant_id varchar(64) NOT NULL,
       id char(24) NOT NULL,
@@ -111,12 +113,49 @@ export function createCloudMemoryStore(config, options = {}) {
       occurrence_count integer NOT NULL DEFAULT 1,
       PRIMARY KEY (block_key, tenant_id)
     );
-  `);
+  ` });
+  let initializationState = "idle";
+  let initializationError = null;
+  let initializationPromise = null;
+
+  function initialize() {
+    if (initializationState === "ready") return Promise.resolve({ ready: true, backend: "postgres" });
+    if (initializationPromise) return initializationPromise;
+    initializationState = "initializing";
+    initializationError = null;
+    const attempt = initializePostgresWithRetry(() => migrate());
+    const guarded = attempt.then(() => {
+      initializationState = "ready";
+      return { ready: true, backend: "postgres" };
+    }).catch((error) => {
+      initializationState = "failed";
+      initializationError = String(error?.code || "cloud_memory_initialization_failed").slice(0, 80);
+      if (initializationPromise === guarded) initializationPromise = null;
+      throw error;
+    });
+    initializationPromise = guarded;
+    return guarded;
+  }
+
+  function requireInitialized() {
+    if (initializationState === "ready") return;
+    const error = new Error("cloud_memory_not_ready");
+    error.code = "cloud_memory_not_ready";
+    error.status = 503;
+    error.statusCode = 503;
+    throw error;
+  }
 
   return {
     backend: "postgres",
+    initialize,
+    initializationStatus: () => ({
+      state: initializationState,
+      ready: initializationState === "ready",
+      error: initializationError,
+    }),
     async search(tenantId, query, limit = 20) {
-      await initialize();
+      requireInitialized();
       const terms = String(query || "").trim().split(/\s+/).filter(Boolean).slice(0, 12);
       if (!terms.length) return [];
       const patterns = terms.map((term) => `%${term}%`);
@@ -130,7 +169,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows.map((row) => ({ id: row.id, title: row.title, url: "" }));
     },
     async fetch(tenantId, id) {
-      await initialize();
+      requireInitialized();
       const result = await pool.query(
         `SELECT id, title, source_path, content, content_sha256, redaction_count, metadata, updated_at
          FROM mcp_memory_documents WHERE tenant_id = $1 AND id = $2`,
@@ -139,7 +178,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows[0] || null;
     },
     async inspectBySourcePaths(tenantId, sourcePaths) {
-      await initialize();
+      requireInitialized();
       const paths = [...new Set((sourcePaths || []).map((value) => String(value || "").replace(/^\/+/, "")))]
         .filter((value) => value && !value.includes(".."))
         .slice(0, 50);
@@ -154,7 +193,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows;
     },
     async fetchBySourcePaths(tenantId, sourcePaths) {
-      await initialize();
+      requireInitialized();
       const paths = [...new Set((sourcePaths || []).map((value) => String(value || "").replace(/^\/+/, "")))]
         .filter((value) => value && !value.includes(".."))
         .slice(0, 50);
@@ -169,7 +208,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows;
     },
     async upsert(tenantId, input) {
-      await initialize();
+      requireInitialized();
       const sourcePath = String(input.source_path || "").replace(/^\/+/, "").slice(0, 500);
       if (!sourcePath || sourcePath.includes("..")) throw new Error("memory_source_path_invalid");
       const cleaned = redactMemoryText(input.text);
@@ -193,7 +232,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows[0];
     },
     async status(tenantId) {
-      await initialize();
+      requireInitialized();
       const result = await pool.query(
         `SELECT count(*)::integer AS document_count, coalesce(sum(octet_length(content)),0)::bigint AS bytes,
                 max(updated_at) AS last_updated_at
@@ -203,7 +242,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return { backend: "postgres", ...result.rows[0] };
     },
     async recordDistilledFailure(identity, event = {}) {
-      await initialize();
+      requireInitialized();
       const tenantId = tenant(identity?.tenantId);
       const dynamic = event.toolName === "core_capability_invoke";
       const toolName = String(dynamic ? event.args?.capability_id : event.toolName || "").trim().slice(0, 160);
@@ -278,7 +317,7 @@ export function createCloudMemoryStore(config, options = {}) {
         platform_learning: platformLearning };
     },
     async listDistilledLessons(tenantId, projectId, limit = 10) {
-      await initialize();
+      requireInitialized();
       const scopedProject = safeProjectId(projectId);
       const result = await pool.query(
         `SELECT tool_name AS source_tool, failure_code, occurrence_count, first_observed_at, last_observed_at,
@@ -291,7 +330,7 @@ export function createCloudMemoryStore(config, options = {}) {
       return result.rows;
     },
     async listPlatformLearningBlocks(limit = 10) {
-      await initialize();
+      requireInitialized();
       const result = await pool.query(
         `SELECT block_key, source_tool, failure_code, occurrence_count,
                 corroborating_tenant_count, lifecycle_state, first_observed_at, last_observed_at

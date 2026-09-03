@@ -8,9 +8,18 @@ const {
   createPersistentReplayGuard,
 } = require("./lib/nyra-deep-branch-v2-federation");
 const {
+  featureFlags: nyraDeepV2FeatureFlags,
+  loadCatalog: loadNyraDeepV2Catalog,
+} = require("./lib/nyra-deep-branch-v2");
+const {
   createNyraPolicyRegistryAttester,
   createNyraPolicyRegistryLocalTestSigner,
 } = require("./lib/nyra-policy-registry-attestation");
+const {
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  buildIdentity: buildHostNativeIdentity,
+} = require("../services/shared/host-native-health-contract.cjs");
 const {
   compileIntent,
   detectIntentDrift,
@@ -87,7 +96,6 @@ const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_C
 const nyraHorizontalRuntime = createNyraHorizontalRuntime(process.env);
 const NYRA_SERVICE_NAME = nyraHorizontalRuntime.serviceName;
 const NYRA_SERVICE_VERSION = nyraHorizontalRuntime.version;
-const NYRA_BUILD_COMMIT = /^[a-f0-9]{40}$/i;
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
 const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
 const nyraRateBuckets = new Map();
@@ -150,6 +158,8 @@ function resolveStoragePath(relativePath) {
 }
 
 const NYRA_DEEP_V2_FEDERATION_PATH = "/api/nyra/runtime/v2/evaluate";
+const NYRA_DEEP_V2_RUNTIME_DESCRIPTOR_SCHEMA_VERSION =
+  "nyra_deep_branch_v2_runtime_descriptor_v1";
 const NYRA_POLICY_REGISTRY_ATTESTATION_PATH = "/api/nyra/policy-registry/attestations";
 const configuredNyraDeepV2ReplayPath = String(
   process.env.NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH || "",
@@ -188,6 +198,80 @@ const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({
 
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
+}
+
+function nyraDeepV2RuntimeDescriptor() {
+  const featureTenantId = String(process.env.NYRA_CORE_TENANT_ID || "").trim();
+  const empty = {
+    schema_version: NYRA_DEEP_V2_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+    ready: false,
+    feature_enabled: false,
+    mode: "disabled",
+    feature_tenant_configured: Boolean(featureTenantId),
+    catalog_fingerprint: null,
+    root_binding_hash: null,
+    counts: {
+      branch_count: 0,
+      subbranch_count: 0,
+      node_count: 0,
+      shard_count: 0,
+    },
+    branch_ids: [],
+    effective_branch_allowlist: [],
+    execution_authorized: false,
+    core_final_authority: true,
+  };
+  try {
+    const loaded = loadNyraDeepV2Catalog({ runtimeMode: "lazy" });
+    const branchIds = Array.isArray(loaded?.catalog?.branches)
+      ? loaded.catalog.branches
+        .map((branch) => String(branch?.id || "").trim())
+        .filter((branchId) => /^[a-z][a-z0-9_]{1,63}$/.test(branchId))
+      : [];
+    const branchSet = new Set(branchIds);
+    const feature = nyraDeepV2FeatureFlags(process.env, featureTenantId);
+    const effectiveAllowlist = feature.enabled
+      ? feature.branch_allowlist.filter((branchId) => branchSet.has(branchId))
+      : [];
+    const metrics = loaded?.validation?.metrics || {};
+    const shardCount = Array.isArray(loaded?.manifest?.shards)
+      ? loaded.manifest.shards.length
+      : 0;
+    const catalogFingerprint = String(loaded?.catalog?.catalog_fingerprint || "");
+    const rootBindingHash = String(loaded?.manifest?.root_binding_hash || "");
+    const pinsValid = /^[a-f0-9]{64}$/.test(catalogFingerprint)
+      && /^[a-f0-9]{64}$/.test(rootBindingHash);
+    const counts = {
+      branch_count: Number(metrics.branch_count || 0),
+      subbranch_count: Number(metrics.subbranch_count || 0),
+      node_count: Number(metrics.node_count || 0),
+      shard_count: shardCount,
+    };
+    const countsValid = Number.isInteger(counts.branch_count)
+      && counts.branch_count === branchIds.length
+      && Number.isInteger(counts.subbranch_count)
+      && counts.subbranch_count >= 0
+      && Number.isInteger(counts.node_count)
+      && counts.node_count >= 0
+      && Number.isInteger(counts.shard_count)
+      && counts.shard_count >= 0;
+    return {
+      schema_version: NYRA_DEEP_V2_RUNTIME_DESCRIPTOR_SCHEMA_VERSION,
+      ready: loaded?.ok === true && pinsValid && countsValid,
+      feature_enabled: feature.enabled === true,
+      mode: feature.mode,
+      feature_tenant_configured: Boolean(featureTenantId),
+      catalog_fingerprint: pinsValid ? catalogFingerprint : null,
+      root_binding_hash: pinsValid ? rootBindingHash : null,
+      counts,
+      branch_ids: branchIds,
+      effective_branch_allowlist: effectiveAllowlist,
+      execution_authorized: false,
+      core_final_authority: true,
+    };
+  } catch {
+    return empty;
+  }
 }
 
 function nyraBearerKeys() {
@@ -340,7 +424,7 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
 
-  if (req.path === "/healthz" || req.path === "/livez") {
+  if (req.path === "/healthz" || req.path === "/livez" || req.path === "/render-readyz") {
     next();
     return;
   }
@@ -389,14 +473,10 @@ app.get("/livez", (_req, res) => res.status(200).json({
   liveness: "process_running",
 }));
 
-app.get("/healthz", async (_req, res) => {
-  const commitSha = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim();
-  const build = {
-    build_id: String(process.env.RENDER_DEPLOY_ID || "").trim() || null,
-    commit_sha: NYRA_BUILD_COMMIT.test(commitSha) ? commitSha : null,
-    commit_verifiable: NYRA_BUILD_COMMIT.test(commitSha),
-  };
+const serveNyraHealth = async (_req, res) => {
+  const build = buildHostNativeIdentity(process.env);
   const deepV2FederationConfig = nyraDeepV2Federation.config();
+  const deepV2Runtime = nyraDeepV2RuntimeDescriptor();
   const replayStorePersistent = Boolean(
     nyraStorageRoot || configuredNyraDeepV2ReplayPath,
   );
@@ -409,11 +489,13 @@ app.get("/healthz", async (_req, res) => {
     : { ok: true, ready: true, durable: true };
   const replayStoreReady = replayStorePersistent && replayStoreProbe.ready === true;
   const replayStoreDurable = replayStorePersistent && replayStoreProbe.durable === true;
-  const federationReady = !deepV2FederationConfig.enabled || (
+  const federationReady = deepV2FederationConfig.enabled && (
     federationConfigured
     && replayStoreReady
     && replayStoreDurable
+    && deepV2Runtime.ready
   );
+  const federationHealthGate = !deepV2FederationConfig.enabled || federationReady;
   // The probe is bounded and internally single-flight/cooldown protected. It
   // verifies both the replay backend and a locally verified signer challenge
   // without creating a Policy Registry replay record.
@@ -421,12 +503,16 @@ app.get("/healthz", async (_req, res) => {
   const policyRegistryAttestation = nyraPolicyRegistryAttester.status();
   const policyRegistryReady = !policyRegistryAttestation.render_gate_required ||
     policyRegistryAttestation.ready;
-  const healthy = federationReady && policyRegistryReady;
-  res.status(healthy ? 200 : 503).json({
-    ok: healthy,
+  const healthy = federationHealthGate && policyRegistryReady;
+  const renderReady = healthy && build.commit_verifiable;
+  res.status(renderReady ? 200 : 503).json({
+    ok: renderReady,
     service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
     build,
+    health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    render_ready: renderReady,
     runtime_kind: "horizontal_neural_branch_runtime",
     domain_pack_resolution: "universal_core_key_metadata_only",
     auth_required: process.env.NODE_ENV === "production",
@@ -444,6 +530,7 @@ app.get("/healthz", async (_req, res) => {
       replay_store_durable: replayStoreDurable,
       operational_evaluation_enabled: deepV2FederationConfig.operational_evaluation_enabled,
     },
+    deep_branch_v2_runtime: deepV2Runtime,
     policy_registry_attestation: policyRegistryAttestation,
     work_automation: {
       schema_version: "nyra_work_automation_v3",
@@ -457,7 +544,10 @@ app.get("/healthz", async (_req, res) => {
       provider_execution: false,
     },
   });
-});
+};
+
+app.get("/healthz", serveNyraHealth);
+app.get("/render-readyz", serveNyraHealth);
 
 app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, authorizeExactNyraPolicyRegistryRoute, async (req, res) => {
   try {

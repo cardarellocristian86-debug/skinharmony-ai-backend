@@ -314,6 +314,8 @@ function nativePrecommitGate(overrides = {}) {
     workspace_digest: "f".repeat(64),
     supersession_digest: "1".repeat(64),
     reconciliation_digest: "2".repeat(64),
+    v2_scope_snapshot_digest: "4".repeat(64),
+    v2_scope_tasks: [],
     legacy_evidence_ids: [],
     replacement_evidence_ids: [],
     fulfilled: false,
@@ -651,9 +653,16 @@ test("an expired open reference is atomically retired before the same Nyra bindi
   const statements = [];
   const client = {
     query: async (statement, parameters = []) => {
+      if (statement && typeof statement === "object") {
+        parameters = statement.values || [];
+        statement = statement.text;
+      }
       const sql = String(statement);
       statements.push(sql);
-      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" ||
+          sql.startsWith("SET LOCAL ") || sql.includes("CREATE TABLE IF NOT EXISTS nyra_governed_continuation")) {
+        return { rows: [] };
+      }
       if (sql.includes("SET state='EXPIRED'")) return { rowCount: 1, rows: [] };
       if (sql.includes("SELECT * FROM nyra_governed_continuation")) return { rows: [] };
       if (sql.includes("INSERT INTO nyra_governed_continuation")) {

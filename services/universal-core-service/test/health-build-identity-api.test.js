@@ -395,6 +395,69 @@ test("health exposes a non-secret build identity and commit-verification state",
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
+test("render readiness adds the bounded Deep V2 probe without changing readyz", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "deep-v2-render-readiness-"));
+  let remoteReady = false;
+  let calls = 0;
+  const created = createUniversalCoreService({
+    storageRoot,
+    nyraDeepBranchV2Client: {
+      async readiness() {
+        calls += 1;
+        return {
+          schema_version: "nyra_deep_branch_v2_remote_readiness_v1",
+          ready: remoteReady,
+          requested_enabled: true,
+          enabled: true,
+          mode: "preview",
+          state: remoteReady ? "ready" : "upstream_mismatch_v1_authoritative",
+          reason: remoteReady ? null : "nyra_deep_branch_v2_readiness_pin_mismatch",
+          upstream_verified: remoteReady,
+          federation_verified: remoteReady,
+          feature_enabled: remoteReady,
+          feature_mode: remoteReady ? "shadow" : "disabled",
+          execution_authorized: false,
+          core_final_authority: true,
+          secret: "must-not-be-published",
+        };
+      },
+    },
+  });
+  const server = http.createServer(created.app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const ordinary = await fetch(`${base}/readyz`);
+    assert.equal(ordinary.status, 200);
+    assert.equal(calls, 0);
+
+    const mismatchResponse = await fetch(`${base}/render-readyz`);
+    const mismatch = await mismatchResponse.json();
+    assert.equal(mismatchResponse.status, 503);
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.render_ready, false);
+    assert.equal(mismatch.nyra_deep_branch_v2.remote_readiness.ready, false);
+    assert.equal(
+      mismatch.nyra_deep_branch_v2.remote_readiness.reason,
+      "nyra_deep_branch_v2_readiness_pin_mismatch",
+    );
+    assert.equal(JSON.stringify(mismatch).includes("must-not-be-published"), false);
+
+    remoteReady = true;
+    const readyResponse = await fetch(`${base}/render-readyz`);
+    const ready = await readyResponse.json();
+    assert.equal(readyResponse.status, 200);
+    assert.equal(ready.ok, true);
+    assert.equal(ready.render_ready, true);
+    assert.equal(ready.nyra_deep_branch_v2.remote_readiness.ready, true);
+    assert.equal(calls, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await created.shutdown?.();
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("liveness responds without consulting unavailable governed dependencies", async () => {
   const storageRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "host-native-liveness-"),
@@ -1042,10 +1105,11 @@ test("injected blocking DB probes are bounded and cannot mint degraded bootstrap
       assert.equal(health.render_ready, false);
       assert.equal(health.liveness_degraded, false);
       assert.equal(health.research_airlock.bootstrap_guard, undefined);
-      assert.equal(calls.airlock, constructionCalls.airlock + 1);
+      // Readiness observes the startup migration state; it never runs DDL.
+      assert.equal(calls.airlock, constructionCalls.airlock);
       assert.ok(Date.now() - startedAt < 250);
       assert.equal(health.nyra_policy_registry.state, "probe_timeout");
-      assert.equal(health.research_airlock.state, "probe_timeout");
+      assert.equal(health.research_airlock.state, "initializing");
 
       const readyStartedAt = Date.now();
       const readyResponse = await fetch(`${service.base}/readyz`);
@@ -1053,12 +1117,10 @@ test("injected blocking DB probes are bounded and cannot mint degraded bootstrap
       assert.equal(readyResponse.status, 503);
       assert.equal(ready.ok, false);
       assert.equal(ready.render_ready, false);
-      // The store's own initialization is also single-flight, so the second
-      // bounded probe reuses its one unresolved initialization query.
-      assert.equal(calls.airlock, constructionCalls.airlock + 1);
+      assert.equal(calls.airlock, constructionCalls.airlock);
       assert.ok(Date.now() - readyStartedAt < 250);
       assert.equal(ready.nyra_policy_registry.state, "probe_timeout");
-      assert.equal(ready.research_airlock.state, "probe_timeout");
+      assert.equal(ready.research_airlock.state, "initializing");
     } finally {
       await service.close();
     }
@@ -1202,6 +1264,41 @@ test("permanently hung health probes retain at most one orphan and one active re
         assert.equal(health.nyra_policy_registry.state, "probe_timeout", `attempt_${attempt}`);
       }
       assert.equal(calls, 2);
+    } finally {
+      await service.close();
+    }
+  });
+});
+
+test("Causal Continuity initialization retries one transient PostgreSQL lock timeout", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "false",
+    GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
+    CORE_SERVICE_BUILD_ID: undefined,
+    RENDER_GIT_COMMIT: undefined,
+    GIT_COMMIT: "a".repeat(40),
+  }, async () => {
+    const createService = await freshUniversalCoreService("causal-transient-retry");
+    let attempts = 0;
+    const service = await startHealthService(causalProductionOptions(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error("canceling statement due to lock timeout");
+        error.code = "55P03";
+        throw error;
+      }
+    }), createService);
+    try {
+      let health;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        health = await fetch(`${service.base}/healthz`).then((response) => response.json());
+        if (health.causal_continuity.state === "ready") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(attempts, 2);
+      assert.equal(health.causal_continuity.state, "ready");
     } finally {
       await service.close();
     }

@@ -12,7 +12,46 @@ const DB_NOW = new Date("2026-08-10T10:00:00.000Z");
 const POSTGRES_TEST_URL = process.env.BOOTSTRAP_AUTHORITY_TEST_DATABASE_URL || "";
 const SERVICE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function registryColumns() { return [{ column_name: "migration_id", data_type: "character varying", character_maximum_length: 160, is_nullable: "NO", column_default: null }, { column_name: "applied_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "now()" }, { column_name: "sql_digest", data_type: "character", character_maximum_length: 64, is_nullable: "YES", column_default: null }, { column_name: "application_state", data_type: "text", character_maximum_length: null, is_nullable: "YES", column_default: null }, { column_name: "checkpoint", data_type: "text", character_maximum_length: null, is_nullable: "YES", column_default: null }, { column_name: "started_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "clock_timestamp()" }, { column_name: "completed_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "YES", column_default: null }, { column_name: "verifier_evidence", data_type: "jsonb", character_maximum_length: null, is_nullable: "NO", column_default: "'{}'::jsonb" }]; }
-function poolWith(handler, convergence = {}) { const calls = []; const converged = { missing_columns: [], missing_indexes: [], missing_triggers: [], missing_constraints: [], attestation_columns_converged: true, active_key_index_converged: true, column_semantics_converged: true, check_constraints_converged: true, legacy_state_constraint_converged: true, foreign_keys_converged: true, trigger_definitions_converged: true, ...convergence }; const client = { async query(sql, params = []) { calls.push({ sql, params }); if (String(sql).includes("FROM information_schema.columns") && String(sql).includes("core_schema_migrations")) return { rows: registryColumns() }; if (String(sql).includes("FROM pg_constraint constraint_row")) return { rows: [{ column_name: "migration_id" }] }; return handler(sql.replace(/\s+/g, " ").trim(), params, calls); }, release() { calls.push({ sql: "RELEASE", params: [] }); } }; return { calls, pool: { async query(sql, params = []) { calls.push({ sql, params, migration: true }); if (sql.includes("required_columns(table_name,column_name)")) return { rowCount: 1, rows: [converged] }; return { rowCount: 0, rows: [] }; }, async connect() { return client; } } }; }
+function poolWith(handler, convergence = {}) {
+  const calls = [];
+  const converged = {
+    missing_columns: [], missing_indexes: [], missing_triggers: [], missing_constraints: [],
+    attestation_columns_converged: true, active_key_index_converged: true,
+    column_semantics_converged: true, check_constraints_converged: true,
+    legacy_state_constraint_converged: true, foreign_keys_converged: true,
+    trigger_definitions_converged: true, ...convergence,
+  };
+  const normalize = (sql, params) => sql && typeof sql === "object"
+    ? { sql: sql.text, params: sql.values || [] }
+    : { sql, params };
+  const client = {
+    async query(sql, params = []) {
+      ({ sql, params } = normalize(sql, params));
+      calls.push({ sql, params });
+      if (String(sql).includes("FROM information_schema.columns") &&
+          String(sql).includes("core_schema_migrations")) return { rows: registryColumns() };
+      if (String(sql).includes("FROM pg_constraint constraint_row")) {
+        return { rows: [{ column_name: "migration_id" }] };
+      }
+      return handler(String(sql).replace(/\s+/g, " ").trim(), params, calls);
+    },
+    release() { calls.push({ sql: "RELEASE", params: [] }); },
+  };
+  return {
+    calls,
+    pool: {
+      async query(sql, params = []) {
+        ({ sql, params } = normalize(sql, params));
+        calls.push({ sql, params, migration: true });
+        if (String(sql).includes("required_columns(table_name,column_name)")) {
+          return { rowCount: 1, rows: [converged] };
+        }
+        return { rowCount: 0, rows: [] };
+      },
+      async connect() { return client; },
+    },
+  };
+}
 function receipt(tenant = "tenant-a") { return { schema_version: "bootstrap_release_exception_v1", allowed_action: "github.merge", authority_assertion: {}, authority_key_id: "local-pin-key-001", authority_provider: "local_pin", consumed_at: null, core_policy_classification: "BOOTSTRAP_DEADLOCK_VERIFIED", core_policy_verdict_digest: D("policy"), exception_id: "exception-001", expires_at: "2026-08-10T10:10:00.000Z", head_sha: "a".repeat(40), issued_at: "2026-08-10T09:59:00.000Z", max_uses: 1, nonce: "nonce-001", owner_confirmation_digest: D("owner"), post_deploy_obligations_digest: D("post"), pr_number: 223, repository: "owner/repo", required_checks_digest: D("checks"), required_checks_results_digest: D("results"), revoked_at: null, rollback_obligations_digest: D("rollback"), tenant_id: tenant, work_id: "work-001" }; }
 function candidate(value) { const receipt_digest = D(JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))))); return { verification_status: "verified_non_authorizing_candidate", candidate: true, action_authorized: false, execution_authorized: false, host_action_authorized: false, core_join_authorized: false, consumption_authorized: false, receipt_digest, tenant_id: value.tenant_id, exception_id: value.exception_id, work_id: value.work_id, repository: value.repository, pr_number: value.pr_number, head_sha: value.head_sha, allowed_action: value.allowed_action, authority_provider: value.authority_provider, authority_key_id: value.authority_key_id }; }
 function consumeArgs(value = receipt()) { return { tenant_id: value.tenant_id, exception_id: value.exception_id, work_id: value.work_id, repository: value.repository, pr_number: value.pr_number, head_sha: value.head_sha, allowed_action: value.allowed_action, authority_key_id: value.authority_key_id, required_checks_digest: value.required_checks_digest, required_checks_results_digest: value.required_checks_results_digest, owner_confirmation_digest: value.owner_confirmation_digest, core_policy_verdict_digest: value.core_policy_verdict_digest, rollback_obligations_digest: value.rollback_obligations_digest, post_deploy_obligations_digest: value.post_deploy_obligations_digest, receipt_digest: D("receipt"), action_request_digest: D("action"), consumed_by: "core-release-gate", target: { repository: value.repository, pr_number: value.pr_number, head_sha: value.head_sha, allowed_action: value.allowed_action } }; }

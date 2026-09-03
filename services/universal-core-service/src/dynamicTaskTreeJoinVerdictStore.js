@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 function requireText(value, field, max = 200) {
   const normalized = String(value || "").trim();
@@ -197,8 +198,7 @@ export function createPostgresDynamicTaskTreeJoinVerdictStore({
 } = {}) {
   const url = requireText(connectionString, "dtt_verdict_database_url", 4_000);
   if (!/^postgres(?:ql)?:\/\//i.test(url)) throw new Error("dtt_verdict_database_url_invalid");
-  const db = pool || new Pool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 });
-  let initialized;
+  const db = pool || createBoundedPostgresPool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 });
 
   function scopeFor({ tenant_id, work_id, tree_id }) {
     return {
@@ -208,8 +208,7 @@ export function createPostgresDynamicTaskTreeJoinVerdictStore({
     };
   }
 
-  function initialize() {
-    initialized ||= db.query(`
+  const initialize = createRetryablePostgresInitializer({ pool: db, sql: `
       CREATE TABLE IF NOT EXISTS dynamic_task_tree_join_verdicts_v2 (
         tenant_id varchar(120) NOT NULL,
         work_id uuid NOT NULL,
@@ -244,9 +243,7 @@ export function createPostgresDynamicTaskTreeJoinVerdictStore({
       );
       CREATE INDEX IF NOT EXISTS dynamic_task_tree_join_verdict_events_v2_scope_idx
         ON dynamic_task_tree_join_verdict_events_v2 (tenant_id, work_id, tree_id, sequence);
-    `);
-    return initialized;
-  }
+    ` });
 
   function verifyEvents(rows, scope) {
     let previousHash = null;

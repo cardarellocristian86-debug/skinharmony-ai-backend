@@ -394,6 +394,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
     [
       "nyra_continue",
       "core_capability_invoke",
+      "orchestration_dtt_plan",
       "orchestration_dtt_core_join",
       "ai_work_quality_observe",
       "nyra_research_airlock_bootstrap",

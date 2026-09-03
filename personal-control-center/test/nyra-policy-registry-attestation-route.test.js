@@ -13,6 +13,7 @@ const {
   publicKeyFingerprint,
 } = require("../lib/nyra-policy-registry-attestation");
 const repoRoot = path.resolve(__dirname, "../..");
+const TEST_RENDER_GIT_COMMIT = "a".repeat(40);
 let runtimeAvailable = true;
 try { require.resolve("express", { paths: [repoRoot] }); } catch { runtimeAvailable = false; }
 
@@ -43,6 +44,7 @@ test("Policy Registry stays code-dark by default without gating Nyra health", {
     stdio: ["ignore", "ignore", "pipe"],
     env: {
       ...process.env, NODE_ENV: "test", PORT: String(port), HOST: "127.0.0.1",
+      RENDER_GIT_COMMIT: TEST_RENDER_GIT_COMMIT,
       NYRA_ALLOW_UNAUTHENTICATED: "false", NYRA_DISABLE_BASIC_AUTH: "true",
       NYRA_API_KEY: "", NYRA_API_KEYS: "", NYRA_STORAGE_ROOT: storage,
       NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED: "false",
@@ -109,6 +111,7 @@ test("required Policy Registry configuration gates Nyra health fail closed", {
     stdio: ["ignore", "ignore", "pipe"],
     env: {
       ...process.env, NODE_ENV: "test", PORT: String(port), HOST: "127.0.0.1",
+      RENDER_GIT_COMMIT: TEST_RENDER_GIT_COMMIT,
       NYRA_ALLOW_UNAUTHENTICATED: "false", NYRA_DISABLE_BASIC_AUTH: "true",
       NYRA_API_KEY: "", NYRA_API_KEYS: "", NYRA_STORAGE_ROOT: storage,
       NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED: "false",
@@ -152,6 +155,7 @@ test("dedicated Nyra S2S route authenticates, signs and reports readiness", {
     stdio: ["ignore", "ignore", "pipe"],
     env: {
       ...process.env, NODE_ENV: "test", PORT: String(port), HOST: "127.0.0.1",
+      RENDER_GIT_COMMIT: TEST_RENDER_GIT_COMMIT,
       NYRA_ALLOW_UNAUTHENTICATED: "false", NYRA_DISABLE_BASIC_AUTH: "false",
       NYRA_ENABLE_BASIC_AUTH: "true", NYRA_BASIC_USER: basicUser, NYRA_BASIC_PASSWORD: basicPassword,
       NYRA_API_KEY: generalBearer, NYRA_API_KEYS: "", NYRA_STORAGE_ROOT: storage,

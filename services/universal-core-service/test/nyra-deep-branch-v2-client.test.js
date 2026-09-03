@@ -17,6 +17,7 @@ const {
 const branches = ["context_intelligence", "work_intake", "research_evidence", "quality_verification"];
 const serviceKey = "nyra-deep-branch-v2-client-test-service-key-0123456789";
 const loaded = loadCatalog({ runtimeMode: "lazy" });
+const runtimeBranchIds = loaded.catalog.branches.map((branch) => branch.id);
 
 function env(overrides = {}) {
   return {
@@ -65,6 +66,46 @@ function federatedFetch(federation) {
       headers: { "content-type": "application/json" },
     });
   };
+}
+
+function readinessPayload(overrides = {}, federationOverrides = {}) {
+  return {
+    ok: true,
+    deep_branch_v2_federation: {
+      enabled: true,
+      configured: true,
+      ready: true,
+      ...federationOverrides,
+    },
+    deep_branch_v2_runtime: {
+      schema_version: "nyra_deep_branch_v2_runtime_descriptor_v1",
+      ready: true,
+      feature_enabled: true,
+      mode: "shadow",
+      feature_tenant_configured: true,
+      catalog_fingerprint: loaded.catalog.catalog_fingerprint,
+      root_binding_hash: loaded.manifest.root_binding_hash,
+      counts: {
+        branch_count: runtimeBranchIds.length,
+        subbranch_count: loaded.validation.metrics.subbranch_count,
+        node_count: loaded.validation.metrics.node_count,
+        shard_count: loaded.manifest.shards.length,
+      },
+      branch_ids: runtimeBranchIds,
+      effective_branch_allowlist: branches,
+      execution_authorized: false,
+      core_final_authority: true,
+      ...overrides,
+    },
+  };
+}
+
+function readinessResponse(overrides = {}, responseOptions = {}, federationOverrides = {}) {
+  return new Response(JSON.stringify(readinessPayload(overrides, federationOverrides)), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    ...responseOptions,
+  });
 }
 
 test("Core V2 client returns only a bounded Core-attested preview", async () => {
@@ -234,4 +275,270 @@ test("Core V2 operational context refuses a missing memory-first read-only prefl
   assert.equal(accepted.ok, true);
   assert.equal(accepted.branch_id, "context_intelligence");
   assert.equal(accepted.subbranch_id, "request_normalization");
+});
+
+test("Core V2 operational POST rejects a declared response above 1 MB before reading it", async () => {
+  let postSignal;
+  const client = createNyraDeepBranchV2Client({
+    env: env({
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED: "true",
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_MODE: "advisory",
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST: "codexai",
+    }),
+    fetchImpl: async (_url, options) => {
+      assert.equal(options.method, "POST");
+      postSignal = options.signal;
+      return new Response("{}", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "content-length": "1000001",
+        },
+      });
+    },
+  });
+  const context = client.beginOperational(input({
+    branchId: "context_intelligence",
+    subbranchId: "request_normalization",
+    workPreflight: {
+      preflight_id: "preflight-v2-operational-declared-limit",
+      mandatory: true,
+      state: "ready_read_only",
+      governance: { execution_allowed_by_preflight: true },
+      memory_first: { status: "recalled" },
+    },
+  }));
+
+  const result = await client.evaluateOperational({
+    context,
+    operationalAttestation: { schema_version: "test_attestation_v1" },
+  });
+
+  assert.equal(context.ok, true);
+  assert.equal(result.state, "unavailable_v1_authoritative");
+  assert.equal(result.reason, "nyra_deep_branch_v2_response_too_large");
+  assert.equal(postSignal.aborted, true);
+});
+
+test("Core V2 operational POST aborts a chunked response after it crosses 1 MB", async () => {
+  let postSignal;
+  let streamCancelled = false;
+  const client = createNyraDeepBranchV2Client({
+    env: env({
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED: "true",
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_MODE: "advisory",
+      CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST: "codexai",
+    }),
+    fetchImpl: async (_url, options) => {
+      assert.equal(options.method, "POST");
+      postSignal = options.signal;
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(600_000));
+          controller.enqueue(new Uint8Array(400_001));
+        },
+        cancel() {
+          streamCancelled = true;
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const context = client.beginOperational(input({
+    requestId: "nyra-v2-operational-chunked-limit",
+    branchId: "context_intelligence",
+    subbranchId: "request_normalization",
+    workPreflight: {
+      preflight_id: "preflight-v2-operational-chunked-limit",
+      mandatory: true,
+      state: "ready_read_only",
+      governance: { execution_allowed_by_preflight: true },
+      memory_first: { status: "recalled" },
+    },
+  }));
+
+  const result = await client.evaluateOperational({
+    context,
+    operationalAttestation: { schema_version: "test_attestation_v1" },
+  });
+
+  assert.equal(context.ok, true);
+  assert.equal(result.state, "unavailable_v1_authoritative");
+  assert.equal(result.reason, "nyra_deep_branch_v2_response_too_large");
+  assert.equal(postSignal.aborted, true);
+  assert.equal(streamCancelled, true);
+});
+
+test("Core V2 readiness is healthy and network-free when V2 is disabled", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env({ CORE_NYRA_DEEP_BRANCH_V2_ENABLED: "false" }),
+    fetchImpl: async () => { throw new Error("disabled readiness must not call Nyra"); },
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, true);
+  assert.equal(result.enabled, false);
+  assert.equal(result.state, "disabled_v1_authoritative");
+  assert.equal(result.fallback, "nyra_neural_branch_network_v1");
+  assert.equal(result.execution_authorized, false);
+});
+
+test("Core V2 readiness rejects a Nyra runtime pin mismatch", async () => {
+  let requestOptions;
+  const client = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async (url, options) => {
+      assert.equal(url, "https://nyra.test/healthz");
+      requestOptions = options;
+      return readinessResponse({ catalog_fingerprint: "b".repeat(64) });
+    },
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_pin_mismatch");
+  assert.equal(result.upstream_verified, false);
+  assert.equal(requestOptions.method, "GET");
+  assert.equal(requestOptions.redirect, "error");
+  assert.equal(JSON.stringify(requestOptions.headers).includes(serviceKey), false);
+});
+
+test("Core V2 readiness rejects an effective Nyra allowlist missing a Core branch", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async () => readinessResponse({
+      effective_branch_allowlist: branches.slice(0, -1),
+    }),
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_allowlist_mismatch");
+  assert.equal(result.execution_authorized, false);
+});
+
+test("Core V2 readiness observes the tenant-effective Nyra feature kill switch", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async () => readinessResponse({
+      feature_enabled: false,
+      mode: "disabled",
+      effective_branch_allowlist: [],
+    }),
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.feature_enabled, false);
+  assert.equal(result.feature_mode, "disabled");
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_feature_disabled");
+  assert.equal(result.state, "upstream_mismatch_v1_authoritative");
+});
+
+test("Core V2 readiness rejects a disabled Nyra federation", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async () => readinessResponse({}, {}, {
+      enabled: false,
+      configured: true,
+      ready: false,
+    }),
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.federation_verified, false);
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_federation_disabled");
+});
+
+test("Core V2 readiness requires coherent shadow and active rollout modes", async () => {
+  const shadowClient = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async () => readinessResponse({ mode: "active" }),
+  });
+  const activeClient = createNyraDeepBranchV2Client({
+    env: env({ CORE_NYRA_DEEP_BRANCH_V2_MODE: "active" }),
+    fetchImpl: async () => readinessResponse({ mode: "active" }),
+  });
+
+  const mismatch = await shadowClient.readiness();
+  const active = await activeClient.readiness();
+
+  assert.equal(mismatch.ready, false);
+  assert.equal(mismatch.reason, "nyra_deep_branch_v2_readiness_mode_mismatch");
+  assert.equal(active.ready, true);
+  assert.equal(active.feature_mode, "active");
+  assert.equal(active.federation_verified, true);
+});
+
+test("Core V2 readiness timeout is bounded and keeps V1 authoritative", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env({ CORE_NYRA_DEEP_BRANCH_V2_READINESS_TIMEOUT_MS: "50" }),
+    fetchImpl: async (_url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }),
+  });
+  const startedAt = Date.now();
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_timeout");
+  assert.equal(result.state, "upstream_unavailable_v1_authoritative");
+  assert.ok(Date.now() - startedAt < 500);
+});
+
+test("Core V2 readiness is single-flight and caches a verified descriptor", async () => {
+  let calls = 0;
+  const client = createNyraDeepBranchV2Client({
+    env: env({ CORE_NYRA_DEEP_BRANCH_V2_READINESS_CACHE_TTL_MS: "5000" }),
+    fetchImpl: async () => {
+      calls += 1;
+      await Promise.resolve();
+      return readinessResponse();
+    },
+  });
+
+  const [first, second] = await Promise.all([client.readiness(), client.readiness()]);
+  const cached = await client.readiness();
+
+  assert.equal(calls, 1);
+  assert.equal(first.ready, true);
+  assert.equal(second.ready, true);
+  assert.equal(cached.ready, true);
+  assert.equal(cached.upstream_verified, true);
+  assert.deepEqual(cached.counts, {
+    branch_count: 24,
+    subbranch_count: 337,
+    node_count: 2022,
+    shard_count: 337,
+  });
+});
+
+test("Core V2 readiness rejects a declared response above its byte budget", async () => {
+  const client = createNyraDeepBranchV2Client({
+    env: env(),
+    fetchImpl: async () => readinessResponse({}, {
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(129 * 1024),
+      },
+    }),
+  });
+
+  const result = await client.readiness();
+
+  assert.equal(result.ready, false);
+  assert.equal(result.reason, "nyra_deep_branch_v2_readiness_response_too_large");
 });

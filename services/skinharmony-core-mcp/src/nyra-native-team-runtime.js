@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { Pool } from "pg";
 import { digest, WORK_CONTINUITY_SCHEMA_SQL } from "./work-continuity-runtime.js";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 export const NYRA_NATIVE_TEAM_PACKAGE_ID = "nyra_native_team";
 export const NYRA_NATIVE_TEAM_VERSION = "1.0.0";
@@ -235,18 +237,15 @@ function publicInstance(row) {
 
 export function createNyraNativeTeamRuntime(config = {}, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
-  const pool = options.pool || new Pool({
+  const pool = options.pool || new Pool(postgresPoolConfig(config, {
     connectionString: config.databaseUrl,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-    max: config.databasePoolMax || 5,
-  });
-  let ready;
+  }));
   // Team rows bind to Gallery Work Identity. The Gallery schema is therefore
   // initialized first even when the first request after restart is `enable`.
-  const initialize = () => ready ||= (async () => {
-    await pool.query(WORK_CONTINUITY_SCHEMA_SQL);
-    await pool.query(CREATE_SCHEMA_SQL);
-  })();
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: `${WORK_CONTINUITY_SCHEMA_SQL}\n${CREATE_SCHEMA_SQL}`,
+  });
 
   async function transaction(fn) {
     await initialize();

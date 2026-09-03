@@ -73,9 +73,14 @@ test("generic closure requires independent verification and Core Join, then prod
     final_evidence_digest: "b".repeat(64),
   } });
   assert.equal(closed.work.status, "COMPLETED");
-  assert.equal(closed.archive_status, "ARCHIVED");
+  assert.equal(closed.terminal_status, "COMPLETED");
+  assert.equal(closed.archived, true);
+  assert.equal(Object.hasOwn(closed, "archive_status"), false);
+  assert.equal(closed.work.archived_at, closed.work.closed_at);
   assert.equal(closed.final_report.final_status, "COMPLETED");
   const replay = finalizeGenericClosure(closed.work, { adapter: "research" });
   assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.terminal_status, "COMPLETED");
+  assert.equal(replay.archived, true);
   assert.equal(replay.receipt.receipt_digest, closed.receipt.receipt_digest);
 });

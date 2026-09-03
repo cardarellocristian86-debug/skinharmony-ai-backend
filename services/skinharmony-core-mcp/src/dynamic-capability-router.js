@@ -81,6 +81,8 @@ const FORBIDDEN_ARGUMENT_KEYS = new Set([
 const CAPABILITY_ID = /^[a-z][a-z0-9_]{1,95}$/;
 const CATALOG_VERSION = "core_dynamic_capabilities_v1";
 const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
+const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
+  "work_continuity_native_acceptance_contract_read";
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -280,6 +282,24 @@ function withoutNativeReportAdmission(identity = {}) {
   return ambientIdentity;
 }
 
+function asNativeAcceptanceContractReadCatalogIdentity(identity = {}) {
+  const acceptanceIdentity = withoutNativeReportAdmission(identity);
+  delete acceptanceIdentity.nativeAcceptanceContractReadAdmission;
+  // This projection is used only to verify the immutable catalog digest that
+  // an admitted verifier received immediately before reading its acceptance
+  // contract. It is never passed to a handler and grants no read authority.
+  Object.defineProperty(acceptanceIdentity, "nativeAcceptanceContractReadAdmission", {
+    value: Object.freeze({
+      ...(identity.nativeReportAdmission || {}),
+      capability_id: NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY,
+    }),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return acceptanceIdentity;
+}
+
 function targetArguments(tool, wrapperArgs, identity = {}) {
   assertSystemAssignedCapability(tool, wrapperArgs);
   const args = { ...(wrapperArgs.arguments || {}) };
@@ -414,8 +434,20 @@ export function createDynamicCapabilityHandlers({
     // never widens visibility or dispatches another target.
     if (hasNativeReportAdmission(identity, args.capability_id)) {
       const ambientState = stateFor(withoutNativeReportAdmission(identity));
-      assertRevision(args.catalog_revision, ambientState.revision);
-      return;
+      if (args.catalog_revision === ambientState.revision) return;
+      // A verifier first discovers and invokes the SELECT-only acceptance
+      // contract capability, then submits its terminal report through the same
+      // assignment. Those two independently admitted calls intentionally have
+      // distinct singleton views. Accept the exact preceding read-catalog
+      // digest without widening the current report-only dispatch state.
+      const acceptanceState = stateFor(
+        asNativeAcceptanceContractReadCatalogIdentity(identity),
+      );
+      if (
+        acceptanceState.definitions.some((tool) =>
+          tool.name === NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY) &&
+        args.catalog_revision === acceptanceState.revision
+      ) return;
     }
     assertRevision(args.catalog_revision, admittedState.revision);
   }

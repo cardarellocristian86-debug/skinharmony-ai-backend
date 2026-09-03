@@ -65,6 +65,31 @@ test("authorizes a bounded repository Atlas bootstrap only for its Work-derived 
   assert.equal(denied.allowed, false);
 });
 
+test("resume-or-bind is autonomous only inside the closed bounded contract", () => {
+  const resume = {
+    ...boundedCoordinationWrite,
+    action_type: "work.continuity.resume_or_bind",
+    target: "nyra-core:authenticated-session-1",
+    idempotency_key: "resume-existing-work-0001",
+  };
+  const allowed = buildActionAuthorization(contract(), resume);
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.scope, "bounded_internal_coordination_write");
+  assert.equal(allowed.confirmation_required, false);
+  for (const unsafe of [
+    { action_type: "work.continuity.resume" },
+    { operation_class: "owner_confirmed_governed_action" },
+    { owner_confirmed: true },
+    { owner_context_verified: true },
+    { request_bound_owner_confirmation: true },
+    { external_side_effect: true },
+    { target: "render_service" },
+    { idempotency_key: "" },
+  ]) {
+    assert.equal(buildActionAuthorization(contract(), { ...resume, ...unsafe }).allowed, false);
+  }
+});
+
 test("preserves the closed legacy and continuity coordination action set", () => {
   const targets = {
     "agent.heartbeat": "tenant_agent_heartbeat",

@@ -244,7 +244,6 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
   for (const name of [
     "orchestration_capability_catalog",
     "orchestration_relational_evaluate",
-    "orchestration_dtt_plan",
     "orchestration_dtt_read",
     "orchestration_dtt_verification_readiness",
     "orchestration_dtt_expansion_propose",
@@ -257,6 +256,13 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
     assert.equal(definition.annotations.readOnlyHint, true);
     assert.equal(definition.annotations.destructiveHint, false);
   }
+
+  const planDefinition = TOOLS.find((item) => item.name === "orchestration_dtt_plan");
+  assert(planDefinition);
+  assert.deepEqual(planDefinition.scopes, ["core:govern"]);
+  assert.equal(planDefinition.annotations.readOnlyHint, false);
+  assert.equal(planDefinition.annotations.idempotentHint, true);
+  assert.equal(planDefinition._meta["skinharmony/ownerConfirmationRequired"], false);
 
   for (const name of [
     "orchestration_dtt_outcome_record",

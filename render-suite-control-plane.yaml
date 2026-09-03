@@ -6,6 +6,15 @@ services:
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /readyz
+    autoDeployTrigger: off
+    buildFilter:
+      paths:
+        - services/suite-control-plane/**
+        - render-suite-control-plane.yaml
+      ignoredPaths:
+        - services/suite-control-plane/test/**
+        - docs/**
+        - reports/**
     disk:
       name: suite-control-data
       mountPath: /var/data

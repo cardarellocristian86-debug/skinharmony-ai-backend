@@ -183,8 +183,11 @@ class VerdictPersistencePool {
   }
 
   async query(sql, parameters = []) {
-    const query = String(sql).replace(/\s+/g, " ").trim();
+    const queryText = typeof sql === "string" ? sql : sql.text;
+    if (!parameters.length && Array.isArray(sql?.values)) parameters = sql.values;
+    const query = queryText.replace(/\s+/g, " ").trim();
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(query)) return { rows: [], rowCount: 0 };
+    if (query.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
     if (query.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
     if (query.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const found = parameters[0] === this.work.tenant_id && parameters[1] === this.work.work_id;

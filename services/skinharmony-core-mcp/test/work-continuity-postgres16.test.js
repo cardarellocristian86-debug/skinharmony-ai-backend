@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 import { Pool } from "pg";
 import {
+  buildNativeV2TaskBinding,
   createWorkContinuityRuntime,
   digest,
 } from "../src/work-continuity-runtime.js";
@@ -17,6 +18,287 @@ const TREE_SHA = "b".repeat(40);
 
 test("PostgreSQL continuity bindings distinguish authoritative reconciliation", () => {
   assert.notEqual(digest({ outcome: "unknown" }), digest({ outcome: "authoritatively_reconciled" }));
+});
+
+test("PostgreSQL 16 serializes Core and V2 creation in one Work UUID namespace", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_namespace_${runId.slice(0, 18)}`;
+  const workId = crypto.randomUUID();
+  const pool = new Pool({ connectionString: databaseUrl, max: 6, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  let holder;
+  let holderCommitted = false;
+  try {
+    await runtime.initialize();
+    await v2Store.initialize();
+    holder = await pool.connect();
+    await holder.query("BEGIN");
+    const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+    await holder.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      tenantId,
+      workId,
+    ]);
+
+    const coreCreate = runtime.ensure(coordinatorIdentity(tenantId), {
+      work_id: workId,
+      project_id: `namespace-core-${runId.slice(0, 12)}`,
+      session_id: `namespace-core-session-${runId.slice(0, 12)}`,
+      initial_message: "Create the Core side of a shared Work identity race.",
+      idea: "Shared Work UUID namespace",
+      objective: "Exactly one Work representation may own an unbridged UUID.",
+      acceptance_criteria: ["Only one namespace insert commits."],
+      constraints: ["Serialize before absence checks."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Resolve the creation race.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    const v2Create = v2Store.createWork(reconciliationOwnerIdentity(tenantId), {
+      work_id: workId,
+      project_id: `namespace-v2-${runId.slice(0, 12)}`,
+      work_name: "V2 namespace contender",
+      work_type: "generic",
+      idea: "Shared Work UUID namespace",
+      objective: "Exactly one Work representation may own an unbridged UUID.",
+      architecture: { components: [{ id: "tenant-work" }] },
+      next_action: "Resolve the creation race.",
+      visibility_scope: "private",
+      acceptance_criteria: ["Only one namespace insert commits."],
+      tasks: [{ title: "Verify namespace serialization", required: true }],
+    });
+
+    let blockedCreators = 0;
+    for (let attempt = 0; attempt < 100 && blockedCreators < 2; attempt += 1) {
+      const waiters = await pool.query(`SELECT count(*)::int AS count
+        FROM pg_stat_activity a
+        WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+          AND a.wait_event_type='Lock'
+          AND a.query LIKE 'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))%'`,
+      [holderPid]);
+      blockedCreators = Number(waiters.rows[0].count);
+      if (blockedCreators < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(blockedCreators, 2,
+      "both creators must wait on the same tenant/Work advisory namespace lock");
+    await holder.query("COMMIT");
+    holderCommitted = true;
+
+    const outcomes = await Promise.allSettled([coreCreate, v2Create]);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    assert.match(String(rejected.reason?.message || rejected.reason),
+      /continuity_work_v2_id_collision|tenant_work_core_id_collision/);
+    const namespaceRows = await pool.query(`SELECT
+        (SELECT count(*)::int FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2) AS core_count,
+        (SELECT count(*)::int FROM tenant_work
+          WHERE tenant_id=$1 AND work_id=$2) AS v2_count`, [tenantId, workId]);
+    assert.equal(
+      Number(namespaceRows.rows[0].core_count) + Number(namespaceRows.rows[0].v2_count),
+      1,
+    );
+  } finally {
+    if (holder && !holderCommitted) await holder.query("ROLLBACK").catch(() => {});
+    holder?.release();
+    await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 carries a divergent bridged intent from createNewWork into the native precommit gate", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_intent_${runId.slice(0, 20)}`;
+  const projectId = `intent-bridge-${runId.slice(0, 16)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const owner = reconciliationOwnerIdentity(tenantId);
+  const explicitV2IntentDigest = digest({ tenantId, runId, namespace: "explicit-v2-intent" });
+  let client;
+  try {
+    const createInput = {
+      intent_type: "CREATE_WORK",
+      request_id: `pg16-intent-${runId}`,
+      project_id: projectId,
+      session_id: `intent-session-${runId.slice(0, 16)}`,
+      initial_message: "Create a bridged Work with intentionally distinct V2 and legacy intents.",
+      work_name: "PostgreSQL divergent intent bridge",
+      work_type: "software_git",
+      idea: "Verify the real coordinated writer and native precommit reader together.",
+      objective: "A valid dual-intent bridge must remain closable without rewriting history.",
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Materialize the native precommit gate.",
+      visibility_scope: "private",
+      acceptance_criteria: ["Both immutable intent bindings verify."],
+      constraints: ["Do not mutate the historical event."],
+      tasks: [{ title: "Verify the native precommit bridge", required: true }],
+      intent_digest: explicitV2IntentDigest,
+      host_type: "codex_native",
+      client_type: "codex",
+      agent_id: "postgres16-reconciliation-owner",
+    };
+    const review = await v2Store.openWorkReview(owner, {
+      intent_type: "CREATE_WORK",
+      request: createInput.objective,
+      create_request: createInput,
+    });
+    const created = await v2Store.createNewWork(owner, {
+      ...createInput,
+      review_id: review.review_id,
+      review_digest: review.review_digest,
+      review_decision: "NO_CONFLICT_PROCEED",
+      _core_authorization_receipt: bootstrapCoreAuthorizationReceipt(tenantId, runId),
+    });
+    const bindings = await pool.query(`SELECT w.intent_digest AS v2_intent_digest,
+        a.intent_digest AS legacy_intent_digest,e.payload,e.event_hash
+      FROM tenant_work w
+      JOIN core_continuity_intent_anchors a
+        ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+      JOIN tenant_work_event e
+        ON e.tenant_id=w.tenant_id AND e.work_id=w.work_id AND e.event_type='work_v2_created'
+      WHERE w.tenant_id=$1 AND w.work_id=$2`, [tenantId, created.work.work_id]);
+    assert.equal(bindings.rowCount, 1);
+    assert.equal(bindings.rows[0].v2_intent_digest, explicitV2IntentDigest);
+    assert.notEqual(bindings.rows[0].legacy_intent_digest, explicitV2IntentDigest);
+    assert.equal(bindings.rows[0].payload.intent_digest, explicitV2IntentDigest);
+    assert.equal(bindings.rows[0].payload.legacy_intent_digest,
+      bindings.rows[0].legacy_intent_digest);
+
+    const planId = crypto.randomUUID();
+    const evaluationId = crypto.randomUUID();
+    const v2TaskId = crypto.randomUUID();
+    const workspaceDigest = digest({ tenantId, runId, namespace: "workspace" });
+    const v2TaskBinding = buildNativeV2TaskBinding({
+      tenant_id: tenantId,
+      work_id: created.work.work_id,
+      task_id: v2TaskId,
+      title: "Verify the divergent intent bridge",
+      weight: 1,
+      required: true,
+    });
+    await pool.query(`INSERT INTO tenant_work_task
+        (tenant_id,task_id,work_id,title,weight,required,status,acceptance_verified)
+      VALUES ($1,$2,$3,$4,1,true,'completed',true)`, [tenantId, v2TaskId,
+      created.work.work_id, "Verify the divergent intent bridge"]);
+    const v2TaskScope = {
+      schema_version: "native_v2_precommit_scope_v1",
+      scope_snapshot_digest: digest({ tenantId, runId, namespace: "v2-scope" }),
+      v2_task_governed: true,
+      tasks: [{ task_id: v2TaskId, v2_task_digest: v2TaskBinding.v2_task_digest, revision: 1 }],
+    };
+    const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+    const evaluation = {
+      schema_version: "native_closure_evaluation_v1",
+      closed: false,
+      commit_ticket_ready: true,
+      execution_authorized: false,
+      precommit_verification: { ready: true, workspace_digest: workspaceDigest },
+      native_v2_precommit_scope: v2TaskScope,
+    };
+    await pool.query(`INSERT INTO core_continuity_native_plans
+        (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
+      VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6)`, [tenantId, created.work.work_id,
+      planId, JSON.stringify(plan), digest(plan), "postgres16-intent-test"]);
+    await pool.query(`INSERT INTO core_continuity_closure_evaluations
+        (tenant_id,work_id,plan_id,evaluation_id,evaluation,evaluation_digest,evaluated_by)
+      VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)`, [tenantId, created.work.work_id, planId,
+      evaluationId, JSON.stringify(evaluation), digest(evaluation), "postgres16-intent-test"]);
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const gate = await v2Store.materializeNativePrecommitTicketGateWithClient(client, {
+      server_owned: true,
+      tenant_id: tenantId,
+      work_id: created.work.work_id.toUpperCase(),
+      plan_id: planId.toUpperCase(),
+      evaluation_id: evaluationId.toUpperCase(),
+      evaluation_digest: digest(evaluation),
+      workspace_digest: workspaceDigest,
+      v2_task_scope: v2TaskScope,
+    });
+    await client.query("COMMIT");
+    assert.equal(gate.schema_version, "precommit_ticket_gate_v2");
+    assert.equal(gate.gate_source, "native_closure_evaluation");
+    assert.equal(gate.fresh, true);
+  } finally {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    client?.release();
+    await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 terminal transition serializes a concurrent Gallery join", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_terminal_${runId.slice(0, 20)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  let holder;
+  let holderCommitted = false;
+  try {
+    const created = await runtime.ensure(coordinatorIdentity(tenantId), {
+      project_id: `terminal-${runId.slice(0, 16)}`,
+      session_id: `terminal-source-${runId.slice(0, 16)}`,
+      initial_message: "Verify the terminal coordination lock.",
+      idea: "Terminal Gallery concurrency",
+      objective: "A join waiting behind closure must observe completed status.",
+      acceptance_criteria: ["No participant is recreated after closure."],
+      constraints: ["Use the shared Core Work row lock."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Close under the shared row lock.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    holder = await pool.connect();
+    await holder.query("BEGIN");
+    const backend = await holder.query("SELECT pg_backend_pid() AS pid");
+    const holderPid = Number(backend.rows[0].pid);
+    await holder.query(`SELECT work_id FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, created.work_id]);
+
+    const sessionId = `terminal-waiter-${runId.slice(0, 12)}`;
+    const agentId = `terminal-agent-${runId.slice(0, 12)}`;
+    const deniedJoin = assert.rejects(runtime.join(
+      galleryIdentity(tenantId, "terminal-waiter", sessionId, agentId),
+      {
+        work_id: created.work_id,
+        session_id: sessionId,
+        agent_id: agentId,
+        client_type: "codex",
+        ttl_seconds: 300,
+        idempotency_key: `terminal-race-join-${runId}`,
+      },
+    ), /continuity_work_terminal/);
+    let rowWaitObserved = false;
+    for (let attempt = 0; attempt < 100 && !rowWaitObserved; attempt += 1) {
+      const waiters = await pool.query(`SELECT 1 FROM pg_stat_activity a
+        WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+          AND a.wait_event_type='Lock'
+          AND a.query LIKE '%core_continuity_works%FOR UPDATE%'
+        LIMIT 1`, [holderPid]);
+      rowWaitObserved = waiters.rowCount === 1;
+      if (!rowWaitObserved) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await holder.query(`UPDATE core_continuity_works
+      SET status='completed',next_action='',updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, created.work_id]);
+    await holder.query("COMMIT");
+    holderCommitted = true;
+    assert.equal(rowWaitObserved, true, "Gallery join did not wait on the terminal Work row");
+    await deniedJoin;
+    const participants = await pool.query(`SELECT count(*)::int AS count
+      FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, created.work_id]);
+    assert.equal(Number(participants.rows[0].count), 0);
+  } finally {
+    if (holder && !holderCommitted) await holder.query("ROLLBACK").catch(() => {});
+    holder?.release();
+    await runtime.close();
+  }
 });
 
 function pgIdentifier(value) {
@@ -113,6 +395,40 @@ function reconciliationOwnerIdentity(tenantId) {
   };
 }
 
+function bootstrapCoreAuthorizationReceipt(tenantId, nonce) {
+  const issuedAt = new Date(Date.now() - 1_000);
+  const expiresAt = new Date(issuedAt.getTime() + 120_000);
+  const coreMaterial = {
+    schema_version: "core_action_authorization_receipt_v1",
+    authority: "universal_core",
+    authorization_id: `cae_${digest({ tenantId, nonce }).slice(0, 40)}`,
+    tenant_id: tenantId,
+    action_type: "work.continuity.v2.create",
+    idempotency_key_digest: digest({ tenantId, nonce, kind: "idempotency" }),
+    request_digest: digest({ tenantId, nonce, kind: "request" }),
+    response_digest: digest({ tenantId, nonce, kind: "response" }),
+    issued_at: issuedAt.toISOString(),
+    expires_at: expiresAt.toISOString(),
+  };
+  const coreAuthorizationReceipt = {
+    ...coreMaterial,
+    receipt_digest: digest(coreMaterial),
+  };
+  const material = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: `work_bootstrap:create:chatgpt_prod:codex_native:${digest({ tenantId, nonce, kind: "target" })}`,
+    decision_id: coreAuthorizationReceipt.authorization_id,
+    decision: "allow",
+    mediation: "allow",
+    owner_confirmation_required: true,
+    confirmation_satisfied: true,
+    core_authorization_receipt: coreAuthorizationReceipt,
+  };
+  return { ...material, receipt_digest: digest(material) };
+}
+
 function corePlanFor({ tenantId, work, request, objective }) {
   const payload = {
     tenant_id: tenantId,
@@ -195,7 +511,12 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     databaseUrl,
     dttAgentIdentitySigningSecret: "postgres16-continuity-assignment-secret-0123456789",
   }, { pool });
-  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const v2Store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: runtime,
+    verifierReceiptSigningSecret: "postgres16-generic-verifier-secret-0123456789",
+  });
+  runtime.setNativeV2TaskBindingResolver(v2Store.resolveNativeTaskBindingWithClient);
   runtime.setNativeVerifierEvidenceBridge(v2Store.recordNativeVerifierEvidenceWithClient);
   const coordinator = coordinatorIdentity(tenantId);
   const bridgeOwner = reconciliationOwnerIdentity(tenantId);
@@ -229,7 +550,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
       title: "Native verifier acceptance bridge target",
-      status: "completed",
+      status: "planned",
       required: true,
     });
     const unrelatedTaskId = crypto.randomUUID();
@@ -876,7 +1197,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-builder",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-build",
-      v2_task_id: bridgeTaskId,
+      v2_task_id: bridgeTaskId.toUpperCase(),
     });
     const projectedBeforeBridge = await pool.query(`SELECT created_by_agent_id,
         created_by_session_fingerprint
@@ -896,9 +1217,15 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
         status: "completed",
         report: {
           summary: "Bounded implementation completed.",
-          commit_sha: COMMIT,
+          precommit_evidence: {
+            schema_version: "native_precommit_evidence_v1",
+            diff_mode: "git_diff_binary_sha256_v1",
+            base_commit: BASE_COMMIT,
+            diff_digest: "9".repeat(64),
+            changed_files: ["services/skinharmony-core-mcp/src/work-continuity-v2-store.js"],
+          },
           tests: [{ name: "PostgreSQL 16 schema contract", passed: true }],
-          evidence_refs: ["commit:postgres16"],
+          evidence_refs: ["workspace:postgres16"],
         },
       },
     );
@@ -909,7 +1236,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-verifier",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-verify",
-      v2_task_id: bridgeTaskId,
+      v2_task_id: bridgeTaskId.toUpperCase(),
     });
     const verifierReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-verifier", "d".repeat(64), "d"),
@@ -923,17 +1250,28 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
         report: {
           summary: "Independent PostgreSQL verification approved.",
           verdict: "approved",
-          commit_sha: COMMIT,
+          precommit_evidence: {
+            schema_version: "native_precommit_evidence_v1",
+            diff_mode: "git_diff_binary_sha256_v1",
+            base_commit: BASE_COMMIT,
+            diff_digest: "9".repeat(64),
+            changed_files: ["services/skinharmony-core-mcp/src/work-continuity-v2-store.js"],
+          },
           verifies_task_ids: ["build"],
           tests: [{ name: "PostgreSQL 16 immutable event contract", passed: true }],
-          evidence_refs: ["review:postgres16"],
-          // The bridge may promote the bound V2 task from task-scoped proof;
-          // the other Work acceptance criteria remain for full closure.
-          acceptance_evidence: planned.plan.acceptance_contract.criteria.slice(0, 1).map((criterion) => ({
-            criterion_digest: criterion.criterion_digest,
-            passed: true,
-            evidence_refs: [`evidence:${criterion.criterion_id}`],
-          })),
+          evidence_refs: [
+            "review:postgres16",
+            `v2-task:${verifier.binding.v2_task_digest}`,
+          ],
+          // Precommit proves only present-tense constraints. Objective and
+          // release criteria remain deferred until the commit exists.
+          acceptance_evidence: planned.plan.acceptance_contract.criteria
+            .filter((criterion) => criterion.criterion_kind === "constraint")
+            .map((criterion) => ({
+              criterion_digest: criterion.criterion_digest,
+              passed: true,
+              evidence_refs: ["review:postgres16-constraint"],
+            })),
         },
       },
     );
@@ -972,6 +1310,8 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       agent_id: "codex-verifier",
       session_fingerprint: "d".repeat(64),
       presence_signature: `ags_${"d".repeat(32)}`,
+      v2_task_digest: verifierReport.v2_evidence.v2_task_digest,
+      task_evaluation_digest: verifierReport.v2_evidence.task_evaluation_digest,
       report_digest: verifierReport.report_digest,
       receipt_id: verifierReport.receipt.receipt_id,
       receipt_digest: verifierReport.receipt.payload_digest,
@@ -981,6 +1321,25 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       await bridgeClient.query("BEGIN");
       const replay = await v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource);
       assert.equal(replay.idempotent_replay, true);
+      await bridgeClient.query(`UPDATE tenant_work_task
+        SET status='planned',acceptance_verified=false,completed_at=NULL
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+      [tenantId, firstWork.work_id, bridgeTaskId]);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
+        /native_verifier_evidence_replay_integrity_failed/,
+      );
+      await bridgeClient.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=now(),title=$4
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+      [tenantId, firstWork.work_id, bridgeTaskId, "Native verifier acceptance bridge target changed"]);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
+        /native_verifier_evidence_(task_binding_invalid|replay_conflict)/,
+      );
+      await bridgeClient.query(`UPDATE tenant_work_task SET title=$4
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+      [tenantId, firstWork.work_id, bridgeTaskId, "Native verifier acceptance bridge target"]);
       await assert.rejects(
         v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
           ...bridgeSource,
@@ -1036,7 +1395,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       ]);
       await assert.rejects(
         v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
-        /native_verifier_evidence_independence_invalid/,
+        /native_verifier_evidence_task_scope_invalid/,
       );
       await bridgeClient.query(`UPDATE core_continuity_native_agents
         SET v2_task_id=$1
@@ -1056,6 +1415,241 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       await bridgeClient.query("ROLLBACK");
       bridgeClient.release();
     }
+    await pool.query(`UPDATE tenant_work_task SET acceptance_verified=true
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+    [tenantId, firstWork.work_id, unrelatedTaskId]);
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: unrelatedTaskId,
+      title: "Unrelated V2 task binding changed",
+      status: "completed",
+      required: true,
+    });
+    const mutatedTask = await pool.query(`SELECT acceptance_verified FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+    [tenantId, firstWork.work_id, unrelatedTaskId]);
+    assert.equal(mutatedTask.rows[0].acceptance_verified, false);
+
+    // An active assignment created before v2-task digests existed must keep
+    // its historical evidence hash on upgrade. It may attest only a V2 task
+    // that was already completed; it cannot use the new planned-task shortcut.
+    await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: secondWork.work_id });
+    const legacyTaskId = crypto.randomUUID();
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: secondWork.work_id,
+      task_id: legacyTaskId,
+      title: "Pre-upgrade native verifier bridge target",
+      status: "completed",
+      required: true,
+    });
+    const legacyRuntime = createWorkContinuityRuntime({
+      databaseUrl,
+      dttAgentIdentitySigningSecret: "postgres16-continuity-assignment-secret-0123456789",
+    }, { pool });
+    legacyRuntime.setNativeVerifierEvidenceBridge(v2Store.recordNativeVerifierEvidenceWithClient);
+    const legacyRequest = {
+      work_id: secondWork.work_id,
+      repository: "owner/repo",
+      base_branch: "main",
+      host_type: "codex_native",
+      required_checks: ["core-mcp"],
+      max_parallel: 1,
+      tasks: [
+        { task_id: "build", kind: "builder", instruction: "Build the legacy fixture." },
+        { task_id: "verify", kind: "verifier", instruction: "Verify the legacy fixture.", dependencies: ["build"] },
+      ],
+      idempotency_key: `legacy-native-plan-${runId}`,
+    };
+    const legacyPlan = await legacyRuntime.planNativeAgents(coordinator, legacyRequest, {
+      corePlan: corePlanFor({
+        tenantId,
+        work: secondWork,
+        request: legacyRequest,
+        objective: initial.objective,
+      }),
+    });
+    const legacyBuilder = await legacyRuntime.bindNativeAgent(coordinator, {
+      work_id: secondWork.work_id,
+      plan_id: legacyPlan.plan.plan_id,
+      task_id: "build",
+      native_agent_id: "codex-legacy-builder",
+      host_type: "codex_native",
+      host_task_id: "/root/postgres16-legacy-build",
+      v2_task_id: legacyTaskId,
+    });
+    assert.equal(legacyBuilder.binding.v2_task_digest, undefined);
+    const legacyPrecommitEvidence = {
+      schema_version: "native_precommit_evidence_v1",
+      diff_mode: "git_diff_binary_sha256_v1",
+      base_commit: BASE_COMMIT,
+      diff_digest: "6".repeat(64),
+      changed_files: ["services/skinharmony-core-mcp/src/work-continuity-v2-store.js"],
+    };
+    const legacyBuilderReport = await legacyRuntime.reportNativeAgent(
+      reporterIdentity(tenantId, "codex-legacy-builder", "7".repeat(64), "7"),
+      {
+        work_id: secondWork.work_id,
+        plan_id: legacyPlan.plan.plan_id,
+        native_agent_id: "codex-legacy-builder",
+        host_task_id: "/root/postgres16-legacy-build",
+        assignment_capability: legacyBuilder.assignment_capability,
+        status: "completed",
+        report: {
+          summary: "Legacy builder fixture completed.",
+          precommit_evidence: legacyPrecommitEvidence,
+          tests: [{ name: "legacy builder", passed: true }],
+          evidence_refs: ["legacy:builder"],
+        },
+      },
+    );
+    const legacyVerifier = await legacyRuntime.bindNativeAgent(coordinator, {
+      work_id: secondWork.work_id,
+      plan_id: legacyPlan.plan.plan_id,
+      task_id: "verify",
+      native_agent_id: "codex-legacy-verifier",
+      host_type: "codex_native",
+      host_task_id: "/root/postgres16-legacy-verify",
+      v2_task_id: legacyTaskId,
+    });
+    const legacyVerifierInput = {
+      work_id: secondWork.work_id,
+      plan_id: legacyPlan.plan.plan_id,
+      native_agent_id: "codex-legacy-verifier",
+      host_task_id: "/root/postgres16-legacy-verify",
+      assignment_capability: legacyVerifier.assignment_capability,
+      status: "completed",
+      report: {
+        summary: "Legacy verifier fixture approved.",
+        verdict: "approved",
+        precommit_evidence: legacyPrecommitEvidence,
+        verifies_task_ids: ["build"],
+        tests: [{ name: "legacy verifier", passed: true }],
+        evidence_refs: ["legacy:verifier"],
+        acceptance_evidence: [{
+          criterion_digest: legacyPlan.plan.acceptance_contract.criteria[0].criterion_digest,
+          passed: true,
+          evidence_refs: ["legacy:criterion"],
+        }],
+      },
+    };
+    const historicalReport = await legacyRuntime.reportNativeAgent(
+      reporterIdentity(tenantId, "codex-legacy-verifier", "8".repeat(64), "8"),
+      legacyVerifierInput,
+    );
+    assert.equal(historicalReport.v2_evidence, undefined);
+    const noSyntheticLegacyEvidence = await pool.query(`SELECT count(*)::int AS count
+      FROM tenant_work_native_verifier_evidence WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, secondWork.work_id]);
+    assert.equal(noSyntheticLegacyEvidence.rows[0].count, 0);
+    const historicalMaterial = {
+      schema_version: "native_verifier_terminal_evidence_v1",
+      tenant_id: tenantId,
+      work_id: secondWork.work_id,
+      legacy_work_id: secondWork.work_id,
+      plan_id: legacyPlan.plan.plan_id,
+      task_id: "verify",
+      task_digest: legacyPlan.plan.tasks.find((task) => task.task_id === "verify").task_digest,
+      v2_task_id: legacyTaskId,
+      verifier_agent_id: "codex-legacy-verifier",
+      verifier_session_fingerprint: "8".repeat(64),
+      verified_builder_bindings: [{
+        task_id: "build",
+        task_digest: legacyPlan.plan.tasks.find((task) => task.task_id === "build").task_digest,
+        v2_task_id: legacyTaskId,
+        agent_id: "codex-legacy-builder",
+        session_fingerprint: "7".repeat(64),
+        presence_signature: `ags_${"7".repeat(32)}`,
+        report_digest: legacyBuilderReport.report_digest,
+      }],
+      native_receipt_id: historicalReport.receipt.receipt_id,
+      native_receipt_digest: historicalReport.receipt.payload_digest,
+      report_digest: historicalReport.report_digest,
+    };
+    const historicalEvidenceDigest = digest(historicalMaterial);
+    const historicalEvidenceId = crypto.randomUUID();
+    await pool.query(`INSERT INTO tenant_work_evidence
+      (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
+       verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+      VALUES ($1,$2,$3,'native_verifier_terminal_report',$4,true,true,$5,$6,1,$7::jsonb)`, [
+      tenantId, historicalEvidenceId, secondWork.work_id, historicalEvidenceDigest,
+      "codex-legacy-verifier", "8".repeat(64), JSON.stringify({
+        ...historicalMaterial,
+        source: "server_native_verifier_terminal_report",
+        authority: "evidence_only",
+        execution_authorized: false,
+      }),
+    ]);
+    await pool.query(`INSERT INTO tenant_work_native_verifier_evidence
+      (tenant_id,work_id,plan_id,task_id,task_digest,v2_task_id,
+       verifier_agent_id,verifier_session_fingerprint,native_receipt_id,
+       native_receipt_digest,report_digest,evidence_id,evidence_digest)
+      VALUES ($1,$2,$3,'verify',$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [
+      tenantId, secondWork.work_id, legacyPlan.plan.plan_id,
+      historicalMaterial.task_digest, legacyTaskId, "codex-legacy-verifier",
+      "8".repeat(64), historicalReport.receipt.receipt_id,
+      historicalReport.receipt.payload_digest, historicalReport.report_digest,
+      historicalEvidenceId, historicalEvidenceDigest,
+    ]);
+    await pool.query(`UPDATE tenant_work_task SET acceptance_verified=true
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND status='completed'`,
+    [tenantId, secondWork.work_id, legacyTaskId]);
+    const legacyReplay = await legacyRuntime.reportNativeAgent(
+      reporterIdentity(tenantId, "codex-legacy-verifier", "8".repeat(64), "8"),
+      legacyVerifierInput,
+    );
+    assert.equal(legacyReplay.v2_evidence.schema_version,
+      "native_verifier_terminal_evidence_v1");
+    assert.equal(legacyReplay.v2_evidence.idempotent_replay, true);
+    const legacyEvidence = await pool.query(`SELECT e.digest,e.metadata,n.v2_task_digest
+      FROM tenant_work_evidence e
+      JOIN tenant_work_native_verifier_evidence n
+        ON n.tenant_id=e.tenant_id AND n.evidence_id=e.evidence_id
+      WHERE e.tenant_id=$1 AND e.work_id=$2`, [tenantId, secondWork.work_id]);
+    assert.equal(legacyEvidence.rowCount, 1);
+    assert.equal(legacyEvidence.rows[0].metadata.schema_version,
+      "native_verifier_terminal_evidence_v1");
+    assert.equal(legacyEvidence.rows[0].v2_task_digest, null);
+    assert.equal("task_evaluation_digest" in legacyEvidence.rows[0].metadata, false);
+    assert.deepEqual(Object.keys(legacyEvidence.rows[0].metadata).sort(), [
+      "authority", "execution_authorized", "legacy_work_id", "native_receipt_digest",
+      "native_receipt_id", "plan_id", "report_digest", "schema_version", "source",
+      "task_digest", "task_id", "tenant_id", "v2_task_id", "verified_builder_bindings",
+      "verifier_agent_id", "verifier_session_fingerprint", "work_id",
+    ].sort());
+    assert.deepEqual(
+      Object.keys(legacyEvidence.rows[0].metadata.verified_builder_bindings[0]).sort(),
+      [
+        "agent_id", "presence_signature", "report_digest", "session_fingerprint",
+        "task_digest", "task_id", "v2_task_id",
+      ].sort(),
+    );
+    const replayedV1Material = { ...legacyEvidence.rows[0].metadata };
+    delete replayedV1Material.authority;
+    delete replayedV1Material.execution_authorized;
+    delete replayedV1Material.source;
+    assert.deepEqual(replayedV1Material, historicalMaterial);
+    assert.equal(digest(replayedV1Material), legacyEvidence.rows[0].digest);
+    // Exercise the supported generic finalizer against the same durable,
+    // server-created task evidence.  A projected legacy row normally has no
+    // generic adapter, so temporarily model the canonical bridged Work shape
+    // that exists when V2 was created first.
+    await pool.query(`UPDATE tenant_work SET work_type='generic'
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, secondWork.work_id]);
+    const legacyGenericReadiness = await v2Store.evaluateGenericClosure(bridgeOwner, {
+      work_id: secondWork.work_id,
+      adapter: "generic",
+    });
+    assert.equal(legacyGenericReadiness.ready, false);
+    assert.equal(legacyGenericReadiness.native_task_evidence_only, true);
+    assert.ok(legacyGenericReadiness.missing.includes("native_closure_required"));
+    await assert.rejects(v2Store.buildGenericCoreJoinRequest(bridgeOwner, {
+      work_id: secondWork.work_id,
+      adapter: "generic",
+      idempotency_key: `native-task-evidence-cannot-close-${runId}`,
+    }), /generic_core_join_native_closure_required/);
+    await pool.query(`UPDATE tenant_work SET work_type='legacy'
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, secondWork.work_id]);
+
     const clientEvidence = await v2Store.recordEvidence(bridgeOwner, {
       work_id: firstWork.work_id,
       kind: "client_injected_candidate",
@@ -1095,11 +1689,84 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       idempotency_key: `closure-${runId}`,
     });
     assert.equal(evaluation.closed, false);
+    assert.equal(evaluation.commit_ticket_ready, true);
+    assert.equal(evaluation.native_v2_task_bindings_verified, true);
+    assert.equal(evaluation.native_v2_work_tasks_verified, false);
+    assert.match(evaluation.native_v2_task_scope_snapshot_digest, /^[a-f0-9]{64}$/);
+    assert.match(evaluation.native_v2_work_snapshot_digest, /^[a-f0-9]{64}$/);
     assert.equal(evaluation.core_join_required, false);
     assert.equal(evaluation.independent_verifier_count, 1);
     assert.ok(evaluation.acceptance_criteria_proven < planned.plan.acceptance_contract.criteria.length);
     assert.ok(evaluation.missing.some((item) => item.startsWith("acceptance_evidence_missing:")));
+    assert.ok(evaluation.missing.includes(
+      `native_v2_task_acceptance_not_current:${unrelatedTaskId}`,
+    ));
     assert.equal(evaluation.core_join_material, undefined);
+
+    // A future lateral task may evolve without invalidating Task A's scoped
+    // precommit ticket. Mutating Task A itself, including an ABA restore,
+    // invalidates the revision-bound retry.
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: unrelatedTaskId,
+      title: "Future unrelated V2 task evolved",
+      status: "completed",
+      required: true,
+    });
+    const scopedReplay = await runtime.evaluateClosure(coordinator, {
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      release: release(),
+      idempotency_key: `closure-${runId}`,
+    });
+    assert.equal(scopedReplay.commit_ticket_ready, true);
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: bridgeTaskId,
+      title: "Native verifier acceptance bridge target changed after evaluation",
+      status: "completed",
+      required: true,
+    });
+    await pool.query(`UPDATE tenant_work_task SET title=$4,status='completed',
+        acceptance_verified=true,completed_at=now()
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      bridgeTaskId,
+      "Native verifier acceptance bridge target",
+    ]);
+    await assert.rejects(runtime.evaluateClosure(coordinator, {
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      release: release(),
+      idempotency_key: `closure-${runId}`,
+    }), /native_v2_task_closure_binding_changed/);
+
+    // Once a release join is active, no task writer can create a stale action
+    // ticket window. The database trigger covers every mutation path.
+    await pool.query(`UPDATE core_continuity_native_plans SET status='verified'
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
+    [tenantId, firstWork.work_id, planned.plan.plan_id]);
+    await pool.query(`INSERT INTO core_continuity_release_joins
+      (tenant_id,work_id,plan_id,evaluation_id,verdict_id,release_intent,
+       release_intent_digest,core_join_record,core_join_record_digest,created_by)
+      VALUES ($1,$2,$3,$4,$5,'{}'::jsonb,$6,'{}'::jsonb,$7,$8)`, [
+      tenantId,
+      firstWork.work_id,
+      planned.plan.plan_id,
+      evaluation.evaluation_id,
+      `freeze-${runId}`,
+      "a".repeat(64),
+      "b".repeat(64),
+      "postgres16-freeze-regression",
+    ]);
+    await assert.rejects(v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: unrelatedTaskId,
+      title: "Mutation after release join must be rejected",
+      status: "completed",
+      required: true,
+    }), /tenant_work_task_release_frozen/);
 
     const events = await pool.query(`SELECT sequence_number,event_hash,previous_event_hash,event_type
       FROM core_continuity_events
@@ -1242,6 +1909,161 @@ test("PostgreSQL 16 reconciles stale Gallery Work with typed status parameters a
     }
   } finally {
     await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 binds software changes and supersedes planned native work atomically", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const schema = `native_replan_${runId}`;
+  const tenantId = `pg16_replan_${runId}`;
+  const adminPool = new Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 10_000 });
+  let client;
+  let runtime;
+  try {
+    const version = await adminPool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+    await adminPool.query(`CREATE SCHEMA ${pgIdentifier(schema)}`);
+    client = await adminPool.connect();
+    await client.query(`SET search_path TO ${pgIdentifier(schema)}`);
+    const scopedPool = {
+      query: (...args) => client.query(...args),
+      async connect() {
+        return {
+          query: (...args) => client.query(...args),
+          release() {},
+        };
+      },
+      async end() {},
+    };
+    runtime = createWorkContinuityRuntime({
+      databaseUrl,
+      dttAgentIdentitySigningSecret: "postgres16-replan-assignment-secret-0123456789",
+    }, { pool: scopedPool });
+    await runtime.initialize();
+    const v2Store = createWorkContinuityV2Store({
+      pool: scopedPool,
+      legacyRuntime: runtime,
+    });
+    await v2Store.initialize();
+    // Reproduce only the authoritative Software Cognition parent and FK in an
+    // isolated schema; this keeps the regression independent of other suites.
+    await client.query(`CREATE TABLE core_changes (
+      tenant_id text NOT NULL,
+      work_id uuid NOT NULL,
+      change_id uuid NOT NULL,
+      base_state_digest char(64) NOT NULL,
+      PRIMARY KEY (tenant_id,change_id),
+      UNIQUE (tenant_id,work_id,change_id)
+    )`);
+    await client.query(`ALTER TABLE core_continuity_native_plans
+      ADD CONSTRAINT core_continuity_native_plans_change_fk
+      FOREIGN KEY(tenant_id,work_id,change_id)
+      REFERENCES core_changes(tenant_id,work_id,change_id) ON DELETE RESTRICT`);
+
+    const coordinator = coordinatorIdentity(tenantId);
+    const objective = "Keep exactly one open native plan and bind its software change.";
+    const work = await runtime.ensure(coordinator, {
+      project_id: `replan-${runId.slice(0, 12)}`,
+      session_id: `replan-session-${runId.slice(0, 12)}`,
+      initial_message: "Verify native replan invariants on PostgreSQL 16.",
+      idea: "Atomic native replacement",
+      objective,
+      acceptance_criteria: ["No superseded plan can advance closure."],
+      constraints: ["Never expose a raw PostgreSQL FK failure."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Create the exact native plan.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    const changeId = crypto.randomUUID();
+    const requestFor = (idempotencyKey, instruction) => ({
+      work_id: work.work_id,
+      repository: "owner/repo",
+      base_branch: "main",
+      host_type: "codex_native",
+      required_checks: ["core-mcp"],
+      tasks: [
+        { task_id: "build", kind: "builder", instruction },
+        { task_id: "verify", kind: "verifier", instruction: "Verify independently.", dependencies: ["build"] },
+      ],
+      max_parallel: 2,
+      software_contract: {
+        change_id: changeId,
+        base_state_digest: "9".repeat(64),
+      },
+      idempotency_key: idempotencyKey,
+    });
+    const missing = requestFor(`pg16-replan-missing-${runId}`, "Implement revision zero.");
+    await assert.rejects(runtime.planNativeAgents(coordinator, missing, {
+      corePlan: corePlanFor({ tenantId, work, request: missing, objective }),
+    }), /native_agent_software_change_binding_not_found/);
+    const afterMissing = await client.query(`SELECT count(*)::int AS count
+      FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, work.work_id]);
+    assert.equal(afterMissing.rows[0].count, 0);
+
+    await client.query(`INSERT INTO core_changes
+      (tenant_id,work_id,change_id,base_state_digest) VALUES ($1,$2,$3,$4)`,
+    [tenantId, work.work_id, changeId, "1".repeat(64)]);
+    const firstRequest = requestFor(`pg16-replan-first-${runId}`, "Implement revision one.");
+    const first = await runtime.planNativeAgents(coordinator, firstRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: firstRequest, objective }),
+    });
+    await runtime.bindNativeAgent(coordinator, {
+      work_id: work.work_id,
+      plan_id: first.plan.plan_id,
+      task_id: "build",
+      native_agent_id: "pg16-builder",
+      host_type: "codex_native",
+      host_task_id: "/root/pg16-builder",
+    });
+
+    const secondRequest = requestFor(`pg16-replan-second-${runId}`, "Implement revision two.");
+    const second = await runtime.planNativeAgents(coordinator, secondRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: secondRequest, objective }),
+    });
+    assert.equal(second.superseded_plan_count, 1);
+    assert.equal(second.superseded_agent_count, 1);
+    const plans = await client.query(`SELECT plan_id,status,plan_version,supersedes_plan_id,
+        change_id,base_state_digest
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY plan_version`,
+    [tenantId, work.work_id]);
+    assert.deepEqual(plans.rows.map((row) => row.status), ["superseded", "planned"]);
+    assert.equal(plans.rows[1].supersedes_plan_id, first.plan.plan_id);
+    assert.equal(Number(plans.rows[1].plan_version), 2);
+    assert.equal(plans.rows[1].change_id, changeId);
+    assert.equal(plans.rows[1].base_state_digest, "9".repeat(64));
+    const agents = await client.query(`SELECT status FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
+    [tenantId, work.work_id, first.plan.plan_id]);
+    assert.deepEqual(agents.rows.map((row) => row.status), ["superseded"]);
+    await assert.rejects(runtime.evaluateClosure(coordinator, {
+      work_id: work.work_id,
+      plan_id: first.plan.plan_id,
+      idempotency_key: `pg16-replan-stale-evaluation-${runId}`,
+    }), /native_agent_plan_not_open/);
+
+    await client.query(`UPDATE core_continuity_native_plans SET status='verified'
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
+    [tenantId, work.work_id, second.plan.plan_id]);
+    const thirdRequest = requestFor(`pg16-replan-third-${runId}`, "Implement revision three.");
+    await assert.rejects(runtime.planNativeAgents(coordinator, thirdRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: thirdRequest, objective }),
+    }), /native_agent_plan_replacement_conflict/);
+    const afterConflict = await client.query(`SELECT count(*)::int AS count
+      FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, work.work_id]);
+    assert.equal(afterConflict.rows[0].count, 2);
+  } finally {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+      await client.query("SET search_path TO public").catch(() => {});
+      client.release();
+    }
+    await adminPool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`).catch(() => {});
+    await adminPool.end();
   }
 });
 

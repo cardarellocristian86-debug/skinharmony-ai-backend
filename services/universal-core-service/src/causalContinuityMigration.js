@@ -1,10 +1,14 @@
 import { readFile } from "node:fs/promises";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
 import {
   acquireBoundedMigrationLock,
   ensureCoreSchemaMigrationRegistry,
 } from "./coreSchemaMigrationRegistry.js";
+import {
+  runPostgresMigrationBlock,
+  withPostgresMigrationSession,
+} from "../../shared/retryable-postgres-initializer.js";
 
 export const CAUSAL_MIGRATION_ID = "20260809_001_causal_continuity_v1";
 export const CAUSAL_MIGRATION_LOCK = "skinharmony:universal-core:causal-continuity:migration:v1";
@@ -78,17 +82,9 @@ async function executeBlock(client, block) {
       const legacy = await client.query("SELECT to_regclass('core_continuity_works') IS NOT NULL AS present");
       if (!legacy.rows[0]?.present) return;
     }
-    await client.query(block.sql);
-    return;
+    return runPostgresMigrationBlock(client, block.sql, { transactional: false });
   }
-  await client.query("BEGIN");
-  try {
-    await client.query(block.sql);
-    await client.query("COMMIT");
-  } catch (error) {
-    try { await client.query("ROLLBACK"); } catch { /* preserve the migration error */ }
-    throw error;
-  }
+  return runPostgresMigrationBlock(client, block.sql, { transactional: true });
 }
 
 function legacyIndexDefinitionMatches(row) {
@@ -108,7 +104,7 @@ export function galleryTicketIndexDefinitionMatches(row) {
     definition.includes("(tenant_id, ticket_id)") && !definition.includes(" where ");
 }
 
-export async function recoverInterruptedCausalLegacyIndex(client) {
+export async function recoverInterruptedCausalLegacyIndex(client, { migrationQuery = null } = {}) {
   const legacy = await client.query("SELECT to_regclass('core_continuity_works') IS NOT NULL AS present");
   if (!legacy.rows[0]?.present) return { legacy_table_present: false, action: "SKIPPED" };
   const result = await client.query(`
@@ -135,14 +131,16 @@ export async function recoverInterruptedCausalLegacyIndex(client) {
   if (index.constraint_owned === true || index.external_dependency === true) {
     throw new CausalContinuityError("CAUSAL_MIGRATION_INDEX_OWNERSHIP_UNCERTAIN", "Invalid index has dependent objects and cannot be recovered automatically");
   }
-  await client.query("DROP INDEX CONCURRENTLY core_continuity_works_tenant_project_uuid_idx");
+  await (migrationQuery || client.query.bind(client))(
+    "DROP INDEX CONCURRENTLY core_continuity_works_tenant_project_uuid_idx",
+  );
   return { legacy_table_present: true, action: "DROP_INVALID_EXACT" };
 }
 
 export function createCausalContinuityMigrator({ pool, connectionString } = {}) {
   if (!pool && !connectionString) throw new CausalContinuityError("CAUSAL_DATABASE_REQUIRED");
   const ownsPool = !pool;
-  const db = pool || new Pool({ connectionString, max: 2, idleTimeoutMillis: 10_000 });
+  const db = pool || createBoundedPostgresPool({ connectionString, max: 2, idleTimeoutMillis: 10_000 });
 
   async function readback(client = db) {
     const tableResult = await client.query(
@@ -286,7 +284,8 @@ export function createCausalContinuityMigrator({ pool, connectionString } = {}) 
       );
       for (const [index, block] of migrationBlocks(sql).entries()) {
         if (block.mode === "nontransactional" && /core_continuity_works_tenant_project_uuid_idx/.test(block.sql)) {
-          await recoverInterruptedCausalLegacyIndex(client);
+          await withPostgresMigrationSession(client, ({ query }) =>
+            recoverInterruptedCausalLegacyIndex(client, { migrationQuery: query }));
         }
         await executeBlock(client, block);
         await client.query(

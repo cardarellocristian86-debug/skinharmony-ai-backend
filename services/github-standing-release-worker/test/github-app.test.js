@@ -76,6 +76,42 @@ test("installation token request is fixed to GitHub and one authorized repositor
   );
 });
 
+test("installation token request aborts at its deadline and rejects oversized JSON", async () => {
+  let observedSignal = null;
+  const timed = createGitHubInstallationTokenResolver({
+    app_id: 4596254,
+    private_key: privatePem,
+    bindings: registry(),
+    now: () => 1_700_000_000_000,
+    request_timeout_ms: 10,
+    fetch_impl: async (_url, options) => {
+      observedSignal = options.signal;
+      return new Promise(() => {});
+    },
+  });
+  await assert.rejects(
+    timed({ tenant_id: "customer-a", repository: "customer/example" }),
+    (error) => error.code === "github_api_request_timeout" && error.status === 504,
+  );
+  assert.equal(observedSignal?.aborted, true);
+
+  const oversized = createGitHubInstallationTokenResolver({
+    app_id: 4596254,
+    private_key: privatePem,
+    bindings: registry(),
+    now: () => 1_700_000_000_000,
+    response_limit_bytes: 64,
+    fetch_impl: async () => new Response(JSON.stringify({ payload: "x".repeat(256) }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await assert.rejects(
+    oversized({ tenant_id: "customer-a", repository: "customer/example" }),
+    (error) => error.code === "github_api_response_too_large" && error.status === 502,
+  );
+});
+
 test("execution claim rejects caller authority and malformed bindings", () => {
   const claim = validateExecutionClaimShape({
     schema_version: "standing_release_execution_claim_v1",

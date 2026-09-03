@@ -2,9 +2,10 @@ import { createUniversalCoreService } from "./src/app.js";
 import { createGhidraHeadlessAdapter } from "./src/ghidraHeadlessAdapter.js";
 import { createFridaLocalAdapter } from "./src/fridaLocalAdapter.js";
 import { createSoftwareAuthorizationVerifier } from "./src/universalSoftwareIntelligence.js";
-import pg from "pg";
 import { createIcfPostgresStore } from "./src/icfPostgresStore.js";
 import { createCoreJoinPostgresStore, createCoreJoinSigner } from "./src/coreJoinPostgresStore.js";
+import { createBoundedPostgresPool } from "./src/postgresPoolConfig.js";
+import { initializePostgresWithRetry } from "../shared/retryable-postgres-initializer.js";
 
 const port = Number(process.env.PORT || process.env.CORE_SERVICE_PORT || 8787);
 const softwareWorkerAdapters = {};
@@ -34,13 +35,15 @@ const softwareAuthorizationVerifier = process.env.SOFTWARE_INTELLIGENCE_AUTHORIZ
   ? createSoftwareAuthorizationVerifier({ secret: process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET })
   : undefined;
 const icfDatabaseUrl = process.env.GOVERNED_AGENT_DATABASE_URL || process.env.DATABASE_URL || "";
-const icfPool = icfDatabaseUrl ? new pg.Pool({ connectionString: icfDatabaseUrl, max: 4, idleTimeoutMillis: 30000 }) : null;
+const icfPool = icfDatabaseUrl
+  ? createBoundedPostgresPool({ connectionString: icfDatabaseUrl, max: 4, idleTimeoutMillis: 30_000 })
+  : null;
 const icfStore = icfPool ? createIcfPostgresStore({ pool: icfPool }) : undefined;
 const coreJoinSigner = createCoreJoinSigner({ secret: process.env.ICF_GENERIC_JOIN_SIGNING_SECRET, keyId: process.env.ICF_GENERIC_JOIN_KEY_ID || "core-join-hmac-v1" });
 const coreJoinStore = createCoreJoinPostgresStore({ pool: icfPool, signer: coreJoinSigner });
 if (icfStore) {
   try {
-    await icfStore.initialize();
+    await initializePostgresWithRetry(() => icfStore.initialize());
     if (icfStore.ready !== true || icfStore.initialization_state !== "ready") {
       throw new Error("icf_postgres_store_initialization_readback_failed");
     }

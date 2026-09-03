@@ -680,14 +680,17 @@ test("PostgreSQL receipt store consumes context and inserts receipt in one trans
   let contextAvailable = true;
   const client = {
     async query(sql, params) {
-      statements.push(String(sql).trim().split(/\s+/).slice(0, 4).join(" "));
-      if (String(sql).includes("INSERT INTO dtt_agent_identity_contexts")) {
-        contextInsertParams = params;
+      const statement = typeof sql === "string" ? sql : String(sql?.text || "");
+      const values = params === undefined && Array.isArray(sql?.values) ? sql.values : params;
+      statements.push(statement.trim().split(/\s+/).slice(0, 4).join(" "));
+      if (statement.includes("CREATE TABLE")) initializationSql = statement;
+      if (statement.includes("INSERT INTO dtt_agent_identity_contexts")) {
+        contextInsertParams = values;
         const available = contextAvailable;
         contextAvailable = false;
         return { rowCount: available ? 1 : 0, rows: available ? [{ context_fingerprint: "f" }] : [] };
       }
-      if (String(sql).includes("INSERT INTO dtt_agent_identity_receipts")) receiptInsertParams = params;
+      if (statement.includes("INSERT INTO dtt_agent_identity_receipts")) receiptInsertParams = values;
       return { rowCount: 1, rows: [] };
     },
     release() { statements.push("RELEASE"); },
@@ -751,6 +754,35 @@ test("PostgreSQL receipt store consumes context and inserts receipt in one trans
   assert.deepEqual(poolQueries.at(-1).params.slice(0, 5), [
     "dair_one", "tenant-a", TRUST_WORK, "tree-a", "verify",
   ]);
+});
+
+test("PostgreSQL receipt schema initialization retries and coalesces after a transient timeout", async () => {
+  let attempts = 0;
+  let releases = 0;
+  const migrationQueries = [];
+  const pool = {
+    async query() { return { rows: [], rowCount: 0 }; },
+    async connect() {
+      attempts += 1;
+      return {
+        async query(query) {
+          if (query && typeof query === "object" && /CREATE TABLE IF NOT EXISTS dtt_agent_identity_contexts_v2/.test(query.text)) {
+            migrationQueries.push(query);
+            if (attempts === 1) throw new Error("transient_statement_timeout");
+          }
+          return { rows: [], rowCount: 0 };
+        },
+        release() { releases += 1; },
+      };
+    },
+  };
+  const store = createPostgresDttAgentIdentityReceiptStore({ pool });
+  await assert.rejects(Promise.all([store.initialize(), store.initialize()]), /transient_statement_timeout/);
+  await Promise.all([store.initialize(), store.initialize()]);
+  assert.equal(attempts, 2);
+  assert.equal(releases, 2);
+  assert.equal(migrationQueries.length, 2);
+  assert(migrationQueries.every((query) => query.query_timeout === 30_000));
 });
 
 test("artifact registry resolves only the exact tenant-and-Work-bound server-computed tuple", () => {

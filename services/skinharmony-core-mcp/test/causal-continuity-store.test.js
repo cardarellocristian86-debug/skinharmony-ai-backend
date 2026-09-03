@@ -139,11 +139,11 @@ test("startup initialization is idempotent per store and restart-safe across sto
   await first.initialize();
   await first.initialize();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0], CAUSAL_CONTINUITY_SCHEMA_SQL);
+  assert.equal(calls[0], CAUSAL_CONTINUITY_SCHEMA_SQL.trim());
   const restarted = createCausalContinuityStore({ pool });
   await restarted.initialize();
   assert.equal(calls.length, 2);
-  assert.equal(calls[1], CAUSAL_CONTINUITY_SCHEMA_SQL);
+  assert.equal(calls[1], CAUSAL_CONTINUITY_SCHEMA_SQL.trim());
 });
 
 test("store requires PostgreSQL and rejects malformed scope before causal writes", async () => {
@@ -166,7 +166,9 @@ test("multi-write operation rolls back and releases when outbox persistence fail
   let projectRow = null;
   const client = {
     async query(sql, params = []) {
-      const normalized = String(sql).replace(/\s+/g, " ").trim();
+      const queryText = typeof sql === "string" ? sql : sql.text;
+      if (!params.length && Array.isArray(sql?.values)) params = sql.values;
+      const normalized = queryText.replace(/\s+/g, " ").trim();
       queries.push(normalized);
       if (normalized.startsWith("INSERT INTO causal_project")) {
         projectRow = { project_name: params[2], project_digest: params[3] };
@@ -190,6 +192,9 @@ test("multi-write operation rolls back and releases when outbox persistence fail
     connect: async () => client,
   };
   const store = createCausalContinuityStore({ pool, now: () => new Date("2026-08-10T08:00:00.000Z") });
+  await store.initialize();
+  queries.length = 0;
+  released = false;
   await assert.rejects(store.registerProject({
     tenant_id: "tenant-a", project_id: "project-a", project_name: "A",
     actor_id: "owner-a", idempotency_key: "create-a",

@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
 import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
+import {
+  retryableInitializer,
+  runPostgresMigration,
+} from "../../shared/retryable-postgres-initializer.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONTINUATION_REF = /^nyc1_[A-Za-z0-9_-]{32,80}$/;
@@ -389,11 +393,8 @@ export function createNyraGovernedContinuationStore({
   }
   const boundedTtl = Math.min(Math.max(Number(ttlMs) || 300_000, 60_000), 600_000);
   let initialized = false;
-  let initialization;
-
-  async function initialize() {
-    initialization ||= Promise.resolve().then(async () => {
-      await pool.query(NYRA_GOVERNED_CONTINUATION_SCHEMA);
+  const initialize = retryableInitializer(async () => {
+      await runPostgresMigration(pool, NYRA_GOVERNED_CONTINUATION_SCHEMA);
       const verification = await pool.query(`
         SELECT
           to_regclass('nyra_governed_continuation') IS NOT NULL AS continuation_table,
@@ -423,9 +424,7 @@ export function createNyraGovernedContinuationStore({
       }
       initialized = true;
       return Object.freeze({ ready: true, distributed: true, restart_durable: true });
-    });
-    return initialization;
-  }
+  });
 
   function requireReady() {
     if (!initialized) fail("nyra_continuation_store_unavailable", 503);
