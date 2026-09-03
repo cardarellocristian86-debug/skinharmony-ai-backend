@@ -9,6 +9,7 @@ import {
   requireScopes,
 } from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 import { compactMcpTools } from "./dynamic-capability-router.js";
@@ -46,19 +47,101 @@ import { classifyNyraIntent } from "./nyra-intent-router.js";
 // ChatGPT uses the MCP server identity while refreshing an installed app's
 // tool descriptors. Keep this revision aligned with every published tool
 // contract change so a reconnect cannot silently retain a stale schema.
-const SERVER_VERSION = "0.18.0-nyra-finalize-frontdoor";
-const TOOL_CONTRACT_REVISION = "nyra-finalize-published-frontdoor-v1";
+const SERVER_VERSION = "0.19.0-nyra-nonblocking-fast-path";
+const TOOL_CONTRACT_REVISION = "nyra-risk-tier-fast-path-v1";
 const SERVER_INSTRUCTIONS = [
-  "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
-  "For a bound Work, use nyra_converse only when Nyra Dialogue is advertised as enabled: it resumes, diagnoses or coordinates that Work. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. For functions, controls, runtime state, Work closure percentage, blockers or allowed toggles, use nyra_control_room_status directly; never route that read through a Work. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
-  "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
-  "When the owner asks for controls, runtime state, Work closure percentage, blockers or allowed toggles, invoke nyra_control_room_status. Render its server-derived state and allowed_actions exactly; never invent an ON/OFF state, percentage, available command or authority. For an EXISTING_GOVERNED_HANDLER, invoke only that exact registered handler after its fresh owner confirmation; never write environment or deployment configuration from chat.",
-  "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
-  "For a recoverable connector/OAuth failure, checkpoint the exact blocker and state the one real recovery action. After the user reconnects, resume the same Work and ticket path; never say that a reconnect alone completed a push, merge or deploy.",
-  "For current research, use nyra_research_plan then the authenticated host's web tool when available; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
-  "Nyra/Core is exposed through a governed MCP connector. Nyra coordinates and Core decides. Neither bypasses the registered host's approvals, sandbox, OAuth, GitHub or Render. Keep prompts and receipts free of secrets and raw customer data; use only registered host-native agents supported by the current runtime and no provider API key.",
-  "HOST-NATIVE MULTI-AGENT: HOW TO BUILD AN AGENT: use a narrow role, bounded task, dependencies, acceptance criteria and a host assignment receipt; provider_execution=false and provider_api_key_required=false. AUTOMATIC: preflight, continuity and compact memory. NOT AUTOMATIC: external actions or host approvals; Nyra/Core cannot click, bypass or replace the registered host's approval. RESEARCH DISTILLATION uses the tenant-isolated shadow workspace and never invokes a server-side model provider.",
+  "Reuse a bound Work and its compact checkpoint; do not recreate known intent.",
+  "Use nyra_control_room_status for state and blockers. Do not call work_preflight manually.",
+  "Low-risk reads use the fast path. Durable or external effects require the exact Core ticket and one current owner confirmation.",
+  "The authenticated host executes; Nyra coordinates and Core authorizes. Neither bypasses host policy or needs a provider API key.",
+  "For current research, call nyra_research_plan then the authenticated host's web tool; keep only distilled evidence in tenant-isolated shadow memory.",
+  "Host-native agents use narrow roles and host assignments; automatic coordination never invokes a server-side model provider or replaces host approval.",
+  "Never ask for API keys or use provider tools, setup panels, or retired provider links.",
+  "Keep secrets and raw customer data out of prompts and receipts. Claim completion only from verified evidence and live readback.",
 ].join(" ");
+
+// Compact MCP clients pay for this descriptor on every refreshed tool
+// context. Keep the exhaustive contracts server-side for validation, while
+// publishing the stable wire boundary needed to select and call each tool.
+// The runtime still validates calls and results against the full definitions.
+const COMPACT_OPAQUE_BOUND_OBJECT = Object.freeze({
+  type: "object",
+  description: "Copy the exact server-bound object from the preceding Nyra response; do not invent fields.",
+  additionalProperties: true,
+});
+
+const COMPACT_OUTPUT_SCHEMAS = Object.freeze({
+  nyra_converse: Object.freeze({
+    type: "object",
+    properties: Object.freeze({
+      schema_version: { const: "nyra_conversation_turn_v3" },
+      ok: { const: true },
+      tenant_id: { type: "string" },
+      orchestration_directive: { type: "object" },
+      host_response_contract: { type: "object" },
+      execution_authorized: { const: false },
+      external_action_authorized: { const: false },
+      provider_execution: { const: false },
+      provider_api_key_required: { const: false },
+      server_model_calls: { const: 0 },
+    }),
+    required: Object.freeze([
+      "schema_version", "ok", "tenant_id", "orchestration_directive",
+      "host_response_contract", "execution_authorized", "external_action_authorized",
+      "provider_execution", "provider_api_key_required", "server_model_calls",
+    ]),
+    additionalProperties: true,
+  }),
+  nyra_control_room_status: Object.freeze({
+    type: "object",
+    properties: Object.freeze({
+      ok: { type: "boolean" },
+      tenant_id: { type: "string" },
+      control_room: { type: "object" },
+    }),
+    required: Object.freeze(["ok", "tenant_id", "control_room"]),
+    additionalProperties: true,
+  }),
+});
+
+const COMPACT_CONTINUATION_OBJECT_FIELDS = new Set([
+  "work_bootstrap",
+  "delegation_request",
+  "action_request",
+  "pull_request_materialization",
+  "resume_request",
+  "native_plan_request",
+  "native_bind_request",
+]);
+
+export function compactPublishedToolDescriptor(tool) {
+  if (!tool || typeof tool !== "object") return tool;
+  let inputSchema = tool.inputSchema;
+  if (tool.name === "nyra_converse") {
+    inputSchema = {
+      ...inputSchema,
+      properties: {
+        ...inputSchema?.properties,
+        work_bootstrap: COMPACT_OPAQUE_BOUND_OBJECT,
+      },
+    };
+  } else if (tool.name === "nyra_continue") {
+    inputSchema = {
+      ...inputSchema,
+      properties: Object.fromEntries(Object.entries(inputSchema?.properties || {}).map(([name, schema]) => [
+        name,
+        COMPACT_CONTINUATION_OBJECT_FIELDS.has(name) ? COMPACT_OPAQUE_BOUND_OBJECT : schema,
+      ])),
+    };
+  }
+  return {
+    ...tool,
+    inputSchema,
+    ...(COMPACT_OUTPUT_SCHEMAS[tool.name]
+      ? { outputSchema: COMPACT_OUTPUT_SCHEMAS[tool.name] }
+      : {}),
+  };
+}
 
 const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
 const GENERIC_WORK_CORE_JOIN_TOOL = "work_continuity_generic_core_join";
@@ -852,6 +935,16 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
 // gate. They still require an exact canonical-Work ACL check in server.js.
 const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
   "tenant_work_legacy_reconcile_close",
+  // Terminal replay must be reachable without trying to recreate a read
+  // lease or participant on a Work that is already closed. These entrypoints
+  // retain exact Work ACL, presence, Airlock, ledger and their dedicated Core
+  // closure gates in server.js; only the generic continuity preflight is
+  // skipped.
+  "nyra_verified_work_finalize",
+  "work_continuity_generic_closure_finalize",
+  "work_continuity_closure_evaluate",
+  "work_continuity_closure_rejoin_persisted_release",
+  "work_continuity_closure_finalize",
 ]);
 
 // These exact read-only capabilities issue a tenant-and-Work-bound DTT
@@ -875,6 +968,52 @@ const DTT_BACKED_DYNAMIC_READ_CAPABILITIES = new Set([
   "nyra_precore_decision_list",
   "nyra_precore_decision_verify",
 ]);
+
+// A readOnlyHint is only a declaration, not proof that a handler is
+// state-pure.  Keep the production bypass as a positive matrix of handlers
+// whose implementation is observational (SELECT/local computation/remote
+// read) and whose result does not depend on registering presence, opening a
+// decision-ledger row or materialising Work continuity.  DTT-backed reads are
+// deliberately absent: several of them issue participant contexts or depend
+// on a live lease and must retain the governed lifecycle until their handlers
+// can be made observational end to end.
+const STATE_PURE_READ_TOOL_NAMES = new Set([
+  "core_branch_registry",
+  "core_capability_catalog",
+  "core_health",
+  "nyra_branch_catalog",
+  "nyra_control_room_status",
+  "nyra_research_airlock_status",
+  "memory_context",
+  "memory_search",
+  "search",
+  "fetch",
+  "memory_cloud_status",
+  "workspace_list",
+  "workspace_read_document",
+  "task_list",
+  "web_compatibility_manifest",
+  "work_preflight",
+  "work_continuity_read",
+  "work_continuity_intent_read",
+  "work_continuity_work_catalog",
+  "work_continuity_v2_read",
+  "tenant_work_gallery_list",
+  "tenant_work_gallery_list_v2",
+  "tenant_work_coordination_read",
+  "tenant_work_coordination_overview",
+  "decision_ledger_report",
+  "agent_list",
+  "message_inbox",
+]);
+
+export function qualifiesForStatePureReadPath(toolName, tools = [...TOOLS, ...WORK_CONTINUITY_TOOLS]) {
+  const requestedTool = String(toolName || "");
+  if (!STATE_PURE_READ_TOOL_NAMES.has(requestedTool)) return false;
+  const definition = tools.find((item) => item.name === requestedTool);
+  return definition?.annotations?.readOnlyHint === true &&
+    definition?.annotations?.openWorldHint !== true;
+}
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {
   const requestedTool = String(toolName || "");
@@ -909,7 +1048,30 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
       DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(String(args?.capability_id || ""))
     )
   ) return true;
+  if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(requestedTool)) return false;
+  if (qualifiesForStatePureReadPath(requestedTool)) return false;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(requestedTool);
+}
+
+// Fast reads are an explicit state-pure allowlist, not the inverse of an MCP
+// readOnly annotation. Some historical read-labelled capabilities create a
+// DTT plan, append audit state or update caches; a dynamic wrapper must never
+// inherit fast-path status without proving its concrete target state-pure.
+const FAST_READ_PATH_TOOL_NAMES = new Set([
+  "core_branch_registry",
+  "core_capability_catalog",
+  "core_health",
+  "nyra_branch_catalog",
+  "nyra_control_room_status",
+  "nyra_research_airlock_status",
+]);
+
+export function qualifiesForFastReadPath(toolName, args = {}, tools = TOOLS) {
+  const requestedTool = String(toolName || "");
+  if (!FAST_READ_PATH_TOOL_NAMES.has(requestedTool)) return false;
+  const definition = tools.find((item) => item.name === requestedTool);
+  return definition?.annotations?.readOnlyHint === true &&
+    !requiresGenericWorkPreflight(requestedTool, args);
 }
 
 export function requiresCanonicalWorkReadAuthorization(toolName, args = {}) {
@@ -1356,6 +1518,11 @@ export function buildReadiness(config = {}, options = {}) {
   const ledgerRequired = config.decisionLedgerRequired === true;
   const ledgerConfigured = Boolean(config.databaseUrl);
   const ledgerInitialized = options.readiness?.decisionLedgerInitialized === true;
+  const cloudMemoryRequired = enforced && Boolean(config.databaseUrl);
+  const cloudMemoryInitialized = options.readiness?.cloudMemoryInitialized === true;
+  const collaborationPostgresRequired = enforced && Boolean(config.collaborationDatabaseUrl);
+  const collaborationPostgresInitialized =
+    options.readiness?.collaborationPostgresInitialized === true;
   const postgresMajorVersion = normalizePostgresMajorVerification(
     options.readiness?.postgresMajorVersion,
   );
@@ -1520,6 +1687,22 @@ export function buildReadiness(config = {}, options = {}) {
         options.readiness?.decisionLedgerInitializationFailed === true,
       ready: !ledgerRequired || (ledgerConfigured && ledgerInitialized),
     },
+    cloud_memory: {
+      required: cloudMemoryRequired,
+      configured: Boolean(config.databaseUrl),
+      initialized: cloudMemoryInitialized,
+      initialization_failed:
+        options.readiness?.cloudMemoryInitializationFailed === true,
+      ready: !cloudMemoryRequired || cloudMemoryInitialized,
+    },
+    collaboration_postgres: {
+      required: collaborationPostgresRequired,
+      configured: Boolean(config.collaborationDatabaseUrl),
+      initialized: collaborationPostgresInitialized,
+      initialization_failed:
+        options.readiness?.collaborationPostgresInitializationFailed === true,
+      ready: !collaborationPostgresRequired || collaborationPostgresInitialized,
+    },
   };
   const reasons = [];
   if (!components.build_identity.ready) reasons.push("build_identity_unverifiable");
@@ -1589,6 +1772,12 @@ export function buildReadiness(config = {}, options = {}) {
     reasons.push("decision_ledger_not_configured");
   } else if (ledgerRequired && !ledgerInitialized) {
     reasons.push("decision_ledger_not_initialized");
+  }
+  if (cloudMemoryRequired && !cloudMemoryInitialized) {
+    reasons.push("cloud_memory_not_initialized");
+  }
+  if (collaborationPostgresRequired && !collaborationPostgresInitialized) {
+    reasons.push("collaboration_postgres_not_initialized");
   }
   return {
     environment,
@@ -2098,8 +2287,11 @@ export function createApp(config, options = {}) {
   const policyRegistryLocallyEligible = config.policyRegistryLifecycleEnabled === true &&
     config.policyRegistryLifecycleConfigurationValid === true &&
     config.policyRegistryLifecycleCoreOriginValid === true;
+  const webCompatibilityLocallyEligible = Array.isArray(config.webAgentAllowedOrigins) &&
+    config.webAgentAllowedOrigins.length > 0;
   const availableTools = TOOLS.filter((tool) =>
     typeof handlers[tool.name] === "function" &&
+    (!tool.name.startsWith("web_compatibility_") || webCompatibilityLocallyEligible) &&
     (tool.name !== GENERIC_WORK_CORE_JOIN_TOOL || (
       config.genericWorkCoreJoinEnabled === true &&
       config.genericWorkCoreJoinConfigurationValid === true
@@ -2636,7 +2828,10 @@ export function createApp(config, options = {}) {
           _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } } },
         }] } });
       }
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: requestVisibleTools.map(({ scopes, ...tool }) => {
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: requestVisibleTools.map((runtimeTool) => {
+        const { scopes, ...tool } = options.toolSurface === "compact"
+          ? compactPublishedToolDescriptor(runtimeTool)
+          : runtimeTool;
         const schemes = securitySchemes(scopes);
         const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
         return {

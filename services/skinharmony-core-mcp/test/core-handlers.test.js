@@ -7,6 +7,67 @@ const OWNER_CONTEXT_SECRET = "test-owner-context-signing-secret-0123456789";
 const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
 
+test("explicit observational work preflight reads hierarchy status and never evaluates it", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (url, init) => {
+      const pathname = new URL(url).pathname;
+      calls.push({ pathname, init });
+      if (pathname === "/v1/runtime/hierarchy/status") {
+        return new Response(JSON.stringify({ ok: true, runtime: {
+          hierarchy_version: "core_runtime_hierarchy_v1",
+          mode: "shadow",
+          router: { route: "V1" },
+          selected_authority: "V1",
+          parity: { attempted: false, matched: null, fallback: null },
+          execution_allowed: false,
+        } }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      assert.equal(pathname, "/v1/work/preflight");
+      return new Response(JSON.stringify({ ok: true, work_preflight: {
+        schema_version: "skinharmony_work_preflight_v1",
+        preflight_id: "preflight-observation-only",
+        tenant_id: "tenant-a",
+        mandatory: true,
+        state: "ready_read_only",
+      } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    contextProvider: async () => ({
+      schema_version: "tenant_memory_context_v1",
+      tenant_id: "tenant-a",
+      revision: 1,
+      relevant_memories: [],
+      pending_handoffs: [],
+    }),
+    tenantWorkGallery: { load: async () => ({
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: "tenant-a",
+      works: [],
+    }) },
+  });
+  await handlers.work_preflight({
+    request: "Inspect only",
+    project_id: "project-a",
+    agent_id: "codex-reader",
+    client_type: "codex",
+    session_id: "session-reader",
+    state_pure_observation: true,
+  }, { tenantId: "tenant-a", kind: "codex" });
+  assert.deepEqual(calls.map(({ pathname }) => pathname), [
+    "/v1/runtime/hierarchy/status",
+    "/v1/work/preflight",
+  ]);
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].init.body, undefined);
+  const preflightBody = JSON.parse(calls[1].init.body);
+  assert.equal(Object.hasOwn(preflightBody, "state_pure_observation"), false);
+});
+
 function expectedOwnerAssertion(secret, context) {
   const canonical = JSON.stringify({
     version: context.assertion_version,
@@ -1647,7 +1708,10 @@ test("owner-confirmed manual merge finalizer projects Core evidence then uses no
         galleryCalls.push({ method: "closure", identity, input });
         return {
           receipt: { receipt_digest: "5".repeat(64) },
-          archive_status: "ARCHIVED",
+          terminal_status: "COMPLETED",
+          archived: true,
+          released_lease_count: 2,
+          closed_participant_count: 3,
           closure_note: "owner_manual_merge",
         };
       },
@@ -1683,7 +1747,11 @@ test("owner-confirmed manual merge finalizer projects Core evidence then uses no
   const response = JSON.parse(result.content[0].text);
   assert.equal(response.work_gallery_projection.note, "owner_manual_merge");
   assert.equal(response.work_gallery_projection.legacy_bridged, true);
-  assert.equal(response.work_gallery_projection.archive_status, "ARCHIVED");
+  assert.equal(response.work_gallery_projection.terminal_status, "COMPLETED");
+  assert.equal(response.work_gallery_projection.archived, true);
+  assert.equal(response.work_gallery_projection.released_lease_count, 2);
+  assert.equal(response.work_gallery_projection.closed_participant_count, 3);
+  assert.equal(Object.hasOwn(response.work_gallery_projection, "archive_status"), false);
   assert.equal(response.work_gallery_projection.closure_receipt_digest,
     "5".repeat(64));
 });
@@ -2285,4 +2353,265 @@ test("exposes one non-tool causal Core transport that preserves the verified DTT
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.headers.authorization, "Bearer tenant-a-key");
   assert.equal(calls[0].init.headers["x-sh-dtt-agent-context"], "dac_verified_context");
+});
+
+test("bounds every ordinary Core request with an abortable deadline", async () => {
+  let observedSignal = null;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreRequestTimeoutMs: 10,
+  }, {
+    fetchImpl: async (_url, init) => {
+      observedSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      });
+    },
+  });
+
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/slow", "tenant-a"),
+    (error) => error.code === "core_request_timeout" && error.status === 504,
+  );
+  assert.equal(observedSignal?.aborted, true);
+});
+
+test("marks a dispatched mutating Core timeout outcome unknown and never retries", async () => {
+  let calls = 0;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreRequestTimeoutMs: 10,
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls += 1;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    },
+  });
+
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/orchestration/dtt/plan", "tenant-a", {
+      method: "POST",
+      body: { tree_id: "dtt_aaaaaaaaaaaaaaaaaaaaaaaa" },
+    }),
+    (error) => error.code === "core_request_outcome_unknown" &&
+      error.status === 504 && error.reconciliation_required === true &&
+      error.dispatched === true && error.cause_code === "core_request_timeout",
+  );
+  assert.equal(calls, 1);
+});
+
+test("keeps an explicit finite budget for bounded long-running Core routes", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreRequestTimeoutMs: 5,
+    universalCoreLongRequestTimeoutMs: 40,
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ path: new URL(url).pathname, signal: init.signal });
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 15);
+        init.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+      return new Response(JSON.stringify({ ok: true, analysis: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await handlers.core_software_intelligence_analyze({ artifact: {} }, { tenantId: "tenant-a" });
+  assert.deepEqual(calls.map((call) => call.path), ["/v1/software-intelligence/analyze"]);
+  assert.equal(calls[0].signal.aborted, false);
+});
+
+test("applies the long-running budget to strict standing-release transport", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreRequestTimeoutMs: 5,
+    universalCoreLongRequestTimeoutMs: 40,
+  }, {
+    fetchImpl: async (_url, init) => {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 15);
+        init.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        }, { once: true });
+      });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const result = await handlers.causalCoreRequest(
+    "/v1/host-native/standing-release/runs/run-12345678/reserve",
+    "tenant-a",
+    { strictTransport: true },
+  );
+  assert.equal(result.ok, true);
+});
+
+test("generic strict transport never mislabels failures as Policy Registry", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response("not json", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    }),
+  });
+
+  await assert.rejects(
+    handlers.causalCoreRequest(
+      "/v1/host-native/standing-release/runs/run-12345678/reserve",
+      "tenant-a",
+      { strictTransport: true },
+    ),
+    (error) => error.code === "core_strict_transport_content_type_invalid"
+      && error.policyRegistryTransportError !== true,
+  );
+});
+
+test("rejects an oversized ordinary Core response before parsing it", async () => {
+  const body = JSON.stringify({ ok: true, payload: "x".repeat(256) });
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreResponseLimitBytes: 64,
+  }, {
+    fetchImpl: async () => new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(body)),
+      },
+    }),
+  });
+
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/oversized", "tenant-a"),
+    (error) => error.code === "core_response_too_large" && error.status === 502,
+  );
+});
+
+test("marks a truncated dispatched mutation unknown instead of inviting replay", async () => {
+  const body = JSON.stringify({ ok: true, payload: "x".repeat(256) });
+  let calls = 0;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreResponseLimitBytes: 64,
+  }, {
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(Buffer.byteLength(body)) },
+      });
+    },
+  });
+
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/orchestration/dtt/plan", "tenant-a", {
+      method: "POST",
+      body: { tree_id: "dtt_bbbbbbbbbbbbbbbbbbbbbbbb" },
+    }),
+    (error) => error.code === "core_request_outcome_unknown" &&
+      error.reconciliation_required === true &&
+      error.cause_code === "core_response_too_large",
+  );
+  assert.equal(calls, 1);
+});
+
+test("rejects malformed Core JSON and marks a dispatched mutation unknown", async () => {
+  let calls = 0;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => {
+      calls += 1;
+      return new Response("not-json", { status: 200 });
+    },
+  });
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/read", "tenant-a"),
+    (error) => error.code === "core_response_json_invalid" && error.status === 502,
+  );
+  await assert.rejects(
+    handlers.causalCoreRequest("/v1/orchestration/dtt/plan", "tenant-a", {
+      method: "POST",
+      body: { tree_id: "dtt_cccccccccccccccccccccccc" },
+    }),
+    (error) => error.code === "core_request_outcome_unknown" &&
+      error.cause_code === "core_response_json_invalid" &&
+      error.reconciliation_required === true,
+  );
+  assert.equal(calls, 2);
+});
+
+test("keeps read-only action mediation byte-pure on both allow and block", async () => {
+  let writes = 0;
+  let calls = 0;
+  const mustNotWrite = () => { writes += 1; throw new Error("read_path_must_not_write"); };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    coreBlockRemediationMode: "active",
+  }, {
+    decisionLedger: {
+      startWork: mustNotWrite,
+      append: mustNotWrite,
+      finishWork: mustNotWrite,
+    },
+    remediationStore: new Proxy({}, { get: () => mustNotWrite }),
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({
+          error: "WORK_PREFLIGHT_INVALID",
+          reason_codes: ["WORK_PREFLIGHT_INVALID"],
+        }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        state: "ALLOW",
+        result: { execution_allowed: false },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const args = {
+    action: { type: "analysis" },
+    policy: {},
+    context: {},
+    work_preflight: { preflight_id: "preflight-read-only" },
+  };
+  const blocked = await handlers.core_action_mediation_evaluate(args, { tenantId: "tenant-a" });
+  assert.equal(blocked.structuredContent.remediation_persisted, false);
+  assert.equal(Object.hasOwn(blocked.structuredContent, "remediation_id"), false);
+  const allowed = await handlers.core_action_mediation_evaluate(args, { tenantId: "tenant-a" });
+  assert.deepEqual(allowed.structuredContent.quality_ledger, {
+    recorded: false,
+    reason: "read_only_evaluation",
+  });
+  assert.equal(writes, 0);
 });

@@ -55,6 +55,7 @@ test("cloud memory search matches every term without requiring phrase order", as
     },
   };
   const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.initialize();
 
   const results = await store.search("tenant-a", "nested preflight owner", 7);
 
@@ -73,6 +74,7 @@ test("canonical bootstrap lookup uses exact tenant-scoped source paths", async (
     },
   };
   const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.initialize();
   const paths = ["SHARED_MEMORY/STATE.json", "SHARED_MEMORY/HANDOFF.md"];
   await store.inspectBySourcePaths("codexai", paths);
   await store.fetchBySourcePaths("codexai", paths);
@@ -90,6 +92,7 @@ test("distilled failures persist only structured, tenant-scoped lesson metadata"
     return { rows: params ? [{ source_tool: "nyra_converse", failure_code: "core_unavailable", occurrence_count: 1 }] : [] };
   } };
   const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.initialize();
   await store.recordDistilledFailure({ tenantId: "tenant-a" }, {
     toolName: "nyra_converse",
     args: { project_id: "nyra-runtime" },
@@ -114,6 +117,7 @@ test("platform learning reads only bounded anonymized shadow or verified blocks"
     }] : [] };
   } };
   const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.initialize();
   const blocks = await store.listPlatformLearningBlocks(99);
   const read = calls.at(-1);
   assert.match(read.sql, /lifecycle_state IN \('shadow', 'verified'\)/);
@@ -121,4 +125,40 @@ test("platform learning reads only bounded anonymized shadow or verified blocks"
   assert.equal(blocks[0].scope, "platform_anonymized");
   assert.equal(blocks[0].entity_360_reference.entity_type, "nyra_platform_learning_block");
   assert.equal(Object.hasOwn(blocks[0], "tenant_id"), false);
+});
+
+test("a cold cloud-memory read fails fast and cannot start schema DDL", async () => {
+  const calls = [];
+  const pool = { query: async (sql) => { calls.push(String(sql)); return { rows: [] }; } };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+
+  await assert.rejects(store.search("tenant-a", "cold read"), (error) =>
+    error.code === "cloud_memory_not_ready" && error.status === 503);
+  assert.equal(calls.length, 0);
+  await store.initialize();
+  const ddlCount = calls.filter((sql) => /CREATE TABLE IF NOT EXISTS mcp_memory_documents/.test(sql)).length;
+  assert.equal(ddlCount, 1);
+  calls.length = 0;
+  await store.search("tenant-a", "ready read");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /^SELECT\b/);
+});
+
+test("cloud-memory bootstrap recovers a transient migration failure in-process", async () => {
+  let attempts = 0;
+  const pool = { query: async (sql) => {
+    if (/CREATE TABLE IF NOT EXISTS mcp_memory_documents/.test(String(sql))) {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("lock timeout"), { code: "55P03" });
+    }
+    return { rows: [] };
+  } };
+  const store = createCloudMemoryStore({ databaseUrl: "postgres://memory.test/db" }, { pool });
+  await store.initialize();
+  assert.equal(attempts, 2);
+  assert.deepEqual(store.initializationStatus(), {
+    state: "ready",
+    ready: true,
+    error: null,
+  });
 });

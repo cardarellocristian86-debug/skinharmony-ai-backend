@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 
 function text(value, field, max = 8_000) { const normalized = String(value || "").trim(); if (!normalized || normalized.length > max) throw new Error(`${field}_invalid`); return normalized; }
 function keyFor(secret) { return crypto.scryptSync(text(secret, "credential_vault_secret", 4_000), "governed-agent-provider-v1", 32); }
@@ -9,7 +9,7 @@ function keyHint(value) { return `${value.slice(0, 3)}…${value.slice(-4)}`; }
 function validateOpenAiKey(value) { const key=text(value,"openai_api_key",1_000); if (!/^sk-(?:proj-)?[A-Za-z0-9_-]{12,}$/.test(key)) throw new Error("openai_api_key_format_invalid"); return key; }
 
 export function createTenantProviderCredentialStore({ connectionString, masterSecret, pool = null } = {}) {
-  const url=text(connectionString,"governed_agent_database_url",4_000), secret=text(masterSecret,"credential_vault_secret",4_000); const db=pool || new Pool({ connectionString:url, max:2, idleTimeoutMillis:10_000 }); let initialized=false;
+  const url=text(connectionString,"governed_agent_database_url",4_000), secret=text(masterSecret,"credential_vault_secret",4_000); const db=pool || createBoundedPostgresPool({ connectionString:url, max:2, idleTimeoutMillis:10_000 }); let initialized=false;
   async function init() { if(initialized)return; await db.query(`CREATE TABLE IF NOT EXISTS governed_agent_provider_credentials (
     tenant_id TEXT NOT NULL, provider TEXT NOT NULL, ciphertext TEXT NOT NULL, iv TEXT NOT NULL, tag TEXT NOT NULL, key_hint TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (tenant_id, provider)
   )`);

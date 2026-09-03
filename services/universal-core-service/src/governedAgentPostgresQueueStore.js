@@ -1,6 +1,33 @@
 import crypto from "node:crypto";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 import { guardInterAgentEnvelope } from "../../shared/handoff-injection-guard.mjs";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
+
+const GOVERNED_AGENT_QUEUE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS governed_agent_queue_jobs (
+  job_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  activation_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  task TEXT NOT NULL,
+  dependencies JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_retries INTEGER NOT NULL DEFAULT 1,
+  available_at TIMESTAMPTZ NOT NULL,
+  deadline_at TIMESTAMPTZ NOT NULL,
+  claimed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  expired_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL,
+  result JSONB,
+  UNIQUE (tenant_id, activation_id, worker_id)
+);
+CREATE INDEX IF NOT EXISTS governed_agent_queue_claim_idx
+  ON governed_agent_queue_jobs (tenant_id, status, available_at, deadline_at);
+`;
 
 function text(value, field, max = 160) { const normalized = String(value || "").trim(); if (!normalized || normalized.length > max) throw new Error(`${field}_invalid`); return normalized; }
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
@@ -9,20 +36,47 @@ function publicJob(row) { return row ? { ...row, dependencies: Array.isArray(row
 
 export function createGovernedAgentPostgresQueueStore({ connectionString, pool = null, now = () => new Date() } = {}) {
   const url = text(connectionString, "governed_agent_database_url", 4_000);
-  const db = pool || new Pool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 }); let initialized = false;
-  async function init() { if (initialized) return; await db.query(`CREATE TABLE IF NOT EXISTS governed_agent_queue_jobs (
-    job_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, activation_id TEXT NOT NULL, plan_id TEXT NOT NULL, worker_id TEXT NOT NULL, agent_id TEXT NOT NULL, task TEXT NOT NULL,
-    dependencies JSONB NOT NULL DEFAULT '[]'::jsonb, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 1,
-    available_at TIMESTAMPTZ NOT NULL, deadline_at TIMESTAMPTZ NOT NULL, claimed_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, expired_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL, result JSONB,
-    UNIQUE (tenant_id, activation_id, worker_id)
-  )`); await db.query("CREATE INDEX IF NOT EXISTS governed_agent_queue_claim_idx ON governed_agent_queue_jobs (tenant_id, status, available_at, deadline_at)"); initialized = true; }
+  const db = pool || createBoundedPostgresPool({ connectionString: url, max: 4, idleTimeoutMillis: 10_000 });
+  let initializationState = "idle";
+  let initializationError = null;
+  const initializeSchema = createRetryablePostgresInitializer({
+    pool: db,
+    sql: GOVERNED_AGENT_QUEUE_SCHEMA_SQL,
+  });
+  async function init() {
+    if (initializationState === "ready") return { ready: true, kind: "postgresql" };
+    initializationState = "initializing";
+    initializationError = null;
+    try {
+      await initializeSchema();
+      initializationState = "ready";
+      return { ready: true, kind: "postgresql" };
+    } catch (error) {
+      initializationState = "failed";
+      initializationError = String(error?.code || "governed_agent_queue_schema_initialization_failed").slice(0, 80);
+      throw error;
+    }
+  }
   async function rows(query, values) { await init(); return (await db.query(query, values)).rows.map(publicJob); }
   return {
+    kind: "postgresql",
+    restart_durable: true,
+    distributed: true,
+    init,
+    initializationStatus() {
+      return {
+        state: initializationState,
+        ready: initializationState === "ready",
+        error: initializationError,
+      };
+    },
     async enqueue({ tenant_id, activation_id, plan_id, workers, deadline_at, max_retries = 1 }) {
       const tenantId=text(tenant_id,"tenant_id",120), activationId=text(activation_id,"activation_id",160), planId=text(plan_id,"plan_id",160), deadline=new Date(deadline_at);
       if (Number.isNaN(deadline.getTime()) || deadline <= now()) throw new Error("queue_deadline_invalid");
-      const normalizedWorkers=normalizeWorkers(workers), retries=Math.max(0,Math.min(3,Number(max_retries)||0)), client=await db.connect();
-      try { await init(); await client.query("BEGIN"); for (const worker of normalizedWorkers) await client.query(`INSERT INTO governed_agent_queue_jobs (job_id,tenant_id,activation_id,plan_id,worker_id,agent_id,task,dependencies,status,attempts,max_retries,available_at,deadline_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'queued',0,$9,$10,$11,$10) ON CONFLICT (tenant_id,activation_id,worker_id) DO NOTHING`,[`queue_${crypto.randomUUID()}`,tenantId,activationId,planId,worker.worker_id,worker.agent_id,worker.task,JSON.stringify(worker.dependencies),retries,now().toISOString(),deadline.toISOString()]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+      const normalizedWorkers=normalizeWorkers(workers), retries=Math.max(0,Math.min(3,Number(max_retries)||0));
+      await init();
+      const client=await db.connect();
+      try { await client.query("BEGIN"); for (const worker of normalizedWorkers) await client.query(`INSERT INTO governed_agent_queue_jobs (job_id,tenant_id,activation_id,plan_id,worker_id,agent_id,task,dependencies,status,attempts,max_retries,available_at,deadline_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'queued',0,$9,$10,$11,$10) ON CONFLICT (tenant_id,activation_id,worker_id) DO NOTHING`,[`queue_${crypto.randomUUID()}`,tenantId,activationId,planId,worker.worker_id,worker.agent_id,worker.task,JSON.stringify(worker.dependencies),retries,now().toISOString(),deadline.toISOString()]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
       return rows("SELECT * FROM governed_agent_queue_jobs WHERE tenant_id=$1 AND activation_id=$2 ORDER BY worker_id",[tenantId,activationId]);
     },
     async claim({ tenant_id }) { const tenantId=text(tenant_id,"tenant_id",120); await init(); const result=await db.query(`WITH candidate AS (

@@ -159,6 +159,9 @@ function galleryMessagePool({ participantSubject, recipientSubject, messages = [
       if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
         return { rows: [{ work_id: WORK_ID }] };
       }
+      if (/SELECT status FROM core_continuity_works/.test(sql)) {
+        return { rows: [{ status: "active" }] };
+      }
       if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) {
         if (params[3] !== participantSubject) return { rows: [] };
         return {
@@ -711,6 +714,8 @@ test("authoritative Work events invoke the Gallery projector in the same transac
       calls.push({ sql, parameters });
       if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
       if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT work_id FROM core_continuity_works/.test(sql)) return { rows: [{ work_id: WORK_ID }] };
+      if (/SELECT status FROM core_continuity_works/.test(sql)) return { rows: [{ status: "active" }] };
       if (/SELECT w.current_version,v.architecture/.test(sql)) {
         return { rows: [{ current_version: 1, architecture: { functions: [], components: [], dependencies: [], links: [] } }] };
       }
@@ -755,13 +760,23 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
   assert.equal(tools.work_continuity_read.annotations.readOnlyHint, true);
-  for (const name of names.filter((item) => item !== "work_continuity_read")) {
+  for (const name of names.filter((item) =>
+    !["work_continuity_read", "work_continuity_resume", "work_continuity_start_or_resume"].includes(item))) {
     assert.equal(tools[name].annotations.readOnlyHint, false);
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], true);
   }
+  for (const name of ["work_continuity_resume", "work_continuity_start_or_resume"]) {
+    assert.equal(tools[name].annotations.readOnlyHint, false);
+    assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
+    assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
+    assert.equal(tools[name].inputSchema.properties.owner_confirmed, undefined);
+    assert.equal(tools[name].inputSchema.properties.confirmation_reference, undefined);
+  }
+  assert.equal(tools.work_continuity_resume.inputSchema.properties.idempotency_key.minLength, 8);
+  assert.match(tools.work_continuity_resume.inputSchema.properties.idempotency_key.pattern,
+    /\\u0000.*\\u001f.*\\u007f/);
   const resumeHashes = tools.work_continuity_resume.inputSchema.properties.current_state_hashes;
   assert.deepEqual(resumeHashes.required.sort(), ["live_state_hash", "policy_hash", "repository_hash"]);
-  assert.equal(tools.work_continuity_start_or_resume.inputSchema.properties.owner_confirmed.type, "boolean");
 });
 
 test("canonical Work Continuity tools register exactly once", () => {
@@ -942,6 +957,7 @@ test("causal lease persists only server-authored authority proof while legacy le
       calls.push({ sql, params });
       if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
       if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) return { rows: [{ work_id: WORK_ID }] };
+      if (/SELECT status FROM core_continuity_works/.test(sql)) return { rows: [{ status: "active" }] };
       if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) return { rows: [{
         session_id: "causal-session", agent_id: "causal-agent", client_type: "codex", branch_id: null,
         status: "active", expires_at: "2030-01-01T00:00:00.000Z", actor_subject: "oauth|causal",
@@ -1108,6 +1124,9 @@ test("Gallery mutations lock the work before participant rows", async () => {
         if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
           return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
         }
+        if (/SELECT status FROM core_continuity_works/.test(sql)) {
+          return { rows: [{ status: "active" }], rowCount: 1 };
+        }
         return { rows: [], rowCount: 0 };
       },
       async end() {},
@@ -1145,6 +1164,9 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
       }
       if (/SELECT work_id FROM core_continuity_works/.test(sql)) {
         return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+      }
+      if (/SELECT status FROM core_continuity_works/.test(sql)) {
+        return { rows: [{ status: "active" }], rowCount: 1 };
       }
       if (/SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(sql)) {
         throw new Error("join-lock-order-observed");

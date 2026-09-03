@@ -109,9 +109,11 @@ function governedMigrationPool({ tamperTargetConstraint = false } = {}) {
   ];
   const client = {
     async query(sql, values = []) {
-      const statement = String(sql);
+      const statement = typeof sql === "string" ? sql : String(sql?.text || "");
+      if (!values.length && Array.isArray(sql?.values)) values = sql.values;
       const normalized = statement.replace(/\s+/gu, " ").trim();
-      queries.push({ sql: statement, normalized, values });
+      queries.push({ sql: statement, normalized, values,
+        query_timeout: typeof sql === "object" ? sql.query_timeout : null });
       if (normalized.includes("FROM information_schema.columns")
         && normalized.includes("table_name='core_schema_migrations'")) {
         return { rows: compatibleRegistryColumns };
@@ -257,6 +259,7 @@ test("ICF store governs the checked-in v2 migration through terminal readback", 
   assert.match(store.health().migration.sql_digest, /^[a-f0-9]{64}$/u);
   assert.equal(fake.queries.filter(({ sql }) => sql === expectedSql).length, 1,
     "the checked-in migration is the only v2 DDL executed");
+  assert.equal(fake.queries.find(({ sql }) => sql === expectedSql).query_timeout, 30_000);
   assert(fake.queries.some(({ normalized }) =>
     normalized.includes("application_state='COMPLETED',checkpoint='READBACK_VERIFIED'")));
   assert.equal(fake.released(), true);

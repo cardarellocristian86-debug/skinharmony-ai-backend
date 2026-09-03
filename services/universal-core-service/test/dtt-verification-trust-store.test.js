@@ -269,3 +269,32 @@ test("DTT PostgreSQL trust V2 uses Work-scoped versioned tables and queries", as
   assert(pool.calls.some(({ sql }) => /assignment_id=\$1 AND tenant_id=\$2 AND work_id=\$3::uuid/.test(sql)));
   assert(pool.calls.some(({ sql }) => /tenant_id=\$1 AND work_id=\$2::uuid AND artifact_id=\$3/.test(sql)));
 });
+
+test("DTT PostgreSQL trust initialization retries a transient migration failure and coalesces callers", async () => {
+  let attempts = 0;
+  let releases = 0;
+  const migrationQueries = [];
+  const pool = {
+    async query() { return { rows: [], rowCount: 0 }; },
+    async connect() {
+      attempts += 1;
+      return {
+        async query(query) {
+          if (query && typeof query === "object" && /CREATE TABLE IF NOT EXISTS dtt_verifier_assignments_v2/.test(query.text)) {
+            migrationQueries.push(query);
+            if (attempts === 1) throw new Error("transient_lock_timeout");
+          }
+          return { rows: [], rowCount: 0 };
+        },
+        release() { releases += 1; },
+      };
+    },
+  };
+  const store = createPostgresDttVerificationTrustStore({ pool });
+  await assert.rejects(Promise.all([store.initialize(), store.initialize()]), /transient_lock_timeout/);
+  await Promise.all([store.initialize(), store.initialize()]);
+  assert.equal(attempts, 2);
+  assert.equal(releases, 2);
+  assert.equal(migrationQueries.length, 2);
+  assert(migrationQueries.every((query) => query.query_timeout === 30_000));
+});

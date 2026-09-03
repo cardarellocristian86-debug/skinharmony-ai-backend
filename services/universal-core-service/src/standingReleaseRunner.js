@@ -49,6 +49,7 @@ const RECORD_KEYS = new Set([
   "protocol_deviation", "superseded_by_ticket_id", "superseded_at",
   "lifecycle_digest", "lifecycle_signature", "pre_merge_readback_digest",
   "quarantined_at", "quarantine_reason_digest",
+  "semantic_scope_at_reservation",
   "trusted", "provider_execution",
 ]);
 
@@ -61,6 +62,7 @@ const TICKET_KEYS = new Set([
   "release_manifest_binding", "release_intent_digest", "core_join_verdict_id",
   "core_join_verdict_digest", "release_join_resolution", "release_join_resolution_digest",
   "bootstrap_release_exception_candidate", "native_precommit_predecessor",
+  "semantic_scope_at_issue",
 ]);
 
 const FINALIZE_AUTHORIZATION_KEYS = new Set([
@@ -178,6 +180,24 @@ function canonical(value) {
 
 function objectDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+}
+
+function validateSemanticScopeDecision(value, code) {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) {
+    fail(code);
+  }
+  const decisionDigest = Object.getOwnPropertyDescriptor(value, "decision_digest");
+  if (!decisionDigest || decisionDigest.get || decisionDigest.set ||
+      decisionDigest.enumerable !== true) {
+    fail(code);
+  }
+  const expected = digest(decisionDigest.value, code);
+  const unsigned = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "decision_digest"),
+  );
+  if (objectDigest(unsigned) !== expected) fail(code);
 }
 
 function deepFreeze(value) {
@@ -370,6 +390,10 @@ function validateTicketRecord(run, record, at, { requireFresh = false } = {}) {
       (record.provider_execution !== undefined && record.provider_execution !== false)) {
     fail("standing_release_ticket_record_invalid");
   }
+  validateSemanticScopeDecision(
+    record.semantic_scope_at_reservation,
+    "standing_release_ticket_reservation_semantic_scope_invalid",
+  );
   exactKeys(record.ticket, TICKET_KEYS, "standing_release_ticket_invalid");
   requiredKeys(record.ticket, [
     "schema_version", "ticket_id", "delegation_id", "tenant_id", "work_id",
@@ -378,6 +402,10 @@ function validateTicketRecord(run, record, at, { requireFresh = false } = {}) {
     "host_policy_must_allow", "provider_execution", "signature",
   ], "standing_release_ticket_invalid");
   const ticket = record.ticket;
+  validateSemanticScopeDecision(
+    ticket.semantic_scope_at_issue,
+    "standing_release_ticket_semantic_scope_invalid",
+  );
   if (ticket.schema_version !== "host_native_action_ticket_v1" || !TICKET_ID.test(String(ticket.ticket_id)) ||
       !/^hnt_[a-f0-9]{64}$/.test(String(ticket.signature)) || ticket.tenant_id !== run.tenant_id ||
       ticket.work_id !== run.work_id || ticket.delegation_id !== run.delegation_id ||

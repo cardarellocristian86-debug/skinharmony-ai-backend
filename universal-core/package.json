@@ -211,7 +211,7 @@
     "nyra:runtime-robustness-lab": "node --experimental-strip-types tools/nyra-runtime-robustness-lab.ts",
     "perf:lab": "node --expose-gc --experimental-strip-types tests/performance-lab.ts",
     "perf:stress": "node --expose-gc --experimental-strip-types tests/performance-stress-lab.ts",
-    "check:nyra:render-core2-pipeline": "node --experimental-strip-types tests/nyra-render-core2-pipeline-test.ts"
+    "check:nyra:core2-pipeline": "node --experimental-strip-types tests/nyra-core2-pipeline-test.ts"
   },
   "dependencies": {
     "chess.js": "^1.4.0",

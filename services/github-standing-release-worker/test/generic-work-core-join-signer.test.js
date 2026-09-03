@@ -120,6 +120,12 @@ test("sign route accepts the exact Universal Core contract and returns a verifia
       healthContract.HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
     );
     assert.equal(status.json.execution_endpoint_enabled, true);
+    assert.deepEqual(status.json.github_api_transport, {
+      request_timeout_ms: 8_000,
+      request_deadline_ms: 18_000,
+      response_limit_bytes: 1024 * 1024,
+      automatic_retries: 0,
+    });
     assert.deepEqual(status.json.generic_work_core_join_signer, {
       configured: true,
       ready: true,
@@ -235,6 +241,9 @@ test("sign route is gated by worker readiness and emergency stop", async (t) => 
   const cases = [
     ["worker disabled", { GITHUB_STANDING_RELEASE_WORKER_ENABLED: "false" }, "worker_disabled"],
     ["worker invalid", { CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET: "short" }, "worker_unavailable"],
+    ["worker deadline reaches Core timeout", {
+      GITHUB_WORKER_REQUEST_DEADLINE_MS: "20000",
+    }, "worker_unavailable"],
     ["emergency stop", { GITHUB_STANDING_RELEASE_WORKER_EMERGENCY_STOP: "true" }, "emergency_stopped"],
   ];
   for (const [name, overrides, state] of cases) {

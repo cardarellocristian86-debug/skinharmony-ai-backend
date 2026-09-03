@@ -15,6 +15,7 @@ import {
   createWorkContinuityV2Store,
   deriveLegacyFinalReportDigest,
   deriveAuthenticatedTenantWorkAcl,
+  deriveGenericClosureReadiness,
   deriveTenantWorkClosureVerification,
   normalizeNyraAutopilotVerificationResult,
   verifyGenericCoreJoinVerdict,
@@ -24,6 +25,39 @@ import { buildGenericClosureArtifacts } from "../src/work-continuity-v2.js";
 const acl = ({ user_id = "user-a", tenant_id = "tenant-a", ...rest } = {}) => ({
   server_derived: true, user_id, tenant_id, team_ids: [], managed_team_ids: [],
   is_tenant_owner: false, is_super_admin: false, ...rest,
+});
+
+test("generic evaluator and finalizer readiness includes every required gate", () => {
+  const state = {
+    work: {
+      created_by_agent_id: "builder",
+      created_by_session_fingerprint: "builder-session",
+    },
+    tasks: [{ required: true, status: "planned", acceptance_verified: false }],
+    evidence: [{
+      required: true,
+      independently_verified: true,
+      verified_by_agent_id: "verifier",
+      verified_by_session_fingerprint: "verifier-session",
+    }],
+    join: { core_join_digest: "a".repeat(64) },
+  };
+  const incomplete = deriveGenericClosureReadiness(state);
+  assert.equal(incomplete.ready, false);
+  assert.equal(incomplete.required_tasks_complete, false);
+  assert.equal(incomplete.independent_verification_persisted, true);
+  assert.equal(incomplete.core_join_persisted, true);
+  assert.deepEqual(incomplete.missing, ["required_tasks_incomplete"]);
+
+  state.tasks[0] = { required: true, status: "completed", acceptance_verified: true };
+  const ready = deriveGenericClosureReadiness(state);
+  assert.equal(ready.ready, true);
+  assert.deepEqual(ready.missing, []);
+
+  state.evidence[0].verified_by_session_fingerprint = "builder-session";
+  const selfVerified = deriveGenericClosureReadiness(state);
+  assert.equal(selfVerified.ready, false);
+  assert.deepEqual(selfVerified.missing, ["independent_verification_missing"]);
 });
 
 test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
@@ -440,7 +474,7 @@ test("initialization sends one additive schema statement to the injected pool", 
   const store = createWorkContinuityV2Store({ pool });
   await store.initialize();
   assert.equal(calls.length, 1);
-  assert.equal(calls[0], ADDITIVE_SCHEMA_SQL);
+  assert.equal(calls[0], ADDITIVE_SCHEMA_SQL.trim());
 });
 
 test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {

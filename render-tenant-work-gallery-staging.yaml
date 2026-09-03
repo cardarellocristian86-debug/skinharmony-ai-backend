@@ -7,7 +7,8 @@
 
 databases:
   - name: skinharmony-mcp-twg-staging-db
-    plan: free
+    # Omitted deliberately: Render retains the existing 0.1c-256mb plan.
+    # Declaring `free` here attempts a prohibited downgrade during validation.
     region: oregon
     connectionPool: none
     storageAutoscalingEnabled: false
@@ -22,19 +23,53 @@ services:
     plan: starter
     region: oregon
     repo: https://github.com/cardarellocristian86-debug/skinharmony-ai-backend
-    branch: agent/tenant-work-gallery-on-continuity
-    autoDeployTrigger: commit
+    # The old feature branches drifted from production and kept rebuilding.
+    # The canary now follows reviewed main releases, manually only.
+    branch: main
+    autoDeployTrigger: off
     numInstances: 1
-    buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
+    buildCommand: npm ci
     startCommand: npm run core:service
     healthCheckPath: /healthz
+    buildFilter:
+      paths:
+        - package.json
+        - package-lock.json
+        - scripts/build-rust-extractor-render.sh
+        - services/universal-core-service/**
+        - services/shared/**
+        - universal-core/**
+        - skinharmony-rust-extractor-governor/**
+        - render-tenant-work-gallery-staging.yaml
+      ignoredPaths:
+        - services/universal-core-service/test/**
+        - universal-core/tests/**
+        - docs/**
+        - reports/**
+        - shared-work-memory/**
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SKINHARMONY_BUILD_RUST_COMPONENTS
+        value: all
       - key: CORE_SERVICE_NAME
         value: universal-core-service-staging
       - key: CORE_SERVICE_STORAGE_ROOT
         value: /var/data/universal-core-service
+      - key: DATABASE_CONNECTION_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_QUERY_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_LOCK_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_MIGRATION_STATEMENT_TIMEOUT_MS
+        value: "30000"
+      - key: DATABASE_MIGRATION_LOCK_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_IDLE_TRANSACTION_TIMEOUT_MS
+        value: "15000"
       - key: CORE_SERVICE_ADMIN_KEY
         generateValue: true
       - key: CORE_EVIDENCE_SIGNING_SECRET
@@ -90,14 +125,51 @@ services:
     plan: starter
     region: oregon
     repo: https://github.com/cardarellocristian86-debug/skinharmony-ai-backend
-    branch: agent/tenant-work-gallery-on-continuity
-    autoDeployTrigger: commit
+    branch: main
+    autoDeployTrigger: off
     buildCommand: npm ci
     startCommand: npm run core:mcp
     healthCheckPath: /healthz
+    buildFilter:
+      paths:
+        - package.json
+        - package-lock.json
+        - scripts/build-rust-extractor-render.sh
+        - services/skinharmony-core-mcp/**
+        - services/shared/**
+        - render-tenant-work-gallery-staging.yaml
+      ignoredPaths:
+        - services/skinharmony-core-mcp/test/**
+        - docs/**
+        - reports/**
+        - shared-work-memory/**
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SKINHARMONY_BUILD_RUST_COMPONENTS
+        value: none
+      - key: NYRA_FAST_READ_PATH_ENABLED
+        value: "true"
+      - key: UNIVERSAL_CORE_REQUEST_TIMEOUT_MS
+        value: "8000"
+      - key: UNIVERSAL_CORE_LONG_REQUEST_TIMEOUT_MS
+        value: "30000"
+      - key: UNIVERSAL_CORE_RESPONSE_LIMIT_BYTES
+        value: "524288"
+      - key: DATABASE_CONNECTION_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_QUERY_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_LOCK_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_MIGRATION_STATEMENT_TIMEOUT_MS
+        value: "30000"
+      - key: DATABASE_MIGRATION_LOCK_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_IDLE_TRANSACTION_TIMEOUT_MS
+        value: "15000"
       - key: MCP_PUBLIC_URL
         value: https://skinharmony-core-mcp-twg-staging.onrender.com
       # Kept external to the Blueprint: this canary must never inherit a

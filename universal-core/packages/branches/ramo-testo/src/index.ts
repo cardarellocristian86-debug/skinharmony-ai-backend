@@ -221,13 +221,24 @@ export function mapTextBranchToUniversal(input: TextBranchInput): UniversalCoreI
 
 export function runTextBranch(input: TextBranchInput): TextBranchDecision {
   const output = runUniversalCore(mapTextBranchToUniversal(input));
+  const publicationBlocked = input.issues.some((issue) =>
+    issue.type === "claim_risk" ||
+    issue.type === "publish_safety" ||
+    issue.severity === "blocker"
+  );
   return {
     request_id: output.request_id,
     state: output.state,
     confidence: output.confidence,
     risk_band: output.risk.band,
     control_level: output.control_level,
-    publish_safe: !output.blocked_reasons.length && output.risk.band !== "blocked",
+    // Core risk aggregation may keep a reviewable claim in a non-blocked
+    // state. That must never be reinterpreted as permission to publish the
+    // uncorrected text: the branch's exact publication constraints are the
+    // authoritative fail-closed boundary.
+    publish_safe: !publicationBlocked &&
+      !output.blocked_reasons.length &&
+      output.risk.band !== "blocked",
     primary_action_id: output.priority.primary_action_id,
     blocked_reasons: output.blocked_reasons,
     recommended_actions: output.recommended_actions,

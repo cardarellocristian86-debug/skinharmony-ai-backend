@@ -13,12 +13,33 @@ services:
     # Render uses process liveness for rollout. /healthz remains the strict
     # Nyra/Core dependency contract checked after deployment.
     healthCheckPath: /livez
-    # A merge/push to the linked main branch deploys only after repository CI
-    # checks pass. This trigger does not replace Core or host authorization.
-    autoDeployTrigger: checksPass
+    # Automatic deploys stay paused during stabilization. A reviewed manual
+    # release still requires repository CI, Core and host authorization.
+    autoDeployTrigger: off
+    buildFilter:
+      paths:
+        - package.json
+        - package-lock.json
+        - scripts/build-rust-extractor-render.sh
+        - scripts/build-nyra-deep-branch-v2-runtime-artifacts.mjs
+        - scripts/lib/**
+        - personal-control-center/**
+        - universal-core/**
+        - services/universal-core-service/src/nyraBranchNetwork.js
+        - mail/load_env.js
+        - google_api.js
+        - render-nyra.yaml
+      ignoredPaths:
+        - personal-control-center/test/**
+        - universal-core/tests/**
+        - docs/**
+        - reports/**
+        - shared-work-memory/**
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SKINHARMONY_BUILD_RUST_COMPONENTS
+        value: none
       - key: NYRA_SERVICE_NAME
         value: nyra-horizontal-runtime
       - key: NYRA_DOMAIN_PACK_ID
@@ -64,7 +85,9 @@ services:
       - key: NYRA_DEEP_BRANCH_V2_RUNTIME_MODE
         value: lazy
       - key: NYRA_DEEP_BRANCH_V2_MODE
-        value: active
+        value: shadow
+      # The runtime artifact contains 24 branches. These 22 are the existing
+      # production authority surface; new branches require a separate review.
       - key: NYRA_DEEP_BRANCH_V2_BRANCHES
         value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,tenant_work_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
       - key: NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST

@@ -1,4 +1,6 @@
 import { createSign } from "node:crypto";
+import { boundedJsonRequest } from "../../shared/bounded-json-request.js";
+import { remainingWorkerRequestTimeout } from "./requestDeadline.js";
 
 const TENANT = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
@@ -93,30 +95,51 @@ export function createGitHubAppJwt({ app_id, private_key, now = Date.now() }) {
   }
 }
 
-export function createGitHubInstallationTokenResolver({ app_id, private_key, bindings, fetch_impl = fetch, now = Date.now }) {
+export function createGitHubInstallationTokenResolver({
+  app_id,
+  private_key,
+  bindings,
+  fetch_impl = fetch,
+  now = Date.now,
+  request_timeout_ms = 8_000,
+  response_limit_bytes = 1024 * 1024,
+}) {
   if (typeof fetch_impl !== "function" || typeof now !== "function") fail("github_app_resolver_invalid");
   const registry = parseGitHubAppBindings(bindings);
   const cache = new Map();
-  return async function installationToken({ tenant_id, repository }) {
+  return async function installationToken({ tenant_id, repository }, { deadline = null } = {}) {
     const binding = resolveGitHubAppBinding(registry, { tenant_id, repository });
     const cacheKey = `${binding.tenant_id}\u0000${binding.installation_id}\u0000${binding.repository}`;
     const cached = cache.get(cacheKey);
     const current = Number(now());
     if (cached && cached.expires_at_ms - current > 60_000) return cached.token;
     const jwt = createGitHubAppJwt({ app_id, private_key, now: current });
-    const response = await fetch_impl(`https://api.github.com/app/installations/${binding.installation_id}/access_tokens`, {
-      method: "POST",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${jwt}`,
-        "content-type": "application/json",
-        "user-agent": "skinharmony-standing-release-worker/1",
-        "x-github-api-version": "2022-11-28",
+    const { response, payload: body } = await boundedJsonRequest(
+      `https://api.github.com/app/installations/${binding.installation_id}/access_tokens`,
+      {
+        method: "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${jwt}`,
+          "content-type": "application/json",
+          "user-agent": "skinharmony-standing-release-worker/1",
+          "x-github-api-version": "2022-11-28",
+        },
+        body: JSON.stringify({ repositories: [binding.repository.split("/")[1]], permissions: {} }),
       },
-      body: JSON.stringify({ repositories: [binding.repository.split("/")[1]], permissions: {} }),
-    });
+      {
+        fetchImpl: fetch_impl,
+        timeoutMs: remainingWorkerRequestTimeout(deadline, request_timeout_ms),
+        maxResponseBytes: response_limit_bytes,
+        errorCodes: {
+          timeout: "github_api_request_timeout",
+          too_large: "github_api_response_too_large",
+          invalid: "github_api_response_invalid",
+          unavailable: "github_api_unavailable",
+        },
+      },
+    );
     if (!response?.ok) fail("github_app_installation_token_unavailable");
-    const body = await response.json();
     if (!body || typeof body.token !== "string" || body.token.length < 20 ||
         typeof body.expires_at !== "string" || !Number.isFinite(Date.parse(body.expires_at)) ||
         Date.parse(body.expires_at) <= current + 60_000) {

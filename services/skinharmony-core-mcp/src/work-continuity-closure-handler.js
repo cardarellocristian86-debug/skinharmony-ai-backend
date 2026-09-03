@@ -7,6 +7,88 @@ function defaultTextResult(payload) {
   };
 }
 
+export async function replayNyraVerifiedWorkFinalize({
+  store,
+  aclIdentity,
+  args,
+  state,
+  textResult = defaultTextResult,
+} = {}) {
+  if (state?.work?.status !== "COMPLETED") return null;
+  if (typeof store?.finalizeGenericClosure !== "function" ||
+      typeof store?.verifyWorkClosure !== "function") {
+    throw new Error("nyra_verified_work_finalize_store_required");
+  }
+  const adapter = state.work.work_type;
+  const closure = await store.finalizeGenericClosure(aclIdentity, {
+    work_id: args.work_id,
+    adapter,
+    idempotency_key: `${args.idempotency_key}:closure`,
+  });
+  const verification = await store.verifyWorkClosure(aclIdentity, {
+    work_id: args.work_id,
+  });
+  if (verification.verified !== true) {
+    throw new Error("tenant_work_terminal_closure_verification_failed");
+  }
+  return textResult({
+    ok: true,
+    result: {
+      checkpoint: null,
+      core_join: null,
+      closure,
+      verification,
+      terminal_replay: true,
+    },
+    dedicated_core_gate: {
+      authorized: true,
+      authority: "universal_core",
+      route: "/v1/work/core-join-verdicts",
+      server_owned: true,
+    },
+  });
+}
+
+export function createWorkContinuityClosureFinalizeHandler({
+  runtime,
+  coreHandlers,
+  textResult = defaultTextResult,
+} = {}) {
+  if (typeof runtime?.replayFinalizedClosure !== "function" ||
+      typeof runtime?.finalizeClosure !== "function") {
+    throw new Error("work_continuity_finalize_runtime_required");
+  }
+  if (typeof coreHandlers?.host_native_action_closure_receipt !== "function") {
+    throw new Error("work_continuity_finalize_core_handler_required");
+  }
+  return async (args, identity) => {
+    const localReplay = await runtime.replayFinalizedClosure(identity, args);
+    if (localReplay) {
+      return textResult({ ok: true, result: localReplay });
+    }
+    const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
+      ticket_id: args.action_ticket_id,
+    }, identity);
+    const authorization = coreReceipt?.structuredContent?.finalize_authorization;
+    if (
+      coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
+      authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
+      authorization?.trusted !== true ||
+      authorization?.allowed !== true ||
+      !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
+      authorization.tenant_id !== identity.tenantId ||
+      authorization.work_id !== args.work_id ||
+      authorization.action_ticket_id !== args.action_ticket_id
+    ) {
+      throw new Error("continuity_trusted_core_closure_receipt_required");
+    }
+    return textResult({
+      ok: true,
+      result: await runtime.finalizeClosure(identity, args, authorization),
+    });
+  };
+}
+
 export function createWorkContinuityClosureEvaluateHandler({
   runtime,
   coreHandlers,
@@ -24,6 +106,12 @@ export function createWorkContinuityClosureEvaluateHandler({
 
   async function evaluateAndJoin(args, identity, { releaseSource = "caller" } = {}) {
     const initialEvaluation = await runtime.evaluateClosure(identity, args);
+    if (initialEvaluation.terminal_replay === true) {
+      if (initialEvaluation.completed !== true || initialEvaluation.closed !== true) {
+        throw new Error("continuity_terminal_replay_invalid");
+      }
+      return textResult({ ok: true, result: initialEvaluation });
+    }
     if (initialEvaluation.closed !== true) {
       return textResult({ ok: true, result: initialEvaluation });
     }

@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { softwareDigest } from "./softwareCognition.js";
+import {
+  retryableInitializer,
+  withPostgresMigrationSession,
+} from "../../shared/retryable-postgres-initializer.js";
 
 const MIGRATION = fileURLToPath(new URL("../migrations/20260815_software_cognition_v1.sql", import.meta.url));
 const ARTIFACT_KINDS = new Set(["impact", "coverage", "reconciliation", "runtime_observation", "learning", "closure", "traceability", "architecture", "calibration", "supervision",
@@ -11,7 +15,18 @@ function receiptUuid(value) { const hex = crypto.createHash("sha256").update(Str
 
 export function createPostgresSoftwareCognitionStore({ pool } = {}) {
   if (!pool || typeof pool.query !== "function") fail("software_cognition_postgres_required");
-  async function initialize() { await pool.query(await fs.readFile(MIGRATION, "utf8")); return { schema_version: "software_cognition_atlas_extension_v1", ready: true }; }
+  const initialize = retryableInitializer(async () => {
+    const sql = await fs.readFile(MIGRATION, "utf8");
+    const client = typeof pool.connect === "function" ? await pool.connect() : pool;
+    try {
+      // The checked-in migration owns its BEGIN/COMMIT. Give its leased
+      // session the migration budget without nesting another transaction.
+      await withPostgresMigrationSession(client, ({ query }) => query(sql));
+      return { schema_version: "software_cognition_atlas_extension_v1", ready: true };
+    } finally {
+      if (client !== pool) client.release?.();
+    }
+  });
   async function withTransaction(fn, { readOnly = false } = {}) {
     const client = typeof pool.connect === "function" ? await pool.connect() : pool;
     try { await client.query("BEGIN"); if (readOnly) await client.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"); const result = await fn(client); await client.query("COMMIT"); return result; }

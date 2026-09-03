@@ -116,6 +116,39 @@ test("Universal Core exposes Entity 360 SHADOW health without making it a produc
   }
 });
 
+test("Entity 360 initialization recovers from one transient PostgreSQL lock timeout", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-retry-"));
+  let initialized = 0;
+  const entity360Runtime = {
+    async initialize() {
+      initialized += 1;
+      if (initialized === 1) {
+        const error = new Error("canceling statement due to lock timeout");
+        error.code = "55P03";
+        throw error;
+      }
+    },
+    async health() {
+      return { schema_version: "entity_360_health_v1", ok: true, ready: true, state: "ready",
+        mode: "SHADOW", backend: "test_postgresql", migration: { checkpoint: "READBACK_VERIFIED" },
+        shadow_non_mutating: true, execution_authorized: false };
+    },
+    async invoke() { return { execution_authorized: false }; },
+  };
+  const { app } = createUniversalCoreService({ storageRoot, entity360Mode: "SHADOW", entity360Runtime });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { body } = await waitForEntity360(`http://127.0.0.1:${server.address().port}`);
+    assert.equal(initialized, 2);
+    assert.equal(body.entity_360.state, "ready");
+    assert.equal(body.entity_360.ready, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("tenant OFF rollback route remains reachable after Entity 360 initialization failure", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-owner-disable-failed-"));
   const gatewayKey = "g".repeat(48);

@@ -19,6 +19,266 @@ test("PostgreSQL continuity bindings distinguish authoritative reconciliation", 
   assert.notEqual(digest({ outcome: "unknown" }), digest({ outcome: "authoritatively_reconciled" }));
 });
 
+test("PostgreSQL 16 serializes Core and V2 creation in one Work UUID namespace", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_namespace_${runId.slice(0, 18)}`;
+  const workId = crypto.randomUUID();
+  const pool = new Pool({ connectionString: databaseUrl, max: 6, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  let holder;
+  let holderCommitted = false;
+  try {
+    await runtime.initialize();
+    await v2Store.initialize();
+    holder = await pool.connect();
+    await holder.query("BEGIN");
+    const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+    await holder.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      tenantId,
+      workId,
+    ]);
+
+    const coreCreate = runtime.ensure(coordinatorIdentity(tenantId), {
+      work_id: workId,
+      project_id: `namespace-core-${runId.slice(0, 12)}`,
+      session_id: `namespace-core-session-${runId.slice(0, 12)}`,
+      initial_message: "Create the Core side of a shared Work identity race.",
+      idea: "Shared Work UUID namespace",
+      objective: "Exactly one Work representation may own an unbridged UUID.",
+      acceptance_criteria: ["Only one namespace insert commits."],
+      constraints: ["Serialize before absence checks."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Resolve the creation race.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    const v2Create = v2Store.createWork(reconciliationOwnerIdentity(tenantId), {
+      work_id: workId,
+      project_id: `namespace-v2-${runId.slice(0, 12)}`,
+      work_name: "V2 namespace contender",
+      work_type: "generic",
+      idea: "Shared Work UUID namespace",
+      objective: "Exactly one Work representation may own an unbridged UUID.",
+      architecture: { components: [{ id: "tenant-work" }] },
+      next_action: "Resolve the creation race.",
+      visibility_scope: "private",
+      acceptance_criteria: ["Only one namespace insert commits."],
+      tasks: [{ title: "Verify namespace serialization", required: true }],
+    });
+
+    let blockedCreators = 0;
+    for (let attempt = 0; attempt < 100 && blockedCreators < 2; attempt += 1) {
+      const waiters = await pool.query(`SELECT count(*)::int AS count
+        FROM pg_stat_activity a
+        WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+          AND a.wait_event_type='Lock'
+          AND a.query LIKE 'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))%'`,
+      [holderPid]);
+      blockedCreators = Number(waiters.rows[0].count);
+      if (blockedCreators < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(blockedCreators, 2,
+      "both creators must wait on the same tenant/Work advisory namespace lock");
+    await holder.query("COMMIT");
+    holderCommitted = true;
+
+    const outcomes = await Promise.allSettled([coreCreate, v2Create]);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+    assert.equal(outcomes.filter((outcome) => outcome.status === "rejected").length, 1);
+    const rejected = outcomes.find((outcome) => outcome.status === "rejected");
+    assert.match(String(rejected.reason?.message || rejected.reason),
+      /continuity_work_v2_id_collision|tenant_work_core_id_collision/);
+    const namespaceRows = await pool.query(`SELECT
+        (SELECT count(*)::int FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2) AS core_count,
+        (SELECT count(*)::int FROM tenant_work
+          WHERE tenant_id=$1 AND work_id=$2) AS v2_count`, [tenantId, workId]);
+    assert.equal(
+      Number(namespaceRows.rows[0].core_count) + Number(namespaceRows.rows[0].v2_count),
+      1,
+    );
+  } finally {
+    if (holder && !holderCommitted) await holder.query("ROLLBACK").catch(() => {});
+    holder?.release();
+    await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 carries a divergent bridged intent from createNewWork into the native precommit gate", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_intent_${runId.slice(0, 20)}`;
+  const projectId = `intent-bridge-${runId.slice(0, 16)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const owner = reconciliationOwnerIdentity(tenantId);
+  const explicitV2IntentDigest = digest({ tenantId, runId, namespace: "explicit-v2-intent" });
+  let client;
+  try {
+    const createInput = {
+      intent_type: "CREATE_WORK",
+      request_id: `pg16-intent-${runId}`,
+      project_id: projectId,
+      session_id: `intent-session-${runId.slice(0, 16)}`,
+      initial_message: "Create a bridged Work with intentionally distinct V2 and legacy intents.",
+      work_name: "PostgreSQL divergent intent bridge",
+      work_type: "software_git",
+      idea: "Verify the real coordinated writer and native precommit reader together.",
+      objective: "A valid dual-intent bridge must remain closable without rewriting history.",
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Materialize the native precommit gate.",
+      visibility_scope: "private",
+      acceptance_criteria: ["Both immutable intent bindings verify."],
+      constraints: ["Do not mutate the historical event."],
+      tasks: [{ title: "Verify the native precommit bridge", required: true }],
+      intent_digest: explicitV2IntentDigest,
+      host_type: "codex_native",
+      client_type: "codex",
+      agent_id: "postgres16-reconciliation-owner",
+    };
+    const review = await v2Store.openWorkReview(owner, {
+      intent_type: "CREATE_WORK",
+      request: createInput.objective,
+      create_request: createInput,
+    });
+    const created = await v2Store.createNewWork(owner, {
+      ...createInput,
+      review_id: review.review_id,
+      review_digest: review.review_digest,
+      review_decision: "NO_CONFLICT_PROCEED",
+      _core_authorization_receipt: bootstrapCoreAuthorizationReceipt(tenantId, runId),
+    });
+    const bindings = await pool.query(`SELECT w.intent_digest AS v2_intent_digest,
+        a.intent_digest AS legacy_intent_digest,e.payload,e.event_hash
+      FROM tenant_work w
+      JOIN core_continuity_intent_anchors a
+        ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+      JOIN tenant_work_event e
+        ON e.tenant_id=w.tenant_id AND e.work_id=w.work_id AND e.event_type='work_v2_created'
+      WHERE w.tenant_id=$1 AND w.work_id=$2`, [tenantId, created.work.work_id]);
+    assert.equal(bindings.rowCount, 1);
+    assert.equal(bindings.rows[0].v2_intent_digest, explicitV2IntentDigest);
+    assert.notEqual(bindings.rows[0].legacy_intent_digest, explicitV2IntentDigest);
+    assert.equal(bindings.rows[0].payload.intent_digest, explicitV2IntentDigest);
+    assert.equal(bindings.rows[0].payload.legacy_intent_digest,
+      bindings.rows[0].legacy_intent_digest);
+
+    const planId = crypto.randomUUID();
+    const evaluationId = crypto.randomUUID();
+    const workspaceDigest = digest({ tenantId, runId, namespace: "workspace" });
+    const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+    const evaluation = {
+      schema_version: "native_closure_evaluation_v1",
+      closed: false,
+      commit_ticket_ready: true,
+      execution_authorized: false,
+      precommit_verification: { ready: true, workspace_digest: workspaceDigest },
+    };
+    await pool.query(`INSERT INTO core_continuity_native_plans
+        (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
+      VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6)`, [tenantId, created.work.work_id,
+      planId, JSON.stringify(plan), digest(plan), "postgres16-intent-test"]);
+    await pool.query(`INSERT INTO core_continuity_closure_evaluations
+        (tenant_id,work_id,plan_id,evaluation_id,evaluation,evaluation_digest,evaluated_by)
+      VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)`, [tenantId, created.work.work_id, planId,
+      evaluationId, JSON.stringify(evaluation), digest(evaluation), "postgres16-intent-test"]);
+
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const gate = await v2Store.materializeNativePrecommitTicketGateWithClient(client, {
+      server_owned: true,
+      tenant_id: tenantId,
+      work_id: created.work.work_id.toUpperCase(),
+      plan_id: planId.toUpperCase(),
+      evaluation_id: evaluationId.toUpperCase(),
+      evaluation_digest: digest(evaluation),
+      workspace_digest: workspaceDigest,
+    });
+    await client.query("COMMIT");
+    assert.equal(gate.schema_version, "precommit_ticket_gate_v2");
+    assert.equal(gate.gate_source, "native_closure_evaluation");
+    assert.equal(gate.fresh, true);
+  } finally {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    client?.release();
+    await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 terminal transition serializes a concurrent Gallery join", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_terminal_${runId.slice(0, 20)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  let holder;
+  let holderCommitted = false;
+  try {
+    const created = await runtime.ensure(coordinatorIdentity(tenantId), {
+      project_id: `terminal-${runId.slice(0, 16)}`,
+      session_id: `terminal-source-${runId.slice(0, 16)}`,
+      initial_message: "Verify the terminal coordination lock.",
+      idea: "Terminal Gallery concurrency",
+      objective: "A join waiting behind closure must observe completed status.",
+      acceptance_criteria: ["No participant is recreated after closure."],
+      constraints: ["Use the shared Core Work row lock."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Close under the shared row lock.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    holder = await pool.connect();
+    await holder.query("BEGIN");
+    const backend = await holder.query("SELECT pg_backend_pid() AS pid");
+    const holderPid = Number(backend.rows[0].pid);
+    await holder.query(`SELECT work_id FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, created.work_id]);
+
+    const sessionId = `terminal-waiter-${runId.slice(0, 12)}`;
+    const agentId = `terminal-agent-${runId.slice(0, 12)}`;
+    const deniedJoin = assert.rejects(runtime.join(
+      galleryIdentity(tenantId, "terminal-waiter", sessionId, agentId),
+      {
+        work_id: created.work_id,
+        session_id: sessionId,
+        agent_id: agentId,
+        client_type: "codex",
+        ttl_seconds: 300,
+        idempotency_key: `terminal-race-join-${runId}`,
+      },
+    ), /continuity_work_terminal/);
+    let rowWaitObserved = false;
+    for (let attempt = 0; attempt < 100 && !rowWaitObserved; attempt += 1) {
+      const waiters = await pool.query(`SELECT 1 FROM pg_stat_activity a
+        WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+          AND a.wait_event_type='Lock'
+          AND a.query LIKE '%core_continuity_works%FOR UPDATE%'
+        LIMIT 1`, [holderPid]);
+      rowWaitObserved = waiters.rowCount === 1;
+      if (!rowWaitObserved) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await holder.query(`UPDATE core_continuity_works
+      SET status='completed',next_action='',updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, created.work_id]);
+    await holder.query("COMMIT");
+    holderCommitted = true;
+    assert.equal(rowWaitObserved, true, "Gallery join did not wait on the terminal Work row");
+    await deniedJoin;
+    const participants = await pool.query(`SELECT count(*)::int AS count
+      FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, created.work_id]);
+    assert.equal(Number(participants.rows[0].count), 0);
+  } finally {
+    if (holder && !holderCommitted) await holder.query("ROLLBACK").catch(() => {});
+    holder?.release();
+    await runtime.close();
+  }
+});
+
 function pgIdentifier(value) {
   assert.match(value, /^[a-z][a-z0-9_]{1,62}$/);
   return `"${value}"`;
@@ -111,6 +371,40 @@ function reconciliationOwnerIdentity(tenantId) {
       is_super_admin: false,
     },
   };
+}
+
+function bootstrapCoreAuthorizationReceipt(tenantId, nonce) {
+  const issuedAt = new Date(Date.now() - 1_000);
+  const expiresAt = new Date(issuedAt.getTime() + 120_000);
+  const coreMaterial = {
+    schema_version: "core_action_authorization_receipt_v1",
+    authority: "universal_core",
+    authorization_id: `cae_${digest({ tenantId, nonce }).slice(0, 40)}`,
+    tenant_id: tenantId,
+    action_type: "work.continuity.v2.create",
+    idempotency_key_digest: digest({ tenantId, nonce, kind: "idempotency" }),
+    request_digest: digest({ tenantId, nonce, kind: "request" }),
+    response_digest: digest({ tenantId, nonce, kind: "response" }),
+    issued_at: issuedAt.toISOString(),
+    expires_at: expiresAt.toISOString(),
+  };
+  const coreAuthorizationReceipt = {
+    ...coreMaterial,
+    receipt_digest: digest(coreMaterial),
+  };
+  const material = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: `work_bootstrap:create:chatgpt_prod:codex_native:${digest({ tenantId, nonce, kind: "target" })}`,
+    decision_id: coreAuthorizationReceipt.authorization_id,
+    decision: "allow",
+    mediation: "allow",
+    owner_confirmation_required: true,
+    confirmation_satisfied: true,
+    core_authorization_receipt: coreAuthorizationReceipt,
+  };
+  return { ...material, receipt_digest: digest(material) };
 }
 
 function corePlanFor({ tenantId, work, request, objective }) {
@@ -1242,6 +1536,161 @@ test("PostgreSQL 16 reconciles stale Gallery Work with typed status parameters a
     }
   } finally {
     await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 binds software changes and supersedes planned native work atomically", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const schema = `native_replan_${runId}`;
+  const tenantId = `pg16_replan_${runId}`;
+  const adminPool = new Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 10_000 });
+  let client;
+  let runtime;
+  try {
+    const version = await adminPool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+    await adminPool.query(`CREATE SCHEMA ${pgIdentifier(schema)}`);
+    client = await adminPool.connect();
+    await client.query(`SET search_path TO ${pgIdentifier(schema)}`);
+    const scopedPool = {
+      query: (...args) => client.query(...args),
+      async connect() {
+        return {
+          query: (...args) => client.query(...args),
+          release() {},
+        };
+      },
+      async end() {},
+    };
+    runtime = createWorkContinuityRuntime({
+      databaseUrl,
+      dttAgentIdentitySigningSecret: "postgres16-replan-assignment-secret-0123456789",
+    }, { pool: scopedPool });
+    await runtime.initialize();
+    const v2Store = createWorkContinuityV2Store({
+      pool: scopedPool,
+      legacyRuntime: runtime,
+    });
+    await v2Store.initialize();
+    // Reproduce only the authoritative Software Cognition parent and FK in an
+    // isolated schema; this keeps the regression independent of other suites.
+    await client.query(`CREATE TABLE core_changes (
+      tenant_id text NOT NULL,
+      work_id uuid NOT NULL,
+      change_id uuid NOT NULL,
+      base_state_digest char(64) NOT NULL,
+      PRIMARY KEY (tenant_id,change_id),
+      UNIQUE (tenant_id,work_id,change_id)
+    )`);
+    await client.query(`ALTER TABLE core_continuity_native_plans
+      ADD CONSTRAINT core_continuity_native_plans_change_fk
+      FOREIGN KEY(tenant_id,work_id,change_id)
+      REFERENCES core_changes(tenant_id,work_id,change_id) ON DELETE RESTRICT`);
+
+    const coordinator = coordinatorIdentity(tenantId);
+    const objective = "Keep exactly one open native plan and bind its software change.";
+    const work = await runtime.ensure(coordinator, {
+      project_id: `replan-${runId.slice(0, 12)}`,
+      session_id: `replan-session-${runId.slice(0, 12)}`,
+      initial_message: "Verify native replan invariants on PostgreSQL 16.",
+      idea: "Atomic native replacement",
+      objective,
+      acceptance_criteria: ["No superseded plan can advance closure."],
+      constraints: ["Never expose a raw PostgreSQL FK failure."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Create the exact native plan.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    const changeId = crypto.randomUUID();
+    const requestFor = (idempotencyKey, instruction) => ({
+      work_id: work.work_id,
+      repository: "owner/repo",
+      base_branch: "main",
+      host_type: "codex_native",
+      required_checks: ["core-mcp"],
+      tasks: [
+        { task_id: "build", kind: "builder", instruction },
+        { task_id: "verify", kind: "verifier", instruction: "Verify independently.", dependencies: ["build"] },
+      ],
+      max_parallel: 2,
+      software_contract: {
+        change_id: changeId,
+        base_state_digest: "9".repeat(64),
+      },
+      idempotency_key: idempotencyKey,
+    });
+    const missing = requestFor(`pg16-replan-missing-${runId}`, "Implement revision zero.");
+    await assert.rejects(runtime.planNativeAgents(coordinator, missing, {
+      corePlan: corePlanFor({ tenantId, work, request: missing, objective }),
+    }), /native_agent_software_change_binding_not_found/);
+    const afterMissing = await client.query(`SELECT count(*)::int AS count
+      FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, work.work_id]);
+    assert.equal(afterMissing.rows[0].count, 0);
+
+    await client.query(`INSERT INTO core_changes
+      (tenant_id,work_id,change_id,base_state_digest) VALUES ($1,$2,$3,$4)`,
+    [tenantId, work.work_id, changeId, "1".repeat(64)]);
+    const firstRequest = requestFor(`pg16-replan-first-${runId}`, "Implement revision one.");
+    const first = await runtime.planNativeAgents(coordinator, firstRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: firstRequest, objective }),
+    });
+    await runtime.bindNativeAgent(coordinator, {
+      work_id: work.work_id,
+      plan_id: first.plan.plan_id,
+      task_id: "build",
+      native_agent_id: "pg16-builder",
+      host_type: "codex_native",
+      host_task_id: "/root/pg16-builder",
+    });
+
+    const secondRequest = requestFor(`pg16-replan-second-${runId}`, "Implement revision two.");
+    const second = await runtime.planNativeAgents(coordinator, secondRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: secondRequest, objective }),
+    });
+    assert.equal(second.superseded_plan_count, 1);
+    assert.equal(second.superseded_agent_count, 1);
+    const plans = await client.query(`SELECT plan_id,status,plan_version,supersedes_plan_id,
+        change_id,base_state_digest
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY plan_version`,
+    [tenantId, work.work_id]);
+    assert.deepEqual(plans.rows.map((row) => row.status), ["superseded", "planned"]);
+    assert.equal(plans.rows[1].supersedes_plan_id, first.plan.plan_id);
+    assert.equal(Number(plans.rows[1].plan_version), 2);
+    assert.equal(plans.rows[1].change_id, changeId);
+    assert.equal(plans.rows[1].base_state_digest, "9".repeat(64));
+    const agents = await client.query(`SELECT status FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
+    [tenantId, work.work_id, first.plan.plan_id]);
+    assert.deepEqual(agents.rows.map((row) => row.status), ["superseded"]);
+    await assert.rejects(runtime.evaluateClosure(coordinator, {
+      work_id: work.work_id,
+      plan_id: first.plan.plan_id,
+      idempotency_key: `pg16-replan-stale-evaluation-${runId}`,
+    }), /native_agent_plan_not_open/);
+
+    await client.query(`UPDATE core_continuity_native_plans SET status='verified'
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
+    [tenantId, work.work_id, second.plan.plan_id]);
+    const thirdRequest = requestFor(`pg16-replan-third-${runId}`, "Implement revision three.");
+    await assert.rejects(runtime.planNativeAgents(coordinator, thirdRequest, {
+      corePlan: corePlanFor({ tenantId, work, request: thirdRequest, objective }),
+    }), /native_agent_plan_replacement_conflict/);
+    const afterConflict = await client.query(`SELECT count(*)::int AS count
+      FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, work.work_id]);
+    assert.equal(afterConflict.rows[0].count, 2);
+  } finally {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+      await client.query("SET search_path TO public").catch(() => {});
+      client.release();
+    }
+    await adminPool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`).catch(() => {});
+    await adminPool.end();
   }
 });
 

@@ -141,7 +141,7 @@ test("indexes verifier dissent without trusting raw error text", async () => {
   assert.match(input.idempotency_key, /^incident-operational-[a-f0-9]{64}$/);
 });
 
-test("indexes deterministic closure gaps and replays the same checkpoint", async () => {
+test("treats an expected closure readiness gap as non-incident", async () => {
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const event = {
@@ -163,18 +163,39 @@ test("indexes deterministic closure gaps and replays the same checkpoint", async
     },
   };
 
-  await hook(event);
-  await hook(event);
+  const first = await hook(event);
+  const replay = await hook(event);
 
-  assert.equal(fake.calls.operationalIncidents.length, 2);
-  assert.deepEqual(
-    fake.calls.operationalIncidents[0].input,
-    fake.calls.operationalIncidents[1].input,
-  );
+  assert.equal(first.handled, true);
+  assert.deepEqual(first.projections, []);
+  assert.deepEqual(replay.projections, []);
+  assert.equal(fake.calls.operationalIncidents.length, 0);
+});
+
+test("indexes a thrown closure evaluation failure without masking it", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const original = new Error("closure_evaluation_unavailable");
+  original.code = "closure_evaluation_unavailable";
+
+  const result = await hook({
+    identity: identity(),
+    toolName: "work_continuity_closure_evaluate",
+    args: {
+      work_id: WORK_ID,
+      plan_id: "22222222-2222-4222-8222-222222222222",
+    },
+    error: original,
+  });
+
+  assert.equal(fake.calls.operationalIncidents.length, 1);
   assert.equal(
     fake.calls.operationalIncidents[0].input.error_code,
-    "NATIVE_CLOSURE_GAPS",
+    "CLOSURE_EVALUATION_UNAVAILABLE",
   );
+  assert.equal(result.projections[0].kind, "incident");
+  assert.equal(result.projections[0].ok, true);
+  assert.equal(original.message, "closure_evaluation_unavailable");
 });
 
 test("indexes lease and finalize errors but never masks the original failure", async () => {

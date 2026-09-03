@@ -10,6 +10,7 @@ import {
   deriveProgress,
   resolveWorkRequest,
 } from "./work-continuity-v2.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
@@ -192,7 +193,7 @@ function galleryIdempotencyKey(value, code) {
 function uuid(value, code = "work_id_invalid") {
   const normalized = text(value, code, 36);
   if (!UUID.test(normalized)) fail(code);
-  return normalized;
+  return normalized.toLowerCase();
 }
 function digest(value, code = "digest_invalid") {
   const normalized = text(value, code, 64);
@@ -357,6 +358,11 @@ const CLOSURE_EVENT_PAYLOAD_FIELDS = Object.freeze([
   "core_join_digest",
   "final_evidence_digest",
   "report_digest",
+]);
+const CLOSURE_EVENT_COORDINATION_FIELDS = Object.freeze([
+  ...CLOSURE_EVENT_PAYLOAD_FIELDS,
+  "released_lease_count",
+  "closed_participant_count",
 ]);
 const FINAL_REPORT_FIELDS = Object.freeze([
   "schema_version",
@@ -575,7 +581,16 @@ export function deriveTenantWorkClosureVerification(input = {}, { verifyCoreJoin
       !(previousEventHash === null || HASH.test(previousEventHash)) ||
       !HASH.test(String(event.event_hash || "")) ||
       !eventEnvelope || objectDigest(eventEnvelope) !== event.event_hash ||
-      !exactObjectKeys(eventPayload, CLOSURE_EVENT_PAYLOAD_FIELDS) ||
+      !(
+        exactObjectKeys(eventPayload, CLOSURE_EVENT_PAYLOAD_FIELDS) ||
+        (
+          exactObjectKeys(eventPayload, CLOSURE_EVENT_COORDINATION_FIELDS) &&
+          Number.isSafeInteger(Number(eventPayload.released_lease_count)) &&
+          Number(eventPayload.released_lease_count) >= 0 &&
+          Number.isSafeInteger(Number(eventPayload.closed_participant_count)) &&
+          Number(eventPayload.closed_participant_count) >= 0
+        )
+      ) ||
       eventPayload.adapter !== receipt?.adapter || eventPayload.archived !== true ||
       eventPayload.closure_receipt_digest !== receipt?.receipt_digest ||
       eventPayload.core_join_digest !== join?.core_join_digest ||
@@ -1137,6 +1152,55 @@ function terminalLegacyProjectionVerified(projectedStatus, event, row = null) {
   return String(evidence.payload?.status || "").toUpperCase() === projectedStatus;
 }
 
+function independentlyVerifiedGenericEvidence(item, work = {}) {
+  if (!plainRecord(item) || item.independently_verified !== true) return false;
+  const verifierAgentId = String(item.verified_by_agent_id || "").trim();
+  const verifierSession = String(item.verified_by_session_fingerprint || "").trim();
+  const creatorAgentId = String(work.created_by_agent_id || "").trim();
+  const creatorSession = String(work.created_by_session_fingerprint || "").trim();
+  return Boolean(
+    verifierAgentId && verifierSession &&
+    (!creatorAgentId || verifierAgentId !== creatorAgentId) &&
+    (!creatorSession || verifierSession !== creatorSession)
+  );
+}
+
+export function deriveGenericClosureReadiness(state = {}) {
+  const work = plainRecord(state.work) ? state.work : {};
+  const tasks = Array.isArray(state.tasks)
+    ? state.tasks.filter((item) => item?.required !== false)
+    : [];
+  const evidence = Array.isArray(state.evidence)
+    ? state.evidence.filter((item) => item?.required !== false)
+    : [];
+  const completedTasks = tasks.filter((item) =>
+    item?.status === "completed" && item?.acceptance_verified === true);
+  const independentlyVerifiedEvidence = evidence.filter((item) =>
+    independentlyVerifiedGenericEvidence(item, work));
+  const requiredTasksComplete = tasks.length > 0 && completedTasks.length === tasks.length;
+  const independentVerificationPersisted = evidence.length > 0 &&
+    independentlyVerifiedEvidence.length === evidence.length;
+  const coreJoinPersisted = Boolean(state.join);
+  const missing = [];
+  if (!tasks.length) missing.push("required_tasks_missing");
+  else if (!requiredTasksComplete) missing.push("required_tasks_incomplete");
+  if (!evidence.length) missing.push("required_evidence_missing");
+  else if (!independentVerificationPersisted) missing.push("independent_verification_missing");
+  if (!coreJoinPersisted) missing.push("core_join_missing");
+  return Object.freeze({
+    ready: missing.length === 0,
+    required_tasks_complete: requiredTasksComplete,
+    independent_verification_persisted: independentVerificationPersisted,
+    core_join_persisted: coreJoinPersisted,
+    idempotent_receipt: Boolean(state.receipt),
+    required_task_count: tasks.length,
+    completed_required_task_count: completedTasks.length,
+    required_evidence_count: evidence.length,
+    independently_verified_evidence_count: independentlyVerifiedEvidence.length,
+    missing: Object.freeze(missing),
+  });
+}
+
 export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId, expected } = {}) {
   try {
     return createGenericWorkCoreJoinVerifier({ publicKey, keyId }).verify(verdict, expected);
@@ -1223,8 +1287,10 @@ export function createWorkContinuityV2Store({
     : coreJoinVerifier
       ? createGenericWorkCoreJoinVerifier(coreJoinVerifier)
       : null;
-  let ready;
-  const initialize = () => ready ||= pool.query(ADDITIVE_SCHEMA_SQL);
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: ADDITIVE_SCHEMA_SQL,
+  });
   const query = (...args) => pool.query(...args);
   async function transaction(fn) {
     const client = typeof pool.connect === "function" ? await pool.connect() : pool;
@@ -1247,6 +1313,12 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, uuid(workId)]);
     const work = result.rows[0] && normalizeWork(result.rows[0]);
     if (!work) fail("tenant_work_not_found");
+    return work;
+  }
+  function assertOperationalWorkMutation(work) {
+    if (!work) fail("tenant_work_not_found");
+    if (ARCHIVE_STATUSES.has(work.status)) fail("tenant_work_terminal");
+    if (!OPERATIONAL_STATUSES.has(work.status)) fail("tenant_work_not_operational");
     return work;
   }
   async function allocateCode(client, actor, projectId) {
@@ -1276,6 +1348,36 @@ export function createWorkContinuityV2Store({
       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id, workId, crypto.randomUUID(),
       sequence, eventType, JSON.stringify(event.payload), event.previous_event_hash, eventHash, actor.user_id]);
     return { sequence_number: sequence, event_type: eventType, event_hash: eventHash };
+  }
+  async function v2CreationIntentBindingValid(client, tenantId, work, createdEvent) {
+    const eventIntentDigest = createdEvent?.payload?.intent_digest || null;
+    const workIntentDigest = work?.intent_digest || null;
+    const eventPayload = createdEvent?.payload || {};
+    const hasLegacyIntentMarker = Object.hasOwn(eventPayload, "legacy_intent_digest");
+    if (!work?.legacy_work_id || work.legacy_work_id !== work.work_id ||
+        !HASH.test(String(workIntentDigest || "")) ||
+        !HASH.test(String(eventIntentDigest || ""))) return false;
+    const legacyIntentResult = await client.query(`SELECT anchor,intent_digest
+      FROM core_continuity_intent_anchors
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, work.work_id]);
+    const legacyIntent = legacyIntentResult.rows[0];
+    const canonicalLegacyAnchor = Boolean(
+      legacyIntent && HASH.test(String(legacyIntent.intent_digest || "")) &&
+      plainRecord(legacyIntent.anchor) &&
+      legacyIntent.anchor.schema_version === "intent_anchor_v1" &&
+      legacyIntent.anchor.immutable === true &&
+      objectDigest(legacyIntent.anchor) === legacyIntent.intent_digest
+    );
+    if (!canonicalLegacyAnchor) return false;
+    if (hasLegacyIntentMarker) {
+      return eventIntentDigest === workIntentDigest &&
+        HASH.test(String(eventPayload.legacy_intent_digest || "")) &&
+        eventPayload.legacy_intent_digest === legacyIntent.intent_digest;
+    }
+    // The previous writer stored the immutable legacy anchor digest in the
+    // event intent field, while the V2 row could retain a different explicit
+    // digest. That old shape is accepted only through the anchor above.
+    return eventIntentDigest === legacyIntent.intent_digest;
   }
   function archiveRequestDigest(actor, workId, reason) {
     return objectDigest({
@@ -1380,6 +1482,13 @@ export function createWorkContinuityV2Store({
     const supervisingUserIds = stringArray(input.supervising_user_ids, "supervising_user_ids_invalid");
     const tasks = Array.isArray(input.tasks) ? input.tasks : [];
     if (!tasks.length || tasks.length > 250) fail("work_tasks_required");
+    // Serialize Core and V2 creation on the shared tenant/Work UUID before
+    // either namespace is inspected.  FOR UPDATE on a missing row cannot
+    // prevent the other creator from inserting concurrently.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      actor.tenant_id,
+      workId,
+    ]);
     const insertTasks = async () => {
       for (const task of tasks) {
         await client.query(`INSERT INTO tenant_work_task
@@ -1392,6 +1501,7 @@ export function createWorkContinuityV2Store({
     const existing = await client.query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
     if (existing.rows[0]) {
       const row = normalizeWork(existing.rows[0]);
+      if (!legacyWorkId && row.legacy_work_id) fail("tenant_work_core_id_collision");
       if (legacyWorkId && row.legacy_work_id !== legacyWorkId) fail("tenant_work_legacy_link_conflict");
       // The compatibility bridge can project the just-created legacy work in a
       // concurrent transaction. Promote only that bridge-owned projection: a
@@ -1418,6 +1528,12 @@ export function createWorkContinuityV2Store({
       }
       return { work: row, created: false };
     }
+      if (!legacyWorkId) {
+        const coreCollision = await client.query(`SELECT work_id
+          FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+        if (coreCollision.rows[0]) fail("tenant_work_core_id_collision");
+      }
       const workCode = await allocateCode(client, actor, projectId);
       await client.query(`INSERT INTO tenant_work
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,team_id,
@@ -1615,7 +1731,9 @@ export function createWorkContinuityV2Store({
           decision_digest: review.decision_digest,
         });
         await appendV2Event(client, actor, workId, "work_v2_created", {
-          legacy_work_id: workId, intent_digest: legacy.intent_digest || input.intent_digest || null,
+          legacy_work_id: workId,
+          intent_digest: v2.work.intent_digest || null,
+          legacy_intent_digest: legacy.intent_digest || null,
           legacy_event_hash: legacy.event?.event_hash || null,
           ...(coreAuthorizationReceipt ? {
             core_authorization_receipt: coreAuthorizationReceipt,
@@ -1861,6 +1979,9 @@ export function createWorkContinuityV2Store({
     }
     const consumedEvent = events.get("open_work_review_consumed");
     const createdEvent = events.get("work_v2_created");
+    const creationIntentBound = createdEvent
+      ? await v2CreationIntentBindingValid(pool, actor.tenant_id, work, createdEvent)
+      : false;
     if (!consumedEvent || !createdEvent ||
         Number(createdEvent.sequence_number) !== Number(consumedEvent.sequence_number) + 1 ||
         createdEvent.previous_event_hash !== consumedEvent.event_hash ||
@@ -1870,7 +1991,7 @@ export function createWorkContinuityV2Store({
         consumedEvent.payload?.decision !== review.decision ||
         consumedEvent.payload?.decision_digest !== expectedDecisionDigest ||
         createdEvent.payload?.legacy_work_id !== work.work_id ||
-        (createdEvent.payload?.intent_digest || null) !== (work.intent_digest || null)) {
+        !creationIntentBound) {
       fail("work_bootstrap_replay_evidence_invalid");
     }
     const persistedCoreAuthorizationReceipt = normalizeCoreAuthorizationReceipt(
@@ -1919,35 +2040,60 @@ export function createWorkContinuityV2Store({
       const existing = await client.query(`SELECT * FROM tenant_work
         WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2) FOR UPDATE`,
       [actor.tenant_id, legacyId]);
+      if (existing.rows.some((candidate) =>
+        candidate.work_id === legacyId && candidate.legacy_work_id !== legacyId)) {
+        fail("tenant_work_legacy_link_conflict");
+      }
+      const existingRow = existing.rows.find((candidate) =>
+        candidate.legacy_work_id === legacyId) || null;
       const sourceEvent = legacyProjectionEvent(row, suppliedEvent);
-      if (!sourceEvent && existing.rows[0]) return normalizeWork(existing.rows[0]);
+      if (!sourceEvent && existingRow) return normalizeWork(existingRow);
       if (!sourceEvent) fail("legacy_projection_source_event_required");
       if (!terminalLegacyProjectionVerified(status, sourceEvent, row)) {
         fail("legacy_projection_terminal_evidence_required");
       }
-      if (existing.rows[0]) {
-        const current = normalizeWork(existing.rows[0]);
-        // A linked V2 identity is authoritative for its V2 fields. The
-        // compatibility projector must not later turn it back into a legacy
-        // projection when a delayed legacy event is observed.
-        if (current.legacy_work_id === legacyId && current.work_type !== "legacy") return current;
+      if (existingRow) {
+        const current = normalizeWork(existingRow);
+        // A linked V2 identity remains authoritative for identity, ownership,
+        // intent and architecture. Legacy events only advance its mirrored
+        // operational state and projection cursor.
+        const linkedCanonicalWork = current.legacy_work_id === legacyId &&
+          current.work_type !== "legacy";
         const projectedSequence = Number(current.legacy_projection_sequence || 0);
         if (projectedSequence >= sourceEvent.sequence_number) return current;
         if (ARCHIVE_STATUSES.has(current.status) && !ARCHIVE_STATUSES.has(status)) {
           fail("legacy_projection_terminal_regression_denied");
         }
-        const updated = await client.query(`UPDATE tenant_work SET
-            project_id=$3,parent_work_id=$4,work_name=$5,objective=$6,next_action=$7,status=$8::varchar,
-            updated_at=$9::timestamptz,
-            closed_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(closed_at,$9::timestamptz) ELSE closed_at END,
-            archived_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(archived_at,$9::timestamptz) ELSE archived_at END,
-            legacy_projection_sequence=$10,legacy_projection_event_hash=$11,
-            legacy_projection_updated_at=$12::timestamptz
-          WHERE tenant_id=$1 AND work_id=$2 RETURNING *`,
-        [actor.tenant_id, current.work_id, row.project_id || null, row.parent_work_id || null,
-          String(row.idea || row.objective || "Legacy work").slice(0, 1_000), row.objective || null,
-          row.next_action || null, status, row.updated_at || now(), sourceEvent.sequence_number,
-          sourceEvent.event_hash, now(), [...ARCHIVE_STATUSES]]);
+        const projectionUpdatedAt = now();
+        const sourceUpdatedAt = row.updated_at || projectionUpdatedAt;
+        const updated = linkedCanonicalWork
+          ? await client.query(`UPDATE tenant_work SET
+              status=$3::varchar,next_action=$4,
+              updated_at=GREATEST(updated_at,$5::timestamptz),
+              closed_at=CASE WHEN $3::varchar = ANY($9::varchar[]) THEN COALESCE(closed_at,$5::timestamptz) ELSE closed_at END,
+              archived_at=CASE WHEN $3::varchar = ANY($9::varchar[]) THEN COALESCE(archived_at,$5::timestamptz) ELSE archived_at END,
+              legacy_projection_sequence=$6,legacy_projection_event_hash=$7,
+              legacy_projection_updated_at=$8::timestamptz
+            WHERE tenant_id=$1 AND work_id=$2
+              AND COALESCE(legacy_projection_sequence,0) < $6
+            RETURNING *`, [actor.tenant_id, current.work_id, status, row.next_action || null,
+            sourceUpdatedAt, sourceEvent.sequence_number, sourceEvent.event_hash,
+            projectionUpdatedAt, [...ARCHIVE_STATUSES]])
+          : await client.query(`UPDATE tenant_work SET
+              project_id=$3,parent_work_id=$4,work_name=$5,objective=$6,next_action=$7,status=$8::varchar,
+              updated_at=$9::timestamptz,
+              closed_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(closed_at,$9::timestamptz) ELSE closed_at END,
+              archived_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(archived_at,$9::timestamptz) ELSE archived_at END,
+              legacy_projection_sequence=$10,legacy_projection_event_hash=$11,
+              legacy_projection_updated_at=$12::timestamptz
+            WHERE tenant_id=$1 AND work_id=$2
+              AND COALESCE(legacy_projection_sequence,0) < $10
+            RETURNING *`,
+          [actor.tenant_id, current.work_id, row.project_id || null, row.parent_work_id || null,
+            String(row.idea || row.objective || "Legacy work").slice(0, 1_000), row.objective || null,
+            row.next_action || null, status, sourceUpdatedAt, sourceEvent.sequence_number,
+            sourceEvent.event_hash, projectionUpdatedAt, [...ARCHIVE_STATUSES]]);
+        if (!updated.rows[0]) return current;
         await appendV2Event(client, actor, current.work_id, "legacy_work_projection_synced", {
           legacy_status: String(row.status || "").toLowerCase(), projected_status: status,
           source_event_type: sourceEvent.event_type, source_event_hash: sourceEvent.event_hash,
@@ -1986,11 +2132,7 @@ export function createWorkContinuityV2Store({
   async function readWork(identity, { work_id }) {
     await initialize();
     const actor = actorFromIdentity(identity);
-    let result = await query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, uuid(work_id)]);
-    if (!result.rows[0] && isAdmin(actor)) {
-      await projectLegacyWork(identity, { legacy_work_id: work_id });
-      result = await query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, uuid(work_id)]);
-    }
+    const result = await query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, uuid(work_id)]);
     const work = result.rows[0] && normalizeWork(result.rows[0]);
     if (!work) fail("tenant_work_not_found");
     assertPermission(canRead, work, actor);
@@ -2010,17 +2152,15 @@ export function createWorkContinuityV2Store({
     return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, false);
       assertPermission(canRead, work, actor);
-      const [tasks, evidence, join, receipt, report, event] = await Promise.all([
-        client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, workId]),
-        client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, workId]),
-        client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-        client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-        client.query("SELECT tenant_id,work_id,report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-        client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash
-          FROM tenant_work_event
-          WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
-          ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId]),
-      ]);
+      const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, workId]);
+      const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, workId]);
+      const join = await client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+      const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+      const report = await client.query("SELECT tenant_id,work_id,report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+      const event = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
+        ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId]);
       return deriveTenantWorkClosureVerification({
         tenant_id: actor.tenant_id,
         work,
@@ -2166,10 +2306,10 @@ export function createWorkContinuityV2Store({
         WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
         RETURNING *`, [actor.tenant_id, workId, work.status, reason, work.status]);
       if (!archived.rows[0]) fail("work_archive_status_conflict");
-      const released = await client.query(`UPDATE core_continuity_leases
-        SET status='released',released_at=coalesce(released_at,now())
-        WHERE tenant_id=$1 AND work_id=$2 AND status='active'
-        RETURNING lease_id`, [actor.tenant_id, workId]);
+      // A native V2 Work has no Core coordination namespace. Its UUID must
+      // never be treated as an implicit bridge to an identically named Core
+      // Work; only an explicit legacy_work_id may authorize Core cleanup.
+      const releasedLeaseCount = 0;
       const event = await appendV2Event(client, actor, workId, "work_archived_v3", {
         schema_version: "tenant_work_gallery_archive_event_v1",
         from_status: work.status,
@@ -2177,12 +2317,12 @@ export function createWorkContinuityV2Store({
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
         work: normalizeWork(archived.rows[0]),
-        released_lease_count: released.rowCount,
+        released_lease_count: releasedLeaseCount,
       });
       return {
         schema_version: "tenant_work_gallery_v3",
         work: normalizeWork(archived.rows[0]),
-        released_lease_count: released.rowCount,
+        released_lease_count: releasedLeaseCount,
         event,
         idempotent_replay: false,
       };
@@ -2459,15 +2599,26 @@ export function createWorkContinuityV2Store({
     return Object.freeze(result);
   }
   async function preflightGallery(identity, input = {}) {
-    await initialize();
     const actor = actorFromIdentity(identity);
-    await projectLegacyCatalog(identity, { project_id: input.project_id, limit: input.limit || 50 });
-    const works = await listWorks(identity, { view: "operational", project_id: input.project_id });
+    // Preflight is a read path. Legacy projection/backfill is deliberately
+    // owned by the startup projector and the explicit writer entry points;
+    // observing the Gallery must never create/update Work rows or events.
+    const values = [actor.tenant_id];
+    const where = ["tenant_id=$1"];
+    if (input.project_id) {
+      values.push(text(input.project_id, "project_id_invalid", 128));
+      where.push(`project_id=$${values.length}`);
+    }
+    const persisted = await query(`SELECT * FROM tenant_work WHERE ${where.join(" AND ")}
+      ORDER BY priority_score DESC,updated_at DESC`, values);
+    const works = persisted.rows.map(normalizeWork).filter((work) =>
+      OPERATIONAL_STATUSES.has(work.status) && canRead(work, actor));
     const limited = works.slice(0, Math.max(1, Math.min(200, Number(input.limit) || 20)));
     const rows = [];
     for (const work of limited) {
-      const sourceId = work.legacy_work_id || work.work_id;
-      const activity = await query(`SELECT
+      const coordinationWorkId = work.legacy_work_id || null;
+      const activity = coordinationWorkId
+        ? await query(`SELECT
           count(DISTINCT p.session_id) FILTER (WHERE p.status='active' AND p.expires_at>now())::int AS active_participants,
           count(DISTINCT l.lease_id) FILTER (WHERE l.status='active' AND l.expires_at>now())::int AS active_leases,
           count(DISTINCT b.branch_id) FILTER (WHERE b.status='active')::int AS active_branches
@@ -2475,9 +2626,11 @@ export function createWorkContinuityV2Store({
         LEFT JOIN core_continuity_participants p ON p.tenant_id=w.tenant_id AND p.work_id=w.work_id
         LEFT JOIN core_continuity_leases l ON l.tenant_id=w.tenant_id AND l.work_id=w.work_id
         LEFT JOIN core_continuity_branches b ON b.tenant_id=w.tenant_id AND b.work_id=w.work_id
-        WHERE w.tenant_id=$1 AND w.work_id=$2`, [actor.tenant_id, sourceId]);
+        WHERE w.tenant_id=$1 AND w.work_id=$2`, [actor.tenant_id, coordinationWorkId])
+        : { rows: [{ active_participants: 0, active_leases: 0, active_branches: 0 }] };
       rows.push({
-        tenant_id: actor.tenant_id, project_id: work.project_id, work_id: sourceId,
+        tenant_id: actor.tenant_id, project_id: work.project_id,
+        work_id: coordinationWorkId || work.work_id,
         parent_work_id: work.parent_work_id || null, idea: work.work_name, objective: work.objective,
         status: mapV2StatusToLegacy(work.status), current_version: 2, next_action: work.next_action || "",
         updated_at: work.updated_at, active_participants: Number(activity.rows[0]?.active_participants || 0),
@@ -2512,7 +2665,8 @@ export function createWorkContinuityV2Store({
     const assignment = suppliedAssignment || selected.rows[0];
     if (!assignment) fail("nyra_autopilot_assignment_not_found");
     if (assignment.role !== "independent_verifier") {
-      return Object.freeze({ required: false, work_id: workId, assignment_id: assignmentId });
+      return Object.freeze({ required: false, work_id: workId, assignment_id: assignmentId,
+        work_status: work.status });
     }
     if (!assignmentStates.includes(assignment.status)) fail("nyra_autopilot_verification_assignment_state_invalid");
     if (!actor.agent_id || !actor.session_fingerprint ||
@@ -2554,6 +2708,7 @@ export function createWorkContinuityV2Store({
       work_id: workId,
       assignment_id: assignmentId,
       run_id: runId,
+      work_status: work.status,
       verification,
       source_digests: Object.freeze(sourceDigests),
     });
@@ -2593,8 +2748,17 @@ export function createWorkContinuityV2Store({
         if (existing.rows[0].payload?.evidence_digest !== evidenceDigest) {
           fail("nyra_autopilot_verification_projection_conflict");
         }
-        return buildNyraAutopilotVerificationReplay(candidate, evidenceDigest);
+        return Object.freeze({
+          ...buildNyraAutopilotVerificationReplay(candidate, evidenceDigest),
+          progress: await deriveWorkStateWithClient(
+            client,
+            actor,
+            workId,
+            { persist: false },
+          ),
+        });
       }
+      assertOperationalWorkMutation({ status: candidate.work_status });
       if (candidate.verification.verdict === "rejected") {
         const event = await appendV2Event(client, actor, workId, eventType, {
           assignment_id: assignmentId,
@@ -2604,8 +2768,9 @@ export function createWorkContinuityV2Store({
           verifier_agent_id: candidate.verification.verifier_agent_id,
           verifier_session_fingerprint: candidate.verification.verifier_session_fingerprint,
         });
+        const progress = await refreshDerivedWithClient(client, actor, workId);
         return Object.freeze({ ...candidate, evidence_digest: evidenceDigest, event, idempotent_replay: false,
-          task_projection: "not_applied" });
+          task_projection: "not_applied", progress });
       }
       const taskUpdate = await client.query(`UPDATE tenant_work_task
         SET status='completed',acceptance_verified=true,completed_at=coalesce(completed_at,now())
@@ -2637,52 +2802,111 @@ export function createWorkContinuityV2Store({
         verifier_agent_id: candidate.verification.verifier_agent_id,
         verifier_session_fingerprint: candidate.verification.verifier_session_fingerprint,
       });
-      return Object.freeze({ ...candidate, evidence_id: evidenceId, evidence_digest: evidenceDigest, event, idempotent_replay: false });
+      const progress = await refreshDerivedWithClient(client, actor, workId);
+      return Object.freeze({ ...candidate, evidence_id: evidenceId,
+        evidence_digest: evidenceDigest, event, progress, idempotent_replay: false });
     });
-    const derived = outcome.required
-      ? await refreshDerived(identity, { work_id: workId })
-      : null;
-    return Object.freeze({ ...outcome, ...(derived ? { progress: derived } : {}) });
+    return outcome;
   }
   async function recordTask(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
     const workId = uuid(input.work_id);
     const taskId = input.task_id ? uuid(input.task_id, "task_id_invalid") : crypto.randomUUID();
-    await transaction(async (client) => {
+    const task = Object.freeze({
+      title: text(input.title, "task_title_invalid", 2_000),
+      weight: Math.max(1, Number(input.weight) || 1),
+      status: input.status === "completed" ? "completed" : "planned",
+      required: input.required !== false,
+    });
+    return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canRecordTask, work, actor);
-      await client.query(`INSERT INTO tenant_work_task (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified,completed_at)
+      const existing = await client.query(`SELECT work_id,title,weight,status,required
+        FROM tenant_work_task
+        WHERE tenant_id=$1 AND task_id=$2 FOR UPDATE`, [actor.tenant_id, taskId]);
+      if (existing.rows[0] && existing.rows[0].work_id !== workId) {
+        fail("tenant_work_task_binding_conflict");
+      }
+      if (existing.rows[0] &&
+          existing.rows[0].title === task.title &&
+          Number(existing.rows[0].weight) === task.weight &&
+          existing.rows[0].status === task.status &&
+          existing.rows[0].required === task.required) {
+        return deriveWorkStateWithClient(client, actor, workId, { persist: false });
+      }
+      assertOperationalWorkMutation(work);
+      const persisted = await client.query(`INSERT INTO tenant_work_task (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified,completed_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,false,CASE WHEN $6::varchar='completed' THEN now() ELSE NULL END)
-        ON CONFLICT (tenant_id,task_id) DO UPDATE SET title=EXCLUDED.title,weight=EXCLUDED.weight,status=EXCLUDED.status,required=EXCLUDED.required,completed_at=EXCLUDED.completed_at`,
-      [actor.tenant_id, taskId, workId, text(input.title, "task_title_invalid", 2_000), Math.max(1, Number(input.weight) || 1),
-        input.status === "completed" ? "completed" : "planned", input.required !== false]);
+        ON CONFLICT (tenant_id,task_id) DO UPDATE
+        SET title=EXCLUDED.title,weight=EXCLUDED.weight,status=EXCLUDED.status,
+          required=EXCLUDED.required,completed_at=EXCLUDED.completed_at
+        WHERE tenant_work_task.work_id=EXCLUDED.work_id
+        RETURNING work_id`,
+      [actor.tenant_id, taskId, workId, task.title, task.weight, task.status, task.required]);
+      if (persisted.rows[0]?.work_id !== workId) fail("tenant_work_task_binding_conflict");
+      return refreshDerivedWithClient(client, actor, workId);
     });
-    return refreshDerived(identity, { work_id: workId });
   }
   async function recordEvidence(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
     const workId = uuid(input.work_id);
     const evidenceId = input.evidence_id ? uuid(input.evidence_id, "evidence_id_invalid") : crypto.randomUUID();
-    await transaction(async (client) => {
+    const evidence = Object.freeze({
+      kind: text(input.kind, "evidence_kind_invalid", 80),
+      digest: digest(input.digest, "evidence_digest_invalid"),
+      required: false,
+      independently_verified: false,
+      verified_by_agent_id: null,
+      verified_by_session_fingerprint: null,
+      weight: Math.max(1, Number(input.weight) || 1),
+      metadata: stable(input.metadata || {}),
+    });
+    return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canContributeEvidence, work, actor);
+      const existing = await client.query(`SELECT work_id,kind,digest,required,
+          independently_verified,verified_by_agent_id,
+          verified_by_session_fingerprint,weight,metadata
+        FROM tenant_work_evidence
+        WHERE tenant_id=$1 AND evidence_id=$2 FOR UPDATE`, [actor.tenant_id, evidenceId]);
+      if (existing.rows[0] && existing.rows[0].work_id !== workId) {
+        fail("tenant_work_evidence_binding_conflict");
+      }
+      if (existing.rows[0]) {
+        const exactReplay = existing.rows[0].kind === evidence.kind &&
+          existing.rows[0].digest === evidence.digest &&
+          existing.rows[0].required === evidence.required &&
+          existing.rows[0].independently_verified === evidence.independently_verified &&
+          (existing.rows[0].verified_by_agent_id || null) === evidence.verified_by_agent_id &&
+          (existing.rows[0].verified_by_session_fingerprint || null) ===
+            evidence.verified_by_session_fingerprint &&
+          Number(existing.rows[0].weight) === evidence.weight &&
+          objectDigest(existing.rows[0].metadata || {}) === objectDigest(evidence.metadata);
+        if (!exactReplay) fail("tenant_work_evidence_conflict");
+        return deriveWorkStateWithClient(client, actor, workId, { persist: false });
+      }
+      assertOperationalWorkMutation(work);
       // This generic client-facing path records candidate evidence only.
       // Independent evidence is derived exclusively by the atomic native
       // verifier bridge from a server-read terminal report and receipt.
-      const independentlyVerified = false;
-      await client.query(`INSERT INTO tenant_work_evidence (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+      const persisted = await client.query(`INSERT INTO tenant_work_evidence (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-        ON CONFLICT (tenant_id,evidence_id) DO NOTHING`,
-      [actor.tenant_id, evidenceId, workId, text(input.kind, "evidence_kind_invalid", 80), digest(input.digest, "evidence_digest_invalid"),
+        ON CONFLICT (tenant_id,evidence_id) DO NOTHING
+        RETURNING work_id`,
+      [actor.tenant_id, evidenceId, workId, evidence.kind, evidence.digest,
         // A client-submitted record is a candidate only.  It cannot become a
         // closure prerequisite before a server-owned verifier bridge derives
         // independent evidence from a terminal native receipt.
-        false, independentlyVerified, independentlyVerified ? actor.agent_id : null,
-        independentlyVerified ? actor.session_fingerprint : null, Math.max(1, Number(input.weight) || 1), JSON.stringify(input.metadata || {})]);
+        evidence.required, evidence.independently_verified, evidence.verified_by_agent_id,
+        evidence.verified_by_session_fingerprint, evidence.weight,
+        JSON.stringify(evidence.metadata)]);
+      if (persisted.rows[0]?.work_id !== workId) {
+        fail("tenant_work_evidence_binding_conflict");
+      }
+      return refreshDerivedWithClient(client, actor, workId);
     });
-    return refreshDerived(identity, { work_id: workId });
   }
   async function recordOwnerManualMergeReleaseEvidence(identity, source = {}) {
     await initialize();
@@ -2937,6 +3161,7 @@ export function createWorkContinuityV2Store({
           idempotent_replay: true,
         };
       }
+      assertOperationalWorkMutation(work);
       const evidenceId = crypto.randomUUID();
       await client.query(`INSERT INTO tenant_work_evidence
         (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
@@ -3111,7 +3336,7 @@ export function createWorkContinuityV2Store({
         payload?.native_presence_signature !== presenceSignature) {
       fail("native_verifier_evidence_receipt_binding_invalid");
     }
-    const linkedWork = await client.query(`SELECT work_id,legacy_work_id,created_by_agent_id,
+    const linkedWork = await client.query(`SELECT work_id,legacy_work_id,status,created_by_agent_id,
         created_by_session_fingerprint
       FROM tenant_work
       WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2
@@ -3183,6 +3408,25 @@ export function createWorkContinuityV2Store({
           evidenceRow.verified_by_session_fingerprint !== sessionFingerprint) {
         fail("native_verifier_evidence_replay_integrity_failed");
       }
+      if (ARCHIVE_STATUSES.has(String(work.status || "").toUpperCase())) {
+        const derived = await deriveWorkStateWithClient(client, {
+          tenant_id: tenantId,
+          user_id: "core_native_verifier_evidence_bridge",
+          agent_id: agentId,
+          session_fingerprint: sessionFingerprint,
+          team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
+        }, work.work_id, { persist: false });
+        return Object.freeze({
+          schema_version: "native_verifier_terminal_evidence_v1",
+          evidence_id: row.evidence_id,
+          evidence_digest: evidenceDigest,
+          report_digest: reportDigest,
+          receipt_id: receiptId,
+          derived,
+          idempotent_replay: true,
+        });
+      }
+      assertOperationalWorkMutation(work);
       await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
         WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
           AND status='completed'`, [tenantId, work.work_id, v2TaskId]);
@@ -3203,6 +3447,7 @@ export function createWorkContinuityV2Store({
         idempotent_replay: true,
       });
     }
+    assertOperationalWorkMutation(work);
     const evidenceId = crypto.randomUUID();
     const metadata = stable({
       ...material,
@@ -3293,8 +3538,7 @@ export function createWorkContinuityV2Store({
       : "tenant_work_precommit_ticket_fulfillment";
     const reconciliationVersionPredicate = superseding ? " AND r.gate_version=$4" : "";
     const fulfillmentVersionPredicate = superseding ? " AND gate_version=$4" : "";
-    const [mappingsResult, taskResult, planRowsResult, evaluationResult, fulfillmentResult] = await Promise.all([
-      client.query(`SELECT r.*,legacy.required AS legacy_required,
+    const mappingsResult = await client.query(`SELECT r.*,legacy.required AS legacy_required,
           legacy.independently_verified AS legacy_independently_verified,
           replacement.required AS replacement_required,
           replacement.independently_verified AS replacement_independently_verified,
@@ -3316,28 +3560,27 @@ export function createWorkContinuityV2Store({
             AND native.evidence_id=r.replacement_evidence_id
         WHERE r.tenant_id=$1 AND r.work_id=$2 AND r.task_id=$3${reconciliationVersionPredicate}
         ORDER BY r.legacy_evidence_id${lock ? " FOR UPDATE OF r" : ""}`,
-      superseding
-        ? [actor.tenant_id, workId, gate.task_id, gateVersion]
-        : [actor.tenant_id, workId, gate.task_id]),
-      client.query(`SELECT task_id,status,required,acceptance_verified FROM tenant_work_task
+    superseding
+      ? [actor.tenant_id, workId, gate.task_id, gateVersion]
+      : [actor.tenant_id, workId, gate.task_id]);
+    const taskResult = await client.query(`SELECT task_id,status,required,acceptance_verified FROM tenant_work_task
         WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${lock ? " FOR UPDATE" : ""}`,
-      [actor.tenant_id, workId, gate.task_id]),
-      client.query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
+    [actor.tenant_id, workId, gate.task_id]);
+    const planRowsResult = await client.query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
         FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2
         ORDER BY plan_version,plan_id${lock ? " FOR UPDATE" : ""}`,
-      [actor.tenant_id, workId]),
-      client.query(`SELECT evaluation_id,evaluation,evaluation_digest FROM core_continuity_closure_evaluations
+    [actor.tenant_id, workId]);
+    const evaluationResult = await client.query(`SELECT evaluation_id,evaluation,evaluation_digest FROM core_continuity_closure_evaluations
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY created_at DESC,evaluation_id DESC LIMIT 1${lock ? " FOR UPDATE" : ""}`,
-      [actor.tenant_id, workId, gate.plan_id]),
-      client.query(`SELECT ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest
-        FROM ${fulfillmentTable}
-        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${fulfillmentVersionPredicate}${
-          lock ? " FOR UPDATE" : ""}`,
-      superseding
-        ? [actor.tenant_id, workId, gate.task_id, gateVersion]
-        : [actor.tenant_id, workId, gate.task_id]),
-    ]);
+    [actor.tenant_id, workId, gate.plan_id]);
+    const fulfillmentResult = await client.query(`SELECT ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest
+      FROM ${fulfillmentTable}
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${fulfillmentVersionPredicate}${
+        lock ? " FOR UPDATE" : ""}`,
+    superseding
+      ? [actor.tenant_id, workId, gate.task_id, gateVersion]
+      : [actor.tenant_id, workId, gate.task_id]);
     const mappings = mappingsResult.rows;
     const task = taskResult.rows[0];
     const planRows = planRowsResult.rows;
@@ -3454,9 +3697,6 @@ export function createWorkContinuityV2Store({
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       const gate = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
-      if (!gate || gate.fresh !== true || gate.projection_digest !== projectionDigest) {
-        fail("precommit_gate_claim_gate_invalid");
-      }
       const existingResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
@@ -3474,6 +3714,10 @@ export function createWorkContinuityV2Store({
           existing.idempotency_key === idempotencyKey;
         if (!exact) fail("precommit_gate_claim_replay_conflict");
         return precommitClaimProjection(existing, true);
+      }
+      assertOperationalWorkMutation(work);
+      if (!gate || gate.fresh !== true || gate.projection_digest !== projectionDigest) {
+        fail("precommit_gate_claim_gate_invalid");
       }
       if (gate.fulfilled === true) fail("precommit_gate_claim_gate_invalid");
       const claimId = crypto.randomUUID();
@@ -3657,6 +3901,7 @@ export function createWorkContinuityV2Store({
         return Object.freeze({ ...material, reconciliation_id: existing.rows[0].reconciliation_id,
           reconciliation_digest: reconciliationDigest, replay: true });
       }
+      assertOperationalWorkMutation(work);
       const reconciliationId = crypto.randomUUID();
       await client.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim_reconciliation
         (tenant_id,work_id,claim_id,reconciliation_id,gate_projection_digest,stage,ticket_id,
@@ -3682,7 +3927,8 @@ export function createWorkContinuityV2Store({
       WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
     const work = workResult.rows[0];
     if (!work) fail("native_precommit_gate_work_invalid");
-    if (work.legacy_work_id) {
+    if (work.legacy_work_id !== workId) fail("native_precommit_gate_work_invalid");
+    {
       const promotedEventResult = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,
           previous_event_hash,event_hash
         FROM tenant_work_event
@@ -3697,15 +3943,33 @@ export function createWorkContinuityV2Store({
         payload: stable(promotedEvent.payload),
         previous_event_hash: promotedEvent.previous_event_hash || null,
       };
-      const canonicalPromotedBridge = work.legacy_work_id === workId &&
+      const canonicalPromotedEnvelope = work.legacy_work_id === workId &&
         work.work_type === "software_git" && HASH.test(String(work.intent_digest || "")) &&
         promotedEventResult.rows.length === 1 && promotedEvent?.tenant_id === tenantId &&
         promotedEvent?.work_id === workId && promotedEvent?.event_type === "work_v2_created" &&
         promotedEvent.payload?.legacy_work_id === workId &&
-        promotedEvent.payload?.intent_digest === work.intent_digest &&
         objectDigest(promotedMaterial) === promotedEvent.event_hash;
+      const canonicalPromotedBridge = canonicalPromotedEnvelope &&
+        await v2CreationIntentBindingValid(client, tenantId, work, promotedEvent);
       if (!canonicalPromotedBridge) fail("native_precommit_gate_work_invalid");
     }
+    if (ARCHIVE_STATUSES.has(String(work.status || "").toUpperCase())) {
+      const existing = await readPrecommitTicketGateWithClient(
+        client,
+        actor,
+        workId,
+        { lock: true },
+      );
+      if (existing?.schema_version === "precommit_ticket_gate_v2" &&
+          existing.gate_source === "native_closure_evaluation" &&
+          existing.plan_id === planId && existing.evaluation_id === evaluationId &&
+          existing.evaluation_digest === evaluationDigest &&
+          existing.workspace_digest === workspaceDigest) {
+        return Object.freeze({ ...existing, idempotent_replay: true });
+      }
+      fail("tenant_work_terminal");
+    }
+    assertOperationalWorkMutation(work);
     const planRowsResult = await client.query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
       FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2
       ORDER BY plan_version,plan_id FOR UPDATE`, [tenantId, workId]);
@@ -3864,6 +4128,7 @@ export function createWorkContinuityV2Store({
           );
           return Object.freeze({ ...projection, idempotent_replay: true });
         }
+        assertOperationalWorkMutation(work);
         const currentProjection = await readPrecommitTicketGateWithClient(
           client, actor, workId, { lock: true },
         );
@@ -3885,6 +4150,7 @@ export function createWorkContinuityV2Store({
         nextGateVersion = currentGateVersion + 1;
         supersedesReconciliationDigest = currentGate.reconciliation_digest;
       }
+      assertOperationalWorkMutation(work);
       const taskResult = await client.query(`SELECT task_id,status,required,acceptance_verified
         FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 FOR UPDATE`,
       [actor.tenant_id, workId, taskId]);
@@ -4136,6 +4402,7 @@ export function createWorkContinuityV2Store({
           work_id: workId, task_id: gate?.task_id || null, ticket_id: ticket.ticket_id,
           fulfillment_digest: existing.rows[0].fulfillment_digest, idempotent_replay: true });
       }
+      assertOperationalWorkMutation(work);
       const ticketDigest = objectDigest(ticket);
       const material = { schema_version: "precommit_ticket_fulfillment_v1",
         tenant_id: actor.tenant_id, work_id: workId, task_id: gate.task_id,
@@ -4181,7 +4448,7 @@ export function createWorkContinuityV2Store({
     if (actor.core_join_trusted !== true) fail("core_join_trust_required");
     if (!resolvedCoreJoinVerifier || !resolvedCoreJoinVerifier.verify(core_join_context)) fail("generic_core_join_signature_invalid");
     const workId = uuid(work_id);
-    await transaction(async (client) => {
+    const outcome = await transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canClose, work, actor);
       const joinDigest = digest(core_join_digest, "core_join_digest_invalid");
@@ -4194,28 +4461,59 @@ export function createWorkContinuityV2Store({
       const existing = await client.query("SELECT core_join_digest,core_join_context FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [actor.tenant_id, workId]);
       if (existing.rows[0]) {
         if (existing.rows[0].core_join_digest !== joinDigest || objectDigest(existing.rows[0].core_join_context) !== objectDigest(context)) fail("generic_core_join_conflict");
-        return;
+        if (ARCHIVE_STATUSES.has(work.status)) {
+          return {
+            terminal_replay: true,
+            derived: await deriveWorkStateWithClient(
+              client,
+              actor,
+              workId,
+              { persist: false },
+            ),
+          };
+        }
+        assertOperationalWorkMutation(work);
+        return {
+          terminal_replay: false,
+          derived: await refreshDerivedWithClient(client, actor, workId),
+        };
       }
+      assertOperationalWorkMutation(work);
       await client.query(`INSERT INTO tenant_work_core_join (tenant_id,work_id,core_join_digest,core_join_context,persisted_by_user_id)
         VALUES ($1,$2,$3,$4::jsonb,$5)`,
       [actor.tenant_id, workId, joinDigest, JSON.stringify(context), actor.user_id]);
+      return {
+        terminal_replay: false,
+        derived: await refreshDerivedWithClient(client, actor, workId),
+      };
     });
-    return refreshDerived(identity, { work_id: workId });
+    return outcome.derived;
+  }
+  async function deriveWorkStateWithClient(client, actor, workId, { persist = false } = {}) {
+    const work = await loadWork(client, actor, workId, true);
+    const tasks = await client.query("SELECT title,weight,status,required,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const evidence = await client.query("SELECT weight,required,independently_verified FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const join = await client.query("SELECT core_join_digest FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const progress = deriveProgress(tasks.rows, evidence.rows, { evaluated: false, independent_verification_passed: evidence.rows.length > 0 && evidence.rows.every((item) => item.independently_verified), core_join_received: Boolean(join.rows[0]) });
+    const priorityFacts = await derivePersistedPriorityFacts(client, actor, { ...work, progress_bp: progress.overall_progress_bp });
+    const priority = derivePriority(priorityFacts);
+    if (!persist) return { ...progress, ...priority, work };
+    assertOperationalWorkMutation(work);
+    await client.query(`UPDATE tenant_work SET progress_bp=$3,progress_version=$4,progress_source=$5,priority=$6,priority_score=$7,priority_version=$8,priority_context=$9::jsonb,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId, progress.overall_progress_bp, progress.progress_version, progress.progress_source,
+      priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts)]);
+    return { ...progress, ...priority, work: await loadWork(client, actor, workId) };
   }
   async function refreshDerivedWithClient(client, actor, workId) {
+    return deriveWorkStateWithClient(client, actor, workId, { persist: true });
+  }
+  async function readDerivedReplay(identity, workId) {
+    const actor = actorFromIdentity(identity);
+    return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
-      const [tasks, evidence, join] = await Promise.all([
-        client.query("SELECT title,weight,status,required,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-        client.query("SELECT weight,required,independently_verified FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-        client.query("SELECT core_join_digest FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-      ]);
-      const progress = deriveProgress(tasks.rows, evidence.rows, { evaluated: false, independent_verification_passed: evidence.rows.length > 0 && evidence.rows.every((item) => item.independently_verified), core_join_received: Boolean(join.rows[0]) });
-      const priorityFacts = await derivePersistedPriorityFacts(client, actor, { ...work, progress_bp: progress.overall_progress_bp });
-      const priority = derivePriority(priorityFacts);
-      await client.query(`UPDATE tenant_work SET progress_bp=$3,progress_version=$4,progress_source=$5,priority=$6,priority_score=$7,priority_version=$8,priority_context=$9::jsonb,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId, progress.overall_progress_bp, progress.progress_version, progress.progress_source,
-        priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts)]);
-      return { ...progress, ...priority, work: await loadWork(client, actor, workId) };
+      assertPermission(canRead, work, actor);
+      return deriveWorkStateWithClient(client, actor, workId, { persist: false });
+    });
   }
   async function refreshDerived(identity, { work_id }) {
     await initialize();
@@ -4224,6 +4522,7 @@ export function createWorkContinuityV2Store({
     return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canRead, work, actor);
+      assertOperationalWorkMutation(work);
       return refreshDerivedWithClient(client, actor, workId);
     });
   }
@@ -4233,17 +4532,10 @@ export function createWorkContinuityV2Store({
     const works = await listWorks(identity, { view: "tenant", project_id });
     const result = [];
     for (const work of works) {
-      const sourceId = work.legacy_work_id || work.work_id;
-      const [participants, leases] = await Promise.all([
-        query("SELECT status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
-        query("SELECT status,expires_at FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
-      ]);
-      const activity = {
-        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
-        leases: leases.rows,
-      };
-      const legacyReconciliationEligible = work.work_type === "legacy";
+      const legacyReconciliationEligible = work.work_type === "legacy" &&
+        Boolean(work.legacy_work_id);
       if (!legacyReconciliationEligible) {
+        const activity = { participants: [], leases: [] };
         result.push({
           work_id: work.work_id,
           work_code: work.work_code,
@@ -4267,6 +4559,15 @@ export function createWorkContinuityV2Store({
         });
         continue;
       }
+      const sourceId = work.legacy_work_id;
+      const [participants, leases] = await Promise.all([
+        query("SELECT status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
+        query("SELECT status,expires_at FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
+      ]);
+      const activity = {
+        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases: leases.rows,
+      };
       const authoritative = await query(
         "SELECT status,updated_at FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2",
         [actor.tenant_id, sourceId],
@@ -4434,12 +4735,10 @@ export function createWorkContinuityV2Store({
         fail("legacy_reconciliation_already_closed");
       }
 
-      const [participants, leases] = await Promise.all([
-        client.query(`SELECT status,expires_at FROM core_continuity_participants
-          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]),
-        client.query(`SELECT status,expires_at FROM core_continuity_leases
-          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]),
-      ]);
+      const participants = await client.query(`SELECT status,expires_at FROM core_continuity_participants
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      const leases = await client.query(`SELECT status,expires_at FROM core_continuity_leases
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
       const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
         participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
         leases: leases.rows }, now());
@@ -4609,23 +4908,142 @@ export function createWorkContinuityV2Store({
   }
   async function closureState(client, actor, workId, lock = false) {
     const work = await loadWork(client, actor, workId, lock);
-    const [evidence, join, receipt] = await Promise.all([
-      client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]),
-      client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-      client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
+    const tasks = await client.query("SELECT status,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
+    const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
+    const join = await client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    return { work, tasks: tasks.rows, evidence: evidence.rows,
+      join: join.rows[0] || null, receipt: receipt.rows[0] || null };
+  }
+  async function releaseTerminalCoordination(client, actor, workId) {
+    if (!workId) {
+      return Object.freeze({
+        released_lease_count: 0,
+        closed_participant_count: 0,
+      });
+    }
+    const released = await client.query(`UPDATE core_continuity_leases
+      SET status='released',released_at=coalesce(released_at,now()),
+        expires_at=LEAST(expires_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND status='active'
+      RETURNING lease_id`, [actor.tenant_id, workId]);
+    const closed = await client.query(`UPDATE core_continuity_participants
+      SET status='closed',last_seen_at=now(),expires_at=LEAST(expires_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND status='active'
+      RETURNING session_id`, [actor.tenant_id, workId]);
+    return Object.freeze({
+      released_lease_count: Number(released.rowCount || 0),
+      closed_participant_count: Number(closed.rowCount || 0),
+    });
+  }
+  async function lockLegacyCoordinationWork(client, actor, workId) {
+    const locked = await client.query(`SELECT status FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+    if (!locked.rows[0]) fail("legacy_work_not_found");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+      actor.tenant_id,
+      workId,
     ]);
-    return { work, evidence: evidence.rows, join: join.rows[0] || null, receipt: receipt.rows[0] || null };
+    return locked.rows[0];
+  }
+  async function appendLegacyTerminalCoordinationEvent(client, actor, workId, payload) {
+    // Re-entrant when finalizeGenericClosure already holds the lock. Keeping
+    // the guard here makes every legacy ledger append share the runtime's
+    // Core-row -> Work-advisory ordering.
+    await lockLegacyCoordinationWork(client, actor, workId);
+    const previous = await client.query(`SELECT sequence_number,event_hash
+      FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
+    [actor.tenant_id, workId]);
+    const sequence = Number(previous.rows[0]?.sequence_number || 0) + 1;
+    const material = {
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      sequence_number: sequence,
+      event_type: "terminal_coordination_reconciled",
+      payload: stable(payload),
+      previous_event_hash: previous.rows[0]?.event_hash || null,
+    };
+    const eventHash = objectDigest(material);
+    await client.query(`INSERT INTO core_continuity_events
+      (tenant_id,work_id,event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_by)
+      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [
+      actor.tenant_id,
+      workId,
+      crypto.randomUUID(),
+      sequence,
+      material.event_type,
+      JSON.stringify(material.payload),
+      material.previous_event_hash,
+      eventHash,
+      actor.agent_id || actor.user_id,
+    ]);
+    return Object.freeze({
+      sequence_number: sequence,
+      event_type: material.event_type,
+      event_hash: eventHash,
+    });
+  }
+  async function reconcileTerminalCoordination(client, actor, state, historical = {}) {
+    const workId = state.work.work_id;
+    const coordinationWorkId = state.work.legacy_work_id || null;
+    const coordination = await releaseTerminalCoordination(
+      client,
+      actor,
+      coordinationWorkId,
+    );
+    const reconciled = coordination.released_lease_count > 0 ||
+      coordination.closed_participant_count > 0;
+    let v2Event = null;
+    let legacyEvent = null;
+    if (reconciled) {
+      const payload = {
+        closure_event_type: "generic_closure_finalized",
+        reconciliation_source: "terminal_closure_replay",
+        coordination_work_id: coordinationWorkId,
+        released_lease_count: coordination.released_lease_count,
+        closed_participant_count: coordination.closed_participant_count,
+        historical_released_lease_count: historical.released_lease_count ?? null,
+        historical_closed_participant_count: historical.closed_participant_count ?? null,
+      };
+      v2Event = await appendV2Event(
+        client,
+        actor,
+        workId,
+        "terminal_coordination_reconciled",
+        payload,
+      );
+      if (state.work.legacy_work_id) {
+        legacyEvent = await appendLegacyTerminalCoordinationEvent(
+          client,
+          actor,
+          state.work.legacy_work_id,
+          { ...payload, v2_event_hash: v2Event.event_hash },
+        );
+      }
+      await injectFailure("terminal_coordination_reconciled", {
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        coordination_work_id: coordinationWorkId,
+      });
+    }
+    return Object.freeze({
+      reconciled,
+      released_lease_count: coordination.released_lease_count,
+      closed_participant_count: coordination.closed_participant_count,
+      event: v2Event,
+      legacy_event: legacyEvent,
+    });
   }
   async function verifyAndBackfillExistingClosure(client, actor, state, adapter) {
     const workId = state.work.work_id;
-    const [tasks, reportResult, eventResult] = await Promise.all([
-      client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, workId]),
-      client.query("SELECT tenant_id,work_id,report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
-      client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash
-        FROM tenant_work_event
-        WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
-        ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]),
-    ]);
+    const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, workId]);
+    const reportResult = await client.query("SELECT tenant_id,work_id,report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const eventResult = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash
+      FROM tenant_work_event
+      WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
+      ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]);
     const reportRow = reportResult.rows[0] || null;
     const report = plainRecord(reportRow?.report) ? reportRow.report : null;
     if (!report) fail("work_closure_projection_backfill_invalid");
@@ -4673,7 +5091,13 @@ export function createWorkContinuityV2Store({
       ),
     });
     if (!verification.verified) fail("work_closure_projection_backfill_invalid");
-    return { report, projection_backfilled: projectionBackfilled, verification };
+    const releasedLeaseCount = closureEvent?.payload?.released_lease_count;
+    const closedParticipantCount = closureEvent?.payload?.closed_participant_count;
+    return { report, projection_backfilled: projectionBackfilled, verification,
+      released_lease_count: Number.isSafeInteger(Number(releasedLeaseCount)) &&
+        Number(releasedLeaseCount) >= 0 ? Number(releasedLeaseCount) : null,
+      closed_participant_count: Number.isSafeInteger(Number(closedParticipantCount)) &&
+        Number(closedParticipantCount) >= 0 ? Number(closedParticipantCount) : null };
   }
   async function evaluateGenericClosure(identity, { work_id, adapter }) {
     await initialize();
@@ -4683,8 +5107,7 @@ export function createWorkContinuityV2Store({
     const state = await transaction((client) => closureState(client, actor, workId, false));
     assertPermission(canRead, state.work, actor);
     if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
-    const independent = state.evidence.length > 0 && state.evidence.every((item) => item.independently_verified === true && item.verified_by_agent_id !== state.work.created_by_agent_id);
-    return { work_id: workId, adapter, ready: Boolean(independent && state.join), independent_verification_persisted: independent, core_join_persisted: Boolean(state.join), idempotent_receipt: Boolean(state.receipt) };
+    return { work_id: workId, adapter, ...deriveGenericClosureReadiness(state) };
   }
   async function buildGenericCoreJoinRequest(identity, { work_id, adapter, idempotency_key }) {
     await initialize();
@@ -4700,10 +5123,17 @@ export function createWorkContinuityV2Store({
       const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]);
       return { work, tasks: tasks.rows, evidence: evidence.rows };
     });
-    if (!state.tasks.length || state.tasks.some((task) => task.status !== "completed" || task.acceptance_verified !== true)) fail("generic_core_join_tasks_incomplete");
-    if (!state.evidence.length || state.evidence.some((item) => item.independently_verified !== true)) fail("generic_core_join_evidence_incomplete");
-    const verifier = state.evidence.find((item) => item.verified_by_agent_id && item.verified_by_session_fingerprint);
-    if (!verifier || verifier.verified_by_agent_id === state.work.created_by_agent_id || verifier.verified_by_session_fingerprint === state.work.created_by_session_fingerprint) fail("generic_core_join_verifier_not_independent");
+    const readiness = deriveGenericClosureReadiness(state);
+    if (!readiness.required_tasks_complete) fail("generic_core_join_tasks_incomplete");
+    if (!state.evidence.length ||
+        state.evidence.some((item) => item.independently_verified !== true)) {
+      fail("generic_core_join_evidence_incomplete");
+    }
+    if (!readiness.independent_verification_persisted) {
+      fail("generic_core_join_verifier_not_independent");
+    }
+    const verifier = state.evidence.find((item) =>
+      independentlyVerifiedGenericEvidence(item, state.work));
     const evidenceDigests = state.evidence.map((item) => item.digest).sort();
     const evidenceDigest = objectDigest(evidenceDigests);
     const acceptanceCriteria = (state.work.acceptance_criteria || []).map((criterion, index) => ({
@@ -4737,24 +5167,48 @@ export function createWorkContinuityV2Store({
     const workId = uuid(work_id);
     if (!CLOSURE_ADAPTERS.includes(adapter)) fail("work_closure_adapter_invalid");
     return transaction(async (client) => {
+      // Resolve the immutable bridge without locking, then take the shared
+      // legacy Core row/advisory locks before tenant_work. Runtime Gallery
+      // writers use the same Core-row-first order, so a join either commits
+      // before this release sweep or observes the terminal status afterwards.
+      const bridge = await client.query(`SELECT legacy_work_id FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+      if (!bridge.rows[0]) fail("tenant_work_not_found");
+      const expectedLegacyWorkId = bridge.rows[0].legacy_work_id || null;
+      if (expectedLegacyWorkId) {
+        await lockLegacyCoordinationWork(client, actor, expectedLegacyWorkId);
+      }
       const state = await closureState(client, actor, workId, true);
+      if ((state.work.legacy_work_id || null) !== expectedLegacyWorkId) {
+        fail("work_closure_legacy_binding_changed");
+      }
       assertPermission(canClose, state.work, actor);
       if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
       if (state.receipt) {
         const replay = await verifyAndBackfillExistingClosure(client, actor, state, adapter);
+        const coordinationReconciliation = await reconcileTerminalCoordination(
+          client,
+          actor,
+          state,
+          {
+            released_lease_count: replay.released_lease_count,
+            closed_participant_count: replay.closed_participant_count,
+          },
+        );
         return { receipt: state.receipt, final_report: replay.report, idempotent_replay: true,
           projection_backfilled: replay.projection_backfilled,
-          closure_verification: replay.verification, archive_status: "ARCHIVED" };
+          closure_verification: replay.verification, terminal_status: "COMPLETED", archived: true,
+          released_lease_count: replay.released_lease_count,
+          closed_participant_count: replay.closed_participant_count,
+          terminal_coordination_reconciliation: coordinationReconciliation };
       }
-      const tasks = await client.query("SELECT status,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
-      const independent = state.evidence.length > 0 && state.evidence.every((item) => item.independently_verified === true && item.verified_by_agent_id !== state.work.created_by_agent_id);
-      const completeTasks = tasks.rows.length > 0 && tasks.rows.every((item) => item.status === "completed" && item.acceptance_verified === true);
-      if (!independent || !completeTasks || !state.join) fail("work_closure_gate_unsatisfied");
+      const readiness = deriveGenericClosureReadiness(state);
+      if (!readiness.ready) fail("work_closure_gate_unsatisfied");
       const ownerManualMergeClosure = state.evidence.some((item) =>
         item.kind === "owner_manual_merge_release" &&
         item.metadata?.note === "owner_manual_merge");
       const finalEvidenceDigest = crypto.createHash("sha256").update(JSON.stringify(state.evidence.map((item) => item.digest).sort())).digest("hex");
-      const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: state.work.progress_bp }, {
+      const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: 10_000 }, {
         adapter, server_verified_closure_context: { schema_version: "work_closure_context_v1",
           server_verified: true, independent_verification: { passed: true },
           core_join: { received: true, digest: state.join.core_join_digest }, final_evidence_digest: finalEvidenceDigest,
@@ -4765,8 +5219,26 @@ export function createWorkContinuityV2Store({
         VALUES ($1,$2,$3,$4,$5,$6,$7)`, [actor.tenant_id, finalized.receipt.receipt_id, workId, adapter, state.join.core_join_digest, finalEvidenceDigest, finalized.receipt.receipt_digest]);
       await client.query(`INSERT INTO tenant_work_final_report (tenant_id,work_id,report,report_digest) VALUES ($1,$2,$3::jsonb,$4)`,
         [actor.tenant_id, workId, JSON.stringify(finalized.final_report), reportDigest]);
-      await client.query(`UPDATE tenant_work SET status='COMPLETED',closed_at=now(),archived_at=now(),final_evidence_digest=$3,closure_type=$4,closure_reason='acceptance_criteria_verified',progress_bp=10000,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId, finalEvidenceDigest, adapter]);
+      await client.query(`UPDATE tenant_work SET status='COMPLETED',
+          closed_at=$3::timestamptz,archived_at=$3::timestamptz,
+          final_evidence_digest=$4,closure_type=$5,
+          closure_reason='acceptance_criteria_verified',progress_bp=10000,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2`, [
+        actor.tenant_id,
+        workId,
+        finalized.closed_at,
+        finalEvidenceDigest,
+        adapter,
+      ]);
+      const coordination = await releaseTerminalCoordination(
+        client,
+        actor,
+        state.work.legacy_work_id || null,
+      );
+      await injectFailure("generic_closure_coordination_released", {
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+      });
       await appendV2Event(client, actor, workId, "generic_closure_finalized", {
         adapter,
         archived: true,
@@ -4774,6 +5246,8 @@ export function createWorkContinuityV2Store({
         core_join_digest: state.join.core_join_digest,
         final_evidence_digest: finalEvidenceDigest,
         report_digest: reportDigest,
+        released_lease_count: coordination.released_lease_count,
+        closed_participant_count: coordination.closed_participant_count,
       });
       if (state.work.legacy_work_id) {
         await client.query(`UPDATE core_continuity_works SET status='completed',next_action='',updated_at=now()
@@ -4785,6 +5259,8 @@ export function createWorkContinuityV2Store({
         const payload = { adapter, closure_receipt_digest: finalized.receipt.receipt_digest,
           final_evidence_digest: finalEvidenceDigest,
           report_digest: objectDigest(finalized.final_report), archived: true,
+          released_lease_count: coordination.released_lease_count,
+          closed_participant_count: coordination.closed_participant_count,
           ...(ownerManualMergeClosure ? { note: "owner_manual_merge" } : {}) };
         const event = { tenant_id: actor.tenant_id, work_id: state.work.legacy_work_id,
           sequence_number: sequence, event_type: "generic_closure_finalized", payload,
@@ -4796,7 +5272,9 @@ export function createWorkContinuityV2Store({
           objectDigest(event), actor.agent_id || actor.user_id]);
       }
       return { receipt: finalized.receipt, final_report: finalized.final_report,
-        idempotent_replay: false, archive_status: "ARCHIVED",
+        idempotent_replay: false, terminal_status: "COMPLETED", archived: true,
+        released_lease_count: coordination.released_lease_count,
+        closed_participant_count: coordination.closed_participant_count,
         ...(ownerManualMergeClosure ? { closure_note: "owner_manual_merge" } : {}) };
     });
   }

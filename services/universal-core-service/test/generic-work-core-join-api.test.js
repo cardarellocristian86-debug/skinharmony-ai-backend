@@ -633,6 +633,34 @@ test("OFF suppresses injected NSCT runtime and invalid rollout fails Join closed
   });
 });
 
+test("Software Cognition initialization retries one transient PostgreSQL lock timeout", async () => {
+  let initialized = 0;
+  const runtime = {
+    async initialize() {
+      initialized += 1;
+      if (initialized === 1) {
+        const error = new Error("canceling statement due to lock timeout");
+        error.code = "55P03";
+        throw error;
+      }
+      return { ready: true };
+    },
+    async invoke() { return { execution_authorized: false }; },
+  };
+  await withService({ softwareCognitionMode: "ADVISORY", softwareCognitionRuntime: runtime },
+    async (_request, health) => {
+      let status;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        status = await health();
+        if (status.software_cognition.state === "ready") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(initialized, 2);
+      assert.equal(status.software_cognition.state, "ready");
+      assert.equal(status.software_cognition.ready, true);
+    });
+});
+
 test("generic Core Join routes deny missing, tampered, expired, and cross-Work context proofs", async () => {
   const store = createMemoryGenericWorkCoreJoinStore();
   store.restart_durable = true;
@@ -1066,11 +1094,12 @@ test("an invalid requested remote signer remains fail-closed without constructin
 
 test("PostgreSQL adapter initializes only additive schema before use", async () => {
   const queries = [];
-  const pool = { async query(sql) { queries.push(String(sql)); return { rows: [], rowCount: 0 }; }, async connect() { return { query: pool.query.bind(pool), release() {} }; } };
+  const pool = { async query(sql) { queries.push(typeof sql === "string" ? sql : sql.text); return { rows: [], rowCount: 0 }; }, async connect() { return { query: pool.query.bind(pool), release() {} }; } };
   const store = createPostgresGenericWorkCoreJoinStore({ pool });
   await store.initialize();
   assert.equal(store.restart_durable, true);
   assert.equal(store.distributed, true);
-  assert.match(queries[0], /CREATE TABLE IF NOT EXISTS generic_work_core_joins/);
-  assert.match(queries[0], /generic_work_core_join_events/);
+  const migration = queries.find((query) => /CREATE TABLE IF NOT EXISTS generic_work_core_joins/.test(query));
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS generic_work_core_joins/);
+  assert.match(migration, /generic_work_core_join_events/);
 });

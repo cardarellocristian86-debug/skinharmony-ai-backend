@@ -5,12 +5,14 @@ import {
   createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
+  deriveTenantWorkClosureVerification,
 } from "../src/work-continuity-v2-store.js";
 import {
   createHostNativeFinalizeAuthorizationProof,
   createLocalGenericWorkCoreJoinSigner,
 } from "../../universal-core-service/src/genericWorkCoreJoin.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
+import { createWorkContinuityRuntime } from "../src/work-continuity-runtime.js";
 
 function key(...parts) { return parts.join("\0"); }
 function cloneMap(map) { return new Map([...map].map(([k, v]) => [k, structuredClone(v)])); }
@@ -158,11 +160,13 @@ class AtomicWorkPool {
     let snapshot = null;
     return {
       async query(sql, parameters = []) {
-        const normalized = sql.replace(/\s+/g, " ").trim();
+        const queryText = typeof sql === "string" ? sql : sql.text;
+        const normalized = queryText.replace(/\s+/g, " ").trim();
         if (normalized === "BEGIN") { snapshot = pool.snapshot(); return { rows: [], rowCount: 0 }; }
         if (normalized === "COMMIT") { snapshot = null; return { rows: [], rowCount: 0 }; }
         if (normalized === "ROLLBACK") { if (snapshot) pool.restore(snapshot); snapshot = null; return { rows: [], rowCount: 0 }; }
-        return pool.query(sql, parameters);
+        if (normalized.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
+        return pool.query(queryText, parameters);
       },
       insertLegacy(identity, input) {
         const workKey = key(identity.tenantId, input.work_id);
@@ -182,7 +186,8 @@ class AtomicWorkPool {
   }
 
   async query(sql, parameters = []) {
-    const q = sql.replace(/\s+/g, " ").trim();
+    const queryText = typeof sql === "string" ? sql : sql.text;
+    const q = queryText.replace(/\s+/g, " ").trim();
     this.queries.push(q);
     this.queryParameters.push({ sql: q, parameters: structuredClone(parameters) });
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
@@ -271,10 +276,17 @@ class AtomicWorkPool {
       const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] && work.legacy_work_id === parameters[1]);
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT legacy_work_id FROM tenant_work")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      return {
+        rows: row ? [{ legacy_work_id: row.legacy_work_id || null }] : [],
+        rowCount: row ? 1 : 0,
+      };
+    }
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)")) {
-      const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] &&
+      const rows = [...this.works.values()].filter((work) => work.tenant_id === parameters[0] &&
         (work.legacy_work_id === parameters[1] || work.work_id === parameters[1]));
-      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+      return { rows: structuredClone(rows), rowCount: rows.length };
     }
     if (q.startsWith("SELECT legacy_projection_sequence FROM tenant_work")) {
       const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] &&
@@ -290,6 +302,11 @@ class AtomicWorkPool {
       const row = this.legacy.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone({ project_id: row.project_id, status: row.status,
         anchor: row.anchor || null, intent_digest: row.intent_digest || null })] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT anchor,intent_digest FROM core_continuity_intent_anchors")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone({ anchor: row.anchor || null,
+        intent_digest: row.intent_digest || null })] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO tenant_work ")) {
       let row;
@@ -324,6 +341,27 @@ class AtomicWorkPool {
       }
       this.works.set(key(row.tenant_id, row.work_id), row);
       return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status=$3::varchar,next_action=$4")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || Number(row.legacy_projection_sequence || 0) >= Number(parameters[5])) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, {
+        status: parameters[2],
+        next_action: parameters[3],
+        updated_at: Date.parse(row.updated_at) > Date.parse(parameters[4])
+          ? row.updated_at
+          : parameters[4],
+        legacy_projection_sequence: parameters[5],
+        legacy_projection_event_hash: parameters[6],
+        legacy_projection_updated_at: parameters[7],
+      });
+      if (parameters[8].includes(row.status)) {
+        row.closed_at ||= parameters[4];
+        row.archived_at ||= parameters[4];
+      }
+      return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work SET project_id=$3")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
@@ -422,13 +460,49 @@ class AtomicWorkPool {
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("UPDATE core_continuity_leases SET status='released'")) {
-      return { rows: [], rowCount: 0 };
+      const rows = [];
+      for (const lease of this.leases.values()) {
+        if (lease.tenant_id === parameters[0] && lease.work_id === parameters[1] &&
+            lease.status === "active") {
+          lease.status = "released";
+          lease.released_at ||= "2026-08-08T10:00:03.000Z";
+          lease.expires_at = "2026-08-08T10:00:03.000Z";
+          rows.push({ lease_id: lease.lease_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET status='closed'")) {
+      const rows = [];
+      for (const participant of this.participants.values()) {
+        if (participant.tenant_id === parameters[0] &&
+            participant.work_id === parameters[1] && participant.status === "active") {
+          participant.status = "closed";
+          participant.last_seen_at = "2026-08-08T10:00:03.000Z";
+          participant.expires_at = "2026-08-08T10:00:03.000Z";
+          rows.push({ session_id: participant.session_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT work_id,title,weight,status,required FROM tenant_work_task")) {
+      const row = this.tasks.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO tenant_work_task")) {
-      const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
-        title: parameters[3], weight: parameters[4], status: "planned", required: parameters[5], acceptance_verified: false };
+      const taskKey = key(parameters[0], parameters[1]);
+      const previous = this.tasks.get(taskKey);
+      if (q.includes("ON CONFLICT (tenant_id,task_id)") && previous &&
+          previous.work_id !== parameters[2]) {
+        return { rows: [], rowCount: 0 };
+      }
+      const row = { ...(previous || {}), tenant_id: parameters[0], task_id: parameters[1],
+        work_id: parameters[2], title: parameters[3], weight: parameters[4],
+        status: q.includes("ON CONFLICT (tenant_id,task_id)") ? parameters[5] : "planned",
+        required: q.includes("ON CONFLICT (tenant_id,task_id)") ? parameters[6] : parameters[5],
+        acceptance_verified: previous?.acceptance_verified || false };
       this.tasks.set(key(row.tenant_id, row.task_id), row);
-      return { rows: [], rowCount: 1 };
+      return { rows: q.includes("RETURNING work_id") ? [{ work_id: row.work_id }] : [], rowCount: 1 };
     }
     if (q.startsWith("SELECT evidence_id,digest,metadata FROM tenant_work_evidence")) {
       const row = [...this.evidence.values()].find((item) =>
@@ -437,8 +511,23 @@ class AtomicWorkPool {
         item.metadata?.manual_merge_readback_id === parameters[2]);
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT work_id,kind,digest,required, independently_verified")) {
+      const row = this.evidence.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("INSERT INTO tenant_work_evidence")) {
-      const row = {
+      const evidenceKey = key(parameters[0], parameters[1]);
+      if (q.includes("ON CONFLICT (tenant_id,evidence_id)") && this.evidence.has(evidenceKey)) {
+        return { rows: [], rowCount: 0 };
+      }
+      const genericCandidate = q.includes("ON CONFLICT (tenant_id,evidence_id)");
+      const row = genericCandidate ? {
+        tenant_id: parameters[0], evidence_id: parameters[1], work_id: parameters[2],
+        kind: parameters[3], digest: parameters[4], required: parameters[5],
+        independently_verified: parameters[6], verified_by_agent_id: parameters[7],
+        verified_by_session_fingerprint: parameters[8], weight: parameters[9],
+        metadata: JSON.parse(parameters[10]), created_at: "2026-08-08T10:00:02.000Z",
+      } : {
         tenant_id: parameters[0], evidence_id: parameters[1], work_id: parameters[2],
         kind: "owner_manual_merge_release", digest: parameters[3], required: true,
         independently_verified: true, verified_by_agent_id: parameters[4],
@@ -446,12 +535,19 @@ class AtomicWorkPool {
         metadata: JSON.parse(parameters[6]), created_at: "2026-08-08T10:00:02.000Z",
       };
       this.evidence.set(key(row.tenant_id, row.evidence_id), row);
-      return { rows: [], rowCount: 1 };
+      return { rows: q.includes("RETURNING work_id") ? [{ work_id: row.work_id }] : [], rowCount: 1 };
     }
     if (q.startsWith("SELECT * FROM tenant_work_evidence")) {
       const rows = [...this.evidence.values()].filter((item) =>
         item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
         (!q.includes("required=true") || item.required === true));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_task")) {
+      const rows = [...this.tasks.values()].filter((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
+        (!q.includes("required=true") || item.required === true))
+        .sort((left, right) => String(left.task_id).localeCompare(String(right.task_id)));
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
     if (q.startsWith("SELECT status,acceptance_verified FROM tenant_work_task")) {
@@ -460,6 +556,40 @@ class AtomicWorkPool {
         item.required === true).map(({ status, acceptance_verified }) =>
         ({ status, acceptance_verified }));
       return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT title,weight,status,required,acceptance_verified FROM tenant_work_task")) {
+      const rows = [...this.tasks.values()].filter((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1]);
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT weight,required,independently_verified FROM tenant_work_evidence")) {
+      const rows = [...this.evidence.values()].filter((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1]);
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT core_join_digest FROM tenant_work_core_join")) {
+      const row = this.joins.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ core_join_digest: row.core_join_digest }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT count(*) FILTER (WHERE parent_work_id=$2")) {
+      const operational = new Set(parameters[2]);
+      const rows = [...this.works.values()].filter((work) => work.tenant_id === parameters[0]);
+      return { rows: [{
+        dependent_work_count: rows.filter((work) => work.parent_work_id === parameters[1] &&
+          operational.has(work.status)).length,
+        blocking_dependencies: rows.filter((work) => work.work_id === parameters[3] &&
+          operational.has(work.status)).length,
+      }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET progress_bp=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        progress_bp: parameters[2], progress_version: parameters[3], progress_source: parameters[4],
+        priority: parameters[5], priority_score: parameters[6], priority_version: parameters[7],
+        priority_context: JSON.parse(parameters[8]), updated_at: "2026-08-08T10:00:03.000Z",
+      });
+      return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT * FROM tenant_work_core_join")) {
       const row = this.joins.get(key(parameters[0], parameters[1]));
@@ -482,12 +612,16 @@ class AtomicWorkPool {
       this.finalReports.set(key(row.tenant_id, row.work_id), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT tenant_id,work_id,report,report_digest,created_at FROM tenant_work_final_report")) {
+      const row = this.finalReports.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("UPDATE tenant_work SET status='COMPLETED'")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
       if (!row) return { rows: [], rowCount: 0 };
-      Object.assign(row, { status: "COMPLETED", closed_at: "2026-08-08T10:00:03.000Z",
-        archived_at: "2026-08-08T10:00:03.000Z", final_evidence_digest: parameters[2],
-        closure_type: parameters[3], closure_reason: "acceptance_criteria_verified",
+      Object.assign(row, { status: "COMPLETED", closed_at: parameters[2],
+        archived_at: parameters[2], final_evidence_digest: parameters[3],
+        closure_type: parameters[4], closure_reason: "acceptance_criteria_verified",
         progress_bp: 10000, updated_at: "2026-08-08T10:00:03.000Z" });
       return { rows: [], rowCount: 1 };
     }
@@ -512,6 +646,14 @@ class AtomicWorkPool {
       this.coreEvents.set(key(row.tenant_id, row.event_id), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT status FROM core_continuity_works")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ status: row.status }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ work_id: row.work_id }] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,") &&
         q.includes("open_work_review_consumed") && q.includes("work_v2_created")) {
       const rows = [...this.events.values()].filter((event) =>
@@ -532,6 +674,14 @@ class AtomicWorkPool {
       const rows = [...this.events.values()].filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1])
         .sort((a, b) => a.sequence_number - b.sequence_number);
       return { rows: rows.length ? [structuredClone(rows.at(-1))] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,previous_event_hash,event_hash FROM tenant_work_event")) {
+      const rows = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "generic_closure_finalized")
+        .sort((left, right) => Number(right.sequence_number) - Number(left.sequence_number));
+      return { rows: rows.length ? [structuredClone(rows[0])] : [],
+        rowCount: rows.length ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO tenant_work_event")) {
       const row = { tenant_id: parameters[0], work_id: parameters[1], event_id: parameters[2],
@@ -556,6 +706,10 @@ class AtomicWorkPool {
         .slice(0, parameters[2]);
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
+    if (q.startsWith("SELECT w.tenant_id,w.work_id,w.project_id,w.parent_work_id")) {
+      const rows = [...this.legacy.values()].slice(0, parameters[0]);
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT work_id,project_id,parent_work_id,idea")) {
       const row = this.legacy.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
@@ -573,6 +727,101 @@ class AtomicWorkPool {
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_participants")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) return { rows: [], rowCount: 0 };
     throw new Error(`fake_query_unhandled:${q}`);
+  }
+}
+
+class LockAwareIntegratedWorkPool extends AtomicWorkPool {
+  constructor() {
+    super();
+    this.idempotency = new Map();
+    this.coreRowLocks = new Map();
+    this.nextClientId = 0;
+    this.firstCoreLockObserved = new Promise((resolve) => {
+      this.resolveFirstCoreLockObserved = resolve;
+    });
+    this.secondCoreLockWaiting = new Promise((resolve) => {
+      this.resolveSecondCoreLockWaiting = resolve;
+    });
+    this.firstCoreLockGate = new Promise((resolve) => {
+      this.releaseFirstCoreLockGate = resolve;
+    });
+    this.firstCoreLockPaused = false;
+    this.secondCoreLockSignalled = false;
+  }
+
+  async acquireCoreRowLock(clientId, lockKey) {
+    let lock = this.coreRowLocks.get(lockKey);
+    if (!lock) {
+      lock = { owner: null, waiters: [] };
+      this.coreRowLocks.set(lockKey, lock);
+    }
+    while (lock.owner !== null && lock.owner !== clientId) {
+      if (!this.secondCoreLockSignalled) {
+        this.secondCoreLockSignalled = true;
+        this.resolveSecondCoreLockWaiting();
+      }
+      await new Promise((resolve) => lock.waiters.push(resolve));
+    }
+    lock.owner = clientId;
+    if (!this.firstCoreLockPaused) {
+      this.firstCoreLockPaused = true;
+      this.resolveFirstCoreLockObserved();
+      await this.firstCoreLockGate;
+    }
+  }
+
+  releaseCoreRowLocks(clientId) {
+    for (const lock of this.coreRowLocks.values()) {
+      if (lock.owner !== clientId) continue;
+      lock.owner = null;
+      const waiter = lock.waiters.shift();
+      waiter?.();
+    }
+  }
+
+  async connect() {
+    const pool = this;
+    const clientId = ++this.nextClientId;
+    return {
+      async query(sql, parameters = []) {
+        const queryText = typeof sql === "string" ? sql : sql.text;
+        const normalized = queryText.replace(/\s+/g, " ").trim();
+        if (normalized === "BEGIN") return { rows: [], rowCount: 0 };
+        if (normalized === "COMMIT" || normalized === "ROLLBACK") {
+          pool.releaseCoreRowLocks(clientId);
+          return { rows: [], rowCount: 0 };
+        }
+        if (
+          normalized.includes("FROM core_continuity_works") &&
+          normalized.includes("FOR UPDATE") &&
+          (normalized.startsWith("SELECT work_id") || normalized.startsWith("SELECT status"))
+        ) {
+          await pool.acquireCoreRowLock(clientId, key(parameters[0], parameters[1]));
+        }
+        if (normalized.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
+        return pool.query(queryText, parameters);
+      },
+      release() {
+        pool.releaseCoreRowLocks(clientId);
+      },
+    };
+  }
+
+  async query(sql, parameters = []) {
+    const queryText = typeof sql === "string" ? sql : sql.text;
+    const normalized = queryText.replace(/\s+/g, " ").trim();
+    if (normalized.includes("CREATE TABLE IF NOT EXISTS core_continuity_works")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (normalized.startsWith("SELECT operation,request_digest,result FROM core_continuity_idempotency")) {
+      const row = this.idempotency.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (normalized.startsWith("SELECT work_id FROM core_continuity_works")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ work_id: row.work_id }] : [], rowCount: row ? 1 : 0 };
+    }
+    return super.query(queryText, parameters);
   }
 }
 
@@ -612,9 +861,24 @@ function boundedUniqueText(prefix, index, length) {
   return `${marker}${"x".repeat(length - marker.length)}`;
 }
 
+function fixtureLegacyAnchor(input) {
+  return {
+    schema_version: "intent_anchor_v1",
+    initial_message: "transaction fixture bootstrap",
+    idea: input.idea,
+    objective: input.objective,
+    acceptance_criteria: input.acceptance_criteria,
+    constraints: input.constraints || [],
+    source: { client_type: input.client_type || "codex", session_id: input.session_id },
+    immutable: true,
+  };
+}
+
 function legacyRuntime(pool) {
   return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
     const row = client.insertLegacy(who, input);
+    row.anchor = fixtureLegacyAnchor(input);
+    row.intent_digest = stableDigest(row.anchor);
     return { work_id: row.work_id, intent_digest: row.intent_digest,
       event: { event_hash: "b".repeat(64) } };
   } };
@@ -717,6 +981,33 @@ test("V2 store accepts exact shared bootstrap text boundaries", async () => {
   assert.equal(created.acceptance_criteria.length, 250);
   assert.equal(created.acceptance_criteria.at(-1).length, 2_000);
   assert.equal(pool.works.size, 1);
+});
+
+test("V2 UUID inputs canonicalize before persistence and event hashing", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z"),
+  });
+  const uppercaseWorkId = "ABCDEF12-3456-4ABC-8DEF-ABCDEF123456";
+  const canonicalWorkId = uppercaseWorkId.toLowerCase();
+  const created = await store.createWork(identity(), {
+    ...createInput(),
+    work_id: uppercaseWorkId,
+  });
+  const createdEvent = [...pool.events.values()].find((event) =>
+    event.event_type === "work_v2_created");
+
+  assert.equal(created.work_id, canonicalWorkId);
+  assert.equal(createdEvent.work_id, canonicalWorkId);
+  assert.equal(createdEvent.event_hash, stableDigest({
+    tenant_id: createdEvent.tenant_id,
+    work_id: canonicalWorkId,
+    sequence_number: createdEvent.sequence_number,
+    event_type: createdEvent.event_type,
+    payload: createdEvent.payload,
+    previous_event_hash: createdEvent.previous_event_hash,
+  }));
 });
 
 test("V2 store rejects acceptance and constraint count or item-length overflow", async () => {
@@ -1043,6 +1334,76 @@ test("persists the bounded Universal Core creation receipt in the Work event led
   }), /work_bootstrap_core_authorization_receipt_invalid/);
 });
 
+test("separates canonical V2 intent from the legacy anchor and replays the historical encoding safely", async () => {
+  const pool = new AtomicWorkPool();
+  const legacyAnchor = {
+    schema_version: "intent_anchor_v1",
+    initial_message: "legacy bootstrap",
+    idea: "Atomic work",
+    objective: "Create legacy and V2 atomically",
+    acceptance_criteria: ["atomic"],
+    constraints: [],
+    source: { client_type: "codex", session_id: "session-001" },
+    immutable: true,
+  };
+  const legacyIntentDigest = stableDigest(legacyAnchor);
+  const divergentLegacyRuntime = {
+    initialize: async () => {},
+    ensureWithClient: async (client, who, input) => {
+      const row = client.insertLegacy(who, input);
+      row.anchor = legacyAnchor;
+      row.intent_digest = legacyIntentDigest;
+      return { work_id: row.work_id, intent_digest: legacyIntentDigest,
+        event: { event_hash: "b".repeat(64) } };
+    },
+  };
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: divergentLegacyRuntime,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: coreAuthorizationReceipt(),
+  });
+  const createdEvent = [...pool.events.values()].find((event) =>
+    event.event_type === "work_v2_created");
+
+  assert.equal(created.work.intent_digest, input.intent_digest);
+  assert.equal(createdEvent.payload.intent_digest, input.intent_digest);
+  assert.equal(createdEvent.payload.legacy_intent_digest, legacyIntentDigest);
+
+  // Recreate the immutable event shape emitted by the previous writer: its
+  // intent_digest contained the legacy anchor and had no separate legacy field.
+  const historicalPayload = { ...createdEvent.payload, intent_digest: legacyIntentDigest };
+  delete historicalPayload.legacy_intent_digest;
+  createdEvent.payload = historicalPayload;
+  createdEvent.event_hash = stableDigest({
+    tenant_id: createdEvent.tenant_id,
+    work_id: createdEvent.work_id,
+    sequence_number: createdEvent.sequence_number,
+    event_type: createdEvent.event_type,
+    payload: historicalPayload,
+    previous_event_hash: createdEvent.previous_event_hash,
+  });
+  pool.databaseNow = "2026-08-08T10:05:00.000Z";
+  const replay = await store.readCreatedWorkByBootstrapRequest(identity(), input);
+  assert.equal(replay.work.intent_digest, input.intent_digest);
+  assert.equal(replay.replay_source, "durable_bootstrap_mapping");
+
+  createdEvent.payload.intent_digest = "f".repeat(64);
+  createdEvent.event_hash = stableDigest({
+    tenant_id: createdEvent.tenant_id,
+    work_id: createdEvent.work_id,
+    sequence_number: createdEvent.sequence_number,
+    event_type: createdEvent.event_type,
+    payload: createdEvent.payload,
+    previous_event_hash: createdEvent.previous_event_hash,
+  });
+  await assert.rejects(
+    store.readCreatedWorkByBootstrapRequest(identity(), input),
+    /work_bootstrap_replay_evidence_invalid/,
+  );
+});
+
 test("late durable bootstrap replay accepts a request that originally omitted intent_digest", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
@@ -1055,11 +1416,12 @@ test("late durable bootstrap replay accepts a request that originally omitted in
     _core_authorization_receipt: coreAuthorizationReceipt(),
   });
 
-  assert.equal(created.work.intent_digest, "a".repeat(64));
+  const expectedIntentDigest = stableDigest(fixtureLegacyAnchor(input));
+  assert.equal(created.work.intent_digest, expectedIntentDigest);
   pool.databaseNow = "2026-08-08T10:05:00.000Z";
   const replay = await store.readCreatedWorkByBootstrapRequest(identity(), input);
   assert.equal(replay.work.work_id, created.work.work_id);
-  assert.equal(replay.work.intent_digest, "a".repeat(64));
+  assert.equal(replay.work.intent_digest, expectedIntentDigest);
   assert.equal(replay.replay_source, "durable_bootstrap_mapping");
   assert.equal(replay.execution_authorized, false);
   assert.equal(replay.core_authorization_receipt, null);
@@ -1181,7 +1543,7 @@ test("coordinated create promotes a concurrent legacy projection to the requeste
     source_sequence_number: 3, source_event_type: "work_updated", source_event_hash: "d".repeat(64),
     source_event_payload: {},
   });
-  await store.preflightGallery(identity(), { project_id: input.project_id });
+  await store.projectLegacyCatalog(identity(), { project_id: input.project_id });
   assert.equal(pool.works.get(key("tenant-a", first.work.work_id)).work_type, input.work_type,
     "a delayed legacy event must not overwrite the promoted V2 identity");
   const replay = await store.createNewWork(identity(), input);
@@ -1269,6 +1631,42 @@ test("Gallery V3 archive replays one committed archive and rejects key reuse wit
   assert.equal([...pool.events.values()].filter((event) => event.event_type === "work_archived_v3").length, 1);
 });
 
+test("archiving an unbridged V2 Work never releases an identically named Core lease", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "62626262-6262-4262-8262-626262626262";
+  const leaseId = "63636363-6363-4363-8363-636363636363";
+  pool.works.set(key("tenant-a", workId), candidateWork(114, {
+    work_id: workId, legacy_work_id: null, status: "PLANNED",
+  }));
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, project_id: "foreign-core-project",
+    status: "active", next_action: "retain lease",
+    updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.leases.set(key("tenant-a", workId, leaseId), {
+    tenant_id: "tenant-a", work_id: workId, lease_id: leaseId,
+    status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+
+  const archived = await store.archiveWork(identity(), {
+    work_id: workId, reason: "Archive only the V2 identity.",
+    idempotency_key: "archive-core-namespace-collision",
+  });
+  const replay = await store.archiveWork(identity(), {
+    work_id: workId, reason: "Archive only the V2 identity.",
+    idempotency_key: "archive-core-namespace-collision",
+  });
+
+  assert.equal(archived.released_lease_count, 0);
+  assert.equal(replay.released_lease_count, 0);
+  assert.equal(pool.leases.get(key("tenant-a", workId, leaseId)).status, "active");
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "active");
+});
+
 test("a private Gallery assignment loses agent read access on archive, reopen, and reassignment", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
@@ -1351,6 +1749,39 @@ test("Gallery V3 rejects a caller-supplied Work id already bound to another Work
     "the rejected collision must leave its review available for a corrected request",
   );
   assert.equal(pool.works.size, 1);
+});
+
+test("Gallery V3 rejects a caller-supplied Work id owned by the Core namespace", async () => {
+  const pool = new AtomicWorkPool();
+  const collisionId = "61616161-6161-4161-8161-616161616161";
+  pool.legacy.set(key("tenant-a", collisionId), {
+    tenant_id: "tenant-a", work_id: collisionId, project_id: "other-core-project",
+    status: "active", next_action: "remain separate",
+    updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z"),
+  });
+  const candidate = {
+    ...createInput(), request_id: "request-core-namespace-collision",
+    work_id: collisionId, work_name: "Native V2 collision",
+    idea: "Must not alias a Core Work", objective: "Keep namespaces disjoint",
+  };
+  const input = await reviewed(store, candidate);
+
+  await assert.rejects(store.queueNewWork(identity(), input),
+    /tenant_work_core_id_collision/);
+  const namespaceLock = pool.queryParameters.findIndex((call) =>
+    call.sql.startsWith("SELECT pg_advisory_xact_lock") &&
+    call.parameters[0] === "tenant-a" && call.parameters[1] === collisionId);
+  const coreCollisionRead = pool.queries.findIndex((query) =>
+    query.startsWith("SELECT work_id FROM core_continuity_works"));
+  assert.ok(namespaceLock >= 0 && namespaceLock < coreCollisionRead,
+    "V2 must own the shared namespace lock before checking Core");
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+  assert.equal(pool.legacy.get(key("tenant-a", collisionId)).status, "active");
 });
 
 test("an exact Codex agent can accept a Gallery offer, but an impersonating host cannot", async () => {
@@ -1663,7 +2094,7 @@ test("an owner-approved review remains consumable when a legacy candidate is red
   assert.equal(pool.works.size, 2);
 });
 
-test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {
+test("preflight is a pure projection read and ignores legacy-only rows", async () => {
   const pool = new AtomicWorkPool();
   const legacyId = "22222222-2222-4222-8222-222222222222";
   pool.legacy.set(key("tenant-a", legacyId), { tenant_id: "tenant-a", work_id: legacyId,
@@ -1672,16 +2103,17 @@ test("preflight projects legacy rows without inventing ownership and preserves G
     updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
     source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const stateBefore = pool.snapshot();
   const gallery = await store.preflightGallery(identity(), { project_id: "nyra-core" });
   assert.equal(gallery.schema_version, "tenant_work_gallery_v1");
   assert.equal(gallery.source_schema_version, "work_continuity_v2");
-  assert.equal(gallery.works[0].work_id, legacyId);
-  assert.equal(gallery.works[0].status, "active");
-  assert.equal(pool.works.get(key("tenant-a", legacyId)).owner_user_id, null);
-  const insert = pool.queries.find((query) => query.startsWith("INSERT INTO tenant_work "));
-  assert.match(insert, /\$8::varchar/);
-  assert.equal((insert.match(/\$8::varchar/g) || []).length, 3,
-    "PostgreSQL must infer one varchar type for status and both archive predicates");
+  assert.deepEqual(gallery.works, []);
+  assert.deepEqual(pool.snapshot(), stateBefore,
+    "an owner preflight must not create a projection or append an event");
+  assert.equal(pool.queries.some((query) => query.includes("FROM core_continuity_works")), false,
+    "preflight must not scan the legacy writer source");
+  assert.equal(pool.queries.every((query) => query.startsWith("SELECT ")), true,
+    `preflight issued a non-read query: ${pool.queries.join(" | ")}`);
 });
 
 test("Gallery projection advances from the authoritative Work event and exact replay is idempotent", async () => {
@@ -1693,18 +2125,126 @@ test("Gallery projection advances from the authoritative Work event and exact re
     updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
     source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
-  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   const source = pool.legacy.get(key("tenant-a", legacyId));
   Object.assign(source, { status: "release_ready", next_action: "release", updated_at: "2026-08-08T10:01:00.000Z",
     source_sequence_number: 2, source_event_type: "core_join_issued",
     source_event_hash: "b".repeat(64), source_event_payload: {} });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   const first = await store.preflightGallery(identity(), { project_id: "nyra-core" });
   assert.equal(first.works[0].status, "release_ready");
   assert.equal(pool.works.get(key("tenant-a", legacyId)).status, "HANDOFF");
   assert.equal(pool.works.get(key("tenant-a", legacyId)).legacy_projection_sequence, 2);
   const eventCount = pool.events.size;
-  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   assert.equal(pool.events.size, eventCount, "same authoritative event must not append another projection event");
+});
+
+test("linked V2 projection advances operational state without replacing canonical identity", async () => {
+  const pool = new AtomicWorkPool();
+  const legacyId = "77777777-7777-4777-8777-777777777777";
+  const canonical = candidateWork(77, {
+    work_id: legacyId,
+    legacy_work_id: legacyId,
+    work_name: "Canonical V2 delivery",
+    work_type: "software_git",
+    project_id: "canonical-project",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    intent_digest: "d".repeat(64),
+    idea: "Canonical idea",
+    objective: "Canonical objective",
+    acceptance_criteria: ["canonical criterion"],
+    architecture: { runtime: { service: "canonical" } },
+    status: "ACTIVE",
+    next_action: "canonical next action",
+    updated_at: "2026-08-08T10:00:00.000Z",
+    legacy_projection_sequence: 1,
+    legacy_projection_event_hash: "a".repeat(64),
+    legacy_projection_updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.works.set(key("tenant-a", legacyId), canonical);
+  const source = {
+    tenant_id: "tenant-a",
+    work_id: legacyId,
+    project_id: "legacy-project-must-not-win",
+    parent_work_id: null,
+    idea: "Legacy name must not win",
+    objective: "Legacy objective must not win",
+    status: "blocked",
+    next_action: "resolve the projected blocker",
+    created_at: "2026-08-01T10:00:00.000Z",
+    updated_at: "2026-08-08T10:01:00.000Z",
+    source_sequence_number: 2,
+    source_event_type: "incident_recorded",
+    source_event_hash: "b".repeat(64),
+    source_event_payload: {},
+  };
+  pool.legacy.set(key("tenant-a", legacyId), source);
+  const canonicalFields = [
+    "work_id", "legacy_work_id", "work_code", "work_name", "work_type", "project_id",
+    "owner_user_id", "created_by_user_id", "intent_digest", "idea", "objective",
+    "acceptance_criteria", "architecture",
+  ];
+  const selectCanonicalFields = (work) => Object.fromEntries(
+    canonicalFields.map((field) => [field, structuredClone(work[field])]),
+  );
+  const before = selectCanonicalFields(canonical);
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:02:00.000Z"),
+  });
+
+  await store.projectLegacyCatalog(identity(), { project_id: source.project_id });
+
+  const projected = pool.works.get(key("tenant-a", legacyId));
+  assert.equal(projected.status, "BLOCKED");
+  assert.equal(projected.next_action, "resolve the projected blocker");
+  assert.equal(projected.legacy_projection_sequence, 2);
+  assert.equal(projected.legacy_projection_event_hash, "b".repeat(64));
+  assert.deepEqual(selectCanonicalFields(projected), before);
+  const projectionEvents = () => [...pool.events.values()].filter(
+    (event) => event.event_type === "legacy_work_projection_synced",
+  );
+  assert.equal(projectionEvents().length, 1);
+
+  await store.projectLegacyCatalog(identity(), { project_id: source.project_id });
+  assert.equal(projectionEvents().length, 1, "exact source replay must be a no-op");
+
+  Object.assign(source, {
+    status: "active",
+    next_action: "stale event must not regress state",
+    source_sequence_number: 1,
+    source_event_hash: "a".repeat(64),
+  });
+  await store.projectLegacyCatalog(identity(), { project_id: source.project_id });
+  assert.equal(projected.status, "BLOCKED");
+  assert.equal(projected.next_action, "resolve the projected blocker");
+  assert.equal(projected.legacy_projection_sequence, 2);
+  assert.equal(projectionEvents().length, 1, "older source sequence must be a no-op");
+
+  Object.assign(source, {
+    status: "completed",
+    next_action: "",
+    source_sequence_number: 3,
+    source_event_type: "checkpoint_created",
+    source_event_hash: "c".repeat(64),
+  });
+  await store.projectLegacyCatalog(identity(), { project_id: source.project_id });
+  assert.equal(projected.status, "BLOCKED", "terminal state still requires closure evidence");
+  assert.equal(projected.legacy_projection_sequence, 2);
+  assert.equal(projectionEvents().length, 1);
+
+  Object.assign(source, {
+    source_sequence_number: 4,
+    source_event_type: "closure_finalized",
+    source_event_hash: "d".repeat(64),
+  });
+  await store.projectLegacyCatalog(identity(), { project_id: source.project_id });
+  assert.equal(projected.status, "COMPLETED");
+  assert.equal(projected.legacy_projection_sequence, 4);
+  assert.equal(projectionEvents().length, 2);
+  assert.deepEqual(selectCanonicalFields(projected), before);
 });
 
 test("terminal projection requires immutable Core closure evidence", async () => {
@@ -1716,16 +2256,16 @@ test("terminal projection requires immutable Core closure evidence", async () =>
     updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
     source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
-  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   const source = pool.legacy.get(key("tenant-a", legacyId));
   Object.assign(source, { status: "completed", next_action: "", updated_at: "2026-08-08T10:01:00.000Z",
     source_sequence_number: 2, source_event_type: "checkpoint_created",
     source_event_hash: "b".repeat(64), source_event_payload: {} });
-  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   assert.equal(pool.works.get(key("tenant-a", legacyId)).status, "ACTIVE");
   Object.assign(source, { source_sequence_number: 3, source_event_type: "closure_finalized",
     source_event_hash: "c".repeat(64) });
-  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  await store.projectLegacyCatalog(identity(), { project_id: "nyra-core" });
   const projected = pool.works.get(key("tenant-a", legacyId));
   assert.equal(projected.status, "COMPLETED");
   assert.equal(projected.archived_at, "2026-08-08T10:01:00.000Z");
@@ -1765,16 +2305,553 @@ test("Open Work Review rejects resume/chat intents", async () => {
     request: "resume", create_request: createInput() }), /open_work_review_create_intent_required/);
 });
 
+test("V2 read remains state-pure when only an admin-visible legacy Work exists", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "96969696-9696-4969-8969-969696969696";
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z"),
+  });
+  await store.initialize();
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a",
+    work_id: workId,
+    project_id: "nyra-core",
+    idea: "Legacy-only Work",
+    objective: "Remain unprojected during read.",
+    status: "active",
+    next_action: "Use the explicit projection writer.",
+    created_at: "2026-08-08T09:00:00.000Z",
+    updated_at: "2026-08-08T09:00:00.000Z",
+    source_sequence_number: 1,
+    source_event_type: "work_created",
+    source_event_hash: "a".repeat(64),
+    source_event_payload: {},
+  });
+  const before = JSON.stringify(Object.fromEntries([
+    "legacy", "works", "events", "sequences",
+  ].map((name) => [name, [...pool[name]]])));
+
+  await assert.rejects(store.readWork(identity(), { work_id: workId }),
+    /tenant_work_not_found/);
+
+  const after = JSON.stringify(Object.fromEntries([
+    "legacy", "works", "events", "sequences",
+  ].map((name) => [name, [...pool[name]]])));
+  assert.equal(after, before);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.events.size, 0);
+});
+
+test("legacy catalog and backfill fail closed on an unbridged V2 UUID collision", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "64646464-6464-4464-8464-646464646464";
+  const v2 = candidateWork(115, {
+    work_id: workId, legacy_work_id: null, work_name: "Canonical V2 identity",
+    project_id: "v2-project", objective: "Must remain unchanged",
+  });
+  pool.works.set(key("tenant-a", workId), v2);
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, project_id: "foreign-core-project",
+    idea: "Foreign Core identity", objective: "Must never overwrite V2",
+    status: "active", next_action: "remain separate",
+    created_at: "2026-08-08T09:00:00.000Z",
+    updated_at: "2026-08-08T10:00:00.000Z",
+    source_sequence_number: 1, source_event_type: "work_created",
+    source_event_hash: "a".repeat(64), source_event_payload: {},
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+  const before = pool.snapshot();
+
+  await assert.rejects(store.projectLegacyCatalog(identity(), {
+    project_id: "foreign-core-project",
+  }), /tenant_work_legacy_link_conflict/);
+  await assert.rejects(store.backfillLegacyProjection({ limit: 10 }),
+    /tenant_work_legacy_link_conflict/);
+
+  assert.deepEqual(pool.works, before.works);
+  assert.deepEqual(pool.events, before.events);
+  assert.deepEqual(pool.sequences, before.sequences);
+  assert.equal(pool.works.get(key("tenant-a", workId)).work_name,
+    "Canonical V2 identity");
+});
+
+test("task and evidence identifiers cannot cross an ACL-disjoint Work boundary", async () => {
+  const pool = new AtomicWorkPool();
+  const workA = "abababab-abab-4bab-8bab-abababababab";
+  const workB = "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc";
+  const taskId = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+  const evidenceId = "dededede-dede-4ede-8ede-dededededede";
+  pool.works.set(key("tenant-a", workA), candidateWork(110, {
+    work_id: workA, owner_user_id: "alice", created_by_user_id: "alice",
+  }));
+  pool.works.set(key("tenant-a", workB), candidateWork(111, {
+    work_id: workB, owner_user_id: "bob", created_by_user_id: "bob",
+  }));
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a", task_id: taskId, work_id: workB,
+    title: "Bob task", weight: 3, status: "planned", required: true,
+    acceptance_verified: false,
+  });
+  pool.evidence.set(key("tenant-a", evidenceId), {
+    tenant_id: "tenant-a", evidence_id: evidenceId, work_id: workB,
+    kind: "bob_evidence", digest: "b".repeat(64), required: false,
+    independently_verified: false, verified_by_agent_id: null,
+    verified_by_session_fingerprint: null, weight: 2, metadata: { owner: "bob" },
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+  const alice = identity("alice", "member");
+  const before = pool.snapshot();
+
+  await assert.rejects(store.recordTask(alice, {
+    work_id: workA, task_id: taskId, title: "Alice overwrite", weight: 1,
+  }), /tenant_work_task_binding_conflict/);
+  await assert.rejects(store.recordEvidence(alice, {
+    work_id: workA, evidence_id: evidenceId, kind: "alice_evidence",
+    digest: "a".repeat(64), metadata: { owner: "alice" },
+  }), /tenant_work_evidence_binding_conflict/);
+
+  assert.deepEqual(pool.works, before.works);
+  assert.deepEqual(pool.tasks, before.tasks);
+  assert.deepEqual(pool.evidence, before.evidence);
+  assert.equal(pool.tasks.get(key("tenant-a", taskId)).work_id, workB);
+  assert.equal(pool.evidence.get(key("tenant-a", evidenceId)).work_id, workB);
+});
+
+test("transaction-bound derived-state queries are strictly sequential", async () => {
+  const pool = new AtomicWorkPool();
+  const originalConnect = pool.connect.bind(pool);
+  let maximumConcurrentQueries = 0;
+  pool.connect = async () => {
+    const client = await originalConnect();
+    const originalQuery = client.query.bind(client);
+    let activeQueries = 0;
+    return {
+      ...client,
+      async query(...args) {
+        activeQueries += 1;
+        maximumConcurrentQueries = Math.max(maximumConcurrentQueries, activeQueries);
+        if (activeQueries > 1) {
+          activeQueries -= 1;
+          throw new Error("transaction_client_query_overlap");
+        }
+        try {
+          await new Promise((resolve) => setImmediate(resolve));
+          return await originalQuery(...args);
+        } finally {
+          activeQueries -= 1;
+        }
+      },
+    };
+  };
+  const workId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const taskId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  pool.works.set(key("tenant-a", workId), candidateWork(115, {
+    work_id: workId,
+    owner_user_id: "alice",
+    created_by_user_id: "alice",
+  }));
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+
+  const result = await store.recordTask(identity("alice", "member"), {
+    work_id: workId,
+    task_id: taskId,
+    title: "Verify sequential transaction queries",
+    status: "completed",
+    required: true,
+  });
+
+  assert.equal(maximumConcurrentQueries, 1);
+  assert.equal(pool.tasks.get(key("tenant-a", taskId)).status, "completed");
+  assert.equal(result.work.work_id, workId);
+});
+
+test("terminal task and candidate-evidence replay is exact and state-pure", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "efefefef-efef-4fef-8fef-efefefefefef";
+  const taskId = "10101010-1010-4010-8010-101010101010";
+  const evidenceId = "20202020-2020-4020-8020-202020202020";
+  pool.works.set(key("tenant-a", workId), candidateWork(112, {
+    work_id: workId, owner_user_id: "alice", created_by_user_id: "alice",
+    status: "COMPLETED", updated_at: "2026-08-08T10:00:02.000Z",
+  }));
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a", task_id: taskId, work_id: workId,
+    title: "Persisted task", weight: 1, status: "planned", required: true,
+    acceptance_verified: false,
+  });
+  pool.evidence.set(key("tenant-a", evidenceId), {
+    tenant_id: "tenant-a", evidence_id: evidenceId, work_id: workId,
+    kind: "candidate", digest: "c".repeat(64), required: false,
+    independently_verified: false, verified_by_agent_id: null,
+    verified_by_session_fingerprint: null, weight: 1, metadata: { exact: true },
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+  const alice = identity("alice", "member");
+  const before = pool.snapshot();
+
+  await store.recordTask(alice, {
+    work_id: workId, task_id: taskId, title: "Persisted task", weight: 1,
+    status: "planned", required: true,
+  });
+  await store.recordEvidence(alice, {
+    work_id: workId, evidence_id: evidenceId, kind: "candidate",
+    digest: "c".repeat(64), weight: 1, metadata: { exact: true },
+  });
+  await assert.rejects(store.recordTask(alice, {
+    work_id: workId, task_id: "30303030-3030-4030-8030-303030303030",
+    title: "New terminal task",
+  }), /tenant_work_terminal/);
+  await assert.rejects(store.recordEvidence(alice, {
+    work_id: workId, evidence_id: "40404040-4040-4040-8040-404040404040",
+    kind: "candidate", digest: "d".repeat(64),
+  }), /tenant_work_terminal/);
+
+  assert.deepEqual(pool.works, before.works);
+  assert.deepEqual(pool.tasks, before.tasks);
+  assert.deepEqual(pool.evidence, before.evidence);
+  assert.deepEqual(pool.events, before.events);
+});
+
+test("unbridged V2 closure never reads or releases an identically named Core Work", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "51515151-5151-4151-8151-515151515151";
+  const taskId = "52525252-5252-4252-8252-525252525252";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualClosureAuthority({ workId, intentDigest });
+  pool.works.set(key("tenant-a", workId), candidateWork(113, {
+    work_id: workId, legacy_work_id: null, work_type: "research",
+    owner_user_id: "owner", created_by_user_id: "owner",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    acceptance_criteria: ["independently verified"], intent_digest: intentDigest,
+    objective: "Close only the native V2 identity", team_id: null,
+    created_at: "2026-08-08T10:00:00.000Z",
+    started_at: "2026-08-08T10:00:00.000Z",
+  }));
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, project_id: "nyra-core",
+    status: "active", next_action: "must remain active",
+    updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a", task_id: taskId, work_id: workId, title: "Done",
+    weight: 1, required: true, status: "completed", acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "unbridged-independent"), {
+    tenant_id: "tenant-a", evidence_id: "unbridged-independent", work_id: workId,
+    kind: "independent_verification", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "verifier-agent",
+    verified_by_session_fingerprint: "4".repeat(64), weight: 1,
+    metadata: {}, created_at: "2026-08-08T10:00:01.000Z",
+  });
+  const joinUnsigned = {
+    schema_version: "generic_work_core_join_v1", verdict_id: "unbridged-verdict",
+    authority: "universal_core", decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+    tenant_id: "tenant-a", work_id: workId, adapter: "research",
+    acceptance_criteria_digest: "a".repeat(64), task_state_digest: "b".repeat(64),
+    evidence_digest: "c".repeat(64), independent_verifier_receipt_digest: "d".repeat(64),
+    idempotency_digest: "e".repeat(64), execution_authorized: false,
+    host_action_authorized: false, issued_at: "2026-08-08T10:00:02.000Z",
+    key_id: authority.signer.key_id, signature_algorithm: "ed25519",
+  };
+  const joinDigest = stableDigest(joinUnsigned);
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: joinDigest,
+    core_join_context: {
+      ...joinUnsigned, verdict_digest: joinDigest,
+      signature: await authority.signer.signDigest(joinDigest),
+    },
+  });
+  const leaseId = "53535353-5353-4353-8353-535353535353";
+  pool.leases.set(key("tenant-a", workId, leaseId), {
+    tenant_id: "tenant-a", work_id: workId, lease_id: leaseId,
+    status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  pool.participants.set(key("tenant-a", workId, "foreign-core-session"), {
+    tenant_id: "tenant-a", work_id: workId, session_id: "foreign-core-session",
+    status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+
+  const gallery = await store.preflightGallery(identity("owner", "member"), {
+    project_id: "nyra-core",
+  });
+  assert.equal(gallery.works[0].active_leases, 0);
+  assert.equal(gallery.works[0].active_participants, 0);
+  const dryRun = await store.reconcileStaleDryRun(identity(), { project_id: "nyra-core" });
+  assert.equal(dryRun.classifications[0].legacy_reconciliation_eligible, false);
+
+  const closed = await store.finalizeGenericClosure(identity(), {
+    work_id: workId, adapter: "research",
+  });
+  assert.equal(closed.released_lease_count, 0);
+  assert.equal(closed.closed_participant_count, 0);
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "active");
+  assert.equal(pool.leases.get(key("tenant-a", workId, leaseId)).status, "active");
+  assert.equal(pool.participants.get(key(
+    "tenant-a", workId, "foreign-core-session",
+  )).status, "active");
+
+  const persistedVerification = await store.verifyWorkClosure(identity(), {
+    work_id: workId,
+  });
+  assert.deepEqual(persistedVerification.failure_codes, []);
+
+  const replay = await store.finalizeGenericClosure(identity(), {
+    work_id: workId, adapter: "research",
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.terminal_coordination_reconciliation.reconciled, false);
+  assert.equal(replay.terminal_coordination_reconciliation.released_lease_count, 0);
+  assert.equal(replay.terminal_coordination_reconciliation.closed_participant_count, 0);
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "active");
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 0);
+  assert.equal([...pool.coreEvents.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 0);
+});
+
+test("linked generic closure shares readiness gates and atomically releases Work coordination", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "99999999-9999-4999-8999-999999999999";
+  const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  pool.works.set(key("tenant-a", workId), candidateWork(100, {
+    work_id: workId,
+    legacy_work_id: workId,
+    work_type: "research",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    acceptance_criteria: ["independently verified"],
+  }));
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, project_id: "nyra-core",
+    status: "active", next_action: "close", updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a", task_id: taskId, work_id: workId, required: true,
+    status: "planned", acceptance_verified: false,
+  });
+  pool.evidence.set(key("tenant-a", "evidence-independent"), {
+    tenant_id: "tenant-a", evidence_id: "evidence-independent", work_id: workId,
+    kind: "independent_verification", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "verifier-agent",
+    verified_by_session_fingerprint: "4".repeat(64), created_at: "2026-08-08T10:00:01.000Z",
+  });
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
+  });
+  for (const index of [1, 2]) {
+    const leaseId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+    pool.leases.set(key("tenant-a", workId, leaseId), {
+      tenant_id: "tenant-a", work_id: workId, lease_id: leaseId,
+      status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+    });
+    const sessionId = `closure-session-${index}`;
+    pool.participants.set(key("tenant-a", workId, sessionId), {
+      tenant_id: "tenant-a", work_id: workId, session_id: sessionId,
+      status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+    });
+  }
+  pool.leases.set(key("tenant-a", "88888888-8888-4888-8888-888888888888", "other"), {
+    tenant_id: "tenant-a", work_id: "88888888-8888-4888-8888-888888888888",
+    lease_id: "other", status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  let failAfterCoordinationRelease = false;
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    failureInjector: async (phase) => {
+      if (failAfterCoordinationRelease && phase === "generic_closure_coordination_released") {
+        throw new Error("forced_generic_closure_rollback");
+      }
+    },
+  });
+
+  const incomplete = await store.evaluateGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  });
+  assert.equal(incomplete.ready, false);
+  assert.equal(incomplete.required_tasks_complete, false);
+  assert.deepEqual(incomplete.missing, ["required_tasks_incomplete"]);
+  await assert.rejects(store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  }), /work_closure_gate_unsatisfied/);
+
+  Object.assign(pool.tasks.get(key("tenant-a", taskId)), {
+    status: "completed",
+    acceptance_verified: true,
+  });
+  const ready = await store.evaluateGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  });
+  assert.equal(ready.ready, true);
+  assert.deepEqual(ready.missing, []);
+  failAfterCoordinationRelease = true;
+  await assert.rejects(store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  }), /forced_generic_closure_rollback/);
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "ACTIVE");
+  assert.equal([...pool.leases.values()].filter((row) =>
+    row.work_id === workId && row.status === "active").length, 2);
+  assert.equal([...pool.participants.values()].filter((row) =>
+    row.work_id === workId && row.status === "active").length, 2);
+  assert.equal(pool.closures.has(key("tenant-a", workId)), false);
+
+  failAfterCoordinationRelease = false;
+  const closed = await store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  });
+
+  assert.equal(closed.terminal_status, "COMPLETED");
+  assert.equal(closed.archived, true);
+  assert.equal(Object.hasOwn(closed, "archive_status"), false);
+  assert.equal(closed.released_lease_count, 2);
+  assert.equal(closed.closed_participant_count, 2);
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  assert.equal([...pool.leases.values()].filter((row) =>
+    row.work_id === workId && row.status === "released").length, 2);
+  assert.equal([...pool.participants.values()].filter((row) =>
+    row.work_id === workId && row.status === "closed").length, 2);
+  assert.equal(pool.leases.get(key(
+    "tenant-a", "88888888-8888-4888-8888-888888888888", "other",
+  )).status, "active");
+  const closureEvent = [...pool.events.values()].find((event) =>
+    event.work_id === workId && event.event_type === "generic_closure_finalized");
+  assert.equal(closureEvent.payload.released_lease_count, 2);
+  assert.equal(closureEvent.payload.closed_participant_count, 2);
+});
+
+test("generic finalize serializes a concurrent legacy Gallery join behind terminal status", async () => {
+  const pool = new LockAwareIntegratedWorkPool();
+  const workId = "98989898-9898-4989-8989-989898989898";
+  const taskId = "97979797-9797-4979-8979-979797979797";
+  pool.works.set(key("tenant-a", workId), candidateWork(101, {
+    work_id: workId,
+    legacy_work_id: workId,
+    work_type: "research",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    acceptance_criteria: ["independently verified"],
+  }));
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a",
+    work_id: workId,
+    project_id: "nyra-core",
+    status: "active",
+    next_action: "close atomically",
+    updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a",
+    task_id: taskId,
+    work_id: workId,
+    required: true,
+    status: "completed",
+    acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "race-independent-evidence"), {
+    tenant_id: "tenant-a",
+    evidence_id: "race-independent-evidence",
+    work_id: workId,
+    kind: "independent_verification",
+    digest: "3".repeat(64),
+    required: true,
+    independently_verified: true,
+    verified_by_agent_id: "verifier-agent",
+    verified_by_session_fingerprint: "4".repeat(64),
+    created_at: "2026-08-08T10:00:01.000Z",
+  });
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a",
+    work_id: workId,
+    core_join_digest: "5".repeat(64),
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+  const runtime = createWorkContinuityRuntime({}, {
+    pool,
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+  });
+  const finalize = store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  });
+  await pool.firstCoreLockObserved;
+
+  const sessionId = "race-gallery-session";
+  const agentId = "race-gallery-agent";
+  const galleryIdentity = {
+    tenantId: "tenant-a",
+    subject: "race-gallery-subject",
+    agentPresence: {
+      session_id: sessionId,
+      agent_id: agentId,
+      client_type: "codex",
+      session_fingerprint: "6".repeat(24),
+      host_transport_session_fingerprint: "7".repeat(24),
+      signature: `ags_${"8".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  const rejectedJoin = assert.rejects(runtime.join(galleryIdentity, {
+    work_id: workId,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "race-gallery-join-after-terminal",
+  }), /continuity_work_terminal/);
+  await pool.secondCoreLockWaiting;
+  pool.releaseFirstCoreLockGate();
+
+  const [closed] = await Promise.all([finalize, rejectedJoin.then(() => null)]);
+  assert.equal(closed.terminal_status, "COMPLETED");
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "completed");
+  assert.equal(pool.participants.size, 0);
+  assert.equal(pool.leases.size, 0);
+});
+
 test("owner manual merge release evidence closes and projects the legacy Gallery through normal gates", async () => {
   const pool = new AtomicWorkPool();
   const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
   const intentDigest = "2".repeat(64);
   const authority = await manualClosureAuthority({ workId, intentDigest });
+  let failTerminalReconciliation = false;
   const store = createWorkContinuityV2Store({
     pool,
     legacyRuntime: legacyRuntime(pool),
     now: () => new Date("2026-08-08T10:00:03.000Z"),
     coreJoinVerifier: authority.verifier,
+    failureInjector: async (phase) => {
+      if (failTerminalReconciliation && phase === "terminal_coordination_reconciled") {
+        throw new Error("forced_terminal_coordination_rollback");
+      }
+    },
   });
   const work = candidateWork(99, {
     work_id: workId,
@@ -1812,9 +2889,34 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
     verified_by_session_fingerprint: "4".repeat(64), weight: 1,
     metadata: {}, created_at: "2026-08-08T10:00:01.000Z",
   });
+  const genericJoinUnsigned = {
+    schema_version: "generic_work_core_join_v1",
+    verdict_id: "generic-manual-closure-verdict",
+    authority: "universal_core",
+    decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+    tenant_id: "tenant-a",
+    work_id: workId,
+    adapter: "software_git",
+    acceptance_criteria_digest: "a".repeat(64),
+    task_state_digest: "b".repeat(64),
+    evidence_digest: "c".repeat(64),
+    independent_verifier_receipt_digest: "d".repeat(64),
+    idempotency_digest: "e".repeat(64),
+    execution_authorized: false,
+    host_action_authorized: false,
+    issued_at: "2026-08-08T10:00:02.000Z",
+    key_id: authority.signer.key_id,
+    signature_algorithm: "ed25519",
+  };
+  const genericJoinDigest = stableDigest(genericJoinUnsigned);
+  const genericJoinContext = {
+    ...genericJoinUnsigned,
+    verdict_digest: genericJoinDigest,
+    signature: await authority.signer.signDigest(genericJoinDigest),
+  };
   pool.joins.set(key("tenant-a", workId), {
-    tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
-    core_join_context: { authority: "universal_core" },
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: genericJoinDigest,
+    core_join_context: genericJoinContext,
   });
   await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
     server_owned: true,
@@ -1949,4 +3051,87 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
   assert.ok([...pool.events.values()].some((event) =>
     event.event_type === "owner_manual_merge_release_verified" &&
     event.payload.note === "owner_manual_merge"));
+  const persistedClosureVerification = deriveTenantWorkClosureVerification({
+    tenant_id: "tenant-a",
+    work: pool.works.get(key("tenant-a", workId)),
+    tasks: [...pool.tasks.values()].filter((item) => item.work_id === workId),
+    evidence: [...pool.evidence.values()].filter((item) => item.work_id === workId),
+    core_join: pool.joins.get(key("tenant-a", workId)),
+    closure_receipt: pool.closures.get(key("tenant-a", workId)),
+    final_report: pool.finalReports.get(key("tenant-a", workId)),
+    closure_event: [...pool.events.values()].find((event) =>
+      event.work_id === workId && event.event_type === "generic_closure_finalized"),
+  }, {
+    verifyCoreJoin: (context) => authority.verifier.verify(context),
+  });
+  assert.deepEqual(persistedClosureVerification.failure_codes, []);
+
+  const lateLeaseId = "77777777-7777-4777-8777-777777777771";
+  const lateSessionId = "generic-terminal-late-session";
+  pool.leases.set(key("tenant-a", workId, lateLeaseId), {
+    tenant_id: "tenant-a", work_id: workId, lease_id: lateLeaseId,
+    session_id: lateSessionId, status: "active",
+    expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  pool.participants.set(key("tenant-a", workId, lateSessionId), {
+    tenant_id: "tenant-a", work_id: workId, session_id: lateSessionId,
+    status: "active", expires_at: "2026-08-08T11:00:00.000Z",
+  });
+  failTerminalReconciliation = true;
+  await assert.rejects(store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "software_git",
+  }), /forced_terminal_coordination_rollback/);
+  assert.equal(pool.leases.get(key("tenant-a", workId, lateLeaseId)).status, "active");
+  assert.equal(pool.participants.get(key("tenant-a", workId, lateSessionId)).status, "active");
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 0);
+  assert.equal([...pool.coreEvents.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 0);
+
+  failTerminalReconciliation = false;
+  const terminalReplay = await store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "software_git",
+  });
+  assert.equal(terminalReplay.idempotent_replay, true);
+  assert.equal(terminalReplay.released_lease_count, 0,
+    "historical closure count must remain unchanged");
+  assert.equal(terminalReplay.closed_participant_count, 0,
+    "historical closure count must remain unchanged");
+  assert.equal(terminalReplay.terminal_coordination_reconciliation.reconciled, true);
+  assert.equal(
+    terminalReplay.terminal_coordination_reconciliation.released_lease_count,
+    1,
+  );
+  assert.equal(
+    terminalReplay.terminal_coordination_reconciliation.closed_participant_count,
+    1,
+  );
+  assert.equal(pool.leases.get(key("tenant-a", workId, lateLeaseId)).status, "released");
+  assert.equal(pool.participants.get(key("tenant-a", workId, lateSessionId)).status, "closed");
+  assert.equal(legacyClosure.payload.released_lease_count, 0);
+  assert.equal(legacyClosure.payload.closed_participant_count, 0);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 1);
+  assert.equal([...pool.coreEvents.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 1);
+
+  const secondTerminalReplay = await store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "software_git",
+  });
+  assert.equal(secondTerminalReplay.terminal_coordination_reconciliation.reconciled, false);
+  assert.equal(
+    secondTerminalReplay.terminal_coordination_reconciliation.released_lease_count,
+    0,
+  );
+  assert.equal(
+    secondTerminalReplay.terminal_coordination_reconciliation.closed_participant_count,
+    0,
+  );
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 1);
+  assert.equal([...pool.coreEvents.values()].filter((event) =>
+    event.event_type === "terminal_coordination_reconciled").length, 1);
 });

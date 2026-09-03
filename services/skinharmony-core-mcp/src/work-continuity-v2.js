@@ -453,8 +453,13 @@ export function buildGenericClosureArtifacts(work, input = {}) {
 
 export function finalizeGenericClosure(work, input = {}) {
   if (work.status === "COMPLETED" && work.closure_receipt && work.final_report) {
-    return { work, receipt: work.closure_receipt, final_report: work.final_report, archive_status: "ARCHIVED", idempotent_replay: true };
+    return { work, receipt: work.closure_receipt, final_report: work.final_report,
+      terminal_status: "COMPLETED", archived: true, idempotent_replay: true };
   }
   const { receipt, final_report, closed_at } = buildGenericClosureArtifacts(work, input);
-  return { work: { ...work, status: "COMPLETED", closed_at, final_evidence_digest: receipt.final_evidence_digest, closure_type: input.adapter, closure_reason: input.closure_reason || "acceptance_criteria_verified", closure_receipt: receipt, final_report }, receipt, final_report, archive_status: "ARCHIVED", idempotent_replay: false };
+  return { work: { ...work, status: "COMPLETED", closed_at, archived_at: closed_at,
+    final_evidence_digest: receipt.final_evidence_digest, closure_type: input.adapter,
+    closure_reason: input.closure_reason || "acceptance_criteria_verified",
+    closure_receipt: receipt, final_report }, receipt, final_report,
+    terminal_status: "COMPLETED", archived: true, idempotent_replay: false };
 }

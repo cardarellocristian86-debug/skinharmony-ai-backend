@@ -2,7 +2,6 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import pg from "pg";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
@@ -10,6 +9,7 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 import { createNyraDeepBranchV2Client } from "./nyraDeepBranchV2Client.js";
 import {
   createNyraDeepBranchV2Attester,
@@ -92,6 +92,7 @@ import {
   aiWorkQualityEvidenceBindingReference,
   verifyAiWorkQualityObservation,
 } from "../../shared/ai-work-quality-failure.js";
+import { initializePostgresWithRetry } from "../../shared/retryable-postgres-initializer.js";
 import {
     validateWorkPreflightEnvelope,
   workPreflightFailure,
@@ -280,7 +281,6 @@ import { createPostgresEntity360AdapterRegistry } from "./entity360Adapters.js";
 import {
   createEntity360Runtime,
   ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE,
-  ENTITY_360_SHADOW_OBSERVER_SCOPE,
   loadEntity360Configuration,
   normalizeEntity360Mode,
 } from "./entity360Runtime.js";
@@ -616,6 +616,82 @@ function nyraDeepV2Fallback({
       },
     },
     evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
+    execution_authorized: false,
+    core_final_authority: true,
+    fallback: "nyra_neural_branch_network_v1",
+  };
+}
+
+function publicNyraDeepV2Readiness(value) {
+  const safeReason = (candidate, fallback) => {
+    const text = String(candidate || "").trim();
+    return /^[a-zA-Z0-9_.:-]{1,160}$/.test(text) ? text : fallback;
+  };
+  const sha = (candidate) => (
+    /^[a-f0-9]{64}$/i.test(String(candidate || ""))
+      ? String(candidate).toLowerCase()
+      : null
+  );
+  const count = (candidate) => (
+    Number.isInteger(candidate) && candidate >= 0 ? candidate : null
+  );
+  const counts = value?.counts && typeof value.counts === "object"
+    ? {
+        branch_count: count(value.counts.branch_count),
+        subbranch_count: count(value.counts.subbranch_count),
+        node_count: count(value.counts.node_count),
+        shard_count: count(value.counts.shard_count),
+      }
+    : null;
+  const enabled = value?.enabled === true;
+  const mode = ["disabled", "shadow", "preview", "active"].includes(value?.mode)
+    ? value.mode
+    : "disabled";
+  const federationVerified = value?.federation_verified === true;
+  const featureEnabled = value?.feature_enabled === true;
+  const featureMode = ["disabled", "shadow", "active"].includes(value?.feature_mode)
+    ? value.feature_mode
+    : "disabled";
+  const expectedFeatureMode = mode === "active" ? "active" : "shadow";
+  const ready = value?.ready === true && (
+    !enabled || (
+      federationVerified
+      && featureEnabled
+      && featureMode === expectedFeatureMode
+    )
+  );
+  return {
+    schema_version: "nyra_deep_branch_v2_remote_readiness_v1",
+    ready,
+    requested_enabled: value?.requested_enabled === true,
+    enabled,
+    mode,
+    state: safeReason(
+      value?.state,
+      ready ? "ready" : "upstream_unavailable_v1_authoritative",
+    ),
+    reason: value?.reason
+      ? safeReason(value.reason, "nyra_deep_branch_v2_readiness_unavailable")
+      : null,
+    upstream_verified: value?.upstream_verified === true,
+    federation_verified: federationVerified,
+    feature_enabled: featureEnabled,
+    feature_mode: featureMode,
+    ...(sha(value?.catalog_fingerprint)
+      ? { catalog_fingerprint: sha(value.catalog_fingerprint) }
+      : {}),
+    ...(sha(value?.root_binding_hash)
+      ? { root_binding_hash: sha(value.root_binding_hash) }
+      : {}),
+    ...(counts && Object.values(counts).every((item) => item !== null)
+      ? { counts }
+      : {}),
+    ...(count(value?.branch_count) !== null
+      ? { branch_count: count(value.branch_count) }
+      : {}),
+    ...(count(value?.effective_branch_allowlist_count) !== null
+      ? { effective_branch_allowlist_count: count(value.effective_branch_allowlist_count) }
+      : {}),
     execution_authorized: false,
     core_final_authority: true,
     fallback: "nyra_neural_branch_network_v1",
@@ -5294,7 +5370,7 @@ export function createUniversalCoreService(options = {}) {
   const nyraPolicyRegistryPostgresPool = nyraPolicyRegistryProofConfigurationError === null
     ? ((allowInactivePolicyRegistryInjection && options.nyraPolicyRegistryPostgresPool) ||
       (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
-        ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
+        ? createBoundedPostgresPool({ connectionString: nyraPolicyRegistryDatabaseUrl })
         : null))
     : null;
   if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofProduction && !nyraPolicyRegistryPostgresPool) {
@@ -5589,7 +5665,7 @@ export function createUniversalCoreService(options = {}) {
     : "";
   const dttAgentIdentityPostgresPool = options.dttAgentIdentityPostgresPool
     || (!hasInjectedPostgresVersionProbe && dttAgentIdentitySecret && governedAgentDatabaseUrl
-      ? new pg.Pool({ connectionString: governedAgentDatabaseUrl })
+      ? createBoundedPostgresPool({ connectionString: governedAgentDatabaseUrl })
       : null);
   if (dttAgentIdentityPostgresPool && !options.dttAgentIdentityPostgresPool) {
     internallyOwnedPostgresPools.add(dttAgentIdentityPostgresPool);
@@ -5601,7 +5677,7 @@ export function createUniversalCoreService(options = {}) {
         || options.dynamicTaskTreePostgresPool
         || dttAgentIdentityPostgresPool
         || (governedAgentPostgresConfigured
-          ? new pg.Pool({
+          ? createBoundedPostgresPool({
               connectionString: governedAgentDatabaseUrl,
               max: 1,
               idleTimeoutMillis: 10_000,
@@ -5737,13 +5813,31 @@ export function createUniversalCoreService(options = {}) {
   ).trim().toLowerCase();
   const researchAirlockShadowMonitor =
     process.env.NODE_ENV === "production" && researchAirlockMode === "shadow";
+  const researchAirlockStore = !options.researchAirlockRuntime
+    && (researchAirlockMode === "enforced" || researchAirlockShadowMonitor)
+    && governedAgentPostgresConfigured
+    ? createPostgresResearchAirlockStore({
+        connectionString: governedAgentDatabaseUrl,
+        pool: options.researchAirlockPostgresPool || null,
+      })
+    : null;
+  if (researchAirlockStore) {
+    void initializePostgresWithRetry(() => researchAirlockStore.init()).catch((error) => {
+      const errorCode = /^[a-zA-Z0-9_.:-]{1,80}$/.test(String(error?.code || ""))
+        ? String(error.code)
+        : "research_airlock_schema_initialization_failed";
+      try {
+        audit.append("core_postgres_store_initialization_failed", {
+          store: "research_airlock",
+          error_code: errorCode,
+        });
+      } catch {
+        // The store exposes the failure through pure readiness state.
+      }
+    });
+  }
   const researchAirlockRuntime = options.researchAirlockRuntime || createResearchAirlockRuntime({
-    store: (researchAirlockMode === "enforced" || researchAirlockShadowMonitor) && governedAgentPostgresConfigured
-      ? createPostgresResearchAirlockStore({
-          connectionString: governedAgentDatabaseUrl,
-          pool: options.researchAirlockPostgresPool || null,
-        })
-      : null,
+    store: researchAirlockStore,
     mode: researchAirlockMode,
     shadowMonitorRequired: process.env.NODE_ENV === "production",
     signingSecret: options.researchAirlockSigningSecret
@@ -5760,6 +5854,21 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
+  if (typeof governedAgentQueueStore?.init === "function") {
+    void initializePostgresWithRetry(() => governedAgentQueueStore.init()).catch((error) => {
+      const errorCode = /^[a-zA-Z0-9_.:-]{1,80}$/.test(String(error?.code || ""))
+        ? String(error.code)
+        : "governed_agent_queue_schema_initialization_failed";
+      try {
+        audit.append("core_postgres_store_initialization_failed", {
+          store: "governed_agent_queue",
+          error_code: errorCode,
+        });
+      } catch {
+        // Queue operations retain fail-closed initialization checks.
+      }
+    });
+  }
   const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
   // Core never instantiates, accepts, or invokes a provider credential vault.
   // Native ChatGPT/Codex specialists are materialized by the host, not with an
@@ -7004,12 +7113,15 @@ export function createUniversalCoreService(options = {}) {
   let causalContinuityInitialization = Promise.resolve();
   if (causalContinuityRuntime) {
     causalContinuityInitializationStartedAtMs = performance.now();
-    causalContinuityInitialization = Promise.resolve(causalContinuityRuntime.initialize())
+    causalContinuityInitialization = initializePostgresWithRetry(
+      () => causalContinuityRuntime.initialize(),
+    )
       .then(() => { causalContinuityState = "ready"; })
       .catch((error) => {
         causalContinuityState = "initialization_failed";
         causalContinuityInitializationError = String(error?.code || error?.message || "causal_initialization_failed").slice(0, 160);
-        audit.append("core_causal_continuity_unavailable", { reason: causalContinuityInitializationError });
+        try { audit.append("core_causal_continuity_unavailable", { reason: causalContinuityInitializationError }); }
+        catch { /* readiness state is authoritative even if the audit sink is unavailable */ }
       });
   } else if (causalContinuityStore && causalContinuityState === "initializing") {
     causalContinuityState = "signer_unavailable";
@@ -7067,7 +7179,12 @@ export function createUniversalCoreService(options = {}) {
   let softwareCognitionState = softwareCognitionMode === "INVALID" ? "configuration_invalid" : softwareCognitionRuntime ? "initializing" : "disabled";
   let softwareCognitionInitializationError = softwareCognitionMode === "INVALID" ? "software_cognition_mode_invalid" : null;
   if (softwareCognitionRuntime) {
-    void causalContinuityInitialization.then(() => softwareCognitionRuntime.initialize())
+    void causalContinuityInitialization.then(() => {
+      if (causalContinuityRuntime && causalContinuityState !== "ready") {
+        throw new Error("causal_continuity_initialization_required");
+      }
+      return initializePostgresWithRetry(() => softwareCognitionRuntime.initialize());
+    })
       .then(async () => { if (nyraPrecoreDecisionStore) await nyraPrecoreDecisionStore.initialize(); softwareCognitionState = "ready";
         if (nyraPrecoreDecisionStore) nyraPrecoreDecisionState = "ready"; })
       .catch((error) => {
@@ -7216,7 +7333,12 @@ export function createUniversalCoreService(options = {}) {
       ? "icf_event_digest_v2_migration_unavailable" : null)
     || (!entity360SigningReady && entity360Enabled ? "entity360_qualification_signer_unavailable" : null);
   const entity360Initialization = entity360Runtime
-    ? causalContinuityInitialization.then(() => entity360Runtime.initialize())
+    ? causalContinuityInitialization.then(() => {
+      if (causalContinuityRuntime && causalContinuityState !== "ready") {
+        throw new Error("causal_continuity_initialization_required");
+      }
+      return initializePostgresWithRetry(() => entity360Runtime.initialize());
+    })
       .then(() => { entity360State = "ready"; })
       .catch((error) => {
         entity360State = "initialization_failed";
@@ -7226,292 +7348,6 @@ export function createUniversalCoreService(options = {}) {
         catch { /* readiness state remains authoritative */ }
       })
     : Promise.resolve();
-  const entity360ShadowObservationPolicy = entity360Configuration?.policy?.shadow_observation || null;
-  const entity360ShadowInFlight = new Set();
-  const entity360ShadowTenantInFlight = new Map();
-  const entity360ShadowTenantWindows = new Map();
-  const entity360ShadowLastStartedAt = new Map();
-  const entity360ShadowTenantGateInFlight = new Map();
-  const entity360ShadowOffTenantGateCache = new Map();
-  let entity360ShadowWindowStartedAt = 0;
-  let entity360ShadowWindowStarts = 0;
-  const auditEntity360ShadowSkipped = ({ tenantId, workId, preflightId, reason }) => {
-    try {
-      audit.append("core_entity360_shadow_observation_coalesced", {
-        tenant_id: tenantId,
-        work_id: workId,
-        preflight_id: preflightId,
-        reason,
-        production_decision_changed: false,
-        execution_authorized: false,
-      });
-    } catch { /* shadow observability cannot alter the current path */ }
-  };
-  const readEntity360ShadowTenantGate = async ({ identity, workId, shadowPolicy }) => {
-    const tenantId = identity.tenant_id;
-    const bindWork = (decision) => Object.freeze({ ...decision, work_id: workId });
-    const currentTime = Date.now();
-    const cached = entity360ShadowOffTenantGateCache.get(tenantId);
-    if (cached && currentTime < cached.expires_at) {
-      entity360ShadowOffTenantGateCache.delete(tenantId);
-      entity360ShadowOffTenantGateCache.set(tenantId, cached);
-      return bindWork(cached.decision);
-    }
-    if (cached) entity360ShadowOffTenantGateCache.delete(tenantId);
-    const existing = entity360ShadowTenantGateInFlight.get(tenantId);
-    if (existing) return bindWork(await existing.response);
-    if (entity360ShadowTenantGateInFlight.size >= shadowPolicy.max_gate_inflight_global) {
-      return bindWork(Object.freeze({
-        schema_version: "entity_360_shadow_observation_gate_v1",
-        eligible: false,
-        reason: "SHADOW_OBSERVATION_GATE_GLOBAL_BACKSTOP",
-        tenant_scope: tenantId,
-        read_only: true,
-        production_decision_changed: false,
-        execution_authorized: false,
-      }));
-    }
-    let gateTimeout;
-    const sourceProbe = Promise.resolve()
-      .then(() => entity360Runtime.preflightObservationGate(identity, { work_id: workId }));
-    const deadline = new Promise((_resolve, reject) => {
-      gateTimeout = setTimeout(() => {
-        const error = new Error("entity360_shadow_observation_pre_gate_timeout");
-        error.code = "entity360_shadow_observation_pre_gate_timeout";
-        reject(error);
-      }, shadowPolicy.gate_timeout_ms);
-    });
-    const gateResponse = Promise.race([sourceProbe, deadline])
-      .then((gate) => {
-        if (gate?.schema_version !== "entity_360_shadow_observation_gate_v1"
-          || gate.tenant_scope !== tenantId
-          || String(gate.work_id || "").trim().toLowerCase() !== workId
-          || typeof gate.eligible !== "boolean" || gate.read_only !== true
-          || gate.production_decision_changed !== false || gate.execution_authorized !== false) {
-          const error = new Error("entity360_shadow_observation_pre_gate_invalid");
-          error.code = "entity360_shadow_observation_pre_gate_invalid";
-          throw error;
-        }
-        const decision = Object.freeze({
-          schema_version: gate.schema_version,
-          eligible: gate.eligible,
-          reason: gate.eligible ? null : String(gate.reason || "TENANT_ENTITY360_OFF").slice(0, 160),
-          tenant_scope: tenantId,
-          read_only: true,
-          production_decision_changed: false,
-          execution_authorized: false,
-        });
-        if (!decision.eligible && decision.reason === "TENANT_ENTITY360_OFF") {
-          if (!entity360ShadowOffTenantGateCache.has(tenantId)
-            && entity360ShadowOffTenantGateCache.size >= shadowPolicy.max_cached_tenant_gates) {
-            const oldestTenant = entity360ShadowOffTenantGateCache.keys().next().value;
-            if (oldestTenant) entity360ShadowOffTenantGateCache.delete(oldestTenant);
-          }
-          entity360ShadowOffTenantGateCache.delete(tenantId);
-          entity360ShadowOffTenantGateCache.set(tenantId, {
-            decision,
-            expires_at: Date.now() + shadowPolicy.tenant_off_gate_cache_ttl_ms,
-          });
-        }
-        return decision;
-      });
-    const trackedProbe = Object.freeze({ source: sourceProbe, response: gateResponse });
-    entity360ShadowTenantGateInFlight.set(tenantId, trackedProbe);
-    // A response timeout is not proof that the database operation stopped.
-    // Keep the real source probe counted and tenant-singleflight until both
-    // the Store operation and response/cache publication settle. The
-    // PostgreSQL Store applies the same policy-bound statement_timeout to
-    // cancel the underlying feature-flag query.
-    void Promise.allSettled([sourceProbe, gateResponse]).then(() => {
-      clearTimeout(gateTimeout);
-      if (entity360ShadowTenantGateInFlight.get(tenantId) === trackedProbe) {
-        entity360ShadowTenantGateInFlight.delete(tenantId);
-      }
-    });
-    return bindWork(await gateResponse);
-  };
-  const reserveEntity360ShadowObservation = ({ tenantId, workId, preflightId,
-    observationKey, shadowPolicy }) => {
-    const currentTime = Date.now();
-    if (entity360ShadowInFlight.has(observationKey)) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "WORK_OBSERVATION_ALREADY_IN_FLIGHT" });
-      return null;
-    }
-    const previousStart = entity360ShadowLastStartedAt.get(observationKey);
-    if (Number.isFinite(previousStart)
-      && currentTime - previousStart < shadowPolicy.minimum_interval_ms) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "WORK_OBSERVATION_COOLDOWN_ACTIVE" });
-      return null;
-    }
-    for (const [trackedTenantId, window] of entity360ShadowTenantWindows) {
-      if (trackedTenantId !== tenantId
-        && currentTime - window.started_at >= shadowPolicy.window_ms
-        && Number(entity360ShadowTenantInFlight.get(trackedTenantId) || 0) === 0) {
-        entity360ShadowTenantWindows.delete(trackedTenantId);
-      }
-    }
-    let tenantWindow = entity360ShadowTenantWindows.get(tenantId) || null;
-    if (!tenantWindow && entity360ShadowTenantWindows.size >= shadowPolicy.max_tracked_tenants) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "TENANT_SHADOW_TRACKING_BUDGET_EXHAUSTED" });
-      return null;
-    }
-    if (!tenantWindow || currentTime - tenantWindow.started_at >= shadowPolicy.window_ms) {
-      tenantWindow = { started_at: currentTime, starts: 0 };
-    }
-    if (Number(entity360ShadowTenantInFlight.get(tenantId) || 0)
-      >= shadowPolicy.max_inflight_per_tenant) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "TENANT_SHADOW_INFLIGHT_BUDGET_EXHAUSTED" });
-      return null;
-    }
-    if (entity360ShadowInFlight.size >= shadowPolicy.max_inflight_global) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "GLOBAL_SHADOW_INFLIGHT_BUDGET_EXHAUSTED" });
-      return null;
-    }
-    if (!entity360ShadowWindowStartedAt
-      || currentTime - entity360ShadowWindowStartedAt >= shadowPolicy.window_ms) {
-      entity360ShadowWindowStartedAt = currentTime;
-      entity360ShadowWindowStarts = 0;
-    }
-    if (tenantWindow.starts >= shadowPolicy.max_starts_per_tenant_window) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "TENANT_SHADOW_RATE_BUDGET_EXHAUSTED" });
-      return null;
-    }
-    if (entity360ShadowWindowStarts >= shadowPolicy.max_starts_per_window) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "GLOBAL_SHADOW_RATE_BUDGET_EXHAUSTED" });
-      return null;
-    }
-    if (!entity360ShadowLastStartedAt.has(observationKey)
-      && entity360ShadowLastStartedAt.size >= shadowPolicy.max_tracked_work_keys) {
-      const oldestKey = entity360ShadowLastStartedAt.keys().next().value;
-      if (oldestKey) entity360ShadowLastStartedAt.delete(oldestKey);
-    }
-    entity360ShadowLastStartedAt.delete(observationKey);
-    entity360ShadowLastStartedAt.set(observationKey, currentTime);
-    entity360ShadowInFlight.add(observationKey);
-    entity360ShadowTenantInFlight.set(tenantId,
-      Number(entity360ShadowTenantInFlight.get(tenantId) || 0) + 1);
-    entity360ShadowWindowStarts += 1;
-    tenantWindow.starts += 1;
-    entity360ShadowTenantWindows.set(tenantId, tenantWindow);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      entity360ShadowInFlight.delete(observationKey);
-      const remaining = Number(entity360ShadowTenantInFlight.get(tenantId) || 0) - 1;
-      if (remaining > 0) entity360ShadowTenantInFlight.set(tenantId, remaining);
-      else entity360ShadowTenantInFlight.delete(tenantId);
-    };
-  };
-  const observeEntity360WorkPreflight = (preflight) => {
-    if (entity360State !== "ready" || typeof entity360Runtime?.observeCurrentPath !== "function"
-      || typeof entity360Runtime?.preflightObservationGate !== "function") return false;
-    const workId = String(preflight?.work_binding?.work_id || "").trim().toLowerCase();
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(workId)) {
-      return false;
-    }
-    const galleryMatches = (preflight?.tenant_work_gallery?.works || []).filter((work) =>
-      String(work?.work_id || "").trim().toLowerCase() === workId);
-    if (preflight?.tenant_work_gallery?.available !== true
-      || preflight?.tenant_work_gallery?.state !== "ready" || galleryMatches.length !== 1) return false;
-    const tenantId = String(preflight.tenant_id || "");
-    const preflightId = String(preflight.preflight_id || "");
-    const observationKey = `${tenantId}:${workId}`;
-    const shadowPolicy = entity360ShadowObservationPolicy;
-    if (!shadowPolicy) {
-      auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-        reason: "SHADOW_OBSERVATION_POLICY_UNAVAILABLE" });
-      return false;
-    }
-    const identity = Object.freeze({
-      tenant_id: tenantId,
-      work_id: workId,
-      actor_id: "universal_core:work_preflight_shadow_observer",
-      actor_role: "universal_core_shadow_observer",
-      authority_scope: [ENTITY_360_SHADOW_OBSERVER_SCOPE],
-      provenance: {
-        actor_provenance: "universal_core_server_internal",
-        session_fingerprint: crypto.createHash("sha256")
-          .update(`${tenantId}:${workId}:${preflightId}`).digest("hex"),
-      },
-    });
-    void Promise.resolve()
-      .then(() => readEntity360ShadowTenantGate({ identity, workId, shadowPolicy }))
-      .then((gate) => {
-        if (gate?.schema_version !== "entity_360_shadow_observation_gate_v1"
-          || gate.tenant_scope !== tenantId
-          || String(gate.work_id || "").trim().toLowerCase() !== workId
-          || gate.read_only !== true || gate.production_decision_changed !== false
-          || gate.execution_authorized !== false) {
-          auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-            reason: "SHADOW_OBSERVATION_PRE_GATE_INVALID" });
-          return null;
-        }
-        if (gate.eligible !== true) {
-          auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-            reason: String(gate.reason || "TENANT_ENTITY360_OFF").slice(0, 160) });
-          return null;
-        }
-        if (entity360State !== "ready") {
-          auditEntity360ShadowSkipped({ tenantId, workId, preflightId,
-            reason: "SHADOW_OBSERVATION_RUNTIME_NOT_READY" });
-          return null;
-        }
-        const release = reserveEntity360ShadowObservation({ tenantId, workId, preflightId,
-          observationKey, shadowPolicy });
-        if (!release) return null;
-        return Promise.resolve()
-          .then(() => entity360Runtime.observeCurrentPath(identity, { work_id: workId, preflight }))
-          .then((result) => {
-            try {
-              audit.append("core_entity360_shadow_observation_completed", {
-                tenant_id: tenantId,
-                work_id: workId,
-                preflight_id: preflightId,
-                snapshot_digest: result?.snapshot?.deterministic_immutable_digest || null,
-                comparison_digest: result?.receipt?.comparison_digest || null,
-                diverged: result?.receipt?.diverged === true,
-                production_decision_changed: false,
-                execution_authorized: false,
-              });
-            } catch { /* shadow audit failure cannot mutate the current path */ }
-          })
-          .catch((error) => {
-            try {
-              audit.append("core_entity360_shadow_observation_failed", {
-                tenant_id: tenantId,
-                work_id: workId,
-                preflight_id: preflightId,
-                reason: String(error?.code || error?.message
-                  || "entity360_shadow_observation_failed").slice(0, 160),
-                production_decision_changed: false,
-                execution_authorized: false,
-              });
-            } catch { /* Entity 360 remains outside current-path authority */ }
-          })
-          .finally(release);
-      })
-      .catch((error) => {
-        try {
-          audit.append("core_entity360_shadow_observation_failed", {
-            tenant_id: tenantId,
-            work_id: workId,
-            preflight_id: preflightId,
-            reason: String(error?.code || error?.message || "entity360_shadow_observation_failed").slice(0, 160),
-            production_decision_changed: false,
-            execution_authorized: false,
-          });
-        } catch { /* Entity 360 remains outside current-path authority */ }
-      });
-    return true;
-  };
   const evaluateNyraPrecoreAlignment = async (tenantId, workId, coreAllowed) => {
     if (nyraPrecoreMode !== "ADVISORY" || nyraPrecoreDecisionState !== "ready"
       || !nyraPrecoreDecisionStore?.readHeadForWork || !softwareCognitionStore) {
@@ -8929,7 +8765,21 @@ export function createUniversalCoreService(options = {}) {
     }
   };
 
-  const serveHealth = async (req, res, { strictReadiness = false } = {}) => {
+  const serveHealth = async (
+    req,
+    res,
+    { strictReadiness = false, requireDeepBranchV2Readiness = false } = {},
+  ) => {
+    const deepBranchV2RemoteReadinessPromise = requireDeepBranchV2Readiness
+      ? Promise.resolve()
+        .then(() => {
+          if (typeof nyraDeepBranchV2Client?.readiness !== "function") {
+            return publicNyraDeepV2Readiness(null);
+          }
+          return nyraDeepBranchV2Client.readiness();
+        })
+        .then(publicNyraDeepV2Readiness, () => publicNyraDeepV2Readiness(null))
+      : null;
     const production = (process.env.NODE_ENV || "development") === "production";
     const productionBuildReady =
       !production ||
@@ -9412,11 +9262,16 @@ export function createUniversalCoreService(options = {}) {
       && (!genericWorkCoreJoinGatesGlobalReadiness
         || (genericWorkCoreJoinConfigurationError === null
           && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady)));
-    const renderReady = nonCausalProductionReady
+    const baseRenderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
+    const deepBranchV2RemoteReadiness = deepBranchV2RemoteReadinessPromise
+      ? await deepBranchV2RemoteReadinessPromise
+      : null;
+    const renderReady = baseRenderReady
+      && (!requireDeepBranchV2Readiness || deepBranchV2RemoteReadiness?.ready === true);
     const causalInitializationDegraded = causalBootstrapLivenessReady;
     const healthStatusReady = renderReady
-      || (!strictReadiness && causalInitializationDegraded);
+      || (!requireDeepBranchV2Readiness && !strictReadiness && causalInitializationDegraded);
     const semanticScopeGuardMode = typeof hostNativeGovernance?.semantic_scope_guard_mode === "string" &&
       ["OFF", "SHADOW", "ENFORCE"].includes(hostNativeGovernance.semantic_scope_guard_mode)
       ? hostNativeGovernance.semantic_scope_guard_mode
@@ -9464,7 +9319,7 @@ export function createUniversalCoreService(options = {}) {
       }
       : null;
     res.status(healthStatusReady ? 200 : 503).json({
-      ok: !production || renderReady,
+      ok: requireDeepBranchV2Readiness ? renderReady : !production || renderReady,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       build: {
@@ -9617,6 +9472,9 @@ export function createUniversalCoreService(options = {}) {
           },
         attester_ready: Boolean(nyraDeepV2Attester),
         source_verifier_ready: Boolean(nyraDeepV2SourceVerifier),
+        ...(deepBranchV2RemoteReadiness
+          ? { remote_readiness: deepBranchV2RemoteReadiness }
+          : {}),
         execution_authorized: false,
       },
       nyra_policy_registry: {
@@ -9812,6 +9670,10 @@ export function createUniversalCoreService(options = {}) {
   }));
   app.get("/healthz", (req, res) => serveHealth(req, res));
   app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
+  app.get("/render-readyz", (req, res) => serveHealth(req, res, {
+    strictReadiness: true,
+    requireDeepBranchV2Readiness: true,
+  }));
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
@@ -10077,12 +9939,6 @@ export function createUniversalCoreService(options = {}) {
       branches: extendCausalBranchRegistry(rawCatalog.branches),
       causal_context_schema_version: "causal_context_envelope_v1",
     };
-    audit.append("core_nyra_branch_catalog_read", {
-      tenant_id: req.tenantId,
-      key_id: req.coreKey.key_id,
-      domain_pack_id: current.id,
-      branch_count: catalog.branches.length,
-    });
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
   });
 
@@ -10319,6 +10175,19 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  app.post("/v1/research/airlock/session-tool-observe", coreAuth(SCOPES.READ_EVIDENCE), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.authorizeSessionToolReadOnly(
+        req.body || {},
+        { tenantId: req.tenantId, keyId: req.coreKey.key_id },
+      );
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400,
+        error.code || error.message || "research_airlock_session_tool_observation_failed");
+    }
+  });
+
   app.post("/v1/research/airlock/complete", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
     try {
       const decision = await researchAirlockRuntime.complete(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
@@ -10501,19 +10370,6 @@ export function createUniversalCoreService(options = {}) {
       }
       throw error;
     }
-    audit.append("core_work_preflight_completed", {
-      tenant_id: req.tenantId,
-      key_id: req.coreKey.key_id,
-      preflight_id: preflight.preflight_id,
-      state: preflight.state,
-      memory_revision: preflight.memory_first.revision,
-      selected_branches: preflight.core_route.selected_branches,
-      preferred_route: preflight.tool_routing.preferred_route.id,
-      owner_confirmation_required: preflight.governance.owner_confirmation_required,
-      research_required: preflight.core_research.assessment.required,
-      research_directive_id: preflight.core_research.directive?.directive_id || null,
-    });
-    observeEntity360WorkPreflight(preflight);
     return res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -14119,7 +13975,6 @@ export function createUniversalCoreService(options = {}) {
       { view: "maturity", branches: [] },
     );
     const report = branchMaturityReport(advisoryActivation);
-    audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
   });
 
@@ -16161,6 +16016,10 @@ export function createUniversalCoreService(options = {}) {
     if (causalBootstrapConstructionProvenance.research_airlock
       && typeof researchAirlockRuntime?.store?.close === "function") {
       tasks.push(Promise.resolve().then(() => researchAirlockRuntime.store.close()));
+    }
+    if (!options.governedAgentQueueStore
+      && typeof governedAgentQueueStore?.close === "function") {
+      tasks.push(Promise.resolve().then(() => governedAgentQueueStore.close()));
     }
     for (const pool of internallyOwnedPostgresPools) {
       if (typeof pool?.end === "function") tasks.push(Promise.resolve().then(() => pool.end()));

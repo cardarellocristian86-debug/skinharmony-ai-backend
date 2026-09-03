@@ -51,6 +51,7 @@ import {
   issueGenericWorkCoreJoinContext,
 } from "../../shared/generic-work-core-join-context.js";
 import { projectNyraControlRoomStatus } from "./nyra-control-room.js";
+import { boundedJsonRequest } from "../../shared/bounded-json-request.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -66,6 +67,23 @@ const POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
 const POLICY_REGISTRY_REQUEST_LIMIT_BYTES = 1_572_864;
 const POLICY_REGISTRY_RESPONSE_LIMIT_BYTES = 128 * 1024;
 const POLICY_REGISTRY_CORE_TIMEOUT_MS = 3_000;
+const DEFAULT_CORE_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_LONG_CORE_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_CORE_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_CORE_RESPONSE_LIMIT_BYTES = 512 * 1024;
+const MAX_CORE_RESPONSE_LIMIT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_STANDING_RELEASE_WORKER_REQUEST_TIMEOUT_MS = 20_000;
+const DEFAULT_STANDING_RELEASE_WORKER_RESPONSE_LIMIT_BYTES = 256 * 1024;
+
+function longRunningCorePath(path) {
+  const pathname = String(path || "").split("?", 1)[0];
+  return pathname === "/v1/software-intelligence/analyze" ||
+    pathname === "/v1/research/airlock/discover" ||
+    pathname === "/v1/host-native/actions/owner-manual-merge/readback" ||
+    pathname === "/v1/host-native/actions/post-release/readback-attest" ||
+    /^\/v1\/host-native\/actions\/[^/]+\/(?:complete|reconcile|observe-unreserved)$/.test(pathname) ||
+    /^\/v1\/host-native\/standing-release\/runs\/[^/]+\/(?:reserve|complete|reconcile)$/.test(pathname);
+}
 const ICF_RUNTIME_ATTESTATION_SCHEMA = "nyra.icf.runtime-attestation/1.0";
 const ICF_GENERIC_JOIN_BACKENDS = new Set(["postgres_append_only_v1", "unavailable"]);
 const ICF_GENERIC_JOIN_STATES = new Set([
@@ -720,6 +738,38 @@ export function createCoreHandlers(config, options = {}) {
     10,
   ), POLICY_REGISTRY_CORE_TIMEOUT_MS);
 
+  async function standingReleaseWorkerRequest(path, body) {
+    if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
+    return boundedJsonRequest(`${config.githubStandingReleaseWorkerUrl}${path}`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }, {
+      fetchImpl,
+      timeoutMs: config.githubStandingReleaseWorkerRequestTimeoutMs ||
+        DEFAULT_STANDING_RELEASE_WORKER_REQUEST_TIMEOUT_MS,
+      maxResponseBytes: config.githubStandingReleaseWorkerResponseLimitBytes ||
+        DEFAULT_STANDING_RELEASE_WORKER_RESPONSE_LIMIT_BYTES,
+      errorCodes: {
+        timeout: "github_worker_request_timeout",
+        too_large: "github_worker_response_too_large",
+        invalid: "github_worker_invalid_response",
+        unavailable: "github_worker_unavailable",
+      },
+    });
+  }
+
+  function workerTransportError(code, transportError) {
+    const error = new Error(code);
+    error.code = code;
+    error.status = transportError?.status || 502;
+    error.statusCode = error.status;
+    Object.defineProperty(error, "transportCode", {
+      value: String(transportError?.code || "github_worker_unavailable"),
+    });
+    return error;
+  }
+
   function isWorkQualityRemediation(remediation) {
     return Boolean(AI_WORK_FAILURE_DEFINITIONS[String(remediation?.original_decision?.block_code || "")]);
   }
@@ -940,9 +990,10 @@ export function createCoreHandlers(config, options = {}) {
     genericWorkCoreJoinContext = null,
     preservePolicyRegistryDomainPackId = false,
     strictTransport = false,
-    timeoutMs = POLICY_REGISTRY_CORE_TIMEOUT_MS,
+    strictTransportProfile = "generic",
+    timeoutMs,
     nativePrecommitClaim = null,
-    maxResponseBytes = POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
+    maxResponseBytes = config.universalCoreResponseLimitBytes || DEFAULT_CORE_RESPONSE_LIMIT_BYTES,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId });
     const headers = { accept: "application/json" };
@@ -1028,19 +1079,124 @@ export function createCoreHandlers(config, options = {}) {
           ? canonicalDttWorkContextBody(sanitizedBody)
           : JSON.stringify(sanitizedBody);
     const endpoint = `${config.universalCoreUrl}${path}`;
+    const selectedTimeoutMs = timeoutMs ?? (longRunningCorePath(path)
+      ? (config.universalCoreLongRequestTimeoutMs || DEFAULT_LONG_CORE_REQUEST_TIMEOUT_MS)
+      : (config.universalCoreRequestTimeoutMs || DEFAULT_CORE_REQUEST_TIMEOUT_MS));
     let response;
     let payload;
     if (!strictTransport) {
-      response = await fetchImpl(endpoint, {
-        method,
-        headers,
-        body: serializedBody,
-      });
-      payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
-    } else {
       const controller = new AbortController();
-      const boundedTimeout = Number.isFinite(timeoutMs)
-        ? Math.max(1, Math.min(Number(timeoutMs), POLICY_REGISTRY_CORE_TIMEOUT_MS))
+      const mutatingRequest = !["GET", "HEAD"].includes(String(method).toUpperCase());
+      let dispatched = false;
+      const boundedTimeout = Number.isFinite(selectedTimeoutMs)
+        ? Math.max(1, Math.min(Number(selectedTimeoutMs), MAX_CORE_REQUEST_TIMEOUT_MS))
+        : DEFAULT_CORE_REQUEST_TIMEOUT_MS;
+      const boundedResponseBytes = Number.isFinite(maxResponseBytes)
+        ? Math.max(1, Math.min(Number(maxResponseBytes), MAX_CORE_RESPONSE_LIMIT_BYTES))
+        : DEFAULT_CORE_RESPONSE_LIMIT_BYTES;
+      const transportError = (code, status = 502) => {
+        const error = new Error(code);
+        error.code = code;
+        error.status = status;
+        error.statusCode = status;
+        return error;
+      };
+      const uncertainMutation = (causeCode, status = 502) => {
+        const error = transportError("core_request_outcome_unknown", status);
+        error.reconciliation_required = true;
+        error.dispatched = true;
+        error.cause_code = String(causeCode || "core_request_unavailable");
+        return error;
+      };
+      let reader = null;
+      let timeout;
+      const operation = (async () => {
+        // Once a mutating request has crossed the transport boundary, a lost
+        // response cannot prove that Core rolled the operation back. Never
+        // label that state retryable: require an explicit read reconciliation.
+        dispatched = true;
+        const boundedResponse = await fetchImpl(endpoint, {
+          method,
+          headers,
+          body: serializedBody,
+          signal: controller.signal,
+        });
+        const rawLength = boundedResponse?.headers?.get?.("content-length");
+        if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
+          const declaredLength = Number(rawLength);
+          if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > boundedResponseBytes) {
+            throw transportError("core_response_too_large");
+          }
+        }
+        const chunks = [];
+        let received = 0;
+        if (boundedResponse?.body && typeof boundedResponse.body.getReader === "function") {
+          reader = boundedResponse.body.getReader();
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            const chunk = Buffer.from(part.value);
+            received += chunk.byteLength;
+            if (received > boundedResponseBytes) {
+              void reader.cancel().catch(() => {});
+              throw transportError("core_response_too_large");
+            }
+            chunks.push(chunk);
+          }
+          try {
+            payload = JSON.parse(Buffer.concat(chunks, received).toString("utf8"));
+          } catch {
+            throw transportError("core_response_json_invalid");
+          }
+        } else if (typeof boundedResponse?.arrayBuffer === "function") {
+          const bytes = Buffer.from(await boundedResponse.arrayBuffer());
+          if (bytes.byteLength > boundedResponseBytes) throw transportError("core_response_too_large");
+          try {
+            payload = JSON.parse(bytes.toString("utf8"));
+          } catch {
+            throw transportError("core_response_json_invalid");
+          }
+        } else {
+          // Compatibility for deterministic test transports. Real fetch
+          // responses always expose a byte-readable body, so production still
+          // enforces the limit before parsing.
+          try {
+            payload = await boundedResponse.json();
+          } catch {
+            throw transportError("core_response_json_invalid");
+          }
+          if (Buffer.byteLength(JSON.stringify(payload), "utf8") > boundedResponseBytes) {
+            throw transportError("core_response_too_large");
+          }
+        }
+        return boundedResponse;
+      })();
+      const deadline = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          if (reader) void reader.cancel().catch(() => {});
+          reject(transportError("core_request_timeout", 504));
+        }, boundedTimeout);
+      });
+      try {
+        response = await Promise.race([operation, deadline]);
+      } catch (error) {
+        if (mutatingRequest && dispatched) {
+          throw uncertainMutation(error?.code, error?.status === 504 ? 504 : 502);
+        }
+        if (["core_request_timeout", "core_response_too_large", "core_response_json_invalid"].includes(error?.code)) throw error;
+        throw transportError("core_request_unavailable", 503);
+      } finally {
+        clearTimeout(timeout);
+      }
+    } else {
+      const policyRegistryProfile = strictTransportProfile === "policy_registry";
+      const strictCode = (suffix) => policyRegistryProfile
+        ? `policy_registry_core_${suffix}`
+        : `core_strict_transport_${suffix}`;
+      const controller = new AbortController();
+      const boundedTimeout = Number.isFinite(selectedTimeoutMs)
+        ? Math.max(1, Math.min(Number(selectedTimeoutMs), MAX_CORE_REQUEST_TIMEOUT_MS))
         : POLICY_REGISTRY_CORE_TIMEOUT_MS;
       const boundedResponseBytes = Number.isFinite(maxResponseBytes)
         ? Math.max(1, Math.min(Number(maxResponseBytes), POLICY_REGISTRY_RESPONSE_LIMIT_BYTES))
@@ -1050,7 +1206,10 @@ export function createCoreHandlers(config, options = {}) {
         error.code = code;
         error.status = status;
         error.statusCode = status;
-        Object.defineProperty(error, "policyRegistryTransportError", { value: true });
+        Object.defineProperty(error, "strictCoreTransportError", { value: true });
+        if (policyRegistryProfile) {
+          Object.defineProperty(error, "policyRegistryTransportError", { value: true });
+        }
         return error;
       };
       let reader = null;
@@ -1064,20 +1223,20 @@ export function createCoreHandlers(config, options = {}) {
           signal: controller.signal,
         });
         if (strictResponse?.redirected === true || (strictResponse?.url && strictResponse.url !== endpoint)) {
-          throw transportError("policy_registry_core_redirect_denied");
+          throw transportError(strictCode("redirect_denied"));
         }
         const contentType = String(strictResponse?.headers?.get?.("content-type") || "").trim().toLowerCase();
         if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
-          throw transportError("policy_registry_core_content_type_invalid");
+          throw transportError(strictCode("content_type_invalid"));
         }
         const rawLength = strictResponse?.headers?.get?.("content-length");
         if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
           if (!/^\d+$/.test(String(rawLength))) {
-            throw transportError("policy_registry_core_content_length_invalid");
+            throw transportError(strictCode("content_length_invalid"));
           }
           const declaredLength = Number(rawLength);
           if (!Number.isSafeInteger(declaredLength) || declaredLength > boundedResponseBytes) {
-            throw transportError("policy_registry_core_response_too_large");
+            throw transportError(strictCode("response_too_large"));
           }
         }
         const chunks = [];
@@ -1091,7 +1250,7 @@ export function createCoreHandlers(config, options = {}) {
             received += chunk.byteLength;
             if (received > boundedResponseBytes) {
               void reader.cancel().catch(() => {});
-              throw transportError("policy_registry_core_response_too_large");
+              throw transportError(strictCode("response_too_large"));
             }
             chunks.push(chunk);
           }
@@ -1099,20 +1258,20 @@ export function createCoreHandlers(config, options = {}) {
           const bytes = Buffer.from(await strictResponse.arrayBuffer());
           received = bytes.byteLength;
           if (received > boundedResponseBytes) {
-            throw transportError("policy_registry_core_response_too_large");
+            throw transportError(strictCode("response_too_large"));
           }
           chunks.push(bytes);
         } else {
-          throw transportError("policy_registry_core_response_json_invalid");
+          throw transportError(strictCode("response_json_invalid"));
         }
         let parsed;
         try {
           parsed = JSON.parse(Buffer.concat(chunks, received).toString("utf8"));
         } catch {
-          throw transportError("policy_registry_core_response_json_invalid");
+          throw transportError(strictCode("response_json_invalid"));
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          throw transportError("policy_registry_core_response_json_invalid");
+          throw transportError(strictCode("response_json_invalid"));
         }
         return { response: strictResponse, payload: parsed };
       })();
@@ -1120,15 +1279,16 @@ export function createCoreHandlers(config, options = {}) {
         timeout = setTimeout(() => {
           controller.abort();
           if (reader) void reader.cancel().catch(() => {});
-          reject(transportError("policy_registry_core_timeout", 504));
+          reject(transportError(strictCode("timeout"), 504));
         }, boundedTimeout);
       });
       try {
         ({ response, payload } = await Promise.race([operation, deadline]));
       } catch (error) {
-        if (error?.policyRegistryTransportError === true) throw error;
-        const wrapped = new Error("policy_registry_core_unavailable");
-        wrapped.code = "policy_registry_core_unavailable";
+        if (error?.strictCoreTransportError === true) throw error;
+        const unavailableCode = strictCode("unavailable");
+        const wrapped = new Error(unavailableCode);
+        wrapped.code = unavailableCode;
         wrapped.status = 503;
         wrapped.statusCode = 503;
         throw wrapped;
@@ -1150,7 +1310,7 @@ export function createCoreHandlers(config, options = {}) {
         && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
         : nestedEntity360Code || "unknown";
-      const upstreamCode = strictTransport && !nestedEntity360Code
+      const upstreamCode = strictTransport && strictTransportProfile === "policy_registry" && !nestedEntity360Code
         && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
         ? "unknown" : candidateUpstreamCode;
       const error = new Error(`core_request_failed:${response.status}:${upstreamCode}`);
@@ -1755,6 +1915,15 @@ export function createCoreHandlers(config, options = {}) {
       },
     });
     return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
+  }
+
+  async function runtimeHierarchyStatus(identity) {
+    const payload = await coreRequest("/v1/runtime/hierarchy/status", identity.tenantId);
+    if (!payload?.runtime || typeof payload.runtime !== "object" ||
+        payload.runtime.hierarchy_version !== "core_runtime_hierarchy_v1") {
+      throw new Error("core_runtime_hierarchy_status_invalid");
+    }
+    return compactCoreRuntime(payload.runtime);
   }
 
   async function intelligenceRequest(path, args, identity, options = {}) {
@@ -2403,6 +2572,7 @@ export function createCoreHandlers(config, options = {}) {
       body,
       preservePolicyRegistryDomainPackId: kind !== "reconcile",
       strictTransport: true,
+      strictTransportProfile: "policy_registry",
       timeoutMs: policyRegistryCoreTimeoutMs,
     });
     return dedicatedCoreTextResult(
@@ -2421,6 +2591,7 @@ export function createCoreHandlers(config, options = {}) {
           identity.tenantId,
           {
             strictTransport: true,
+            strictTransportProfile: "policy_registry",
             timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS,
             maxResponseBytes: POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
           },
@@ -2842,17 +3013,15 @@ export function createCoreHandlers(config, options = {}) {
       let workerResponse;
       let workerPayload;
       try {
-        workerResponse = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
+        ({ response: workerResponse, payload: workerPayload } = await standingReleaseWorkerRequest(
+          "/v1/execute",
+          {
             claim,
             ...(args.materialization ? { materialization: args.materialization } : {}),
-          }),
-        });
-        workerPayload = await workerResponse.json().catch(() => null);
-      } catch {
-        throw new Error("standing_release_auto_execution_outcome_unknown");
+          },
+        ));
+      } catch (error) {
+        throw workerTransportError("standing_release_auto_execution_outcome_unknown", error);
       }
       if (!workerResponse.ok) {
         const code = String(workerPayload?.error || "");
@@ -3081,12 +3250,18 @@ export function createCoreHandlers(config, options = {}) {
         throw new Error("github_worker_execution_claim_binding_mismatch");
       }
       if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
-      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ claim: args.claim, ...(args.materialization ? { materialization: args.materialization } : {}) }),
-      });
-      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      let response;
+      let payload;
+      try {
+        ({ response, payload } = await standingReleaseWorkerRequest("/v1/execute", {
+          claim: args.claim,
+          ...(args.materialization ? { materialization: args.materialization } : {}),
+        }));
+      } catch (error) {
+        // The worker may have reached GitHub before this transport failed.
+        // Never turn uncertainty into an automatic second mutation.
+        throw workerTransportError("github_worker_execution_outcome_unknown", error);
+      }
       if (!response.ok) {
         const error = new Error(String(payload?.error || "github_worker_execution_failed"));
         error.statusCode = response.status;
@@ -3102,10 +3277,15 @@ export function createCoreHandlers(config, options = {}) {
         throw new Error("github_worker_execution_claim_binding_mismatch");
       }
       if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
-      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/reconcile`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ claim: args.claim }),
-      });
-      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      let response;
+      let payload;
+      try {
+        ({ response, payload } = await standingReleaseWorkerRequest("/v1/reconcile", {
+          claim: args.claim,
+        }));
+      } catch (error) {
+        throw workerTransportError("github_worker_reconciliation_failed", error);
+      }
       if (!response.ok) {
         const error = new Error(String(payload?.error || "github_worker_reconciliation_failed"));
         error.statusCode = response.status;
@@ -3504,13 +3684,18 @@ export function createCoreHandlers(config, options = {}) {
         evidence_id: projection.evidence_id,
         evidence_digest: projection.evidence_digest,
         closure_receipt_digest: closure.receipt?.receipt_digest || null,
-        archive_status: closure.archive_status,
+        terminal_status: closure.terminal_status,
+        archived: closure.archived === true,
+        released_lease_count: Number(closure.released_lease_count || 0),
+        closed_participant_count: Number(closure.closed_participant_count || 0),
         legacy_bridged: projection.legacy_bridged,
       };
       return textResult(payload);
     },
     work_preflight: async (args, identity) => {
-      const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
+      const coreRuntime = args.state_pure_observation === true
+        ? await runtimeHierarchyStatus(identity)
+        : await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
       const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
       const registeredPrincipal = identity.authenticatedHostPrincipal?.registered === true;
       const resolvedHostType = identity.authenticatedHostPrincipal
@@ -3815,30 +4000,19 @@ export function createCoreHandlers(config, options = {}) {
             allowed_alternatives: [],
           },
         };
-        const remediationResult = await openBlockedRemediation({
-          identity,
-          requestBody: {
-            ...(args.context && typeof args.context === "object" ? args.context : {}),
-            ...(args.action && typeof args.action === "object" ? args.action : {}),
-            request_id: `core_action_mediation_${crypto.randomUUID()}`,
-          },
-          authorization: { state: "BLOCK", confirmation_required: false },
-          contract,
-          output,
-        });
         return textResult({
           ok: false,
           status: upstream.status,
           error: String(payload.error || "WORK_PREFLIGHT_INVALID"),
           reason_codes: reasonCodes,
           execution_allowed: false,
-          ...(remediationResult?.statusPayload || {}),
+          remediation_persisted: false,
+          remediation_tool: "ai_work_quality_observe",
         });
       }
       const coreResponse = upstream.payload;
       const response = applyQualityFailureMediation(args, coreResponse);
-      const ledger = await recordQualityFailureObservation(identity, response);
-      return textResult({ ...response, quality_ledger: ledger });
+      return textResult({ ...response, quality_ledger: { recorded: false, reason: "read_only_evaluation" } });
     },
     core_release_manifest_check: async (args, identity) => textResult(await coreRequest("/v1/releases/manifest/check", identity.tenantId, {
       method: "POST",
@@ -4198,6 +4372,45 @@ export function createCoreHandlers(config, options = {}) {
         },
       }),
     ),
+    nyra_research_airlock_session_tool_observe: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/session-tool-observe", identity.tenantId, {
+        method: "POST",
+        body: {
+          session_id: String(identity.agentPresence?.session_id || args.session_id || ""),
+          tool_name: args.tool_name,
+          transport_tool_name: args.transport_tool_name,
+          open_world: args.open_world === true,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_state_pure_authorize: async (args, identity) => {
+      const body = {
+        session_id: String(identity.agentPresence?.session_id || args.session_id || ""),
+        tool_name: args.tool_name,
+        transport_tool_name: args.transport_tool_name,
+        open_world: args.open_world === true,
+        tenant_id: identity.tenantId,
+      };
+      let payload = await coreRequest(
+        "/v1/research/airlock/session-tool-observe",
+        identity.tenantId,
+        { method: "POST", body },
+      );
+      // A SELECT-only observer cannot durably prove that an otherwise clean
+      // logical session already handled private data. Classify it atomically
+      // exactly once through the existing authorizer. Later reads are again
+      // SELECT-only, while a concurrent research open wins the same session
+      // lock and causes this private read to be denied by phase policy.
+      if (payload?.decision?.reason === "research_airlock_session_classification_required") {
+        payload = await coreRequest(
+          "/v1/research/airlock/session-tool-authorize",
+          identity.tenantId,
+          { method: "POST", body },
+        );
+      }
+      return textResult(payload);
+    },
     nyra_research_airlock_complete: async (args, identity) => textResult(
       await coreRequest("/v1/research/airlock/complete", identity.tenantId, {
         method: "POST",

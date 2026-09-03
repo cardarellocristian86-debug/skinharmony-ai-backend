@@ -9,7 +9,22 @@ services:
     buildCommand: npm ci
     startCommand: node services/github-standing-release-worker/src/server.js
     healthCheckPath: /livez
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: off
+    buildFilter:
+      paths:
+        - package.json
+        - package-lock.json
+        - scripts/build-rust-extractor-render.sh
+        - services/github-standing-release-worker/**
+        - services/shared/bounded-json-request.js
+        - services/shared/github-worker-execution-claim.js
+        - services/shared/host-native-health-contract.cjs
+        - render-github-standing-release-worker.yaml
+      ignoredPaths:
+        - services/github-standing-release-worker/test/**
+        - docs/**
+        - reports/**
+        - shared-work-memory/**
     disk:
       name: github-standing-release-worker-data
       mountPath: /var/data
@@ -17,12 +32,23 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SKINHARMONY_BUILD_RUST_COMPONENTS
+        value: none
       # Enabled only after the Core-signed execution-claim path was merged,
       # deployed on Core/MCP and verified on the exact main commit.
       - key: GITHUB_STANDING_RELEASE_WORKER_ENABLED
         value: "true"
       - key: GITHUB_STANDING_RELEASE_WORKER_EMERGENCY_STOP
         value: "false"
+      # Every GitHub request is single-attempt, abortable and byte-bounded.
+      # The whole cold path stays below Core's 20s caller timeout; each fetch
+      # receives only the smaller of 8s and the remaining global budget.
+      - key: GITHUB_WORKER_REQUEST_DEADLINE_MS
+        value: "18000"
+      - key: GITHUB_API_REQUEST_TIMEOUT_MS
+        value: "8000"
+      - key: GITHUB_API_RESPONSE_LIMIT_BYTES
+        value: "1048576"
       - key: GITHUB_APP_ID
         value: "4596254"
       # Non-secret exact owner binding. Customer installations are added only

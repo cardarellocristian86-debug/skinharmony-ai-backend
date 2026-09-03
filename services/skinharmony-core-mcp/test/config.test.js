@@ -301,14 +301,20 @@ test("standing release auto coordination is strict, opt-in, and worker-bound", (
   const disabled = loadConfig({});
   assert.equal(disabled.standingReleaseAutoCoordinatorEnabled, false);
   assert.equal(disabled.standingReleaseAutoCoordinatorConfigurationValid, true);
+  assert.equal(disabled.githubStandingReleaseWorkerRequestTimeoutMs, 20_000);
+  assert.equal(disabled.githubStandingReleaseWorkerResponseLimitBytes, 256 * 1024);
 
   const enabled = loadConfig({
     GITHUB_STANDING_RELEASE_WORKER_URL: "https://github-worker.example.test/",
     STANDING_RELEASE_AUTO_COORDINATOR_ENABLED: "true",
+    GITHUB_STANDING_RELEASE_WORKER_REQUEST_TIMEOUT_MS: "1234",
+    GITHUB_STANDING_RELEASE_WORKER_RESPONSE_LIMIT_BYTES: "65536",
   });
   assert.equal(enabled.githubStandingReleaseWorkerUrl, "https://github-worker.example.test");
   assert.equal(enabled.standingReleaseAutoCoordinatorEnabled, true);
   assert.equal(enabled.standingReleaseAutoCoordinatorConfigurationValid, true);
+  assert.equal(enabled.githubStandingReleaseWorkerRequestTimeoutMs, 1_234);
+  assert.equal(enabled.githubStandingReleaseWorkerResponseLimitBytes, 65_536);
 
   const missingWorker = loadConfig({ STANDING_RELEASE_AUTO_COORDINATOR_ENABLED: "true" });
   assert.equal(missingWorker.standingReleaseAutoCoordinatorEnabled, true);

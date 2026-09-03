@@ -1922,7 +1922,7 @@ export const TOOLS = [
     },
     unresolved_conflicts: { type: "array", maxItems: 30, uniqueItems: true, items: text(500) },
   }, ["objective", "actors", "relations"]), ["core:read"], true, true),
-  tool("orchestration_dtt_plan", "Plan a governed Dynamic Task Tree", "Compile a deterministic tenant-and-Work-bound DTT v3 proposal with explicit node, depth, fan-out, parallel, time, token and cost limits. It never runs agents, models or tools and always requires a Universal Core join.", object({
+  tool("orchestration_dtt_plan", "Plan a governed Dynamic Task Tree", "Compile and durably create a deterministic tenant-and-Work-bound DTT v3 proposal with explicit node, depth, fan-out, parallel, time, token and cost limits. It never runs agents, models or tools and always requires a Universal Core join.", object({
     work_id: dttWorkId,
     objective: text(4_000),
     limits: object({
@@ -1940,7 +1940,9 @@ export const TOOLS = [
       maxItems: 200,
       items: dttNodeInput,
     },
-  }, ["work_id", "objective", "nodes"]), ["core:read"], true, true),
+  }, ["work_id", "objective", "nodes"]), ["core:govern"], false, true, {
+    ownerConfirmationRequired: false,
+  }),
   tool("orchestration_dtt_read", "Read a Dynamic Task Tree", "Read the current tenant-and-Work-bound DTT v3 state. This exposes audit state only and never invokes a model, tool, agent or external action.", object({
     work_id: dttWorkId,
     tree_id: dttReference,
@@ -2378,16 +2380,27 @@ export const TOOLS = [
   tool("task_update", "Update shared task", "Update the status of a claimed tenant-scoped task using optimistic concurrency.", object({ task_id: text(80), agent_id: identifier, status: { type: "string", enum: ["claimed", "in_progress", "blocked", "completed", "cancelled"] }, note: { type: "string", maxLength: 10_000 }, expected_version: { type: "integer", minimum: 1 } }, ["task_id", "agent_id", "status", "expected_version"]), ["core:govern"], false, true),
 
   tool("agent_heartbeat", "Register unique agent presence", "Register or refresh one uniquely signed session. A pre-issued, consumed Genesis-bound Causal Context may recover presence only; it never authorizes host actions, publishing or deployment.", object({ agent_id: identifier, client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] }, session_id: { type: "string", minLength: 1, maxLength: 240 }, display_name: { type: "string", maxLength: 120 }, capabilities: { type: "array", maxItems: 20, items: identifier }, recovery_context: object({ envelope: { type: "object", additionalProperties: true }, signature: { anyOf: [{ type: "string", pattern: "^hnc_[a-f0-9]{64}$" }, object({ key_id: identifier, digest: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["key_id", "digest"])] } }, ["envelope", "signature"]) }, ["agent_id", "client_type"]), ["core:govern"], false, true),
-  tool("agent_list", "List tenant agents", "List registered agents and their last heartbeat in the authenticated tenant.", object(), ["core:read"]),
+  tool("agent_list", "List tenant agents", "List one bounded page of registered tenant agents and their last heartbeat.", object({
+    limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+    cursor: { type: "string", pattern: "^alc_[A-Za-z0-9_-]{8,500}$", maxLength: 504 },
+  }), ["core:read"]),
   tool("message_post", "Post agent message", "Post a tenant-scoped message from a registered agent to another agent or all agents.", object({ from_agent_id: identifier, to_agent_id: { anyOf: [identifier, { const: "all" }] }, body: text(20_000), thread_id: { type: "string", maxLength: 80 }, idempotency_key: { type: "string", maxLength: 120 } }, ["from_agent_id", "body"]), ["core:govern"], false, true),
   tool("message_inbox", "Read agent inbox", "Read tenant-scoped messages addressed to one agent or all agents.", object({ agent_id: identifier, unread_only: { type: "boolean" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["agent_id"]), ["core:read"]),
   tool("message_acknowledge", "Acknowledge agent message", "Mark one tenant-scoped agent message as read.", object({ message_id: text(80), agent_id: identifier }, ["message_id", "agent_id"]), ["core:govern"], false, true)
 ,
   tool("web_compatibility_manifest", "Read Web Agent Compatibility branches", "Read the governed web compatibility contract for browser transport, structured ingestion and long URL continuity.", object(), ["core:read"], true, true, { meta: { "skinharmony/webCompatibility": true } }),
-  tool("web_compatibility_execute", "Execute a governed web compatibility request", "Fetch an allowlisted web origin with cookie persistence, GET/POST support and JSON-LD preservation. Universal Core gates the request before transport and the result remains tenant-scoped.", object({
+  tool("web_compatibility_execute", "Execute a governed web compatibility request", "Retrieve an allowlisted web origin with tenant-scoped cookie persistence and JSON-LD preservation. Mutating HTTP methods stay disabled until their external effects have a durable replay ledger.", object({
     url: { type: "string", format: "uri", maxLength: 8192 },
-    method: { type: "string", enum: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
+    method: { type: "string", enum: ["GET", "HEAD"] },
     headers: { type: "object", maxProperties: 30, additionalProperties: { type: "string", maxLength: 2000 } },
     body: { type: "string", maxLength: 2000000 },
-  }, ["url"], ["core:govern"], false, true, { openWorld: true, meta: { "skinharmony/webCompatibility": true, "skinharmony/dedicatedCoreGate": true } })),
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["url", "idempotency_key"]), ["core:govern"], false, false, {
+    openWorld: true,
+    destructive: false,
+    meta: {
+      "skinharmony/webCompatibility": true,
+      "skinharmony/dedicatedCoreGate": true,
+    },
+  }),
 ];

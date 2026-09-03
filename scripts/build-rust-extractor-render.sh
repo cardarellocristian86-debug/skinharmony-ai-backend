@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+RUST_BUILD_MODE="${SKINHARMONY_BUILD_RUST_COMPONENTS:-all}"
+case "$RUST_BUILD_MODE" in
+  none)
+    echo "SkinHarmony Rust component build disabled (SKINHARMONY_BUILD_RUST_COMPONENTS=none)"
+    exit 0
+    ;;
+  all)
+    ;;
+  *)
+    echo "Unsupported SKINHARMONY_BUILD_RUST_COMPONENTS value: $RUST_BUILD_MODE (expected all or none)" >&2
+    exit 64
+    ;;
+esac
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$ROOT_DIR/skinharmony-rust-extractor-governor/Cargo.toml"
 BIN="$ROOT_DIR/skinharmony-rust-extractor-governor/target/release/skinharmony-extract"

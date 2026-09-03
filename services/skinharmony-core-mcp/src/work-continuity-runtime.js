@@ -3,6 +3,8 @@ import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
 import { assertTransitionAllowed } from "../../shared/core-block-remediation.js";
 import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 // Existing MCP create/read/capsule responses retain their v1 contract. New
 // fabric methods advertise WORK_CONTINUITY_FABRIC_SCHEMA_VERSION; the storage
@@ -24,6 +26,7 @@ export const WORK_EVENT_TYPES = new Set([
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
   "generic_core_join_issued", "generic_closure_finalized", "work_archived",
+  "synthetic_incident_reconciled", "terminal_coordination_reconciled",
   "legacy_work_reconciled_closed",
   "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
@@ -158,6 +161,9 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
 }
 const WORK_CATALOG_STATUSES = new Set([
   "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
+]);
+const TERMINAL_CONTINUITY_WORK_STATUSES = new Set([
+  "completed", "cancelled", "superseded",
 ]);
 // A new host conversation may safely attach itself only when the project has
 // exactly one still-operational Work.  This is deliberately narrower than the
@@ -2247,11 +2253,9 @@ CREATE TABLE IF NOT EXISTS core_continuity_remediation_idempotency (
 
 export function createWorkContinuityRuntime(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
-  const pool = options.pool || new Pool({
+  const pool = options.pool || new Pool(postgresPoolConfig(config, {
     connectionString: config.databaseUrl,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-    max: config.databasePoolMax || 5,
-  });
+  }));
   const now = typeof options.now === "function" ? options.now : () => new Date();
   const nowDate = () => dateValue(now(), "clock");
   const assignmentSigningSecret = String(
@@ -2266,8 +2270,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ? options.nativePrecommitGateBridge
     : null;
   const nativePrecommitGateBridgeRequired = options.nativePrecommitGateBridgeRequired === true;
-  let ready;
-  const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
+  const failureInjector = typeof options.failureInjector === "function"
+    ? options.failureInjector
+    : null;
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: WORK_CONTINUITY_SCHEMA_SQL,
+  });
+
+  async function injectFailure(phase, context) {
+    if (failureInjector) await failureInjector(phase, context);
+  }
 
   function actorFor(identity, input = {}) {
     return safeText(
@@ -2522,8 +2535,31 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return work.rows[0];
   }
 
-  async function lockGalleryWork(client, context) {
+  function assertOperationalWorkState(state) {
+    if (!state) throw new Error("continuity_work_not_found");
+    if (TERMINAL_CONTINUITY_WORK_STATUSES.has(
+      String(state.status || "").toLowerCase(),
+    )) {
+      throw new Error("continuity_work_terminal");
+    }
+    return state;
+  }
+
+  async function lockWorkState(client, context) {
     await lockWorkRow(client, context);
+    const state = await client.query(`SELECT status FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId]);
+    if (!state.rows[0]) throw new Error("continuity_work_not_found");
+    return state.rows[0];
+  }
+
+  async function lockOperationalWork(client, context) {
+    return assertOperationalWorkState(await lockWorkState(client, context));
+  }
+
+  async function lockGalleryWork(client, context, { allowTerminal = false } = {}) {
+    const state = await lockWorkState(client, context);
+    if (!allowTerminal) assertOperationalWorkState(state);
     // Work-row first is the shared order used by checkpoint/change writers.
     // Taking the Gallery advisory lock only afterwards prevents a writer from
     // holding one side of a row/advisory deadlock while waiting for the other.
@@ -2603,7 +2639,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
     } finally { client.release?.(); }
   }
 
-  async function withIdempotency(client, context, key, operation, request, perform) {
+  async function withIdempotency(
+    client,
+    context,
+    key,
+    operation,
+    request,
+    perform,
+    onReplay = null,
+  ) {
     const idempotencyKey = safeText(key, 160);
     if (!idempotencyKey) throw new Error("idempotency_key_required");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
@@ -2625,7 +2669,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           existing.rows[0].request_digest !== requestDigest) {
         throw new Error("idempotency_key_conflict");
       }
-      return { ...existing.rows[0].result, idempotent_replay: true };
+      const replay = { ...existing.rows[0].result, idempotent_replay: true };
+      return typeof onReplay === "function" ? onReplay(replay) : replay;
     }
     const result = await perform();
     await client.query(`INSERT INTO core_continuity_idempotency
@@ -2710,6 +2755,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           FOR UPDATE OF w`,
         [tenantId, resumeWorkId]);
         if (!existing.rows[0]) throw new Error("continuity_work_not_found");
+        if (TERMINAL_CONTINUITY_WORK_STATUSES.has(
+          String(existing.rows[0].status || "").toLowerCase(),
+        ) && (!binding.rows[0] || authorizedSessionRebind)) {
+          // An exact pre-existing session binding is a state-pure replay. A
+          // new or rebound session would mutate a terminal Work's durable
+          // coordination identity and is therefore forbidden.
+          throw new Error("continuity_work_terminal");
+        }
         if (existing.rows[0].project_id !== projectId) {
           throw new Error("continuity_project_mismatch");
         }
@@ -2828,6 +2881,22 @@ export function createWorkContinuityRuntime(config, options = {}) {
         error.code = "continuity_creation_owner_confirmation_required";
         throw error;
       }
+      // Core and V2 share the caller-visible Work UUID namespace.  A missing
+      // row cannot be protected with FOR UPDATE, so both creators take this
+      // exact tenant/Work advisory lock before checking the other namespace
+      // and inserting.  Legacy projections are the sole intentional overlap.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+        tenantId,
+        workId,
+      ]);
+      const tenantWorkCollision = await client.query(`SELECT work_id,legacy_work_id,work_type
+        FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`, [tenantId, workId]);
+      if (tenantWorkCollision.rows[0] && (
+        tenantWorkCollision.rows[0].legacy_work_id !== workId ||
+        tenantWorkCollision.rows[0].work_type !== "legacy"
+      )) {
+        throw new Error("continuity_work_v2_id_collision");
+      }
       const architectureDigest = digest(architecture);
       await client.query(`INSERT INTO core_continuity_works
         (tenant_id,project_id,work_id,session_id,parent_work_id,idea,objective,status,current_version,
@@ -2878,6 +2947,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("nyra_control_context_invalid");
     }
     return transaction(async (client) => {
+      await lockOperationalWork(client, context);
       const work = await client.query(`SELECT project_id,current_version,status,next_action
         FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
       [context.tenantId, context.workId]);
@@ -2958,6 +3028,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         CASE e.event_type
           WHEN 'incident_runbook_verified' THEN 'verified'
           WHEN 'incident_runbook_quarantined' THEN 'quarantined'
+          WHEN 'synthetic_incident_reconciled' THEN 'reconciled'
           ELSE coalesce(e.payload->>'status','candidate')
         END AS incident_status,
         (SELECT count(*)::int FROM core_continuity_works gw
@@ -2978,7 +3049,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       LEFT JOIN LATERAL (
         SELECT event_type,payload FROM core_continuity_events
         WHERE tenant_id=w.tenant_id AND work_id=w.work_id
-          AND event_type IN ('incident_recorded','incident_runbook_verified','incident_runbook_quarantined')
+          AND event_type IN (
+            'incident_recorded','incident_runbook_verified','incident_runbook_quarantined',
+            'synthetic_incident_reconciled'
+          )
         ORDER BY sequence_number DESC LIMIT 1
       ) e ON true
       WHERE w.tenant_id=$1 AND w.work_id=$2 AND ($3::varchar IS NULL OR w.project_id=$3)`, [tenantId, workId, projectId]);
@@ -3161,10 +3235,21 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ORDER BY created_at DESC,plan_id DESC LIMIT 1
       ) p ON true
       LEFT JOIN LATERAL (
-        SELECT fingerprint,status,updated_at
-        FROM core_continuity_incident_runbooks
-        WHERE tenant_id=w.tenant_id AND project_id=w.project_id
-        ORDER BY updated_at DESC,fingerprint DESC LIMIT 1
+        SELECT e.payload->>'fingerprint' AS fingerprint,
+          CASE e.event_type
+            WHEN 'incident_runbook_verified' THEN 'verified'
+            WHEN 'incident_runbook_quarantined' THEN 'quarantined'
+            WHEN 'synthetic_incident_reconciled' THEN 'reconciled'
+            ELSE coalesce(e.payload->>'status','candidate')
+          END AS status,
+          e.created_at AS updated_at
+        FROM core_continuity_events e
+        WHERE e.tenant_id=w.tenant_id AND e.work_id=w.work_id
+          AND e.event_type IN (
+            'incident_recorded','incident_runbook_verified','incident_runbook_quarantined',
+            'synthetic_incident_reconciled'
+          )
+        ORDER BY e.sequence_number DESC LIMIT 1
       ) i ON true
       LEFT JOIN core_continuity_atlas_state a
         ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
@@ -3241,6 +3326,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "record_change", input,
       async () => {
+        await lockOperationalWork(client, context);
         const current = await client.query(`SELECT w.current_version,v.architecture FROM core_continuity_works w
           JOIN core_continuity_architecture_versions v ON v.tenant_id=w.tenant_id AND v.work_id=w.work_id AND v.version=w.current_version
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
@@ -3269,6 +3355,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "checkpoint", input,
       async () => {
+        await lockOperationalWork(client, context);
         const current = await client.query(`SELECT current_version,repository_hash,policy_hash,live_state_hash,next_action
           FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
@@ -3349,6 +3436,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "resume", input,
       async () => {
+        await lockOperationalWork(client, context);
         const result = await client.query(`SELECT w.*,c.capsule_id,c.capsule,c.capsule_digest,c.supervisor_approved
           FROM core_continuity_works w LEFT JOIN LATERAL (
             SELECT * FROM core_continuity_capsules WHERE tenant_id=w.tenant_id AND work_id=w.work_id
@@ -3421,7 +3509,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "verify_memory", input,
       async () => {
-        await lockWorkRow(client, context);
+        await lockOperationalWork(client, context);
         const capsuleId = uuid(input.capsule_id, "capsule_id");
         const result = await client.query(`UPDATE core_continuity_capsules SET verified_memory=true
           WHERE tenant_id=$1 AND work_id=$2 AND capsule_id=$3 AND supervisor_approved=true
@@ -3668,6 +3756,255 @@ export function createWorkContinuityRuntime(config, options = {}) {
       });
     }
     return expired.rows;
+  }
+
+  async function releaseTerminalCoordination(client, context) {
+    const released = await client.query(`UPDATE core_continuity_leases
+      SET status='released',released_at=coalesce(released_at,now()),
+        expires_at=LEAST(expires_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND status='active'
+      RETURNING lease_id`, [context.tenantId, context.workId]);
+    const closed = await client.query(`UPDATE core_continuity_participants
+      SET status='closed',last_seen_at=now(),expires_at=LEAST(expires_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND status='active'
+      RETURNING session_id`, [context.tenantId, context.workId]);
+    return Object.freeze({
+      released_lease_count: Number(released.rowCount || 0),
+      closed_participant_count: Number(closed.rowCount || 0),
+    });
+  }
+
+  function closureEvaluationNextAction(evaluation = {}) {
+    if (evaluation.closed === true) {
+      return "Issue and persist the exact Universal Core Join verdict before release readiness.";
+    }
+    if (evaluation.commit_ticket_ready === true) {
+      return `Request the exact Core git.commit ticket bound to precommit workspace digest ${evaluation.precommit_verification?.workspace_digest}; no other action is authorized.`;
+    }
+    return `Resolve closure gaps: ${(evaluation.missing || []).join(", ")}`.slice(0, 4_000);
+  }
+
+  // Older automation treated an ordinary {closed:false} readiness result as
+  // NATIVE_CLOSURE_GAPS and blocked the Work. Reconcile only that exact legacy
+  // fingerprint on the exact tenant/Work ledger. Real incidents, rejoin gaps,
+  // blocked plans and sibling Work remain untouched.
+  async function reconcileSyntheticClosureGapIncidents(client, context, {
+    planId,
+    evaluation = {},
+  } = {}) {
+    const work = await client.query(`SELECT project_id,status,next_action
+      FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+    [context.tenantId, context.workId]);
+    if (!work.rows[0]) throw new Error("continuity_work_not_found");
+    const synthetic = await client.query(`SELECT DISTINCT ON (i.fingerprint)
+        i.fingerprint,e.sequence_number AS recorded_sequence_number
+      FROM core_continuity_events e
+      JOIN core_continuity_works w
+        ON w.tenant_id=e.tenant_id AND w.work_id=e.work_id
+      JOIN core_continuity_incident_runbooks i
+        ON i.tenant_id=e.tenant_id AND i.project_id=w.project_id
+        AND i.fingerprint=e.payload->>'fingerprint'
+      WHERE e.tenant_id=$1 AND e.work_id=$2 AND e.event_type='incident_recorded'
+        AND i.scope->>'error_code'='NATIVE_CLOSURE_GAPS'
+        AND i.scope->>'deployment_path'='work_continuity_closure_evaluate'
+        AND i.scope->>'connector'='host-native-coordination'
+        AND NOT EXISTS (
+          SELECT 1 FROM core_continuity_events reconciled
+          WHERE reconciled.tenant_id=e.tenant_id AND reconciled.work_id=e.work_id
+            AND reconciled.event_type='synthetic_incident_reconciled'
+            AND reconciled.payload->>'fingerprint'=i.fingerprint
+            AND reconciled.sequence_number>e.sequence_number
+        )
+      ORDER BY i.fingerprint,e.sequence_number DESC`,
+    [context.tenantId, context.workId]);
+    if (!synthetic.rows.length) {
+      return Object.freeze({
+        reconciled_count: 0,
+        work_reactivated: false,
+        other_blocker_count: 0,
+        events: Object.freeze([]),
+      });
+    }
+    const [otherIncidents, latestPlan] = await Promise.all([
+      client.query(`SELECT count(DISTINCT e.payload->>'fingerprint')::int AS blocker_count
+        FROM core_continuity_events e
+        JOIN core_continuity_works w
+          ON w.tenant_id=e.tenant_id AND w.work_id=e.work_id
+        JOIN core_continuity_incident_runbooks i
+          ON i.tenant_id=e.tenant_id AND i.project_id=w.project_id
+          AND i.fingerprint=e.payload->>'fingerprint'
+        WHERE e.tenant_id=$1 AND e.work_id=$2 AND e.event_type='incident_recorded'
+          AND NOT (
+            COALESCE(i.scope->>'error_code','')='NATIVE_CLOSURE_GAPS'
+            AND COALESCE(i.scope->>'deployment_path','')='work_continuity_closure_evaluate'
+            AND COALESCE(i.scope->>'connector','')='host-native-coordination'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM core_continuity_events resolved
+            WHERE resolved.tenant_id=e.tenant_id AND resolved.work_id=e.work_id
+              AND resolved.event_type IN ('incident_runbook_verified','synthetic_incident_reconciled')
+              AND resolved.payload->>'fingerprint'=i.fingerprint
+              AND resolved.sequence_number>e.sequence_number
+          )`, [context.tenantId, context.workId]),
+      client.query(`SELECT status FROM core_continuity_native_plans
+        WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1`,
+      [context.tenantId, context.workId]),
+    ]);
+    const otherBlockerCount = Number(otherIncidents.rows[0]?.blocker_count || 0) +
+      (latestPlan.rows[0]?.status === "blocked" ? 1 : 0);
+    const workReactivated = work.rows[0].status === "blocked" && otherBlockerCount === 0;
+    if (workReactivated) {
+      await client.query(`UPDATE core_continuity_works
+        SET status='active',next_action=$3,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status='blocked'`,
+      [context.tenantId, context.workId, closureEvaluationNextAction(evaluation)]);
+    }
+    const events = [];
+    for (const row of synthetic.rows) {
+      events.push(await appendEvent(client, context, "synthetic_incident_reconciled", {
+        fingerprint: row.fingerprint,
+        recorded_sequence_number: Number(row.recorded_sequence_number),
+        source_operation: "work_continuity_closure_evaluate",
+        plan_id: planId,
+        evaluation_id: evaluation.evaluation_id || null,
+        evaluation_digest: evaluation.evaluation_digest || null,
+        work_reactivated: workReactivated,
+        other_blocker_count: otherBlockerCount,
+      }));
+    }
+    await injectFailure("synthetic_incident_reconciled", {
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      reconciled_count: synthetic.rows.length,
+    });
+    return Object.freeze({
+      reconciled_count: synthetic.rows.length,
+      work_reactivated: workReactivated,
+      other_blocker_count: otherBlockerCount,
+      events: Object.freeze(events),
+    });
+  }
+
+  async function reconcileTerminalCoordination(client, context, {
+    closureEventType,
+    historicalReleasedLeaseCount = null,
+    historicalClosedParticipantCount = null,
+  } = {}) {
+    const coordination = await releaseTerminalCoordination(client, context);
+    const reconciled = coordination.released_lease_count > 0 ||
+      coordination.closed_participant_count > 0;
+    let event = null;
+    if (reconciled) {
+      event = await appendEvent(client, context, "terminal_coordination_reconciled", {
+        closure_event_type: closureEventType,
+        reconciliation_source: "terminal_closure_replay",
+        released_lease_count: coordination.released_lease_count,
+        closed_participant_count: coordination.closed_participant_count,
+        historical_released_lease_count: historicalReleasedLeaseCount,
+        historical_closed_participant_count: historicalClosedParticipantCount,
+      });
+      await injectFailure("terminal_coordination_reconciled", {
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        closure_event_type: closureEventType,
+      });
+    }
+    return Object.freeze({
+      reconciled,
+      released_lease_count: coordination.released_lease_count,
+      closed_participant_count: coordination.closed_participant_count,
+      event,
+    });
+  }
+
+  async function loadPersistedNativeTerminalEvidence(
+    client,
+    context,
+    { planId } = {},
+  ) {
+    const terminal = await client.query(`SELECT status FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+    [context.tenantId, context.workId]);
+    if (!terminal.rows[0]) throw new Error("continuity_work_not_found");
+    if (terminal.rows[0].status !== "completed") return null;
+    const closure = await client.query(`SELECT sequence_number,payload,previous_event_hash,event_hash
+      FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2 AND event_type='closure_finalized'
+      ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
+    [context.tenantId, context.workId]);
+    if (!closure.rows[0]) throw new Error("continuity_terminal_replay_evidence_invalid");
+    const closureRow = closure.rows[0];
+    const historical = closureRow.payload || {};
+    const closureEnvelope = {
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      sequence_number: Number(closureRow.sequence_number),
+      event_type: "closure_finalized",
+      payload: cleanJson(historical),
+      previous_event_hash: closureRow.previous_event_hash || null,
+    };
+    const receipt = await client.query(`SELECT payload_digest
+      FROM core_continuity_native_receipts
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        AND receipt_type='closure_finalized'
+      ORDER BY created_at DESC,receipt_id DESC LIMIT 1 FOR UPDATE`,
+    [context.tenantId, context.workId, planId]);
+    if (
+      !Number.isSafeInteger(Number(closureRow.sequence_number)) ||
+      Number(closureRow.sequence_number) < 1 ||
+      !SHA256_DIGEST.test(String(closureRow.event_hash || "")) ||
+      digest(closureEnvelope) !== closureRow.event_hash ||
+      historical.plan_id !== planId || historical.finalized !== true ||
+      !receipt.rows[0] ||
+      receipt.rows[0].payload_digest !== historical.final_receipt_digest
+    ) {
+      throw new Error("continuity_terminal_replay_evidence_invalid");
+    }
+    return Object.freeze({
+      historical: cleanJson(historical),
+      receipt_payload_digest: receipt.rows[0].payload_digest,
+    });
+  }
+
+  async function reconcilePersistedNativeTerminalCoordination(
+    client,
+    context,
+    { planId, evidence = null } = {},
+  ) {
+    const persisted = evidence || await loadPersistedNativeTerminalEvidence(
+      client,
+      context,
+      { planId },
+    );
+    if (!persisted) return null;
+    const historical = persisted.historical;
+    return reconcileTerminalCoordination(client, context, {
+      closureEventType: "closure_finalized",
+      historicalReleasedLeaseCount: Number.isSafeInteger(
+        Number(historical.released_lease_count),
+      ) ? Number(historical.released_lease_count) : null,
+      historicalClosedParticipantCount: Number.isSafeInteger(
+        Number(historical.closed_participant_count),
+      ) ? Number(historical.closed_participant_count) : null,
+    });
+  }
+
+  function nativeTerminalReplayResult(context, planId, reconciliation, {
+    idempotentReplay,
+  } = {}) {
+    return {
+      schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      plan_id: planId,
+      completed: true,
+      closed: true,
+      terminal_replay: true,
+      idempotent_replay: idempotentReplay === true,
+      terminal_coordination_reconciliation: reconciliation,
+    };
   }
 
   async function galleryInternal(identity, input = {}, authorizedWorkIds = null) {
@@ -4147,7 +4484,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const leaseId = uuid(input.lease_id, "lease_id");
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_release", input, async () => {
-        await lockGalleryWork(client, context);
+        await lockGalleryWork(client, context, { allowTerminal: true });
         const participant = await requireParticipant(client, context, sessionId, {
           active: false,
           agentId,
@@ -4276,6 +4613,53 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return { ...payload, payload_digest: payloadDigest };
   }
 
+  async function requirePersistedSoftwareChangeBinding(client, context, softwareContract) {
+    if (!softwareContract) return null;
+    const changeId = uuid(
+      softwareContract.change_id,
+      "native_agent_software_change_id",
+    );
+    const baseStateDigest = String(softwareContract.base_state_digest || "");
+    if (!SHA256_DIGEST.test(baseStateDigest)) {
+      throw new Error("native_agent_software_base_state_digest_invalid");
+    }
+    // Older installations intentionally remain usable until the Software
+    // Cognition FK migration is present. Once the FK is authoritative, lock
+    // its exact tenant/Work/change parent so a concurrent delete cannot turn a
+    // typed preflight failure back into a raw PostgreSQL error. The contract's
+    // base_state_digest belongs to the Software Reality Graph; it is not the
+    // causal base_state_digest stored on core_changes.
+    const constraint = await client.query(`SELECT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='core_continuity_native_plans_change_fk'
+          AND conrelid=to_regclass('core_continuity_native_plans')
+          AND contype='f'
+      ) AS enforced`);
+    if (constraint.rows[0]?.enforced !== true) {
+      return { changeId, baseStateDigest, enforced: false };
+    }
+    const persisted = await client.query(`SELECT 1 AS persisted
+      FROM core_changes
+      WHERE tenant_id=$1 AND work_id=$2 AND change_id=$3
+      FOR SHARE`, [context.tenantId, context.workId, changeId]);
+    if (!persisted.rows[0]) {
+      throw new Error("native_agent_software_change_binding_not_found");
+    }
+    return { changeId, baseStateDigest, enforced: true };
+  }
+
+  function assertNativePlanClosureOpen(status) {
+    if (!["planned", "verified"].includes(String(status || ""))) {
+      throw new Error("native_agent_plan_not_open");
+    }
+  }
+
+  function assertNativePlanEvaluable(status) {
+    if (!["planned", "verified", "blocked"].includes(String(status || ""))) {
+      throw new Error("native_agent_plan_not_open");
+    }
+  }
+
   // Example plan input:
   // {work_id, host_type:"codex_native", tasks:[{task_id:"build",kind:"builder",
   // instruction:"Implement..."},{task_id:"verify",kind:"verifier",instruction:"Verify...",
@@ -4313,6 +4697,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         core_plan_digest: options.corePlan ? digest(options.corePlan) : null,
       },
       async () => {
+        await lockOperationalWork(client, context);
         const work = await client.query(`SELECT w.work_id,w.current_version,a.anchor,a.intent_digest,
             v.architecture,v.architecture_digest
           FROM core_continuity_works w JOIN core_continuity_intent_anchors a
@@ -4322,9 +4707,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
-        const priorPlan = (await client.query(`SELECT plan_id,plan_version FROM core_continuity_native_plans
-          WHERE tenant_id=$1 AND work_id=$2 ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1 FOR UPDATE`,
+        const priorPlan = (await client.query(`SELECT plan_id,plan_version,status
+          FROM core_continuity_native_plans
+          WHERE tenant_id=$1 AND work_id=$2
+          ORDER BY plan_version DESC,created_at DESC,plan_id DESC
+          LIMIT 1 FOR UPDATE`,
         [context.tenantId, context.workId])).rows[0];
+        const verifiedPlan = await client.query(`SELECT plan_id
+          FROM core_continuity_native_plans
+          WHERE tenant_id=$1 AND work_id=$2 AND status='verified'
+          ORDER BY plan_version DESC,created_at DESC,plan_id DESC
+          LIMIT 1 FOR UPDATE`,
+        [context.tenantId, context.workId]);
+        if (verifiedPlan.rows[0]) {
+          // A verified plan may already own an external action ticket. Local
+          // replacement cannot revoke that authority, so require the existing
+          // release/rollback workflow to resolve it first.
+          throw new Error("native_agent_plan_replacement_conflict");
+        }
         const planVersion = Number(priorPlan?.plan_version || 0) + 1;
         const plan = {
           ...basePlan,
@@ -4354,12 +4754,61 @@ export function createWorkContinuityRuntime(config, options = {}) {
           }),
         };
         const planDigest = digest(plan);
-        await client.query(`INSERT INTO core_continuity_native_plans
-          (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by,change_id,base_state_digest,contract_schema,plan_version,supersedes_plan_id)
-          VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6,$7,$8,$9,$10,$11)`,
-        [context.tenantId, context.workId, planId, JSON.stringify(plan), planDigest, context.actor,
-          plan.software_contract?.change_id || null, plan.software_contract?.base_state_digest || null,
-          plan.software_contract ? "worker_plan_contract_v1" : "native_agent_plan_v1", planVersion, priorPlan?.plan_id || null]);
+        const softwareBinding = await requirePersistedSoftwareChangeBinding(
+          client,
+          context,
+          plan.software_contract,
+        );
+        try {
+          await client.query(`INSERT INTO core_continuity_native_plans
+            (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by,change_id,base_state_digest,contract_schema,plan_version,supersedes_plan_id)
+            VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6,$7,$8,$9,$10,$11)`,
+          [context.tenantId, context.workId, planId, JSON.stringify(plan), planDigest, context.actor,
+            softwareBinding?.changeId || null, softwareBinding?.baseStateDigest || null,
+            plan.software_contract ? "worker_plan_contract_v1" : "native_agent_plan_v1", planVersion, priorPlan?.plan_id || null]);
+        } catch (error) {
+          if (
+            error?.code === "23503" &&
+            error?.constraint === "core_continuity_native_plans_change_fk"
+          ) {
+            throw new Error("native_agent_software_change_binding_not_found");
+          }
+          throw error;
+        }
+        // Supersede every still-planned predecessor in one bounded statement.
+        // The response/event samples at most 100 ids while the UPDATE itself
+        // remains complete even if historical bad state contains more rows.
+        const superseded = await client.query(`WITH superseded AS (
+            UPDATE core_continuity_native_plans
+            SET status='superseded',closed_at=now()
+            WHERE tenant_id=$1 AND work_id=$2 AND plan_id<>$3 AND status='planned'
+            RETURNING plan_id
+          ), superseded_agents AS (
+            UPDATE core_continuity_native_agents a SET status='superseded'
+            FROM superseded s
+            WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=s.plan_id
+              AND a.status='bound'
+            RETURNING a.agent_id
+          ) SELECT
+            (SELECT count(*)::integer FROM superseded) AS superseded_count,
+            ARRAY(SELECT plan_id FROM superseded ORDER BY plan_id LIMIT 100) AS superseded_plan_ids,
+            (SELECT count(*)::integer FROM superseded_agents) AS superseded_agent_count`,
+        [context.tenantId, context.workId, planId]);
+        const supersededPlanCount = Number(superseded.rows[0]?.superseded_count || 0);
+        const supersededPlanIds = superseded.rows[0]?.superseded_plan_ids || [];
+        const supersededAgentCount = Number(superseded.rows[0]?.superseded_agent_count || 0);
+        let replanEvent = null;
+        if (supersededPlanCount > 0) {
+          replanEvent = await appendEvent(client, context, "native_plan_superseded", {
+            superseded_plan_ids: supersededPlanIds,
+            superseded_plan_count: supersededPlanCount,
+            superseded_plan_ids_truncated: supersededPlanCount > supersededPlanIds.length,
+            superseded_agent_count: supersededAgentCount,
+            superseding_plan_id: planId,
+            reason: "replacement_plan_created",
+            verified_receipts_preserved: true,
+          });
+        }
         const receipt = await insertNativeReceipt(client, context, {
           plan_id: planId,
           receipt_type: "plan_created",
@@ -4388,15 +4837,30 @@ export function createWorkContinuityRuntime(config, options = {}) {
           plan,
           plan_digest: planDigest,
           receipt,
+          superseded_plan_ids: supersededPlanIds,
+          superseded_plan_count: supersededPlanCount,
+          superseded_plan_ids_truncated: supersededPlanCount > supersededPlanIds.length,
+          superseded_agent_count: supersededAgentCount,
+          replan_event: replanEvent,
           event,
         };
+      },
+      async (replay) => {
+        await lockOperationalWork(client, context);
+        const current = await client.query(`SELECT status
+          FROM core_continuity_native_plans
+          WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 FOR UPDATE`,
+        [context.tenantId, context.workId, planId]);
+        if (!current.rows[0]) throw new Error("native_agent_plan_not_found");
+        assertNativePlanClosureOpen(current.rows[0].status);
+        return replay;
       },
     ));
   }
 
   async function expireNativeAgentLeases(context, planId) {
     return transaction(async (client) => {
-      await lockWorkRow(client, context);
+      await lockOperationalWork(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -4467,12 +4931,73 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const hostType = String(input.host_type || "");
     if (!NATIVE_HOST_TYPES.has(hostType)) throw new Error("native_agent_host_type_invalid");
     const coordinatorSessionFingerprint = nativeCoordinatorFingerprint(identity);
+    const terminalReplay = await transaction(async (client) => {
+      const workState = await lockWorkState(client, context);
+      if (!TERMINAL_CONTINUITY_WORK_STATUSES.has(
+        String(workState.status || "").toLowerCase(),
+      )) return null;
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+        context.tenantId,
+        planId,
+      ]);
+      const planResult = await client.query(`SELECT plan,status FROM core_continuity_native_plans
+        WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 FOR UPDATE`,
+      [context.tenantId, context.workId, planId]);
+      const plan = planResult.rows[0]?.plan;
+      const task = plan?.tasks?.find((candidate) => candidate.task_id === taskId);
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,
+          coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
+        FROM core_continuity_native_agents
+        WHERE tenant_id=$1 AND plan_id=$2 AND
+          (task_id=$3 OR agent_id=$4 OR host_task_id=$5) LIMIT 1 FOR UPDATE`,
+      [context.tenantId, planId, taskId, agentId, hostTaskId]);
+      const row = existing.rows[0];
+      if (!plan || !task || !row) throw new Error("continuity_work_terminal");
+      if (row.status === "expired") {
+        throw new Error("native_agent_binding_expired_replan_required");
+      }
+      const replayCapability = assignmentCapability(nativeAssignmentBinding({
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        task_id: taskId,
+        agent_id: agentId,
+        host_type: hostType,
+        host_task_id: hostTaskId,
+        task_digest: task.task_digest,
+        coordinator_session_fingerprint: coordinatorSessionFingerprint,
+        lease_expires_at: dateValue(
+          row.lease_expires_at,
+          "native_agent_lease",
+        ).toISOString(),
+        v2_task_id: row.v2_task_id,
+      }));
+      if (row.task_id !== taskId || row.agent_id !== agentId ||
+          row.host_type !== hostType || row.host_task_id !== hostTaskId ||
+          row.task_digest !== task.task_digest || row.v2_task_id !== v2TaskId ||
+          row.coordinator_session_fingerprint !== coordinatorSessionFingerprint ||
+          row.assignment_capability_digest !==
+            assignmentCapabilityDigest(replayCapability)) {
+        throw new Error("native_agent_binding_conflict");
+      }
+      return {
+        schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        native_agent_id: agentId,
+        binding: row,
+        assignment_capability: replayCapability,
+        idempotent_replay: true,
+      };
+    });
+    if (terminalReplay) return terminalReplay;
     const expiredLeases = await expireNativeAgentLeases(context, planId);
     if (expiredLeases.length) {
       throw new Error("native_agent_binding_expired_replan_required");
     }
     return transaction(async (client) => {
-      await lockWorkRow(client, context);
+      await lockOperationalWork(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -4697,12 +5222,78 @@ export function createWorkContinuityRuntime(config, options = {}) {
       correction_required: reportInput.correction_required === true,
     }, 100_000);
     if (!report.summary) throw new Error("native_agent_report_summary_required");
+    const reportDigest = digest({ status, report });
+    const terminalReplay = await transaction(async (client) => {
+      const workState = await lockWorkState(client, context);
+      if (!TERMINAL_CONTINUITY_WORK_STATUSES.has(
+        String(workState.status || "").toLowerCase(),
+      )) return null;
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+        context.tenantId,
+        planId,
+      ]);
+      const current = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report_digest,
+          a.report,a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
+          a.assignment_capability_digest,a.native_session_fingerprint,
+          a.native_presence_signature,a.lease_expires_at,
+          p.plan,p.status AS plan_status,a.v2_task_id
+        FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
+          ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
+        WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
+      [context.tenantId, context.workId, planId, agentId]);
+      const row = current.rows[0];
+      if (!row) throw new Error("continuity_work_terminal");
+      const expectedAssignment = assignmentCapability(nativeAssignmentBinding({
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        task_id: row.task_id,
+        agent_id: agentId,
+        host_type: row.host_type,
+        host_task_id: row.host_task_id,
+        task_digest: row.task_digest,
+        coordinator_session_fingerprint: row.coordinator_session_fingerprint,
+        lease_expires_at: dateValue(
+          row.lease_expires_at,
+          "native_agent_lease",
+        ).toISOString(),
+        v2_task_id: row.v2_task_id,
+      }));
+      if (row.host_type !== reporterPresence.host_type) {
+        throw new Error("native_agent_reporter_host_scope_mismatch");
+      }
+      if (row.host_task_id !== hostTaskId) {
+        throw new Error("native_agent_host_task_mismatch");
+      }
+      if (row.assignment_capability_digest !== suppliedAssignmentDigest ||
+          suppliedAssignmentDigest !== assignmentCapabilityDigest(expectedAssignment) ||
+          input.assignment_capability !== expectedAssignment) {
+        throw new Error("native_agent_assignment_capability_mismatch");
+      }
+      if (row.report_digest !== reportDigest || row.status !== status ||
+          digest({ status: row.status, report: row.report }) !== reportDigest ||
+          row.native_session_fingerprint !== reporterPresence.session_fingerprint ||
+          row.native_presence_signature !== reporterPresence.signature) {
+        throw new Error("native_agent_report_conflict");
+      }
+      return {
+        schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        agent_id: agentId,
+        native_agent_id: agentId,
+        report_digest: reportDigest,
+        idempotent_replay: true,
+      };
+    });
+    if (terminalReplay) return terminalReplay;
     const expiredLeases = await expireNativeAgentLeases(context, planId);
     if (expiredLeases.length) {
       throw new Error("native_agent_binding_expired_replan_required");
     }
     return transaction(async (client) => {
-      await lockWorkRow(client, context);
+      await lockOperationalWork(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -4820,7 +5411,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
       } else if (report.acceptance_evidence.length) {
         throw new Error("native_agent_acceptance_evidence_verifier_only");
       }
-      const reportDigest = digest({ status, report });
       const bridgeVerifierEvidence = async (receipt = null) => {
         if (row.task_kind !== "verifier" || status !== "completed" ||
             report.verdict !== "approved" || !row.v2_task_id) {
@@ -4964,13 +5554,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "native_closure_evaluation",
       input,
       async () => {
-        await lockWorkRow(client, context);
+        const terminalReconciliation = await reconcilePersistedNativeTerminalCoordination(
+          client,
+          context,
+          { planId },
+        );
+        if (terminalReconciliation) {
+          return nativeTerminalReplayResult(context, planId, terminalReconciliation, {
+            idempotentReplay: false,
+          });
+        }
+        await lockOperationalWork(client, context);
         const planResult = await client.query(`SELECT p.plan,p.plan_digest,p.status,a.intent_digest
           FROM core_continuity_native_plans p JOIN core_continuity_intent_anchors a
             ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
           WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.plan_id=$3 FOR UPDATE`,
         [context.tenantId, context.workId, planId]);
         if (!planResult.rows[0]) throw new Error("native_agent_plan_not_found");
+        assertNativePlanEvaluable(planResult.rows[0].status);
         if (digest(planResult.rows[0].plan) !== planResult.rows[0].plan_digest) {
           throw new Error("native_agent_plan_integrity_failed");
         }
@@ -5061,21 +5662,23 @@ export function createWorkContinuityRuntime(config, options = {}) {
             });
           }
         }
-        if (evaluation.closed) {
-          await client.query(`UPDATE core_continuity_works
-            SET next_action='Issue and persist the exact Universal Core Join verdict before release readiness.',
-              updated_at=now()
-            WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId]);
-        } else if (evaluation.commit_ticket_ready) {
-          await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
-            WHERE tenant_id=$1 AND work_id=$2`,
-          [context.tenantId, context.workId,
-            `Request the exact Core git.commit ticket bound to precommit workspace digest ${evaluation.precommit_verification.workspace_digest}; no other action is authorized.`]);
-        } else {
-          await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
-            WHERE tenant_id=$1 AND work_id=$2`,
-          [context.tenantId, context.workId, `Resolve closure gaps: ${evaluation.missing.join(", ")}`.slice(0, 4_000)]);
-        }
+        const syntheticIncidentReconciliation = await reconcileSyntheticClosureGapIncidents(
+          client,
+          context,
+          {
+            planId,
+            evaluation: {
+              ...evaluation,
+              evaluation_id: evaluationId,
+              evaluation_digest: evaluationDigest,
+            },
+          },
+        );
+        await client.query(`UPDATE core_continuity_works
+          SET next_action=CASE WHEN status='blocked' THEN next_action ELSE $3 END,
+            updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`,
+        [context.tenantId, context.workId, closureEvaluationNextAction(evaluation)]);
         const event = await appendEvent(client, context, "closure_evaluated", {
           plan_id: planId,
           evaluation_id: evaluationId,
@@ -5094,7 +5697,39 @@ export function createWorkContinuityRuntime(config, options = {}) {
           core_join_required: evaluation.closed,
           ...(coreJoinMaterial ? { core_join_material: coreJoinMaterial } : {}),
           ...(precommitTicketGate ? { precommit_ticket_gate: precommitTicketGate } : {}),
+          synthetic_incident_reconciliation: syntheticIncidentReconciliation,
           event,
+        };
+      },
+      async (replay) => {
+        const terminalReconciliation = await reconcilePersistedNativeTerminalCoordination(
+          client,
+          context,
+          { planId },
+        );
+        if (terminalReconciliation) {
+          return nativeTerminalReplayResult(context, planId, terminalReconciliation, {
+            idempotentReplay: true,
+          });
+        }
+        await lockOperationalWork(client, context);
+        const plan = await client.query(`SELECT status
+          FROM core_continuity_native_plans
+          WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 FOR UPDATE`,
+        [context.tenantId, context.workId, planId]);
+        if (!plan.rows[0]) throw new Error("native_agent_plan_not_found");
+        assertNativePlanEvaluable(plan.rows[0].status);
+        const reconciliation = await reconcileSyntheticClosureGapIncidents(
+          client,
+          context,
+          {
+            planId,
+            evaluation: replay,
+          },
+        );
+        return {
+          ...replay,
+          synthetic_incident_reconciliation: reconciliation,
         };
       },
     ));
@@ -5107,7 +5742,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return transaction(async (client) => {
       await lockWorkRow(client, context);
       const current = await client.query(`SELECT
-          p.plan,p.plan_digest,a.intent_digest,e.evaluation,e.evaluation_digest
+          p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation,e.evaluation_digest
         FROM core_continuity_native_plans p
         JOIN core_continuity_intent_anchors a
           ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
@@ -5118,6 +5753,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId, evaluationId]);
       const row = current.rows[0];
       if (!row) throw new Error("continuity_closure_evaluation_not_found");
+      assertNativePlanClosureOpen(row.status);
       if (
         digest(row.plan) !== row.plan_digest ||
         digest(row.evaluation) !== row.evaluation_digest ||
@@ -5318,15 +5954,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const planId = uuid(input.plan_id, "plan_id");
     return transaction(async (client) => {
       await lockWorkRow(client, context);
-      const latest = await client.query(`SELECT j.release_intent,j.release_intent_digest,
+      const latest = await client.query(`SELECT p.status,j.release_intent,j.release_intent_digest,
           j.core_join_record,j.core_join_record_digest,j.verdict_id
         FROM core_continuity_release_joins j
+        JOIN core_continuity_native_plans p
+          ON p.tenant_id=j.tenant_id AND p.work_id=j.work_id AND p.plan_id=j.plan_id
         WHERE j.tenant_id=$1 AND j.work_id=$2 AND j.plan_id=$3
         ORDER BY j.renewal_generation DESC,j.created_at DESC,j.verdict_id DESC
         LIMIT 1 FOR UPDATE`,
       [context.tenantId, context.workId, planId]);
       const row = latest.rows[0];
       if (!row) throw new Error("continuity_persisted_release_not_found");
+      if (!["verified", "closed"].includes(row.status)) {
+        throw new Error("native_agent_plan_not_release_ready");
+      }
       const releaseIntent = requireObject(row.release_intent, "core_release_intent");
       const coreJoinRecord = requireObject(row.core_join_record, "core_join_record");
       const claim = requireObject(coreJoinRecord.claim, "core_join_claim");
@@ -5371,7 +6012,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const releaseIntent = requireObject(options.releaseIntent, "core_release_intent");
     const coreJoinRecord = requireObject(options.coreJoinRecord, "core_join_record");
     return transaction(async (client) => {
-      await lockWorkRow(client, context);
+      const workState = await lockWorkState(client, context);
       const stored = await client.query(`SELECT
           p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation,e.evaluation_digest
         FROM core_continuity_native_plans p
@@ -5384,6 +6025,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId, evaluationId]);
       const row = stored.rows[0];
       if (!row) throw new Error("continuity_closure_evaluation_not_found");
+      assertNativePlanClosureOpen(row.status);
       if (
         digest(row.plan) !== row.plan_digest ||
         digest(row.evaluation) !== row.evaluation_digest ||
@@ -5514,12 +6156,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("continuity_core_join_replay_conflict");
         }
-        await client.query(`UPDATE core_continuity_works
-          SET status='release_ready',
-            next_action='Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.',
-            updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId]);
+        if (!TERMINAL_CONTINUITY_WORK_STATUSES.has(
+          String(workState.status || "").toLowerCase(),
+        )) {
+          await client.query(`UPDATE core_continuity_works
+            SET status='release_ready',
+              next_action='Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.',
+              updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [context.tenantId, context.workId]);
+        }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,
@@ -5535,6 +6181,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           idempotent_replay: true,
         };
       }
+      assertOperationalWorkState(workState);
       await client.query(`INSERT INTO core_continuity_release_joins
         (tenant_id,work_id,plan_id,evaluation_id,verdict_id,release_intent,
          release_intent_digest,core_join_record,core_join_record_digest,
@@ -5587,7 +6234,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // receipt after Core performs its own GitHub, CI, Render and rollback
   // readback. The MCP cannot verify Core's HMAC secret, but it verifies the
   // complete canonical binding before projecting the signed receipt locally.
-  async function finalizeClosure(identity, input, authorization) {
+  function nativeFinalizeRequest(identity, input) {
     const allowedInputFields = new Set([
       "work_id", "plan_id", "action_ticket_id", "idempotency_key",
       "agent_id", "client_type", "session_id",
@@ -5605,6 +6252,88 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (!/^hnt_[a-zA-Z0-9-]{8,160}$/.test(actionTicketId)) {
       throw new Error("continuity_external_release_ticket_invalid");
     }
+    const idempotencyKey = safeText(input.idempotency_key, 160);
+    if (!idempotencyKey) throw new Error("idempotency_key_required");
+    return { context, planId, actionTicketId, idempotencyKey };
+  }
+
+  // An exact terminal retry is authorized by the durable local idempotency
+  // record plus the hash-chained closure event and matching final receipt. It
+  // deliberately runs before any remote re-authorization so a lost response
+  // remains replayable after authorization expiry or an upstream outage.
+  async function replayFinalizedClosure(identity, input) {
+    const { context, planId, actionTicketId, idempotencyKey } =
+      nativeFinalizeRequest(identity, input);
+    return transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+        context.tenantId,
+        `${context.workId}:${idempotencyKey}`,
+      ]);
+      const existing = await client.query(`SELECT operation,request_digest,result
+        FROM core_continuity_idempotency
+        WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`,
+      [context.tenantId, context.workId, idempotencyKey]);
+      const row = existing.rows[0];
+      if (!row) return null;
+      if (row.operation !== "native_closure_finalize") {
+        throw new Error("idempotency_key_conflict");
+      }
+      const result = row.result && typeof row.result === "object" &&
+        !Array.isArray(row.result) ? row.result : null;
+      if (
+        result?.tenant_id !== context.tenantId ||
+        result?.work_id !== context.workId ||
+        result?.plan_id !== planId ||
+        result?.action_ticket_id !== actionTicketId ||
+        result?.completed !== true
+      ) {
+        throw new Error("idempotency_key_conflict");
+      }
+      const evidence = await loadPersistedNativeTerminalEvidence(client, context, {
+        planId,
+      });
+      if (!evidence) throw new Error("continuity_terminal_replay_evidence_invalid");
+      const authorizationDigest = String(
+        evidence.historical.authorization_digest || "",
+      );
+      if (!SHA256_DIGEST.test(authorizationDigest)) {
+        throw new Error("continuity_terminal_replay_evidence_invalid");
+      }
+      const requestDigest = digest({
+        operation: "native_closure_finalize",
+        actor_binding: String(context.actorSubject || context.actor || ""),
+        request: {
+          work_id: context.workId,
+          plan_id: planId,
+          action_ticket_id: actionTicketId,
+          authorization_digest: authorizationDigest,
+        },
+      });
+      if (
+        row.request_digest !== requestDigest ||
+        evidence.historical.plan_id !== planId ||
+        evidence.historical.action_ticket_id !== actionTicketId
+      ) {
+        throw new Error("idempotency_key_conflict");
+      }
+      const reconciliation = await reconcilePersistedNativeTerminalCoordination(
+        client,
+        context,
+        { planId, evidence },
+      );
+      if (!reconciliation) {
+        throw new Error("continuity_terminal_replay_evidence_invalid");
+      }
+      return {
+        ...result,
+        idempotent_replay: true,
+        terminal_coordination_reconciliation: reconciliation,
+      };
+    });
+  }
+
+  async function finalizeClosure(identity, input, authorization) {
+    const { context, planId, actionTicketId } = nativeFinalizeRequest(identity, input);
     const receipt = requireObject(authorization, "core_finalize_authorization");
     const coordinatorSessionFingerprint = String(identity.agentPresence?.session_fingerprint || "");
     if (!/^[a-f0-9]{16,64}$/i.test(coordinatorSessionFingerprint)) {
@@ -5683,7 +6412,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         authorization_digest: suppliedAuthorizationDigest,
       },
       async () => {
-        await lockWorkRow(client, context);
+        await lockOperationalWork(client, context);
         const joined = await client.query(`SELECT
             p.plan,p.plan_digest,p.status,
             e.evaluation_id,e.evaluation,e.evaluation_digest,
@@ -5859,6 +6588,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           })),
           external_readback_digest: receipt.external_readback_digest,
         })]);
+        const coordination = await releaseTerminalCoordination(client, context);
         const event = await appendEvent(client, context, "closure_finalized", {
           plan_id: planId,
           finalized: true,
@@ -5877,6 +6607,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           external_readback_digest: receipt.external_readback_digest,
           authorization_digest: suppliedAuthorizationDigest,
           final_receipt_digest: finalReceipt.payload_digest,
+          released_lease_count: coordination.released_lease_count,
+          closed_participant_count: coordination.closed_participant_count,
         });
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -5891,8 +6623,31 @@ export function createWorkContinuityRuntime(config, options = {}) {
           release_manifest_digest: receipt.release_manifest_digest,
           release_intent_digest: receipt.release_intent_digest,
           external_readback_digest: receipt.external_readback_digest,
+          released_lease_count: coordination.released_lease_count,
+          closed_participant_count: coordination.closed_participant_count,
           final_receipt: finalReceipt,
           event,
+        };
+      },
+      async (replay) => {
+        const terminal = await client.query(`SELECT status FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+        [context.tenantId, context.workId]);
+        if (terminal.rows[0]?.status !== "completed" || replay.completed !== true) {
+          throw new Error("continuity_terminal_replay_evidence_invalid");
+        }
+        const reconciliation = await reconcileTerminalCoordination(client, context, {
+          closureEventType: "closure_finalized",
+          historicalReleasedLeaseCount: Number.isSafeInteger(
+            Number(replay.released_lease_count),
+          ) ? Number(replay.released_lease_count) : null,
+          historicalClosedParticipantCount: Number.isSafeInteger(
+            Number(replay.closed_participant_count),
+          ) ? Number(replay.closed_participant_count) : null,
+        });
+        return {
+          ...replay,
+          terminal_coordination_reconciliation: reconciliation,
         };
       },
     ));
@@ -5983,6 +6738,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "work_atlas_upsert",
       input,
       async () => {
+        await lockOperationalWork(client, context);
         const work = await client.query(`SELECT project_id FROM core_continuity_works
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
@@ -6537,7 +7293,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     // reached an execution-capable plan may move a Work to blocked.
     const blockWork = input.block_work !== false;
     return transaction(async (client) => {
-      const work = await client.query(`SELECT project_id FROM core_continuity_works
+      const work = await client.query(`SELECT project_id,status,next_action FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
       if (!work.rows[0]) throw new Error("continuity_work_not_found");
       if (work.rows[0].project_id !== projectId) throw new Error("incident_project_scope_mismatch");
@@ -6552,6 +7308,21 @@ export function createWorkContinuityRuntime(config, options = {}) {
       );
       if (existing.rows[0]) {
         if (existing.rows[0].runbook_digest !== runbookDigest) throw new Error("incident_runbook_conflict");
+        if (TERMINAL_CONTINUITY_WORK_STATUSES.has(
+          String(work.rows[0].status || "").toLowerCase(),
+        )) {
+          return {
+            schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+            tenant_id: context.tenantId,
+            work_id: context.workId,
+            project_id: projectId,
+            fingerprint,
+            status: existing.rows[0].status,
+            work_status: work.rows[0].status,
+            next_action: work.rows[0].next_action || "",
+            idempotent_replay: true,
+          };
+        }
         if (blockWork) {
           await client.query(`UPDATE core_continuity_works
             SET status='blocked',next_action=$3,updated_at=now()
@@ -6570,6 +7341,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           idempotent_replay: true,
         };
       }
+      assertOperationalWorkState(work.rows[0]);
       await client.query(`INSERT INTO core_continuity_incident_runbooks
         (tenant_id,project_id,fingerprint,scope,runbook,runbook_digest,status,created_by)
         VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,'candidate',$7)`,
@@ -6619,6 +7391,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       maxLength: 500,
     });
     return transaction(async (client) => {
+      await lockOperationalWork(client, context);
       const work = await client.query(`SELECT project_id FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
       [context.tenantId, context.workId]);
@@ -6989,6 +7762,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     resolvePersistedClosureRelease,
     prepareEffectiveCoreJoinEvaluation,
     bindCoreJoinVerdict,
+    replayFinalizedClosure,
     finalizeClosure,
     upsertAtlas,
     selectAtlas,

@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
 import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
 import {
   acquireBoundedMigrationLock,
   ensureCoreSchemaMigrationRegistry,
 } from "./coreSchemaMigrationRegistry.js";
+import { withPostgresMigrationSession } from "../../shared/retryable-postgres-initializer.js";
 
 export const PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID =
   "20260810_002_project_scope_render_origin_indexes_v1";
@@ -61,7 +62,7 @@ async function indexReadback(client) {
   return indexes;
 }
 
-export async function recoverInterruptedProjectScopeRenderIndexes(client) {
+export async function recoverInterruptedProjectScopeRenderIndexes(client, { migrationQuery = null } = {}) {
   const result = await client.query(`
     SELECT idx.relname AS name,i.indisvalid AS valid,
            pg_get_indexdef(i.indexrelid) AS definition,
@@ -92,7 +93,7 @@ export async function recoverInterruptedProjectScopeRenderIndexes(client) {
     if (row.constraint_owned === true || row.external_dependency === true) {
       throw new CausalContinuityError("CAUSAL_MIGRATION_INDEX_OWNERSHIP_UNCERTAIN", `Invalid index has dependencies: ${name}`);
     }
-    await client.query(`DROP INDEX CONCURRENTLY ${name}`);
+    await (migrationQuery || client.query.bind(client))(`DROP INDEX CONCURRENTLY ${name}`);
     actions[name] = "DROP_INVALID_EXACT";
   }
   return actions;
@@ -113,13 +114,14 @@ async function assertRollbackOwnership(client) {
   }
 }
 
-async function runSql(client, sql) {
+async function runSql(client, sql, { migrationQuery = null } = {}) {
+  const query = migrationQuery || client.query.bind(client);
   for (const statement of String(sql).split(";").map((part) => part.trim()).filter(Boolean)) {
     if (statement.startsWith("--")) {
       const executable = statement.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n").trim();
-      if (executable) await client.query(executable);
+      if (executable) await query(executable);
     } else {
-      await client.query(statement);
+      await query(statement);
     }
   }
 }
@@ -127,7 +129,7 @@ async function runSql(client, sql) {
 export function createProjectScopeRenderOriginIndexMigrator({ pool, connectionString } = {}) {
   if (!pool && !connectionString) throw new CausalContinuityError("CAUSAL_DATABASE_REQUIRED");
   const ownsPool = !pool;
-  const db = pool || new Pool({ connectionString, max: 2, idleTimeoutMillis: 10_000 });
+  const db = pool || createBoundedPostgresPool({ connectionString, max: 2, idleTimeoutMillis: 10_000 });
 
   async function apply() {
     const sql = await readFile(UP_URL, "utf8");
@@ -154,8 +156,10 @@ export function createProjectScopeRenderOriginIndexMigrator({ pool, connectionSt
          ON CONFLICT (migration_id) DO UPDATE SET application_state='APPLYING',checkpoint='LOCKED'`,
         [PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID, sqlDigest],
       );
-      await recoverInterruptedProjectScopeRenderIndexes(client);
-      await runSql(client, sql);
+      await withPostgresMigrationSession(client, async ({ query }) => {
+        await recoverInterruptedProjectScopeRenderIndexes(client, { migrationQuery: query });
+        await runSql(client, sql, { migrationQuery: query });
+      });
       const indexes = await indexReadback(client);
       await client.query(
         `UPDATE core_schema_migrations SET application_state='COMPLETED',checkpoint='READBACK_VERIFIED',
@@ -176,7 +180,8 @@ export function createProjectScopeRenderOriginIndexMigrator({ pool, connectionSt
       await acquireBoundedMigrationLock(client, LOCK);
       locked = true;
       await assertRollbackOwnership(client);
-      await runSql(client, await readFile(DOWN_URL, "utf8"));
+      await withPostgresMigrationSession(client, async ({ query }) =>
+        runSql(client, await readFile(DOWN_URL, "utf8"), { migrationQuery: query }));
       await client.query("DELETE FROM core_schema_migrations WHERE migration_id=$1", [PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID]);
       return { rolled_back: true, migration_id: PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID };
     } finally {

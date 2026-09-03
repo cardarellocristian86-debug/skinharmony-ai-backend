@@ -40,24 +40,29 @@ function runtime({ body, now, transportImpl } = {}) {
 }
 
 test("PostgreSQL Airlock schema initialization is single-flight under concurrent metrics", async () => {
-  const statements = [];
+  const calls = [];
   let releaseFirst;
   const firstQueryGate = new Promise((resolve) => { releaseFirst = resolve; });
   let first = true;
+  const query = async (statement) => {
+    const sql = String(typeof statement === "string" ? statement : statement?.text || "")
+      .replace(/\s+/g, " ").trim();
+    calls.push({ sql, query_timeout: statement?.query_timeout || null });
+    if (first && /CREATE TABLE IF NOT EXISTS research_airlock_work/.test(sql)) {
+      first = false;
+      await firstQueryGate;
+    }
+    if (/GROUP BY state/.test(sql) || /GROUP BY verdict/.test(sql)) return { rows: [] };
+    if (/tainted_at IS NOT NULL/.test(sql)) return { rows: [{ count: 0 }] };
+    if (/count\(\*\)::int AS issued/.test(sql)) {
+      return { rows: [{ issued: 0, consumed: 0, expired_unconsumed: 0 }] };
+    }
+    return { rows: [] };
+  };
   const pool = {
-    async query(statement) {
-      const sql = String(statement).replace(/\s+/g, " ").trim();
-      statements.push(sql);
-      if (first) {
-        first = false;
-        await firstQueryGate;
-      }
-      if (/GROUP BY state/.test(sql) || /GROUP BY verdict/.test(sql)) return { rows: [] };
-      if (/tainted_at IS NOT NULL/.test(sql)) return { rows: [{ count: 0 }] };
-      if (/count\(\*\)::int AS issued/.test(sql)) {
-        return { rows: [{ issued: 0, consumed: 0, expired_unconsumed: 0 }] };
-      }
-      return { rows: [] };
+    query,
+    async connect() {
+      return { query, release() {} };
     },
   };
   const store = createPostgresResearchAirlockStore({
@@ -69,10 +74,114 @@ test("PostgreSQL Airlock schema initialization is single-flight under concurrent
   releaseFirst();
   await Promise.all([left, right]);
 
-  const ddl = statements.filter((statement) => /^(CREATE|ALTER) /.test(statement));
-  assert.ok(ddl.length > 10);
-  assert.equal(ddl.length, new Set(ddl).size, "concurrent callers must share one schema initialization");
-  assert.equal(statements.filter((statement) => /GROUP BY state/.test(statement)).length, 2);
+  const ddl = calls.filter(({ sql }) => /CREATE TABLE IF NOT EXISTS research_airlock_work/.test(sql));
+  assert.equal(ddl.length, 1, "concurrent callers must share one schema migration");
+  assert.equal(ddl[0].query_timeout, 30_000);
+  assert.match(ddl[0].sql, /CREATE UNIQUE INDEX IF NOT EXISTS research_airlock_plan_unconsumed_session_idx/);
+  assert.equal(calls.filter(({ sql }) => /GROUP BY state/.test(sql)).length, 2);
+  assert.equal(calls.filter(({ sql }) => sql === "BEGIN").length, 1);
+  assert.equal(calls.filter(({ sql }) => /SET LOCAL statement_timeout = '30000ms'/.test(sql)).length, 1);
+  assert.equal(calls.filter(({ sql }) => sql === "COMMIT").length, 1);
+});
+
+test("PostgreSQL Airlock retries initialization after a transient migration failure", async () => {
+  let migrations = 0;
+  const pool = {
+    async query(statement) {
+      const sql = typeof statement === "string" ? statement : statement?.text || "";
+      if (/CREATE TABLE IF NOT EXISTS research_airlock_work/.test(sql)) {
+        migrations += 1;
+        if (migrations === 1) {
+          throw Object.assign(new Error("transient_lock_timeout"), { code: "55P03" });
+        }
+      }
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresResearchAirlockStore({
+    connectionString: "postgresql://airlock.test/database",
+    pool,
+  });
+  await assert.rejects(store.init(), /transient_lock_timeout/);
+  assert.deepEqual(store.initializationStatus(), {
+    state: "failed",
+    ready: false,
+    error: "55P03",
+  });
+  await store.init();
+  assert.equal(store.initializationStatus().ready, true);
+  assert.equal(migrations, 2);
+});
+
+test("PostgreSQL read-only Airlock authorization issues SELECT only", async () => {
+  const calls = [];
+  const row = {
+    tenant_id: TENANT,
+    project_id: WORK.project_id,
+    work_id: WORK.work_id,
+    session_id: WORK.session_id,
+    state: "DISCOVERY_OPEN",
+    version: 1,
+    allowed_domains: [],
+    allowed_urls: [],
+    plan_digest: "a".repeat(64),
+    policy_snapshot_digest: "b".repeat(64),
+    evidence: [],
+    evidence_digest: null,
+    capsule: null,
+    quarantine_reason: null,
+    release_commit_sha: "c".repeat(40),
+    created_at: new Date(Date.now() - 1_000).toISOString(),
+    updated_at: new Date(Date.now() - 1_000).toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const pool = {
+    async query(statement) {
+      const sql = String(typeof statement === "string" ? statement : statement?.text || "")
+        .replace(/\s+/g, " ").trim();
+      calls.push(sql);
+      if (/FROM research_airlock_work/.test(sql)) return { rows: [row] };
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresResearchAirlockStore({
+    connectionString: "postgresql://airlock.test/database",
+    pool,
+  });
+  await store.init();
+  calls.length = 0;
+  const observed = await store.observeSessionAuthorization({
+    tenant_id: TENANT,
+    session_id: WORK.session_id,
+    tool_name: "workspace_read_document",
+    safe_preopen: false,
+    created_at: new Date().toISOString(),
+  });
+  assert.equal(observed.work.state, "DISCOVERY_OPEN");
+  assert.equal(calls.length, 1);
+  assert.equal(calls.every((sql) => /^SELECT\b/i.test(sql)), true, calls.join("\n"));
+  assert.equal(calls.some((sql) => /\b(FOR UPDATE|INSERT|UPDATE|DELETE|BEGIN|COMMIT)\b/i.test(sql)), false);
+});
+
+test("Airlock readiness observes initialization state without triggering migration", async () => {
+  let metricsCalls = 0;
+  const store = {
+    kind: "postgresql",
+    restart_durable: true,
+    distributed: true,
+    initializationStatus: () => ({ state: "idle", ready: false, error: null }),
+    async metrics() { metricsCalls += 1; throw new Error("metrics_must_not_run"); },
+  };
+  const target = createResearchAirlockRuntime({
+    store,
+    signingSecret: SECRET,
+    mode: "enforced",
+    transport: transport(),
+  });
+  const status = await target.status(TENANT);
+  assert.equal(status.ready, false);
+  assert.equal(status.initialization.state, "idle");
+  assert.equal(metricsCalls, 0);
 });
 
 async function open(target, work = WORK, extra = {}) {
@@ -163,6 +272,53 @@ test("session reference monitor allows only dedicated discovery during public ph
   assert.equal((await target.authorizeSessionTool({ session_id: WORK.session_id, tool_name: "workspace_read_document" }, { tenantId: TENANT })).reason, "research_airlock_public_phase_tool_denied");
   const unbound = await target.authorizeSessionTool({ session_id: "unbound-session", tool_name: "web_compatibility_execute" }, { tenantId: TENANT });
   assert.deepEqual({ verdict: unbound.verdict, state: unbound.state }, { verdict: "ALLOW", state: "PREOPEN_TAINTED" });
+});
+
+test("read-only session authorization blocks private reads in DISCOVERY_OPEN without changing state", async () => {
+  const target = runtime();
+  await open(target);
+  const before = await target.status(TENANT);
+  for (const tool_name of ["workspace_read_document", "memory_context"]) {
+    const decision = await target.authorizeSessionToolReadOnly({
+      session_id: WORK.session_id,
+      tool_name,
+    }, { tenantId: TENANT });
+    assert.equal(decision.verdict, "BLOCK");
+    assert.equal(decision.reason, "research_airlock_public_phase_tool_denied");
+    assert.equal(decision.state, "DISCOVERY_OPEN");
+  }
+  assert.deepEqual(await target.status(TENANT), before);
+});
+
+test("read-only observation preserves normal unbound reads after one durable session classification", async () => {
+  const target = runtime();
+  const session_id = "ordinary-private-session";
+  const clean = await target.authorizeSessionToolReadOnly({
+    session_id,
+    tool_name: "workspace_read_document",
+  }, { tenantId: TENANT });
+  assert.equal(clean.verdict, "BLOCK");
+  assert.equal(clean.reason, "research_airlock_session_classification_required");
+
+  const classified = await target.authorizeSessionTool({
+    session_id,
+    tool_name: "workspace_read_document",
+  }, { tenantId: TENANT });
+  assert.deepEqual(
+    { verdict: classified.verdict, state: classified.state },
+    { verdict: "ALLOW", state: "PREOPEN_TAINTED" },
+  );
+  for (const tool_name of ["core_health", "memory_context", "workspace_read_document"]) {
+    const observed = await target.authorizeSessionToolReadOnly({ session_id, tool_name }, { tenantId: TENANT });
+    assert.deepEqual(
+      { verdict: observed.verdict, state: observed.state },
+      { verdict: "ALLOW", state: "PREOPEN_TAINTED" },
+    );
+  }
+  await assert.rejects(target.createPlan({
+    work_binding: { ...WORK, work_id: "ordinary-private-work", session_id },
+    source_urls: ["https://www.nist.gov/ai"],
+  }, { tenantId: TENANT }), /session_preopen_tainted/);
 });
 
 test("a private pre-open tool permanently taints the logical session before Core can issue a plan", async () => {
@@ -327,6 +483,7 @@ test("shadow rollback allows unrelated sessions but closes every persisted activ
   });
   assert.equal((await target.status(TENANT)).operational_safe, true);
   assert.equal((await target.authorizeSessionTool({ session_id: "unrelated", tool_name: "workspace_read_document" }, { tenantId: TENANT })).verdict, "ALLOW");
+  assert.equal((await target.authorizeSessionToolReadOnly({ session_id: "unrelated", tool_name: "workspace_read_document" }, { tenantId: TENANT })).verdict, "ALLOW");
   await durableStore.createWork({
     tenant_id: TENANT,
     ...WORK,

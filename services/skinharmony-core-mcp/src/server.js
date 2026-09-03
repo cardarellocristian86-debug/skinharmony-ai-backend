@@ -1,10 +1,13 @@
 import {
   createApp,
+  qualifiesForStatePureReadPath,
+  qualifiesForFastReadPath,
   requiresCanonicalWorkReadAuthorization,
   requiresGenericWorkPreflight,
 } from "./app.js";
 import crypto from "node:crypto";
 import { Pool } from "pg";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
@@ -14,14 +17,17 @@ import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
+import { initializeStoreAfter } from "./startup-initialization.js";
 import {
   authorizeDttExactWorkRead,
   authorizeGenericWorkCoreJoinExactWorkRead,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
 import {
+  createWorkContinuityClosureFinalizeHandler,
   createWorkContinuityClosureEvaluateHandler,
   createWorkContinuityClosureRejoinPersistedReleaseHandler,
+  replayNyraVerifiedWorkFinalize,
 } from "./work-continuity-closure-handler.js";
 import {
   createGenericWorkCoreJoinMcpCoordinator,
@@ -118,6 +124,7 @@ import {
   governedWorkBootstrapAuthorizationTarget,
 } from "./work-bootstrap-contract.js";
 import { ensureNyraReadBinding } from "./nyra-read-binding.js";
+import { attachObservedContinuity } from "./work-preflight-observation.js";
 import {
   createPostgresEnvironmentDelegationNonceStore,
 } from "./environment-delegation.js";
@@ -172,11 +179,7 @@ TOOLS.push(...SOFTWARE_COGNITION_TOOLS);
 TOOLS.push(...ENTITY_360_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
-  ? new Pool({
-      connectionString: config.databaseUrl,
-      ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-      max: config.databasePoolMax || 5,
-    })
+  ? new Pool(postgresPoolConfig(config, { connectionString: config.databaseUrl }))
   : null;
 const nyraGovernedContinuationEnabled =
   config.nyraGovernedContinueEnabled === true &&
@@ -264,6 +267,10 @@ const startupReadiness = {
   continuityInitializationFailed: false,
   decisionLedgerInitialized: false,
   decisionLedgerInitializationFailed: false,
+  cloudMemoryInitialized: !cloudMemoryStore,
+  cloudMemoryInitializationFailed: false,
+  collaborationPostgresInitialized: !config.collaborationDatabaseUrl,
+  collaborationPostgresInitializationFailed: false,
   genericWorkCoreJoinStoreInitialized: false,
   genericWorkCoreJoinStoreInitializationFailed: false,
   nyraContinuationStoreInitialized: !nyraGovernedContinuationEnabled,
@@ -303,8 +310,10 @@ if (genericWorkCoreJoinActivationEnabled && workContinuityV2Store) {
     });
 }
 if (config.decisionLedgerRequired === true && decisionLedger) {
-  void Promise.resolve()
-    .then(() => decisionLedger.initialize())
+  // The ledger also contains the continuity V2 compatibility DDL. Serialize
+  // it behind the canonical continuity chain so a clean shared database never
+  // runs two CREATE TABLE/INDEX transactions against the same relations.
+  void initializeStoreAfter(workContinuityV2StoreReady, decisionLedger)
     .then(() => {
       startupReadiness.decisionLedgerInitialized = true;
     })
@@ -324,6 +333,20 @@ if (nyraGovernedContinuationStore) {
       console.error("[skinharmony-core-mcp] nyra_continuation_store_initialization_failed");
     });
 }
+if (cloudMemoryStore) {
+  // Cloud memory shares the primary database. Run its additive migration only
+  // after the continuity schema chain, before readiness, so a first memory
+  // read can never become an implicit DDL request.
+  void Promise.resolve(workContinuityV2StoreReady)
+    .then(() => cloudMemoryStore.initialize())
+    .then(() => {
+      startupReadiness.cloudMemoryInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.cloudMemoryInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] cloud_memory_initialization_failed");
+    });
+}
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
@@ -339,6 +362,17 @@ const collaborationRuntime = (config.agentWorkspaceRoot || config.collaborationD
       },
     })
   : {};
+if (typeof collaborationRuntime.initialize === "function") {
+  void Promise.resolve()
+    .then(() => collaborationRuntime.initialize())
+    .then(() => {
+      startupReadiness.collaborationPostgresInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.collaborationPostgresInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] collaboration_postgres_initialization_failed");
+    });
+}
 const {
   registerAuthenticatedPresence,
   ...collaborationHandlers
@@ -747,6 +781,7 @@ async function requireBoundedTenantCoordination(identity, actionType, target, id
     error.code = "core_tenant_coordination_denied";
     throw error;
   }
+  return decision;
 }
 
 function requireBoundedAssignmentCollaboration(identity) {
@@ -1546,22 +1581,29 @@ async function nyraVerifierAssignmentScope(identity, assignment) {
 }
 
 async function resumeExistingContinuityWork(args, identity) {
-  await requireCanonicalWorkRead(identity, args.work_id);
-  const gate = await coreHandlers.core_gate_action({
-    action_label: "Resume persistent Work Continuity work",
-    action_type: "work.continuity.resume",
-    target: `work_continuity_resume:${args.work_id}`,
-    operation_class: "owner_confirmed_governed_action",
-    external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
-    idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
-    target_authority_verified: true, actor_authorized_for_target: true,
-    owner_confirmed: identity.ownerConfirmed === true,
-    confirmation_reference: identity.confirmationReference,
-  }, identity);
-  const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
-    gate.structuredContent?.result?.authorization || {};
-  if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
-  const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+  const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+  const canonicalWork = canonical?.work || canonical;
+  const sessionId = String(identity.agentPresence?.session_id || "").trim();
+  if (!canonicalWork?.project_id || !sessionId) {
+    throw new Error("work_continuity_resume_binding_invalid");
+  }
+  // Resume mutates only the already-readable tenant Work and its authenticated
+  // logical session. It is the closed internal resume-or-bind capability, not
+  // an owner assertion and not a generic action-class escape hatch.
+  const authorization = await requireBoundedTenantCoordination(
+    identity,
+    "work.continuity.resume_or_bind",
+    `${canonicalWork.project_id}:${sessionId}`,
+    args.idempotency_key,
+  );
+  const payload = {
+    ok: true,
+    result: await workContinuityRuntime.resume(
+      identity,
+      { ...args, session_id: sessionId },
+      authorization,
+    ),
+  };
   payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
   payload.result.nyra_control_context = await materializeNyraControlContext(
     identity,
@@ -1765,12 +1807,15 @@ const baseHandlers = {
   web_compatibility_execute: async (args, identity) => {
     const method = String(args.method || "GET").toUpperCase();
     const hasBody = args.body !== undefined && args.body !== null;
+    if (!["GET", "HEAD"].includes(method) || hasBody) {
+      throw new Error("web_mutating_request_disabled");
+    }
     const gate = await coreHandlers.core_gate_action({
       action_label: "Execute allowlisted web compatibility request",
       action_type: "web.compatibility.request",
       target: String(args.url || "").slice(0, 512),
       operation_class: "owner_confirmed_governed_action",
-      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),
+      external_side_effect: false,
       contains_customer_data: false,
       contains_secret: false,
       secret_value_transmitted: false,
@@ -1786,11 +1831,17 @@ const baseHandlers = {
       audit_ready: Boolean(decisionLedger),
       target_authority_verified: true,
       actor_authorized_for_target: true,
-      idempotency_key: args.idempotency_key || crypto.randomUUID(),
+      idempotency_key: args.idempotency_key,
     }, identity);
     const authorization = gate?.structuredContent?.authorization || {};
     if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
-    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body });
+    const result = await webTransport.request({
+      tenantId: identity.tenantId,
+      url: args.url,
+      method,
+      headers: args.headers || {},
+      body: args.body,
+    });
     const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
     return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
   },
@@ -1809,10 +1860,13 @@ const baseHandlers = {
     const result = await coreHandlers.work_preflight({
       ...args,
       project_id: continuityBinding.projectId,
+      // Server-owned: public schema validation rejects this field. The
+      // explicit diagnostic tool observes hierarchy status instead of running
+      // the audited hierarchy evaluator used by writer preflight.
+      state_pure_observation: true,
     }, identity);
-    await ensureContinuity(identity, continuityBinding.continuityArgs, "work_preflight", result,
-      { resumeExisting: true });
-    return result;
+    return attachObservedContinuity(result, continuityBinding.continuityArgs,
+      continuityBinding.projectId);
   },
   ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
@@ -2112,27 +2166,38 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_start_or_resume: async (args, identity) => {
+      const canonical = args.work_id
+        ? await requireCanonicalWorkRead(identity, args.work_id)
+        : null;
+      const canonicalWork = canonical?.work || canonical;
+      const projectId = String(canonicalWork?.project_id || args.project_id || "").trim();
+      const sessionId = String(identity.agentPresence?.session_id || "").trim();
+      if (!projectId || !sessionId || (canonicalWork && projectId !== args.project_id)) {
+        throw new Error("work_continuity_resume_binding_invalid");
+      }
       const authorizedResumeWorkIds = args.work_id
-        ? (await requireCanonicalWorkRead(identity, args.work_id), [args.work_id])
-        : await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+        ? [args.work_id]
+        : await canonicalVisibleWorkIds(identity, { project_id: projectId });
       const resumeIdempotencyKey = `work_resume_${crypto.createHash("sha256")
         .update(JSON.stringify(stableCanonical({
           tenant_id: identity.tenantId,
           work_id: args.work_id || null,
-          project_id: args.project_id,
-          session_id: identity.agentPresence?.session_id || args.session_id,
+          project_id: projectId,
+          session_id: sessionId,
         })))
         .digest("hex").slice(0, 40)}`;
       await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.start_or_resume",
-        String(args.work_id || args.project_id || "resume_existing"),
+        "work.continuity.resume_or_bind",
+        `${projectId}:${sessionId}`,
         resumeIdempotencyKey,
       );
       return continuityTextResult({
         ok: true,
         result: await workContinuityRuntime.ensure(identity, {
           ...args,
+          project_id: projectId,
+          session_id: sessionId,
           resume_existing: true,
         }, {
           creationAuthorized: false,
@@ -2271,6 +2336,14 @@ const baseHandlers = {
       const aclIdentity = withTenantWorkAcl(identity);
       const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });
       const adapter = state.work.work_type;
+      const terminalReplay = await replayNyraVerifiedWorkFinalize({
+        store: workContinuityV2Store,
+        aclIdentity,
+        args,
+        state,
+        textResult: continuityTextResult,
+      });
+      if (terminalReplay) return terminalReplay;
       const join = await genericWorkCoreJoinCoordinator({
         args: {
           work_id: args.work_id,
@@ -2378,28 +2451,11 @@ const baseHandlers = {
         coreHandlers,
         textResult: continuityTextResult,
       }),
-    work_continuity_closure_finalize: async (args, identity) => {
-      const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
-        ticket_id: args.action_ticket_id,
-      }, identity);
-      const authorization = coreReceipt?.structuredContent?.finalize_authorization;
-      if (
-        coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
-        authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
-        authorization?.trusted !== true ||
-        authorization?.allowed !== true ||
-        !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
-        authorization.tenant_id !== identity.tenantId ||
-        authorization.work_id !== args.work_id ||
-        authorization.action_ticket_id !== args.action_ticket_id
-      ) {
-        throw new Error("continuity_trusted_core_closure_receipt_required");
-      }
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.finalizeClosure(identity, args, authorization),
-      });
-    },
+    work_continuity_closure_finalize: createWorkContinuityClosureFinalizeHandler({
+      runtime: workContinuityRuntime,
+      coreHandlers,
+      textResult: continuityTextResult,
+    }),
     work_continuity_atlas_upsert: continuityMethodWithNyraContext("upsertAtlas"),
     work_continuity_atlas_select: async (args, identity) => continuityTextResult({
       ok: true,
@@ -2766,6 +2822,9 @@ const app = createApp(config, {
       toolName,
       genericWorkPreflightRequired: requiresGenericWorkPreflight(toolName, args),
     });
+    const statePureReadPath = qualifiesForStatePureReadPath(toolName, TOOLS);
+    const fastReadPath = config.nyraFastReadPathEnabled === true &&
+      qualifiesForFastReadPath(toolName, args, TOOLS);
     // Exact Work visibility precedes presence registration, Airlock/Core
     // calls, ledger writes and continuity session bindings. A generic or
     // dynamic tool must not use preflight as a tenant-only read oracle for a
@@ -2785,6 +2844,7 @@ const app = createApp(config, {
     const nativeChildReport = isNativeReportChildOperation(toolName, args) ||
       isNativeAcceptanceContractReadChildOperation(toolName, args);
     if (config.mandatoryAgentPresenceEnabled === true &&
+        !statePureReadPath &&
         !nativeChildReport &&
         !isAgentPresenceBootstrapCall(toolName, args)) {
       try {
@@ -2795,9 +2855,18 @@ const app = createApp(config, {
       }
     }
     const presenceSessionId = String(identity.agentPresence?.session_id || "").trim();
+    if (statePureReadPath && !presenceSessionId) {
+      const error = new Error("research_airlock_session_required");
+      error.code = "research_airlock_session_required";
+      error.status = 403;
+      throw error;
+    }
     if (presenceSessionId) {
       const toolMetadata = researchAirlockToolMetadata(toolName, args, TOOLS);
-      const authorization = await coreHandlers.nyra_research_airlock_session_tool_authorize({
+      const authorizeAirlockTool = statePureReadPath
+        ? coreHandlers.nyra_research_airlock_state_pure_authorize
+        : coreHandlers.nyra_research_airlock_session_tool_authorize;
+      const authorization = await authorizeAirlockTool({
         session_id: presenceSessionId,
         ...toolMetadata,
       }, identity);
@@ -2808,6 +2877,26 @@ const app = createApp(config, {
         error.status = 403;
         throw error;
       }
+    }
+    // The exact positive read matrix skips presence, ledger, continuity and
+    // post-call writes only after Airlock applies the same active-phase policy
+    // as the mutating path. An unbound private session receives one durable
+    // classification; later reads are SELECT-only and never renew it.
+    if (statePureReadPath) {
+      return {
+        preflight: null,
+        ledgerContext: null,
+        statePureReadPath: true,
+        fastReadPath,
+      };
+    }
+    // Safe reads may omit the decision ledger, generic Work preflight and
+    // post-call projections, but they must still pass the session-scoped
+    // Research Airlock above. In particular, dynamic capability reads are
+    // classified as open-world by that monitor even when MCP labels them
+    // read-only.
+    if (fastReadPath) {
+      return { preflight: null, ledgerContext: null, fastReadPath: true };
     }
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
@@ -2878,6 +2967,13 @@ const app = createApp(config, {
     }
   },
   afterToolCall: async (event) => {
+    if (event.hookContext?.statePureReadPath === true ||
+        qualifiesForStatePureReadPath(event.toolName, TOOLS) ||
+        event.hookContext?.fastReadPath === true ||
+        (config.nyraFastReadPathEnabled === true &&
+          qualifiesForFastReadPath(event.toolName, event.args, TOOLS))) {
+      return;
+    }
     if (workContinuityAutomation) await workContinuityAutomation(event);
     // These are audit/projection writes after the governed action has already
     // returned. A projection outage must not turn a successful connector side

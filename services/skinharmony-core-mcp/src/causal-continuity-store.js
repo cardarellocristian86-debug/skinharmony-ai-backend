@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 import { redactMemoryText } from "./cloud-memory-store.js";
 
 export const CAUSAL_CONTINUITY_SCHEMA_VERSION = "causal_continuity_foundation_v1";
@@ -335,8 +336,10 @@ function canonicalRequest(kind, input) {
 
 export function createCausalContinuityStore({ pool, now = () => new Date() } = {}) {
   if (!pool || typeof pool.query !== "function") fail("causal_postgres_pool_required");
-  let initialized;
-  const initialize = () => initialized ||= pool.query(CAUSAL_CONTINUITY_SCHEMA_SQL);
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: CAUSAL_CONTINUITY_SCHEMA_SQL,
+  });
 
   async function transaction(fn) {
     if (typeof pool.connect !== "function") fail("causal_transaction_adapter_required");
@@ -361,7 +364,16 @@ export function createCausalContinuityStore({ pool, now = () => new Date() } = {
     const scopeKind = operationId ? "OPERATION" : "PROJECT";
     const scopeId = operationId || projectId;
     const requestDigest = causalDigest(request);
-    const lockKey = `${tenantId}\0${projectId}\0${scopeKind}\0${operationId || "project"}\0${idempotencyKey}`;
+    // PostgreSQL text parameters reject NUL bytes. A domain-separated digest
+    // preserves an unambiguous lock scope while remaining valid UTF-8 text.
+    const lockKey = `causal_idempotency:${causalDigest({
+      schema_version: "causal_idempotency_lock_v1",
+      tenant_id: tenantId,
+      project_id: projectId,
+      scope_kind: scopeKind,
+      scope_id: operationId || "project",
+      idempotency_key: idempotencyKey,
+    })}`;
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [lockKey]);
     const prior = await client.query(`SELECT request_digest,response_document FROM causal_idempotency
       WHERE tenant_id=$1 AND project_id=$2 AND scope_kind=$3 AND scope_id=$4 AND idempotency_key=$5

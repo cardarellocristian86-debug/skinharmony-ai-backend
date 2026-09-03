@@ -99,6 +99,7 @@ class PrecommitPool {
     this.claimFulfillments = new Map();
     this.claimReconciliations = new Map();
     this.events = [];
+    this.legacyIntentAnchors = new Map();
   }
   snapshot() {
     return {
@@ -112,6 +113,7 @@ class PrecommitPool {
       supersedingFulfillments: cloneMap(this.supersedingFulfillments),
       claims: cloneMap(this.claims), claimFulfillments: cloneMap(this.claimFulfillments),
       claimReconciliations: cloneMap(this.claimReconciliations),
+      legacyIntentAnchors: cloneMap(this.legacyIntentAnchors),
     };
   }
   restore(snapshot) { Object.assign(this, snapshot); }
@@ -119,17 +121,22 @@ class PrecommitPool {
     let snapshot;
     return {
       query: async (sql, parameters = []) => {
-        const q = sql.replace(/\s+/g, " ").trim();
+        const queryText = typeof sql === "string" ? sql : sql.text;
+        if (!parameters.length && Array.isArray(sql?.values)) parameters = sql.values;
+        const q = queryText.replace(/\s+/g, " ").trim();
         if (q === "BEGIN") { snapshot = this.snapshot(); return { rows: [], rowCount: 0 }; }
         if (q === "COMMIT") { snapshot = null; return { rows: [], rowCount: 0 }; }
         if (q === "ROLLBACK") { if (snapshot) this.restore(snapshot); return { rows: [], rowCount: 0 }; }
-        return this.query(sql, parameters);
+        if (q.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
+        return this.query(queryText, parameters);
       },
       release() {},
     };
   }
   async query(sql, parameters = []) {
-    const q = sql.replace(/\s+/g, " ").trim();
+    const queryText = typeof sql === "string" ? sql : sql.text;
+    if (!parameters.length && Array.isArray(sql?.values)) parameters = sql.values;
+    const q = queryText.replace(/\s+/g, " ").trim();
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
@@ -206,6 +213,10 @@ class PrecommitPool {
         row.work_id === parameters[1] && row.event_type === "work_v2_created")
         .sort((a, b) => a.sequence_number - b.sequence_number);
       return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT anchor,intent_digest FROM core_continuity_intent_anchors")) {
+      const row = this.legacyIntentAnchors.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT ticket_id,ticket_digest,gate_projection_digest")) {
       const source = q.includes("fulfillment_supersession")
@@ -824,15 +835,31 @@ test("claim recovery adopts an exact prior continuation and lets verified fulfil
 
 test("materializes one server-owned native closure gate for a canonical promoted V2 bridge", async () => {
   const pool = new PrecommitPool();
+  const canonicalAnchor = {
+    schema_version: "intent_anchor_v1",
+    initial_message: "canonical bootstrap",
+    idea: "Canonical bridge",
+    objective: "Bind both intent namespaces",
+    acceptance_criteria: ["both digests verified"],
+    constraints: [],
+    source: { client_type: "codex", session_id: "canonical-session" },
+    immutable: true,
+  };
+  const canonicalIntentDigest = digest(canonicalAnchor);
+  pool.legacyIntentAnchors.set(key("tenant-a", WORK_ID), {
+    anchor: canonicalAnchor,
+    intent_digest: canonicalIntentDigest,
+  });
   pool.works.set(key("tenant-a", WORK_ID), {
     tenant_id: "tenant-a", work_id: WORK_ID, legacy_work_id: WORK_ID,
-    work_type: "software_git", intent_digest: "1".repeat(64),
+    work_type: "software_git", intent_digest: canonicalIntentDigest,
     owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
     supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
   });
   const createdEventMaterial = { tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
     event_type: "work_v2_created",
-    payload: { legacy_work_id: WORK_ID, intent_digest: "1".repeat(64), legacy_event_hash: "2".repeat(64) },
+    payload: { legacy_work_id: WORK_ID, intent_digest: canonicalIntentDigest,
+      legacy_intent_digest: canonicalIntentDigest, legacy_event_hash: "2".repeat(64) },
     previous_event_hash: null };
   pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
   const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
@@ -885,6 +912,94 @@ test("materializes one server-owned native closure gate for a canonical promoted
   assert.equal(pool.supersedingGates.length, 1);
   assert.equal(pool.tasks.size, 1, "native supersession reuses the immutable ticket-acquisition task");
   await client.query("COMMIT");
+
+  const storedCreatedEvent = pool.events[0];
+  storedCreatedEvent.payload.legacy_intent_digest = "f".repeat(64);
+  storedCreatedEvent.event_hash = digest({
+    tenant_id: storedCreatedEvent.tenant_id,
+    work_id: storedCreatedEvent.work_id,
+    sequence_number: storedCreatedEvent.sequence_number,
+    event_type: storedCreatedEvent.event_type,
+    payload: storedCreatedEvent.payload,
+    previous_event_hash: storedCreatedEvent.previous_event_hash,
+  });
+  await assert.rejects(
+    store.materializeNativePrecommitTicketGateWithClient(client, input),
+    /native_precommit_gate_work_invalid/,
+  );
+});
+
+test("materializes a native gate for the historical divergent-intent event only with its immutable anchor", async () => {
+  const pool = new PrecommitPool();
+  const legacyAnchor = {
+    schema_version: "intent_anchor_v1",
+    initial_message: "legacy bootstrap",
+    idea: "Historical bridge",
+    objective: "Retain the old event without weakening the V2 identity",
+    acceptance_criteria: ["anchor verified"],
+    constraints: [],
+    source: { client_type: "codex", session_id: "legacy-session" },
+    immutable: true,
+  };
+  const legacyIntentDigest = digest(legacyAnchor);
+  pool.legacyIntentAnchors.set(key("tenant-a", WORK_ID), {
+    anchor: legacyAnchor,
+    intent_digest: legacyIntentDigest,
+  });
+  pool.works.set(key("tenant-a", WORK_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, legacy_work_id: WORK_ID,
+    work_type: "software_git", intent_digest: "1".repeat(64),
+    owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
+  });
+  const createdEventMaterial = {
+    tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
+    event_type: "work_v2_created",
+    payload: { legacy_work_id: WORK_ID, intent_digest: legacyIntentDigest,
+      legacy_event_hash: "2".repeat(64) },
+    previous_event_hash: null,
+  };
+  pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
+  const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    plan, plan_digest: digest(plan), status: "planned", plan_version: 1,
+    supersedes_plan_id: null });
+  const evaluation = {
+    schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: WORKSPACE_DIGEST },
+  };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    evaluation_id: EVALUATION_ID, evaluation, evaluation_digest: digest(evaluation),
+    created_at: "2026-09-01T10:00:00.000Z" });
+  const store = createWorkContinuityV2Store({ pool });
+  const client = await pool.connect();
+  const gate = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    server_owned: true,
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    plan_id: PLAN_ID,
+    evaluation_id: EVALUATION_ID,
+    evaluation_digest: digest(evaluation),
+    workspace_digest: WORKSPACE_DIGEST,
+  });
+
+  assert.equal(gate.schema_version, "precommit_ticket_gate_v2");
+  assert.equal(gate.gate_source, "native_closure_evaluation");
+
+  pool.legacyIntentAnchors.get(key("tenant-a", WORK_ID)).anchor.immutable = false;
+  await assert.rejects(
+    store.materializeNativePrecommitTicketGateWithClient(client, {
+      server_owned: true,
+      tenant_id: "tenant-a",
+      work_id: WORK_ID,
+      plan_id: PLAN_ID,
+      evaluation_id: EVALUATION_ID,
+      evaluation_digest: digest(evaluation),
+      workspace_digest: WORKSPACE_DIGEST,
+    }),
+    /native_precommit_gate_work_invalid/,
+  );
 });
 
 test("native gate writer rejects caller authority and noncanonical legacy projections", async () => {
@@ -897,11 +1012,15 @@ test("native gate writer rejects caller authority and noncanonical legacy projec
     { ...base, server_owned: false }), /native_precommit_gate_server_owned_required/);
   await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
     /native_precommit_gate_work_invalid/);
-  pool.works.get(key("tenant-a", WORK_ID)).work_type = "legacy";
-  const createdEventMaterial = { tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
+  pool.works.get(key("tenant-a", WORK_ID)).legacy_work_id = null;
+  const unlinkedEventMaterial = { tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
     event_type: "work_v2_created", payload: { legacy_work_id: WORK_ID,
       intent_digest: "1".repeat(64) }, previous_event_hash: null };
-  pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
+  pool.events.push({ ...unlinkedEventMaterial, event_hash: digest(unlinkedEventMaterial) });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
+    /native_precommit_gate_work_invalid/);
+  pool.works.get(key("tenant-a", WORK_ID)).legacy_work_id = WORK_ID;
+  pool.works.get(key("tenant-a", WORK_ID)).work_type = "legacy";
   await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
     /native_precommit_gate_work_invalid/);
 });

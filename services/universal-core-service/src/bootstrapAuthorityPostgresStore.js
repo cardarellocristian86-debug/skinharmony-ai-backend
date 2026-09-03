@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ensureCoreSchemaMigrationRegistry } from "./coreSchemaMigrationRegistry.js";
+import {
+  retryableInitializer,
+  runPostgresMigration,
+} from "../../shared/retryable-postgres-initializer.js";
 
 const MIGRATION_SQL = [
   "../migrations/20260810_bootstrap_authority_registry.sql",
@@ -288,8 +292,7 @@ async function appendEvent(client, { tenant_id, stream_type, stream_id, event_ty
 
 export function createPostgresBootstrapAuthorityStore({ pool, now = Date.now } = {}) {
   if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function" || typeof now !== "function") fail("bootstrap_authority_postgres_unavailable");
-  let initialized;
-  const initialize = () => initialized ||= (async () => {
+  const initialize = retryableInitializer(async () => {
     // The marker table is shared with Causal Continuity. Reconcile its
     // additive superset before Bootstrap writes one-column historical markers.
     const client = await pool.connect();
@@ -298,12 +301,12 @@ export function createPostgresBootstrapAuthorityStore({ pool, now = Date.now } =
     } finally {
       client.release();
     }
-    await pool.query(MIGRATION_SQL);
+    await runPostgresMigration(pool, MIGRATION_SQL);
     const convergence = await pool.query(SCHEMA_CONVERGENCE_SQL);
     const row = convergence.rows[0];
     if (!row || ["missing_columns", "missing_indexes", "missing_triggers", "missing_constraints"].some((field) => !Array.isArray(row[field]) || row[field].length) || ["attestation_columns_converged", "active_key_index_converged", "column_semantics_converged", "check_constraints_converged", "legacy_state_constraint_converged", "foreign_keys_converged", "trigger_definitions_converged"].some((field) => row[field] !== true)) fail("bootstrap_authority_schema_not_converged");
     return Object.freeze({ backend: "postgres_bootstrap_authority_v2", durable: true, distributed: true, automatic_trust_installation: false });
-  })();
+  });
 
   async function installTrustKey(record = {}) {
     assertPublicData(record); await initialize(); const tenantId = tenant(record.tenant_id); const keyId = identifier(record.authority_key_id); if (!PROVIDERS.has(record.authority_provider)) fail("bootstrap_trust_provider_invalid"); if (!ALGORITHMS.has(record.algorithm)) fail("bootstrap_trust_algorithm_invalid"); if (!ATTESTATION_STATUSES.has(record.attestation_status)) fail("bootstrap_trust_attestation_status_invalid");

@@ -34,6 +34,10 @@ test("migration runner supports apply then empty down then clean re-apply", asyn
   const state = { installed: false, migration: null, applyCount: 0, released: 0 };
   const client = {
     async query(sql, params = []) {
+      if (sql && typeof sql === "object") {
+        params = sql.values || [];
+        sql = sql.text;
+      }
       const query = String(sql);
       if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK" || query.startsWith("SET LOCAL ") ||
           query.includes("pg_advisory_lock") || query.includes("pg_advisory_xact_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };

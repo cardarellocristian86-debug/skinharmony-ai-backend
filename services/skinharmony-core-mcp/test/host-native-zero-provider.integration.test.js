@@ -60,6 +60,30 @@ class EphemeralContinuityPool {
         rowCount: work ? 1 : 0,
       };
     }
+    if (query.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (query.startsWith("SELECT project_id,status,next_action FROM core_continuity_works")) {
+      const work = this.works.get(mapKey(parameters[0], parameters[1]));
+      return {
+        rows: work ? [{
+          project_id: work.project_id,
+          status: work.status,
+          next_action: work.next_action,
+        }] : [],
+        rowCount: work ? 1 : 0,
+      };
+    }
+    if (query.startsWith("SELECT status FROM core_continuity_works")) {
+      const work = this.works.get(mapKey(parameters[0], parameters[1]));
+      return {
+        rows: work ? [{ status: work.status }] : [],
+        rowCount: work ? 1 : 0,
+      };
+    }
+    if (query.startsWith("SELECT DISTINCT ON (i.fingerprint)")) {
+      return { rows: [], rowCount: 0 };
+    }
 
     if (query.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
       const row = this.bindings.get(mapKey(parameters[0], parameters[1], parameters[2]));
@@ -222,12 +246,26 @@ class EphemeralContinuityPool {
         : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
-    if (query.startsWith("SELECT plan_id,plan_version FROM core_continuity_native_plans")) {
+    if (query.startsWith("SELECT plan_id,plan_version,status FROM core_continuity_native_plans")) {
       const rows = [...this.plans.values()]
         .filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
         .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
           String(right.created_at).localeCompare(String(left.created_at)) || String(right.plan_id).localeCompare(String(left.plan_id)));
-      return { rows: rows.length ? [{ plan_id: rows[0].plan_id, plan_version: rows[0].plan_version || 1 }] : [], rowCount: rows.length ? 1 : 0 };
+      return {
+        rows: rows.length ? [{
+          plan_id: rows[0].plan_id,
+          plan_version: rows[0].plan_version || 1,
+          status: rows[0].status,
+        }] : [],
+        rowCount: rows.length ? 1 : 0,
+      };
+    }
+    if (query.startsWith("SELECT plan_id FROM core_continuity_native_plans") &&
+        query.includes("status='verified'")) {
+      const row = [...this.plans.values()].find((candidate) =>
+        candidate.tenant_id === parameters[0] && candidate.work_id === parameters[1] &&
+        candidate.status === "verified");
+      return { rows: row ? [{ plan_id: row.plan_id }] : [], rowCount: row ? 1 : 0 };
     }
     if (query.startsWith("INSERT INTO core_continuity_native_plans")) {
       const [tenantId, workId, planId, plan, planDigest, createdBy, changeId, baseStateDigest,
@@ -248,6 +286,34 @@ class EphemeralContinuityPool {
         created_at: this.now().toISOString(),
       });
       return { rows: [], rowCount: 1 };
+    }
+    if (query.startsWith("WITH superseded AS ( UPDATE core_continuity_native_plans")) {
+      const planIds = [];
+      for (const row of this.plans.values()) {
+        if (row.tenant_id === parameters[0] && row.work_id === parameters[1] &&
+            row.plan_id !== parameters[2] && row.status === "planned") {
+          row.status = "superseded";
+          planIds.push(row.plan_id);
+        }
+      }
+      const selected = new Set(planIds);
+      let agentCount = 0;
+      for (const row of this.nativeAgents.values()) {
+        if (row.tenant_id === parameters[0] && row.work_id === parameters[1] &&
+            selected.has(row.plan_id) && row.status === "bound") {
+          row.status = "superseded";
+          agentCount += 1;
+        }
+      }
+      planIds.sort();
+      return {
+        rows: [{
+          superseded_count: planIds.length,
+          superseded_plan_ids: planIds.slice(0, 100),
+          superseded_agent_count: agentCount,
+        }],
+        rowCount: 1,
+      };
     }
     if (query.startsWith("INSERT INTO core_continuity_native_receipts")) {
       return { rows: [], rowCount: 1 };
@@ -830,8 +896,6 @@ test("host-native MCP to Core reaches independently attested closure material wi
         },
         next_action: "Create the bounded native plan.",
         host_type: "codex_native",
-        owner_confirmed: true,
-        confirmation_reference: "bootstrap the isolated host-native work",
       },
       idempotencyKey: "invoke-start-zero-provider-0001",
       id: 3,

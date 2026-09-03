@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { createRetryablePostgresInitializer } from "./retryable-postgres-initializer.js";
+
 const CONTEXT_VERSION = "dtt_agent_context_v2";
 const RECEIPT_VERSION = "dtt_agent_identity_receipt_v2";
 const CONTEXT_DOMAIN = "dtt-agent-context-v2";
@@ -606,9 +608,9 @@ export function createPostgresDttAgentIdentityReceiptStore({ pool } = {}) {
   if (!databasePool || typeof databasePool.query !== "function" || typeof databasePool.connect !== "function") {
     throw new Error("dtt_agent_identity_postgres_pool_required");
   }
-  let initialized;
-  async function initialize() {
-    if (!initialized) initialized = databasePool.query(`
+  const initialize = createRetryablePostgresInitializer({
+    pool: databasePool,
+    sql: `
       CREATE TABLE IF NOT EXISTS dtt_agent_identity_contexts_v2 (
         context_fingerprint char(64) PRIMARY KEY,
         schema_version varchar(64) NOT NULL CHECK (schema_version = 'dtt_agent_context_v2'),
@@ -648,9 +650,8 @@ export function createPostgresDttAgentIdentityReceiptStore({ pool } = {}) {
         ON dtt_agent_identity_contexts_v2 (tenant_id, work_id, expires_at);
       CREATE INDEX IF NOT EXISTS dtt_agent_identity_receipts_v2_work_scope_idx
         ON dtt_agent_identity_receipts_v2 (tenant_id, work_id, tree_id, node_id, receipt_id);
-    `);
-    return initialized;
-  }
+    `,
+  });
   return {
     async issueAtomic(fingerprint, expiresAt, receiptId, record) {
       await initialize();

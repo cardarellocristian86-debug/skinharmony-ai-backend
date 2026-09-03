@@ -10,12 +10,50 @@ services:
     # Render needs process liveness during rollout. Governed dependency
     # readiness remains available at /healthz and /readyz.
     healthCheckPath: /livez
-    # A merge/push to the linked main branch deploys only after repository CI
-    # checks pass. This trigger does not replace Core or host authorization.
-    autoDeployTrigger: checksPass
+    # Automatic deploys stay paused during stabilization. A reviewed manual
+    # release still requires repository CI, Core and host authorization.
+    autoDeployTrigger: off
+    buildFilter:
+      paths:
+        - package.json
+        - package-lock.json
+        - scripts/build-rust-extractor-render.sh
+        - services/skinharmony-core-mcp/**
+        - services/universal-core-service/src/softwareCognition.js
+        - services/shared/**
+        - render-core-mcp.yaml
+      ignoredPaths:
+        - services/skinharmony-core-mcp/test/**
+        - docs/**
+        - reports/**
+        - shared-work-memory/**
     envVars:
       - key: NODE_ENV
         value: production
+      - key: SKINHARMONY_BUILD_RUST_COMPONENTS
+        value: none
+      - key: NYRA_FAST_READ_PATH_ENABLED
+        value: "true"
+      - key: UNIVERSAL_CORE_REQUEST_TIMEOUT_MS
+        value: "8000"
+      - key: UNIVERSAL_CORE_LONG_REQUEST_TIMEOUT_MS
+        value: "30000"
+      - key: UNIVERSAL_CORE_RESPONSE_LIMIT_BYTES
+        value: "524288"
+      - key: DATABASE_CONNECTION_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_QUERY_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_STATEMENT_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_LOCK_TIMEOUT_MS
+        value: "2000"
+      - key: DATABASE_MIGRATION_STATEMENT_TIMEOUT_MS
+        value: "30000"
+      - key: DATABASE_MIGRATION_LOCK_TIMEOUT_MS
+        value: "5000"
+      - key: DATABASE_IDLE_TRANSACTION_TIMEOUT_MS
+        value: "15000"
       - key: MCP_PUBLIC_URL
         value: https://skinharmony-core-mcp.onrender.com
       - key: MCP_ENVIRONMENT_ROUTING_REQUIRED
@@ -80,6 +118,12 @@ services:
         value: https://skinharmony-universal-core.onrender.com
       - key: GITHUB_STANDING_RELEASE_WORKER_URL
         value: https://skinharmony-github-standing-release.onrender.com
+      # The worker call is one-shot. A timeout or oversized response leaves
+      # the Core ticket reconciliation-required and never triggers a retry.
+      - key: GITHUB_STANDING_RELEASE_WORKER_REQUEST_TIMEOUT_MS
+        value: "20000"
+      - key: GITHUB_STANDING_RELEASE_WORKER_RESPONSE_LIMIT_BYTES
+        value: "262144"
       # A reserved Core ticket carrying a signed GitHub execution claim is
       # forwarded once to the worker. Only a bound succeeded result is written
       # back to Core; uncertain outcomes stop for explicit reconciliation.
@@ -88,6 +132,11 @@ services:
       - key: UNIVERSAL_CORE_KEYS_JSON
         sync: false
       - key: UNIVERSAL_CORE_KEY
+        sync: false
+      # The web compatibility tools are not published when this exact-origin
+      # allowlist is empty. Keep dashboard configuration explicit and secret-
+      # independent; comma-separated HTTPS origins only.
+      - key: WEB_AGENT_ALLOWED_ORIGINS
         sync: false
       # Presence signatures and fingerprints must never reuse a Core bearer or
       # another host-native secret.

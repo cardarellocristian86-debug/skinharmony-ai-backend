@@ -4,6 +4,7 @@ import {
   ensureCoreSchemaMigrationRegistry,
 } from "./coreSchemaMigrationRegistry.js";
 import { Entity360Error, entity360Digest } from "./entity360.js";
+import { withPostgresMigrationSession } from "../../shared/retryable-postgres-initializer.js";
 
 export const ENTITY360_MIGRATION_ID = "20260825_001_entity360_v1";
 export const ENTITY360_MIGRATION_LOCK = "skinharmony:universal-core:entity360:migration:v1";
@@ -395,15 +396,18 @@ export function createEntity360Migrator({ pool } = {}) {
 
   async function apply() {
     const fullPlan = await loadMigrationPlan();
-    const client = await pool.connect();
-    let locked = false;
-    let activeMigrationId = null;
-    let applied = false;
+    const connection = await pool.connect();
     try {
-      await acquireBoundedMigrationLock(client, ENTITY360_MIGRATION_LOCK);
-      locked = true;
-      await ensureCoreSchemaMigrationRegistry(client);
-      for (const [index, migration] of fullPlan.entries()) {
+      return await withPostgresMigrationSession(connection, async ({ query }) => {
+        const client = Object.freeze({ query });
+        let locked = false;
+        let activeMigrationId = null;
+        let applied = false;
+        try {
+          await acquireBoundedMigrationLock(client, ENTITY360_MIGRATION_LOCK);
+          locked = true;
+          await ensureCoreSchemaMigrationRegistry(client);
+          for (const [index, migration] of fullPlan.entries()) {
         const chain = fullPlan.slice(0, index + 1);
         const chainDefinitions = ENTITY360_MIGRATIONS.slice(0, index + 1);
         activeMigrationId = migration.migration_id;
@@ -457,32 +461,35 @@ export function createEntity360Migrator({ pool } = {}) {
         verifyEntity360CompletedMigrationReadback(completed, chain);
         applied = true;
       }
-      const finalReadback = await readback(client);
-      verifyEntity360CompletedMigrationReadback(finalReadback, fullPlan);
-      return {
-        applied,
-        sql_digest: fullPlan[0].sql_digest,
-        migration_digests: fullPlan.map((migration) => ({ migration_id: migration.migration_id,
-          sql_digest: migration.sql_digest })),
-        readback: finalReadback,
-      };
-    } catch (error) {
-      if (activeMigrationId) {
-        try {
-          await client.query(
+          const finalReadback = await readback(client);
+          verifyEntity360CompletedMigrationReadback(finalReadback, fullPlan);
+          return {
+            applied,
+            sql_digest: fullPlan[0].sql_digest,
+            migration_digests: fullPlan.map((migration) => ({ migration_id: migration.migration_id,
+              sql_digest: migration.sql_digest })),
+            readback: finalReadback,
+          };
+        } catch (error) {
+          if (activeMigrationId) {
+            try {
+              await client.query(
             "UPDATE core_schema_migrations SET application_state='FAILED' WHERE migration_id=$1 AND application_state<>'COMPLETED'",
             [activeMigrationId],
           );
-        } catch { /* preserve authoritative error */ }
-      }
-      throw error;
+            } catch { /* preserve authoritative error */ }
+          }
+          throw error;
+        } finally {
+          if (locked) {
+            try {
+              await client.query("SELECT pg_advisory_unlock(hashtext($1))", [ENTITY360_MIGRATION_LOCK]);
+            } catch { /* disconnect also releases the lock */ }
+          }
+        }
+      });
     } finally {
-      if (locked) {
-        try {
-          await client.query("SELECT pg_advisory_unlock(hashtext($1))", [ENTITY360_MIGRATION_LOCK]);
-        } catch { /* disconnect also releases the lock */ }
-      }
-      client.release();
+      connection.release();
     }
   }
 

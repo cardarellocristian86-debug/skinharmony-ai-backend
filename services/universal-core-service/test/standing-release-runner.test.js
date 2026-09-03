@@ -9,6 +9,7 @@ import {
   createStandingReleaseRun,
   quarantineExpiredStandingReleaseRun,
 } from "../src/standingReleaseRunner.js";
+import { semanticScopeDecisionDigest } from "../src/semanticScopeGuard.js";
 
 const H = (character) => character.repeat(64);
 const G = (character) => character.repeat(40);
@@ -68,6 +69,17 @@ function issued(action, overrides = {}) {
     ...overrides.ticket,
   };
   return { state: "issued", uses: 0, ticket, ...overrides.record };
+}
+
+function semanticScopeDecision(overrides = {}) {
+  const unsigned = {
+    schema_version: "semantic_scope_decision_v1",
+    action: "ALLOW",
+    execution_authorized: false,
+    authority: "universal_core",
+    ...overrides,
+  };
+  return { ...unsigned, decision_digest: semanticScopeDecisionDigest(unsigned) };
 }
 
 function completed(record, result = {}) {
@@ -308,6 +320,33 @@ test("a signed native precommit replacement remains valid for the standing runne
       native_precommit_predecessor: { ...predecessor, ticket_digest: "invalid" },
     },
   }), /standing_release_ticket_predecessor_invalid/);
+});
+
+test("semantic scope telemetry must match its signed decision digest", () => {
+  const run = createStandingReleaseRun(input(), { now: NOW });
+  const scopeAtIssue = Object.freeze(semanticScopeDecision());
+  const ticket = issued(commitAction(G("1"), G("2")), {
+    ticket: { semantic_scope_at_issue: scopeAtIssue },
+  });
+  const active = bind(run, ticket);
+
+  assert.throws(() => bind(run, {
+    ...ticket,
+    ticket: {
+      ...ticket.ticket,
+      semantic_scope_at_issue: { ...scopeAtIssue, action: "BLOCK" },
+    },
+  }), /standing_release_ticket_semantic_scope_invalid/);
+
+  const scopeAtReservation = semanticScopeDecision({ phase: "RESERVATION" });
+  assert.equal(advance(active, completed(ticket, {
+    result_commit: G("2"),
+    semantic_scope_at_reservation: scopeAtReservation,
+  })).state, "PUSH_PENDING");
+  assert.throws(() => advance(active, completed(ticket, {
+    result_commit: G("2"),
+    semantic_scope_at_reservation: { ...scopeAtReservation, phase: "TAMPERED" },
+  })), /standing_release_ticket_reservation_semantic_scope_invalid/);
 });
 
 test("two bounded CI repairs are allowed and a third is quarantined", () => {

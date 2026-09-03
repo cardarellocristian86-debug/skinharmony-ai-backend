@@ -23,6 +23,12 @@ const MIN_TIMEOUT_MS = 250;
 const MAX_CIRCUIT_FAILURES = 5;
 const MAX_CIRCUIT_COOLDOWN_MS = 5 * 60_000;
 const MAX_RESPONSE_BYTES = 1_000_000;
+const READINESS_SCHEMA_VERSION = "nyra_deep_branch_v2_remote_readiness_v1";
+const RUNTIME_DESCRIPTOR_SCHEMA_VERSION = "nyra_deep_branch_v2_runtime_descriptor_v1";
+const MAX_READINESS_RESPONSE_BYTES = 128 * 1024;
+const MIN_READINESS_TIMEOUT_MS = 50;
+const MAX_READINESS_TIMEOUT_MS = 2_500;
+const MAX_READINESS_CACHE_TTL_MS = 60_000;
 const MAX_BRANCHES = 64;
 const TRUSTED_PRODUCTION_NYRA_ORIGIN = "https://skinharmony-nyra-core.onrender.com";
 const NYRA_DEEP_V2_CATALOG_SCOPE = "skinharmony";
@@ -69,6 +75,187 @@ function sha256(value) {
 function safeString(value, max = 256) {
   const text = String(value || "").trim();
   return text && text.length <= max ? text : null;
+}
+
+function readinessResult(config, {
+  ready,
+  state,
+  reason = null,
+  upstreamVerified = false,
+  descriptor = null,
+} = {}) {
+  return {
+    schema_version: READINESS_SCHEMA_VERSION,
+    ready: ready === true,
+    requested_enabled: config.requested_enabled === true,
+    enabled: config.enabled === true,
+    mode: config.enabled ? config.mode : "disabled",
+    state: sanitizeReason(state, "unavailable_v1_authoritative"),
+    reason: reason ? sanitizeReason(reason, "nyra_deep_branch_v2_readiness_unavailable") : null,
+    upstream_verified: upstreamVerified === true,
+    federation_verified: upstreamVerified === true,
+    ...(descriptor ? {
+      feature_enabled: descriptor.feature_enabled,
+      feature_mode: descriptor.mode,
+      catalog_fingerprint: descriptor.catalog_fingerprint,
+      root_binding_hash: descriptor.root_binding_hash,
+      counts: descriptor.counts,
+      branch_count: descriptor.branch_ids.length,
+      effective_branch_allowlist_count: descriptor.effective_branch_allowlist.length,
+    } : {}),
+    execution_authorized: false,
+    core_final_authority: true,
+    fallback: "nyra_neural_branch_network_v1",
+  };
+}
+
+function readinessDescriptorValidation(data, config) {
+  if (!data || typeof data !== "object" || data.ok !== true) {
+    return { ok: false, reason: "nyra_deep_branch_v2_readiness_upstream_not_ready" };
+  }
+  const federation = data.deep_branch_v2_federation;
+  if (
+    !federation
+    || typeof federation !== "object"
+    || Array.isArray(federation)
+    || typeof federation.enabled !== "boolean"
+    || typeof federation.configured !== "boolean"
+    || typeof federation.ready !== "boolean"
+  ) return { ok: false, reason: "nyra_deep_branch_v2_readiness_federation_status_invalid" };
+  if (federation.enabled !== true) {
+    return { ok: false, reason: "nyra_deep_branch_v2_readiness_federation_disabled" };
+  }
+  if (federation.configured !== true || federation.ready !== true) {
+    return { ok: false, reason: "nyra_deep_branch_v2_readiness_federation_not_ready" };
+  }
+  const descriptor = data.deep_branch_v2_runtime;
+  if (
+    !descriptor
+    || typeof descriptor !== "object"
+    || descriptor.schema_version !== RUNTIME_DESCRIPTOR_SCHEMA_VERSION
+    || descriptor.ready !== true
+    || typeof descriptor.feature_enabled !== "boolean"
+    || !["disabled", "shadow", "active"].includes(descriptor.mode)
+    || typeof descriptor.feature_tenant_configured !== "boolean"
+    || descriptor.execution_authorized !== false
+    || descriptor.core_final_authority !== true
+    || !SHA256_PATTERN.test(String(descriptor.catalog_fingerprint || ""))
+    || !SHA256_PATTERN.test(String(descriptor.root_binding_hash || ""))
+  ) return { ok: false, reason: "nyra_deep_branch_v2_readiness_descriptor_invalid" };
+
+  const branchIds = normalizedBranchIds(descriptor.branch_ids);
+  const effectiveAllowlist = normalizedBranchIds(descriptor.effective_branch_allowlist);
+  const counts = descriptor.counts;
+  const validCount = (value) => Number.isInteger(value) && value >= 0;
+  if (
+    !Array.isArray(descriptor.branch_ids)
+    || descriptor.branch_ids.length < 1
+    || descriptor.branch_ids.length > MAX_BRANCHES
+    || descriptor.branch_ids.some((branchId) => (
+      typeof branchId !== "string" || !ID_PATTERN.test(branchId)
+    ))
+    || branchIds.length !== descriptor.branch_ids.length
+    || !Array.isArray(descriptor.effective_branch_allowlist)
+    || descriptor.effective_branch_allowlist.length > MAX_BRANCHES
+    || descriptor.effective_branch_allowlist.some((branchId) => (
+      typeof branchId !== "string" || !ID_PATTERN.test(branchId)
+    ))
+    || effectiveAllowlist.length !== descriptor.effective_branch_allowlist.length
+    || !counts
+    || typeof counts !== "object"
+    || !validCount(counts.branch_count)
+    || counts.branch_count !== branchIds.length
+    || !validCount(counts.subbranch_count)
+    || !validCount(counts.node_count)
+    || !validCount(counts.shard_count)
+    || effectiveAllowlist.some((branchId) => !branchIds.includes(branchId))
+  ) return { ok: false, reason: "nyra_deep_branch_v2_readiness_descriptor_invalid" };
+
+  const compact = {
+    feature_enabled: descriptor.feature_enabled,
+    mode: descriptor.mode,
+    feature_tenant_configured: descriptor.feature_tenant_configured,
+    catalog_fingerprint: String(descriptor.catalog_fingerprint).toLowerCase(),
+    root_binding_hash: String(descriptor.root_binding_hash).toLowerCase(),
+    counts: {
+      branch_count: counts.branch_count,
+      subbranch_count: counts.subbranch_count,
+      node_count: counts.node_count,
+      shard_count: counts.shard_count,
+    },
+    branch_ids: branchIds,
+    effective_branch_allowlist: effectiveAllowlist,
+  };
+  if (!compact.feature_tenant_configured || !compact.feature_enabled) {
+    return {
+      ok: false,
+      reason: "nyra_deep_branch_v2_readiness_feature_disabled",
+      descriptor: compact,
+    };
+  }
+  const expectedFeatureMode = config.mode === "active" ? "active" : "shadow";
+  if (compact.mode !== expectedFeatureMode) {
+    return {
+      ok: false,
+      reason: "nyra_deep_branch_v2_readiness_mode_mismatch",
+      descriptor: compact,
+    };
+  }
+  if (
+    compact.catalog_fingerprint !== config.catalog_fingerprint.toLowerCase()
+    || compact.root_binding_hash !== config.root_binding_hash.toLowerCase()
+  ) return { ok: false, reason: "nyra_deep_branch_v2_readiness_pin_mismatch", descriptor: compact };
+  if (config.branch_allowlist.some((branchId) => (
+    !branchIds.includes(branchId) || !effectiveAllowlist.includes(branchId)
+  ))) return { ok: false, reason: "nyra_deep_branch_v2_readiness_allowlist_mismatch", descriptor: compact };
+  return { ok: true, descriptor: compact };
+}
+
+function codedError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+async function boundedResponseText(
+  response,
+  maximumBytes,
+  abort,
+  tooLargeCode = "nyra_deep_branch_v2_readiness_response_too_large",
+) {
+  const declaredLength = Number(response?.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    abort();
+    throw codedError(tooLargeCode);
+  }
+  if (response?.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        total += chunk.byteLength;
+        if (total > maximumBytes) {
+          abort();
+          try { await reader.cancel(); } catch {}
+          throw codedError(tooLargeCode);
+        }
+        chunks.push(chunk);
+      }
+    } finally {
+      try { reader.releaseLock(); } catch {}
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
+  }
+  const raw = await response.text();
+  if (Buffer.byteLength(raw, "utf8") > maximumBytes) {
+    abort();
+    throw codedError(tooLargeCode);
+  }
+  return raw;
 }
 
 function normalizedBranchIds(value, maxItems = MAX_BRANCHES) {
@@ -407,6 +594,18 @@ export function deepBranchV2Config(env = process.env) {
     catalog_fingerprint: catalogFingerprint,
     root_binding_hash: rootBindingHash,
     timeout_ms: clampInteger(env.CORE_NYRA_DEEP_BRANCH_V2_TIMEOUT_MS, 2_500, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
+    readiness_timeout_ms: clampInteger(
+      env.CORE_NYRA_DEEP_BRANCH_V2_READINESS_TIMEOUT_MS,
+      750,
+      MIN_READINESS_TIMEOUT_MS,
+      MAX_READINESS_TIMEOUT_MS,
+    ),
+    readiness_cache_ttl_ms: clampInteger(
+      env.CORE_NYRA_DEEP_BRANCH_V2_READINESS_CACHE_TTL_MS,
+      5_000,
+      250,
+      MAX_READINESS_CACHE_TTL_MS,
+    ),
     circuit_failure_threshold: clampInteger(env.CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_FAILURE_THRESHOLD, 3, 1, MAX_CIRCUIT_FAILURES),
     circuit_cooldown_ms: clampInteger(env.CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_COOLDOWN_MS, 30_000, 1_000, MAX_CIRCUIT_COOLDOWN_MS),
     operational_enabled: configurationValid && requestedOperationalEnabled && operationalTenantAllowlist.length > 0,
@@ -422,6 +621,8 @@ export function createNyraDeepBranchV2Client({
   now = () => Date.now(),
 } = {}) {
   const circuit = { failures: 0, open_until: 0, last_reason: null };
+  let readinessFlight = null;
+  let readinessCache = null;
 
   function circuitState(nowMs = now()) {
     return {
@@ -442,6 +643,110 @@ export function createNyraDeepBranchV2Client({
     circuit.failures = 0;
     circuit.open_until = 0;
     circuit.last_reason = null;
+  }
+
+  async function fetchReadiness(config) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.readiness_timeout_ms);
+    try {
+      const response = await fetchImpl(`${config.url}/healthz`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+      });
+      const raw = await boundedResponseText(
+        response,
+        MAX_READINESS_RESPONSE_BYTES,
+        () => controller.abort(),
+      );
+      if (!response.ok) {
+        return readinessResult(config, {
+          ready: false,
+          state: "upstream_unavailable_v1_authoritative",
+          reason: `nyra_deep_branch_v2_readiness_http_${response.status}`,
+        });
+      }
+      let data;
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        return readinessResult(config, {
+          ready: false,
+          state: "upstream_unavailable_v1_authoritative",
+          reason: "nyra_deep_branch_v2_readiness_invalid_json",
+        });
+      }
+      const validation = readinessDescriptorValidation(data, config);
+      if (!validation.ok) {
+        return readinessResult(config, {
+          ready: false,
+          state: "upstream_mismatch_v1_authoritative",
+          reason: validation.reason,
+          descriptor: validation.descriptor,
+        });
+      }
+      return readinessResult(config, {
+        ready: true,
+        state: "ready",
+        upstreamVerified: true,
+        descriptor: validation.descriptor,
+      });
+    } catch (error) {
+      const reason = error?.code === "nyra_deep_branch_v2_readiness_response_too_large"
+        ? error.code
+        : error?.name === "AbortError"
+          ? "nyra_deep_branch_v2_readiness_timeout"
+          : "nyra_deep_branch_v2_readiness_unreachable";
+      return readinessResult(config, {
+        ready: false,
+        state: "upstream_unavailable_v1_authoritative",
+        reason,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function readiness({ force = false } = {}) {
+    const config = deepBranchV2Config(env);
+    if (!config.requested_enabled) {
+      return readinessResult(config, {
+        ready: true,
+        state: "disabled_v1_authoritative",
+        reason: "nyra_deep_branch_v2_disabled",
+      });
+    }
+    if (!config.enabled) {
+      return readinessResult(config, {
+        ready: false,
+        state: "configuration_invalid_v1_authoritative",
+        reason: "nyra_deep_branch_v2_core_configuration_invalid",
+      });
+    }
+    const cacheKey = sha256({
+      url: config.url,
+      mode: config.mode,
+      catalog_fingerprint: config.catalog_fingerprint.toLowerCase(),
+      root_binding_hash: config.root_binding_hash.toLowerCase(),
+      branch_allowlist: config.branch_allowlist,
+    });
+    const nowMs = now();
+    if (!force && readinessCache?.key === cacheKey && readinessCache.expires_at > nowMs) {
+      return readinessCache.value;
+    }
+    if (readinessFlight?.key === cacheKey) return readinessFlight.promise;
+    const promise = fetchReadiness(config).then((value) => {
+      const ttl = value.ready
+        ? config.readiness_cache_ttl_ms
+        : Math.min(config.readiness_cache_ttl_ms, 1_000);
+      readinessCache = { key: cacheKey, expires_at: now() + ttl, value };
+      return value;
+    }).finally(() => {
+      if (readinessFlight?.promise === promise) readinessFlight = null;
+    });
+    readinessFlight = { key: cacheKey, promise };
+    return promise;
   }
 
   function envelopeContext({
@@ -566,16 +871,25 @@ export function createNyraDeepBranchV2Client({
         signal: controller.signal,
         redirect: "error",
       });
-      const raw = await response.text();
-      if (Buffer.byteLength(raw, "utf8") > MAX_RESPONSE_BYTES) {
-        return { ok: false, reason: "nyra_deep_branch_v2_response_too_large" };
-      }
+      const raw = await boundedResponseText(
+        response,
+        MAX_RESPONSE_BYTES,
+        () => controller.abort(),
+        "nyra_deep_branch_v2_response_too_large",
+      );
       let data = null;
       try { data = raw ? JSON.parse(raw) : null; } catch { return { ok: false, reason: "nyra_deep_branch_v2_invalid_json" }; }
       if (!response.ok) return { ok: false, reason: `nyra_deep_branch_v2_http_${response.status}` };
       return { ok: true, data };
     } catch (error) {
-      return { ok: false, reason: error?.name === "AbortError" ? "nyra_deep_branch_v2_timeout" : "nyra_deep_branch_v2_unreachable" };
+      return {
+        ok: false,
+        reason: error?.code === "nyra_deep_branch_v2_response_too_large"
+          ? error.code
+          : error?.name === "AbortError"
+            ? "nyra_deep_branch_v2_timeout"
+            : "nyra_deep_branch_v2_unreachable",
+      };
     } finally {
       clearTimeout(timeout);
     }
@@ -632,5 +946,7 @@ export function createNyraDeepBranchV2Client({
     circuitState,
     evaluate,
     evaluateOperational,
+    probeReadiness: readiness,
+    readiness,
   };
 }

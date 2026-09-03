@@ -3,6 +3,8 @@ import { Pool } from "pg";
 import { guardInterAgentEnvelope } from "../../shared/handoff-injection-guard.mjs";
 import { digest, WORK_CONTINUITY_SCHEMA_SQL } from "./work-continuity-runtime.js";
 import { compileNyraAutopilotPlan } from "./nyra-autopilot-plan.js";
+import { postgresPoolConfig } from "./postgres-pool-config.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 export const NYRA_AUTOPILOT_SCHEMA_VERSION = "nyra_work_autopilot_v1";
 export const NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT = 100;
@@ -212,13 +214,13 @@ function presence(identity) {
 
 export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, teamRuntime } = {}) {
   if ((!config.databaseUrl && !suppliedPool) || !teamRuntime) return null;
-  const pool = suppliedPool || new Pool({ connectionString: config.databaseUrl, ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
-  let ready;
-  const initialize = () => ready ||= (async () => {
-    await pool.query(WORK_CONTINUITY_SCHEMA_SQL);
-    await pool.query(teamRuntime.schemaSql || "");
-    await pool.query(CREATE_SCHEMA_SQL);
-  })();
+  const pool = suppliedPool || new Pool(postgresPoolConfig(config, {
+    connectionString: config.databaseUrl,
+  }));
+  const initialize = createRetryablePostgresInitializer({
+    pool,
+    sql: [WORK_CONTINUITY_SCHEMA_SQL, teamRuntime.schemaSql || "", CREATE_SCHEMA_SQL].join("\n"),
+  });
   async function transaction(fn) {
     await initialize();
     const client = typeof pool.connect === "function" ? await pool.connect() : pool;

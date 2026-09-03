@@ -6,6 +6,7 @@ import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "../src/nyra-work-automation-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
+import { hostAppCanDiscoverDynamicCapability } from "../src/host-app-authorization.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
   INTERNAL_ONLY_TOOL_NAMES,
@@ -19,6 +20,37 @@ const identity = {
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: true,
 };
+
+test("web compatibility execution is invoke-only and never enters the read catalog", () => {
+  const tool = TOOLS.find((item) => item.name === "web_compatibility_execute");
+  const handlers = { [tool.name]: async () => ({ structuredContent: { ok: true } }) };
+  const snapshot = dynamicCapabilityCatalogSnapshot([tool], handlers);
+  assert.deepEqual(tool.scopes, ["core:govern"]);
+  assert.equal(tool.annotations.readOnlyHint, false);
+  assert.equal(snapshot.capabilities[0].access_mode, "invoke");
+});
+
+test("durable DTT creation is invoke-only and unavailable through the read router", async () => {
+  const tool = TOOLS.find((item) => item.name === "orchestration_dtt_plan");
+  const handlers = { [tool.name]: async () => ({ structuredContent: { ok: true } }) };
+  const snapshot = dynamicCapabilityCatalogSnapshot([tool], handlers);
+  assert.deepEqual(tool.scopes, ["core:govern"]);
+  assert.equal(tool.annotations.readOnlyHint, false);
+  assert.equal(snapshot.capabilities[0].access_mode, "invoke");
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  await assert.rejects(
+    router.core_capability_read({
+      capability_id: tool.name,
+      catalog_revision: snapshot.catalog_revision,
+      arguments: {},
+    }, identity),
+    /dynamic_capability_read_only_required/,
+  );
+});
 
 test("catalog includes system-owned CI without exposing verifier assignment fields", () => {
   const tool = NYRA_WORK_AUTOMATION_TOOLS.find((item) => item.name === "nyra_work_automation_ci_verify");
@@ -483,6 +515,148 @@ test("a server-admitted verifier can read only its acceptance-contract capabilit
     catalog_revision: catalogRevision,
     arguments: received,
   }, caller), /dynamic_capability_unavailable/);
+});
+
+test("a verifier can report with the revision from its acceptance-contract catalog", async () => {
+  const acceptanceRead = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_acceptance_contract_read");
+  const report = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_report");
+  const unrelated = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_v2_read");
+  let acceptanceReads = 0;
+  let reports = 0;
+  const handlers = {
+    [acceptanceRead.name]: async () => {
+      acceptanceReads += 1;
+      return { structuredContent: { execution_authorized: false } };
+    },
+    [report.name]: async () => {
+      reports += 1;
+      return { structuredContent: { ok: true } };
+    },
+    [unrelated.name]: async () => ({ structuredContent: { ok: true } }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [acceptanceRead, report, unrelated],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+    capabilityVisible: ({ tool, identity: caller }) =>
+      hostAppCanDiscoverDynamicCapability({
+        identity: caller,
+        tool,
+        tools: [acceptanceRead, report, unrelated],
+      }),
+  });
+  const assignment = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    native_agent_id: "native-child-verifier",
+    host_task_id: "/root/native-child-verifier",
+    assignment_capability: `hnac_${"A".repeat(43)}`,
+  };
+  const childIdentity = {
+    ...identity,
+    subject: "native-verifier-subject",
+    authenticatedHostPrincipal: {
+      registered: true,
+      host_kind: "codex_native",
+      interaction_mode: "native_tooling",
+      capabilities: ["work.read"],
+    },
+  };
+  const acceptanceCaller = {
+    ...childIdentity,
+    nativeAcceptanceContractReadAdmission: {
+      capability_id: acceptanceRead.name,
+    },
+  };
+  const catalog = await router.core_capability_catalog({
+    capability_id: acceptanceRead.name,
+    include_schema: true,
+  }, acceptanceCaller);
+  const acceptanceRevision = catalog.structuredContent.catalog_revision;
+  assert.match(acceptanceRevision, /^[a-f0-9]{64}$/);
+  assert.equal(catalog.structuredContent.capability.capability_id, acceptanceRead.name);
+  await router.core_capability_read({
+    capability_id: acceptanceRead.name,
+    catalog_revision: acceptanceRevision,
+    arguments: assignment,
+  }, acceptanceCaller);
+  assert.equal(acceptanceReads, 1);
+
+  const reportCaller = {
+    ...childIdentity,
+    nativeReportAdmission: { capability_id: report.name },
+  };
+  const forgedReportCaller = {
+    ...childIdentity,
+    nativeReportAdmission: { capability_id: unrelated.name },
+  };
+  const reportCatalog = await router.core_capability_catalog({}, reportCaller);
+  const ambientCatalog = await router.core_capability_catalog({}, childIdentity);
+  assert.notEqual(acceptanceRevision, reportCatalog.structuredContent.catalog_revision);
+  assert.notEqual(acceptanceRevision, ambientCatalog.structuredContent.catalog_revision);
+  const reportArguments = {
+    ...assignment,
+    status: "completed",
+    report: { summary: "Independently verified the bounded change." },
+  };
+  const invoke = (caller, capabilityId, revision, idempotencyKey) =>
+    router.core_capability_invoke({
+      capability_id: capabilityId,
+      catalog_revision: revision,
+      idempotency_key: idempotencyKey,
+      arguments: capabilityId === report.name
+        ? reportArguments
+        : { work_id: assignment.work_id },
+    }, caller);
+  await assert.rejects(invoke(
+    childIdentity,
+    report.name,
+    acceptanceRevision,
+    "native-verifier-report-without-admission",
+  ), /dynamic_capability_catalog_revision_mismatch/);
+  await assert.rejects(invoke(
+    forgedReportCaller,
+    report.name,
+    acceptanceRevision,
+    "native-verifier-report-with-forged-marker",
+  ), /dynamic_capability_catalog_revision_mismatch/);
+  await assert.rejects(invoke(
+    acceptanceCaller,
+    report.name,
+    acceptanceRevision,
+    "native-verifier-report-with-read-marker",
+  ), /dynamic_capability_unavailable/);
+  assert.equal(reports, 0);
+  const reported = await invoke(
+    reportCaller,
+    report.name,
+    acceptanceRevision,
+    "native-verifier-report-after-acceptance-read",
+  );
+  assert.equal(reports, 1);
+  assert.equal(reported.structuredContent.dynamic_capability.capability_id, report.name);
+  assert.equal(reported.structuredContent.dynamic_capability.catalog_revision,
+    reportCatalog.structuredContent.catalog_revision);
+  await assert.rejects(invoke(
+    reportCaller,
+    unrelated.name,
+    acceptanceRevision,
+    "native-verifier-unrelated-with-acceptance-revision",
+  ), /dynamic_capability_catalog_revision_mismatch/);
+  const alteredRevision = `${acceptanceRevision.slice(0, -1)}${
+    acceptanceRevision.endsWith("0") ? "1" : "0"
+  }`;
+  await assert.rejects(invoke(
+    reportCaller,
+    report.name,
+    alteredRevision,
+    "native-verifier-altered-acceptance-revision",
+  ), /dynamic_capability_catalog_revision_mismatch/);
+  assert.equal(reports, 1);
 });
 
 test("accepts only the exact pre-admission catalog revision for an admitted native report", async () => {
@@ -1382,7 +1556,6 @@ test("keeps Entity 360 shadow controls direct-only and out of generic discovery"
 test("OAuth-owner continuity bootstrap capabilities use only their server-owned Core gate", async () => {
   const bootstrapTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
     "work_continuity_create",
-    "work_continuity_start_or_resume",
     "work_continuity_v2_create",
   ].includes(tool.name));
   const dedicatedContinuityTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
@@ -1402,7 +1575,6 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
   ].includes(tool.name));
   assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
     "work_continuity_create",
-    "work_continuity_start_or_resume",
     "work_continuity_v2_create",
   ]);
   for (const tool of bootstrapTools) {
@@ -1475,15 +1647,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
         architecture: {},
         next_action: "Start the approved work",
       }
-      : tool.name === "work_continuity_start_or_resume" ? {
-        project_id: "client-project",
-        session_id: "owner-session",
-        initial_message: "Create the client work",
-        idea: "Create the client work",
-        objective: "Track the work",
-        architecture: {},
-        next_action: "Start the approved work",
-      } : {
+      : {
         intent_type: "CREATE_WORK",
         request_id: "owner-work-bootstrap-request",
         review_id: "66666666-6666-4666-8666-666666666666",
@@ -1527,6 +1691,84 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
       /dynamic_capability_dedicated_core_gate_unverified/,
     );
     assert.equal(genericGateCalls, 0);
+  }
+});
+
+test("bounded Work resume capabilities replace caller presence and never borrow owner assertions", async () => {
+  const tools = WORK_CONTINUITY_TOOLS.filter((tool) => [
+    "work_continuity_resume",
+    "work_continuity_start_or_resume",
+  ].includes(tool.name));
+  for (const tool of tools) {
+    let received;
+    let genericGateCalls = 0;
+    const handlers = {
+      [tool.name]: async (args) => {
+        received = args;
+        return {
+          structuredContent: {
+            ok: true,
+            dedicated_core_gate: {
+              authorized: true,
+              authority: "universal_core",
+              server_owned: true,
+            },
+          },
+        };
+      },
+    };
+    const router = createDynamicCapabilityHandlers({
+      tools: [tool],
+      handlers,
+      semanticSelect: async () => ({}),
+      gateAction: async () => {
+        genericGateCalls += 1;
+        return { structuredContent: { authorization: { allowed: true } } };
+      },
+    });
+    const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+    const toolArguments = tool.name === "work_continuity_resume"
+      ? {
+        work_id: "11111111-1111-4111-8111-111111111111",
+        session_id: "caller-selected-session",
+        current_state_hashes: {
+          repository_hash: "a".repeat(64),
+          policy_hash: "b".repeat(64),
+          live_state_hash: "c".repeat(64),
+        },
+      }
+      : {
+        project_id: "client-project",
+        session_id: "caller-selected-session",
+        initial_message: "Resume the existing work",
+        idea: "Existing work",
+        objective: "Continue safely",
+        architecture: {},
+        next_action: "Continue the verified plan",
+      };
+    const result = await router.core_capability_invoke({
+      capability_id: tool.name,
+      catalog_revision,
+      idempotency_key: `bounded-${tool.name}`,
+      owner_confirmed: true,
+      confirmation_reference: "must-not-propagate",
+      arguments: toolArguments,
+    }, {
+      ...identity,
+      ownerConfirmed: false,
+      agentPresence: {
+        agent_id: "authenticated-agent",
+        session_id: "authenticated-session",
+        client_type: "codex",
+      },
+    });
+    assert.equal(genericGateCalls, 0);
+    assert.equal(received.session_id, "authenticated-session");
+    assert.equal(received.agent_id, "authenticated-agent");
+    assert.equal(received.client_type, "codex");
+    assert.equal(received.owner_confirmed, undefined);
+    assert.equal(received.confirmation_reference, undefined);
+    assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
   }
 });
 

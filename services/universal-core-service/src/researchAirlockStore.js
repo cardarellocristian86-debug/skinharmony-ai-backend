@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { Pool } from "pg";
+import { createBoundedPostgresPool } from "./postgresPoolConfig.js";
+import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 const STATES = new Set([
   "DISCOVERY_OPEN",
@@ -10,6 +11,130 @@ const STATES = new Set([
   "EXPIRED",
 ]);
 const ACTIVE_STATES = new Set(["DISCOVERY_OPEN", "EVIDENCE_SEALED", "PRIVATE_SYNTHESIS"]);
+
+const RESEARCH_AIRLOCK_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS research_airlock_work (
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  version BIGINT NOT NULL DEFAULT 0,
+  allowed_domains JSONB NOT NULL DEFAULT '[]'::jsonb,
+  allowed_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+  plan_digest TEXT NOT NULL,
+  policy_snapshot_digest TEXT NOT NULL,
+  evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+  evidence_digest TEXT,
+  capsule JSONB,
+  quarantine_reason TEXT,
+  release_commit_sha TEXT,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, project_id, work_id, session_id),
+  CHECK (state IN ('DISCOVERY_OPEN','EVIDENCE_SEALED','PRIVATE_SYNTHESIS','CLOSED','QUARANTINED','EXPIRED'))
+);
+ALTER TABLE research_airlock_work
+  ADD COLUMN IF NOT EXISTS allowed_urls JSONB NOT NULL DEFAULT '[]'::jsonb;
+CREATE TABLE IF NOT EXISTS research_airlock_capability (
+  capability_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  nonce_digest TEXT NOT NULL UNIQUE,
+  issued_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ,
+  key_version TEXT NOT NULL,
+  FOREIGN KEY (tenant_id, project_id, work_id, session_id)
+    REFERENCES research_airlock_work (tenant_id, project_id, work_id, session_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS research_airlock_session_guard (
+  tenant_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  tainted_at TIMESTAMPTZ,
+  taint_reason TEXT,
+  taint_tool_digest TEXT,
+  taint_actor_digest TEXT,
+  taint_request_digest TEXT,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, session_id)
+);
+ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_tool_digest TEXT;
+ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_actor_digest TEXT;
+ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_request_digest TEXT;
+CREATE TABLE IF NOT EXISTS research_airlock_plan (
+  plan_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  allowed_domains JSONB NOT NULL,
+  allowed_urls JSONB NOT NULL,
+  plan_digest TEXT NOT NULL,
+  policy_snapshot_digest TEXT NOT NULL,
+  nonce_digest TEXT NOT NULL UNIQUE,
+  key_version TEXT NOT NULL,
+  issued_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS research_airlock_fetch (
+  fetch_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  capability_id TEXT NOT NULL,
+  normalized_url_digest TEXT NOT NULL,
+  resolved_ip_digest TEXT NOT NULL,
+  redirect_chain_digest TEXT NOT NULL,
+  response_digest TEXT NOT NULL,
+  typed_evidence_digest TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  byte_count INTEGER NOT NULL,
+  status_code INTEGER NOT NULL,
+  sanitizer_version TEXT NOT NULL,
+  injection_verdict TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (tenant_id, project_id, work_id, session_id)
+    REFERENCES research_airlock_work (tenant_id, project_id, work_id, session_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS research_airlock_event (
+  event_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  work_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  previous_state TEXT,
+  next_state TEXT,
+  operation TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  actor_digest TEXT NOT NULL,
+  request_digest TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS research_airlock_work_tenant_state_idx
+  ON research_airlock_work (tenant_id, state, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS research_airlock_work_tenant_session_idx
+  ON research_airlock_work (tenant_id, session_id);
+CREATE INDEX IF NOT EXISTS research_airlock_capability_work_idx
+  ON research_airlock_capability (tenant_id, project_id, work_id, session_id, purpose, expires_at);
+CREATE INDEX IF NOT EXISTS research_airlock_plan_session_idx
+  ON research_airlock_plan (tenant_id, session_id, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS research_airlock_plan_unconsumed_session_idx
+  ON research_airlock_plan (tenant_id, session_id) WHERE consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS research_airlock_fetch_work_idx
+  ON research_airlock_fetch (tenant_id, project_id, work_id, session_id, created_at);
+CREATE INDEX IF NOT EXISTS research_airlock_event_work_idx
+  ON research_airlock_event (tenant_id, project_id, work_id, session_id, created_at);
+`;
 
 function required(value, name, maximum = 160) {
   const normalized = String(value || "").trim();
@@ -64,141 +189,31 @@ function publicCapability(row) {
 
 export function createPostgresResearchAirlockStore({ connectionString, pool = null } = {}) {
   const url = required(connectionString, "research_airlock_database_url", 4_000);
-  const db = pool || new Pool({
+  const db = pool || createBoundedPostgresPool({
     connectionString: url,
     max: 4,
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 3_000,
-    query_timeout: 5_000,
   });
-  let initialized = false;
-  let initializationPromise = null;
-
-  async function initializeSchema() {
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_work (
-      tenant_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      work_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      state TEXT NOT NULL,
-      version BIGINT NOT NULL DEFAULT 0,
-      allowed_domains JSONB NOT NULL DEFAULT '[]'::jsonb,
-      allowed_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
-      plan_digest TEXT NOT NULL,
-      policy_snapshot_digest TEXT NOT NULL,
-      evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
-      evidence_digest TEXT,
-      capsule JSONB,
-      quarantine_reason TEXT,
-      release_commit_sha TEXT,
-      created_at TIMESTAMPTZ NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, project_id, work_id, session_id),
-      CHECK (state IN ('DISCOVERY_OPEN','EVIDENCE_SEALED','PRIVATE_SYNTHESIS','CLOSED','QUARANTINED','EXPIRED'))
-    )`);
-    await db.query("ALTER TABLE research_airlock_work ADD COLUMN IF NOT EXISTS allowed_urls JSONB NOT NULL DEFAULT '[]'::jsonb");
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_capability (
-      capability_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      work_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      purpose TEXT NOT NULL,
-      request_digest TEXT NOT NULL,
-      nonce_digest TEXT NOT NULL UNIQUE,
-      issued_at TIMESTAMPTZ NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      consumed_at TIMESTAMPTZ,
-      key_version TEXT NOT NULL,
-      FOREIGN KEY (tenant_id, project_id, work_id, session_id)
-        REFERENCES research_airlock_work (tenant_id, project_id, work_id, session_id) ON DELETE CASCADE
-    )`);
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_session_guard (
-      tenant_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      tainted_at TIMESTAMPTZ,
-      taint_reason TEXT,
-      taint_tool_digest TEXT,
-      taint_actor_digest TEXT,
-      taint_request_digest TEXT,
-      created_at TIMESTAMPTZ NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL,
-      PRIMARY KEY (tenant_id, session_id)
-    )`);
-    await db.query("ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_tool_digest TEXT");
-    await db.query("ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_actor_digest TEXT");
-    await db.query("ALTER TABLE research_airlock_session_guard ADD COLUMN IF NOT EXISTS taint_request_digest TEXT");
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_plan (
-      plan_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      work_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      allowed_domains JSONB NOT NULL,
-      allowed_urls JSONB NOT NULL,
-      plan_digest TEXT NOT NULL,
-      policy_snapshot_digest TEXT NOT NULL,
-      nonce_digest TEXT NOT NULL UNIQUE,
-      key_version TEXT NOT NULL,
-      issued_at TIMESTAMPTZ NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      consumed_at TIMESTAMPTZ
-    )`);
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_fetch (
-      fetch_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      work_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      capability_id TEXT NOT NULL,
-      normalized_url_digest TEXT NOT NULL,
-      resolved_ip_digest TEXT NOT NULL,
-      redirect_chain_digest TEXT NOT NULL,
-      response_digest TEXT NOT NULL,
-      typed_evidence_digest TEXT NOT NULL,
-      content_type TEXT NOT NULL,
-      byte_count INTEGER NOT NULL,
-      status_code INTEGER NOT NULL,
-      sanitizer_version TEXT NOT NULL,
-      injection_verdict TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL,
-      FOREIGN KEY (tenant_id, project_id, work_id, session_id)
-        REFERENCES research_airlock_work (tenant_id, project_id, work_id, session_id) ON DELETE CASCADE
-    )`);
-    await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_event (
-      event_id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      work_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      previous_state TEXT,
-      next_state TEXT,
-      operation TEXT NOT NULL,
-      verdict TEXT NOT NULL,
-      reason_code TEXT NOT NULL,
-      actor_digest TEXT NOT NULL,
-      request_digest TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL
-    )`);
-    await db.query("CREATE INDEX IF NOT EXISTS research_airlock_work_tenant_state_idx ON research_airlock_work (tenant_id, state, expires_at)");
-    await db.query("CREATE UNIQUE INDEX IF NOT EXISTS research_airlock_work_tenant_session_idx ON research_airlock_work (tenant_id, session_id)");
-    await db.query("CREATE INDEX IF NOT EXISTS research_airlock_capability_work_idx ON research_airlock_capability (tenant_id, project_id, work_id, session_id, purpose, expires_at)");
-    await db.query("CREATE INDEX IF NOT EXISTS research_airlock_plan_session_idx ON research_airlock_plan (tenant_id, session_id, expires_at)");
-    await db.query("CREATE UNIQUE INDEX IF NOT EXISTS research_airlock_plan_unconsumed_session_idx ON research_airlock_plan (tenant_id, session_id) WHERE consumed_at IS NULL");
-    await db.query("CREATE INDEX IF NOT EXISTS research_airlock_fetch_work_idx ON research_airlock_fetch (tenant_id, project_id, work_id, session_id, created_at)");
-    await db.query("CREATE INDEX IF NOT EXISTS research_airlock_event_work_idx ON research_airlock_event (tenant_id, project_id, work_id, session_id, created_at)");
-    initialized = true;
-  }
+  let initializationState = "idle";
+  let initializationError = null;
+  const initializeSchema = createRetryablePostgresInitializer({
+    pool: db,
+    sql: RESEARCH_AIRLOCK_SCHEMA_SQL,
+  });
 
   async function init() {
-    if (initialized) return;
-    if (!initializationPromise) {
-      initializationPromise = initializeSchema().finally(() => {
-        initializationPromise = null;
-      });
+    if (initializationState === "ready") return { ready: true, kind: "postgresql" };
+    initializationState = "initializing";
+    initializationError = null;
+    try {
+      await initializeSchema();
+      initializationState = "ready";
+      return { ready: true, kind: "postgresql" };
+    } catch (error) {
+      initializationState = "failed";
+      initializationError = String(error?.code || "research_airlock_schema_initialization_failed").slice(0, 80);
+      throw error;
     }
-    await initializationPromise;
   }
 
   async function transaction(work, callback) {
@@ -296,7 +311,14 @@ export function createPostgresResearchAirlockStore({ connectionString, pool = nu
     kind: "postgresql",
     restart_durable: true,
     distributed: true,
-    async init() { await init(); return { ready: true, kind: "postgresql" }; },
+    init,
+    initializationStatus() {
+      return {
+        state: initializationState,
+        ready: initializationState === "ready",
+        error: initializationError,
+      };
+    },
     async authorizeUnopenedSession(input) {
       return sessionTransaction(input.tenant_id, input.session_id, (client) => authorizeUnopenedLocked(client, input));
     },
@@ -312,6 +334,50 @@ export function createPostgresResearchAirlockStore({ connectionString, pool = nu
         }
         return { work: null, decision: await authorizeUnopenedLocked(client, input) };
       });
+    },
+    async observeSessionAuthorization(input) {
+      if (initializationState !== "ready") throw new Error("research_airlock_not_ready");
+      const result = await db.query(`SELECT * FROM research_airlock_work
+        WHERE tenant_id=$1 AND session_id=$2 ORDER BY created_at DESC LIMIT 2`,
+      [input.tenant_id, input.session_id]);
+      if (result.rows.length > 1) throw new Error("research_airlock_session_ambiguous");
+      const current = publicWork(result.rows[0]);
+      if (current) {
+        const observed = ACTIVE_STATES.has(current.state) && input.created_at &&
+          new Date(current.expires_at) <= new Date(input.created_at)
+          ? { ...current, state: "EXPIRED" }
+          : current;
+        return { work: observed, decision: null };
+      }
+      const guardResult = await db.query(`SELECT * FROM research_airlock_session_guard
+        WHERE tenant_id=$1 AND session_id=$2`, [input.tenant_id, input.session_id]);
+      const guard = guardResult.rows[0] || null;
+      if (input.safe_preopen === true) return { work: null, decision: guard?.tainted_at
+        ? {
+            verdict: "BLOCK",
+            reason: "research_airlock_session_preopen_tainted",
+            state: "PREOPEN_TAINTED",
+          }
+        : {
+            verdict: "ALLOW",
+            state: "PREOPEN_CLEAN",
+            nyra_core_boundary_only: true,
+          } };
+      // A previously classified non-research session remains usable for
+      // private reads, matching the atomic mutating authorizer. The durable
+      // taint prevents that same logical session from later opening public
+      // research. A clean session cannot be classified by this SELECT-only
+      // observer, so the caller must use the atomic session authorizer once.
+      if (guard?.tainted_at) return { work: null, decision: {
+        verdict: "ALLOW",
+        state: "PREOPEN_TAINTED",
+        nyra_core_boundary_only: true,
+      } };
+      return { work: null, decision: {
+        verdict: "BLOCK",
+        reason: "research_airlock_session_classification_required",
+        state: "PREOPEN_CLEAN",
+      } };
     },
     async issuePlan(input) {
       return sessionTransaction(input.tenant_id, input.session_id, async (client) => {
@@ -596,6 +662,27 @@ export function createMemoryResearchAirlockStore() {
       const current = expire(matches[0] || null, input);
       if (current) return { work: clone(current), decision: null };
       return { work: null, decision: clone(authorizeUnopened({ tenant_id, session_id, ...input })) };
+    },
+    async observeSessionAuthorization({ tenant_id, session_id, ...input }) {
+      const matches = [...works.values()].filter((work) =>
+        work.tenant_id === tenant_id && work.session_id === session_id);
+      if (matches.length > 1) throw new Error("research_airlock_session_ambiguous");
+      const current = matches[0] ? clone(matches[0]) : null;
+      if (current) {
+        if (ACTIVE_STATES.has(current.state) && input.created_at &&
+            new Date(current.expires_at) <= new Date(input.created_at)) current.state = "EXPIRED";
+        return { work: current, decision: null };
+      }
+      const guard = sessionGuards.get(sessionKey({ tenant_id, session_id }));
+      if (input.safe_preopen === true) return { work: null, decision: guard?.tainted_at
+        ? { verdict: "BLOCK", reason: "research_airlock_session_preopen_tainted", state: "PREOPEN_TAINTED" }
+        : { verdict: "ALLOW", state: "PREOPEN_CLEAN", nyra_core_boundary_only: true } };
+      if (guard?.tainted_at) return { work: null, decision: {
+        verdict: "ALLOW", state: "PREOPEN_TAINTED", nyra_core_boundary_only: true,
+      } };
+      return { work: null, decision: {
+        verdict: "BLOCK", reason: "research_airlock_session_classification_required", state: "PREOPEN_CLEAN",
+      } };
     },
     async issuePlan(input) {
       const guardId = sessionKey(input);
