@@ -28,7 +28,7 @@ test("production blueprints pause automatic deploys and bound monorepo builds", 
 
   for (const [blueprintPath, rustMode] of expectedRustMode) {
     const blueprint = read(blueprintPath);
-    assert.match(blueprint, /^    autoDeployTrigger: off$/m, blueprintPath);
+    assert.match(blueprint, /^    autoDeployTrigger: "off"$/m, blueprintPath);
     assert.match(blueprint, /^    buildFilter:\n      paths:\n(?:        - .+\n)+      ignoredPaths:\n(?:        - .+\n)+/m, blueprintPath);
     assert.equal(envValue(blueprint, "SKINHARMONY_BUILD_RUST_COMPONENTS"), rustMode, blueprintPath);
   }

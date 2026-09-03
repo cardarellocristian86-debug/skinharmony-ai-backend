@@ -263,8 +263,13 @@ jobs:
             "render-universal-core.yaml", "skinharmony-universal-core"
           )
           nyra = exact_service.call("render-nyra.yaml", "skinharmony-nyra-core")
+          # Production deploys are deliberately ticketed and started through
+          # the governed Render path after the protected merge.  Keeping
+          # Blueprint auto-deploy disabled prevents an implicit rollout from
+          # racing that readback/rollback sequence.
           [mcp, core, nyra].each do |service|
-            abort("#{service["name"]}: checksPass auto-deploy required") unless service["autoDeployTrigger"] == "checksPass"
+            abort("#{service["name"]}: governed manual deploy requires auto-deploy off") unless
+              service["autoDeployTrigger"] == "off"
             abort("#{service["name"]}: exact GitHub repository required") unless
               service["repo"] == "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend"
             abort("#{service["name"]}: release branch must remain main") unless

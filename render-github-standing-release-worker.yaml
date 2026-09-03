@@ -9,7 +9,7 @@ services:
     buildCommand: npm ci
     startCommand: node services/github-standing-release-worker/src/server.js
     healthCheckPath: /livez
-    autoDeployTrigger: off
+    autoDeployTrigger: "off"
     buildFilter:
       paths:
         - package.json

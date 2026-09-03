@@ -15,7 +15,7 @@ services:
     healthCheckPath: /livez
     # Automatic deploys stay paused during stabilization. A reviewed manual
     # release still requires repository CI, Core and host authorization.
-    autoDeployTrigger: off
+    autoDeployTrigger: "off"
     buildFilter:
       paths:
         - package.json
