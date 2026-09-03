@@ -23,6 +23,7 @@ import { createRetryablePostgresInitializer } from "../../shared/retryable-postg
 // Work execution, while still refusing every real lease, branch or unleased
 // active participant.
 const NYRA_READ_ONLY_LEASE_PURPOSE = "Nyra governed read-only Work context";
+const HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS = 72 * 60 * 60 * 1_000;
 
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
@@ -2427,6 +2428,12 @@ export function createWorkContinuityV2Store({
     // revoke this narrow class after pausing the sessions; execution leases
     // and branches remain unconditionally non-revocable through this route.
     const revokeUnattestedReadOnlyBindings = input.revoke_unattested_read_only_bindings === true;
+    // A maintenance client without a signed host presence must not be able to
+    // manufacture a read-binding audit.  This opt-in is deliberately much
+    // narrower than a general BLOCKED_VALID archive; its invariants describe
+    // the historical bridge anomaly caused by a pre-attestation diagnostic
+    // resume that refreshed only the legacy/V2 projection timestamps.
+    const repairUnattestedHistoricalTimestamp = input.repair_unattested_historical_timestamp === true;
     const idempotencyKey = galleryIdempotencyKey(
       input.idempotency_key,
       "historical_bridge_archive_idempotency_key_required",
@@ -2441,6 +2448,9 @@ export function createWorkContinuityV2Store({
       // absent.  Existing archived Work retries must remain replayable.
       ...(revokeUnattestedReadOnlyBindings
         ? { revoke_unattested_read_only_bindings: true }
+        : {}),
+      ...(repairUnattestedHistoricalTimestamp
+        ? { repair_unattested_historical_timestamp: true }
         : {}),
     });
     const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
@@ -2470,6 +2480,8 @@ export function createWorkContinuityV2Store({
           classification: payload.classification,
           legacy_status: payload.legacy_status,
           closure_claimed: false,
+          blocked_read_audit_event_hash: payload.blocked_read_audit_event_hash || null,
+          blocked_timestamp_repair: payload.blocked_timestamp_repair || null,
           revoked_unattested_read_only_binding_count: Number(
             payload.revoked_unattested_read_only_binding_count || 0,
           ),
@@ -2489,7 +2501,14 @@ export function createWorkContinuityV2Store({
       // BLOCKED_VALID is eligible only when the recent legacy timestamp is
       // explained by the server-owned Nyra read-binding audit.  A normally
       // progressing or newly blocked Work must still age into STALE/ABANDONED.
+      // The sole alternative handles a pre-attestation diagnostic resume:
+      // it is a bridge whose latest meaningful V2 completion/evidence
+      // activity is old, and whose legacy row says
+      // release_ready while the V2 projection is BLOCKED.  That contradictory
+      // state can never represent a current blocked execution, and every
+      // predicate is re-read inside this transaction.
       let blockedReadAuditEvent = null;
+      let blockedTimestampRepair = null;
       if (expectedClassification === "BLOCKED_VALID") {
         const audit = await client.query(`SELECT event_type,event_hash,created_at FROM core_continuity_events
           WHERE tenant_id=$1 AND work_id=$2 AND event_type='nyra_read_binding_attested'
@@ -2497,11 +2516,46 @@ export function createWorkContinuityV2Store({
         const candidate = audit.rows[0];
         const legacyUpdatedAt = new Date(legacy.updated_at).getTime();
         const auditAt = new Date(candidate?.created_at || "").getTime();
-        if (!candidate || !Number.isFinite(legacyUpdatedAt) || !Number.isFinite(auditAt) ||
-            Math.abs(legacyUpdatedAt - auditAt) > 5 * 60 * 1000) {
-          fail("historical_bridge_archive_blocked_audit_required");
+        if (candidate && Number.isFinite(legacyUpdatedAt) && Number.isFinite(auditAt) &&
+            Math.abs(legacyUpdatedAt - auditAt) <= 5 * 60 * 1000) {
+          blockedReadAuditEvent = candidate;
+        } else {
+          if (!repairUnattestedHistoricalTimestamp) {
+            fail("historical_bridge_archive_blocked_audit_required");
+          }
+          if (work.status !== "BLOCKED" || String(legacy.status || "").toLowerCase() !== "release_ready" ||
+              Number(work.progress_bp) !== 10_000) {
+            fail("historical_bridge_archive_timestamp_repair_ineligible");
+          }
+          const [requiredTasks, requiredEvidence] = await Promise.all([
+            client.query(`SELECT status,acceptance_verified,completed_at FROM tenant_work_task
+              WHERE tenant_id=$1 AND work_id=$2 AND required=true FOR UPDATE`, [actor.tenant_id, workId]),
+            client.query(`SELECT independently_verified,verified_by_agent_id,verified_by_session_fingerprint,created_at
+              FROM tenant_work_evidence
+              WHERE tenant_id=$1 AND work_id=$2 AND required=true FOR UPDATE`, [actor.tenant_id, workId]),
+          ]);
+          if (!requiredTasks.rows.length || !requiredEvidence.rows.length ||
+              requiredTasks.rows.some((row) => row.status !== "completed" || row.acceptance_verified !== true) ||
+              requiredEvidence.rows.some((row) => !independentlyVerifiedGenericEvidence(row, work))) {
+            fail("historical_bridge_archive_timestamp_repair_ineligible");
+          }
+          const verifiedActivityAt = [
+            ...requiredTasks.rows.map((row) => new Date(row.completed_at || "").getTime()),
+            ...requiredEvidence.rows.map((row) => new Date(row.created_at || "").getTime()),
+          ];
+          if (verifiedActivityAt.some((timestamp) => !Number.isFinite(timestamp)) ||
+              now().getTime() - Math.max(...verifiedActivityAt) < HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS) {
+            fail("historical_bridge_archive_timestamp_repair_ineligible");
+          }
+          blockedTimestampRepair = {
+            schema_version: "historical_bridge_unattested_timestamp_repair_v1",
+            latest_verified_activity_at: new Date(Math.max(...verifiedActivityAt)).toISOString(),
+            minimum_age_hours: HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS / (60 * 60 * 1_000),
+            legacy_status: "release_ready",
+            verified_required_task_count: requiredTasks.rows.length,
+            independently_verified_required_evidence_count: requiredEvidence.rows.length,
+          };
         }
-        blockedReadAuditEvent = candidate;
       }
       const [participants, leases, branches] = await Promise.all([
         client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
@@ -2634,6 +2688,7 @@ export function createWorkContinuityV2Store({
         legacy_work_id: work.legacy_work_id,
         legacy_status: String(legacy.status || "").toLowerCase(),
         blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
+        blocked_timestamp_repair: blockedTimestampRepair,
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
@@ -2648,6 +2703,7 @@ export function createWorkContinuityV2Store({
         legacy_status: String(legacy.status || "").toLowerCase(),
         closure_claimed: false,
         blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
+        blocked_timestamp_repair: blockedTimestampRepair,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         event_hash: event.event_hash,
