@@ -42,6 +42,8 @@ ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_agent_id v
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_session_fingerprint varchar(128);
 ALTER TABLE IF EXISTS tenant_work_native_verifier_evidence ADD COLUMN IF NOT EXISTS v2_task_id uuid;
 ALTER TABLE IF EXISTS tenant_work_native_verifier_evidence ADD COLUMN IF NOT EXISTS v2_task_digest char(64);
+ALTER TABLE IF EXISTS core_continuity_leases
+  ADD COLUMN IF NOT EXISTS nyra_read_binding_attested boolean NOT NULL DEFAULT false;
 ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate ADD COLUMN IF NOT EXISTS gate_source varchar(48)
   NOT NULL DEFAULT 'legacy_evidence_reconciliation';
 ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate
@@ -2470,7 +2472,7 @@ export function createWorkContinuityV2Store({
       const [participants, leases, branches] = await Promise.all([
         client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
-        client.query(`SELECT session_id,branch_id,purpose,status,expires_at FROM core_continuity_leases
+        client.query(`SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
         client.query(`SELECT branch_id FROM core_continuity_branches
           WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
@@ -2483,10 +2485,12 @@ export function createWorkContinuityV2Store({
       const hasOnlyReadLease = (sessionId) => {
         const sessionLeases = activeLeases.filter((row) => row.session_id === sessionId);
         return sessionLeases.length > 0 && sessionLeases.every((row) =>
-          row.branch_id == null && row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE);
+          row.branch_id == null && row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE &&
+            row.nyra_read_binding_attested === true);
       };
       const activeExecutionLease = activeLeases.some((row) =>
-        row.branch_id != null || row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE);
+        row.branch_id != null || row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE ||
+          row.nyra_read_binding_attested !== true);
       const activeExecutionParticipant = activeParticipants.some((row) =>
         row.branch_id != null || !hasOnlyReadLease(row.session_id));
       if (branches.rows.length || activeExecutionLease || activeExecutionParticipant) {
@@ -2499,7 +2503,8 @@ export function createWorkContinuityV2Store({
         participants: participants.rows
           .filter((row) => !hasOnlyReadLease(row.session_id))
           .map((row) => ({ ...row, active: row.status === "active" })),
-        leases: leases.rows.filter((row) => row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE) }, now());
+        leases: leases.rows.filter((row) => row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE ||
+          row.nyra_read_binding_attested !== true) }, now());
       if (stale.classification !== expectedClassification) {
         fail("historical_bridge_archive_classification_conflict");
       }

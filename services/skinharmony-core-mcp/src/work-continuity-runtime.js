@@ -2144,6 +2144,8 @@ CREATE TABLE IF NOT EXISTS core_continuity_leases (
   policy_authority_source varchar(80) NOT NULL DEFAULT 'legacy_work_lease_v1',
   policy_authority_binding_digest char(64),
   policy_session_fingerprint varchar(64),
+  nyra_read_binding_attested boolean NOT NULL DEFAULT false,
+  nyra_read_binding_attested_at timestamptz,
   PRIMARY KEY (tenant_id, work_id, lease_id),
   FOREIGN KEY (tenant_id, work_id, session_id)
     REFERENCES core_continuity_participants(tenant_id, work_id, session_id),
@@ -2158,6 +2160,10 @@ ALTER TABLE core_continuity_leases
   ADD COLUMN IF NOT EXISTS policy_authority_binding_digest char(64);
 ALTER TABLE core_continuity_leases
   ADD COLUMN IF NOT EXISTS policy_session_fingerprint varchar(64);
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS nyra_read_binding_attested boolean NOT NULL DEFAULT false;
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS nyra_read_binding_attested_at timestamptz;
 CREATE INDEX IF NOT EXISTS core_continuity_leases_active_idx
   ON core_continuity_leases (tenant_id, work_id, expires_at DESC) WHERE status='active';
 
@@ -4221,8 +4227,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const requiredPurpose = requiredSurface
       ? safeText(input.required_lease_purpose, 2_000)
       : null;
+    const requireServerOwnedReadBinding = input.require_server_owned_read_binding === true;
     if (requiredSurface && !requiredPurpose) {
       throw new Error("dtt_work_lease_selector_invalid");
+    }
+    if (requireServerOwnedReadBinding && !requiredSurface) {
+      throw new Error("dtt_work_read_binding_selector_invalid");
     }
     const result = await pool.query(`SELECT
         p.session_id,p.agent_id,p.client_type,p.expires_at AS participant_expires_at,
@@ -4252,6 +4262,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
               AND (other_surface.surface_kind<>$8 OR other_surface.surface_value<>$9)
           )
         ))
+        AND ($11::boolean=false OR l.nyra_read_binding_attested=true)
       ORDER BY l.expires_at,l.lease_id
       LIMIT 1`, [
       context.tenantId,
@@ -4264,6 +4275,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       requiredSurface?.kind || null,
       requiredSurface?.value || null,
       requiredPurpose,
+      requireServerOwnedReadBinding,
     ]);
     const row = result.rows[0];
     if (!row) throw new Error("dtt_work_active_lease_required");
@@ -4292,6 +4304,67 @@ export function createWorkContinuityRuntime(config, options = {}) {
       opaque_agent_id: String(presence.opaque_agent_id),
       actor_provenance: String(presence.actor_provenance),
       execution_authorized: false,
+    });
+  }
+
+  // Intentionally not exposed as a Gallery tool.  A public participant may
+  // choose any purpose text and component surface; only this server-owned
+  // transition can attest that the exact signed Nyra read binding was made.
+  async function attestNyraReadLease(identity, input = {}) {
+    await initialize();
+    const context = workContext(identity, input);
+    const binding = assertGalleryParticipantBinding(identity, input);
+    const leaseId = uuid(input.lease_id, "nyra_read_binding_lease_id");
+    const purpose = safeText(input.required_lease_purpose, 2_000);
+    const surface = input.required_lease_surface
+      ? normalizeSurfaces([input.required_lease_surface])[0]
+      : null;
+    if (!surface || !purpose) throw new Error("nyra_read_binding_attestation_invalid");
+    context.transportSessionFingerprint = binding.transportSessionFingerprint;
+    return transaction(async (client) => {
+      await lockGalleryWork(client, context);
+      const attested = await client.query(`UPDATE core_continuity_leases l
+        SET nyra_read_binding_attested=true,
+          nyra_read_binding_attested_at=coalesce(l.nyra_read_binding_attested_at,now())
+        WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.lease_id=$3
+          AND l.session_id=$4 AND l.branch_id IS NULL AND l.purpose=$5
+          AND l.status='active' AND l.expires_at>now()
+          AND EXISTS (
+            SELECT 1 FROM core_continuity_participants p
+            WHERE p.tenant_id=l.tenant_id AND p.work_id=l.work_id AND p.session_id=l.session_id
+              AND p.actor_subject=$6 AND p.agent_id=$7 AND p.client_type=$8
+              AND p.transport_session_fingerprint=$9 AND p.branch_id IS NULL
+              AND p.status='active' AND p.expires_at>now()
+          )
+          AND EXISTS (
+            SELECT 1 FROM core_continuity_lease_surfaces required_surface
+            WHERE required_surface.tenant_id=l.tenant_id AND required_surface.work_id=l.work_id
+              AND required_surface.lease_id=l.lease_id
+              AND required_surface.surface_kind=$10 AND required_surface.surface_value=$11
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM core_continuity_lease_surfaces other_surface
+            WHERE other_surface.tenant_id=l.tenant_id AND other_surface.work_id=l.work_id
+              AND other_surface.lease_id=l.lease_id
+              AND (other_surface.surface_kind<>$10 OR other_surface.surface_value<>$11)
+          )
+        RETURNING l.lease_id,l.nyra_read_binding_attested,l.nyra_read_binding_attested_at`, [
+        context.tenantId, context.workId, leaseId, binding.sessionId, purpose,
+        context.actorSubject, binding.agentId, binding.clientType,
+        binding.transportSessionFingerprint, surface.kind, surface.value,
+      ]);
+      if (!attested.rows[0]) throw new Error("nyra_read_binding_attestation_denied");
+      await appendEvent(client, context, "nyra_read_binding_attested", {
+        lease_id: leaseId,
+        surface_kind: surface.kind,
+        surface_value: surface.value,
+      });
+      return Object.freeze({
+        schema_version: "nyra_read_binding_attestation_v1",
+        work_id: context.workId,
+        lease_id: leaseId,
+        attested: true,
+      });
     });
   }
 
@@ -8549,6 +8622,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     galleryAuthorized,
     coordinationOverviewAuthorized,
     resolveDttWorkLeaseBinding,
+    attestNyraReadLease,
     rotateNyraReadParticipant,
     resolveGenericWorkCoreJoinLeaseBinding,
     join,

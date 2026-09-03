@@ -80,7 +80,7 @@ function v2Row(workId, status, projectId = "skinharmony-ai-backend") {
 
 class ReconciliationPool {
   constructor({ sourceStatus = "active", sourceV2Status = "ACTIVE", activePresence = false,
-    readOnlyPresence = false, activeBranch = false,
+    readOnlyPresence = false, spoofedReadOnlyPresence = false, activeBranch = false,
     successor = false, successorEvidence = false, sourceClosureEvidence = false } = {}) {
     this.legacy = new Map([[`tenant-a:${SOURCE}`, legacyRow(SOURCE, sourceStatus)]]);
     this.works = new Map([[`tenant-a:${SOURCE}`, v2Row(SOURCE, sourceV2Status)]]);
@@ -95,13 +95,15 @@ class ReconciliationPool {
     this.participants = activePresence
       ? [{ session_id: "active-work-session", branch_id: null, status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
       : [];
-    if (readOnlyPresence) {
+    if (readOnlyPresence || spoofedReadOnlyPresence) {
       this.participants.push({ session_id: "nyra-read-session", branch_id: null,
         status: "active", expires_at: "2026-08-12T00:00:00.000Z" });
     }
-    this.leases = readOnlyPresence
+    this.leases = (readOnlyPresence || spoofedReadOnlyPresence)
       ? [{ session_id: "nyra-read-session", branch_id: null,
-        purpose: "Nyra governed read-only Work context", status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
+        purpose: "Nyra governed read-only Work context",
+        nyra_read_binding_attested: readOnlyPresence,
+        status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
       : [];
     this.branches = activeBranch ? [{ branch_id: "33333333-3333-4333-8333-333333333333" }] : [];
     this.v2Events = [];
@@ -162,7 +164,7 @@ class ReconciliationPool {
         q.startsWith("SELECT status,expires_at FROM core_continuity_participants")) {
       return { rows: params[1] === SOURCE ? this.participants.map((row) => ({ ...row })) : [] };
     }
-    if (q.startsWith("SELECT session_id,branch_id,purpose,status,expires_at FROM core_continuity_leases") ||
+    if (q.startsWith("SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases") ||
         q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) {
       return { rows: params[1] === SOURCE ? this.leases.map((row) => ({ ...row })) : [] };
     }
@@ -325,6 +327,11 @@ test("historical bridged archive retains the legacy record, requires stale inact
   readOnlyPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
   const readOnlyArchive = await store(readOnlyPool).archiveHistoricalBridgedWork(identity(), args);
   assert.equal(readOnlyArchive.work.status, "ARCHIVED");
+
+  const spoofedReadOnlyPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", spoofedReadOnlyPresence: true });
+  spoofedReadOnlyPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  await assert.rejects(store(spoofedReadOnlyPool).archiveHistoricalBridgedWork(identity(), args),
+    /historical_bridge_archive_active_work_denied/);
 
   const branchPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", activeBranch: true });
   branchPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";

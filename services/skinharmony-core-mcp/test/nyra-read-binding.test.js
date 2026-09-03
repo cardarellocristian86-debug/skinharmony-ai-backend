@@ -46,6 +46,7 @@ test("an active exact binding is reused without coordination writes", async () =
       resolveDttWorkLeaseBinding: async (_identity, args) => (
         calls.push(["resolve", args]), lease()
       ),
+      attestNyraReadLease: async () => calls.push("attest"),
       rotateNyraReadParticipant: async () => calls.push("rotate"),
       join: async () => calls.push("join"),
       acquireLease: async () => calls.push("acquire"),
@@ -64,6 +65,7 @@ test("an active exact binding is reused without coordination writes", async () =
     "Nyra governed read-only Work context");
   assert.deepEqual(calls[1][1].required_lease_surface.kind, "component");
   assert.match(calls[1][1].required_lease_surface.value, /^nyra\/read\/[a-f0-9]{64}$/);
+  assert.equal(calls[1][1].require_server_owned_read_binding, true);
   assert.equal(calls.length, 2);
 });
 
@@ -93,6 +95,7 @@ test("preflight creates one server-derived read-only binding for an exact Work",
       resolved = true;
       return { acquired: true, lease: { lease_id: lease().lease_id } };
     },
+    attestNyraReadLease: async (_identity, args) => calls.push(["attest", args]),
   };
   const result = await ensureNyraReadBinding({
     runtime,
@@ -105,6 +108,7 @@ test("preflight creates one server-derived read-only binding for an exact Work",
   assert.equal(result.execution_authorized, false);
   const join = calls.find((call) => Array.isArray(call) && call[0] === "join")[1];
   const acquire = calls.find((call) => Array.isArray(call) && call[0] === "acquire")[1];
+  const attest = calls.find((call) => Array.isArray(call) && call[0] === "attest")[1];
   assert.equal(join.metadata.mode, "read_only");
   assert.equal(join.metadata.logical_session_fingerprint,
     identity.agentPresence.session_fingerprint);
@@ -114,6 +118,9 @@ test("preflight creates one server-derived read-only binding for an exact Work",
   assert.match(acquire.surfaces[0].value, /^nyra\/read\/[a-f0-9]{64}$/);
   assert.equal(Object.hasOwn(acquire, "authority_scope"), false);
   assert.equal(Object.hasOwn(acquire, "owner_confirmed"), false);
+  assert.equal(attest.lease_id, lease().lease_id);
+  assert.equal(attest.required_lease_purpose, "Nyra governed read-only Work context");
+  assert.deepEqual(attest.required_lease_surface, acquire.surfaces[0]);
 });
 
 test("a near-expiry read binding renews participant and lease without a new join", async () => {
@@ -133,6 +140,7 @@ test("a near-expiry read binding renews participant and lease without a new join
       rotateNyraReadParticipant: async () => calls.push("rotate"),
       join: async () => calls.push("join"),
       acquireLease: async () => calls.push("acquire"),
+      attestNyraReadLease: async () => calls.push("attest"),
       heartbeat: async (_identity, args) => calls.push(["heartbeat", args]),
       renewLease: async (_identity, args) => calls.push(["renew", args]),
     },
@@ -173,6 +181,7 @@ test("an unrelated operational lease is never renewed as Nyra's read lease", asy
         resolved = true;
         return { acquired: true, lease: { lease_id: lease().lease_id } };
       },
+      attestNyraReadLease: async () => calls.push("attest"),
     },
     identity,
     continuity: { work_id: WORK_ID },
@@ -211,6 +220,7 @@ test("a verified transport rotation expires stale leases before creating a new r
         resolved = true;
         return { acquired: true, lease: { lease_id: lease().lease_id } };
       },
+      attestNyraReadLease: async () => calls.push("attest"),
     },
     identity,
     continuity: { work_id: WORK_ID },
