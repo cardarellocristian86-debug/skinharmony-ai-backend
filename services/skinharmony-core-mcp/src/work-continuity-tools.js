@@ -378,7 +378,7 @@ export const WORK_CONTINUITY_TOOLS = [
     { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_historical_archive_v3", "Archive an uncloseable historical bridged Work",
     "Owner-confirm and archive one stale V2 Work linked to legacy continuity without claiming it completed or changing the legacy record. An explicit owner may revoke only pre-attestation read-only bindings; branches and execution-capable leases always block.",
-    object({ work_id: uuid, expected_classification: { type: "string", enum: ["STALE", "ABANDONED"] },
+    object({ work_id: uuid, expected_classification: { type: "string", enum: ["STALE", "ABANDONED", "BLOCKED_VALID"] },
       reason: text(1_000),
       revoke_unattested_read_only_bindings: { type: "boolean" },
       idempotency_key: coordinationIdempotencyKey },

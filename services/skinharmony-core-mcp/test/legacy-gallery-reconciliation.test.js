@@ -306,7 +306,7 @@ test("historical bridged archive is owner-confirmed and never claims a closure",
   assert.equal(tool.annotations.readOnlyHint, false);
   assert.equal(tool._meta["skinharmony/ownerConfirmationRequired"], true);
   assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
-  assert.deepEqual(tool.inputSchema.properties.expected_classification.enum, ["STALE", "ABANDONED"]);
+  assert.deepEqual(tool.inputSchema.properties.expected_classification.enum, ["STALE", "ABANDONED", "BLOCKED_VALID"]);
   assert.equal(tool.inputSchema.properties.revoke_unattested_read_only_bindings.type, "boolean");
 });
 
@@ -376,6 +376,18 @@ test("historical bridged archive retains the legacy record, requires stale inact
   branchPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
   await assert.rejects(store(branchPool).archiveHistoricalBridgedWork(identity(), args),
     /historical_bridge_archive_active_work_denied/);
+
+  const blockedValidPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
+  blockedValidPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  blockedValidPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+  const blockedValidArchive = await store(blockedValidPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    idempotency_key: "archive-historical-bridge-blocked-valid-0001",
+  });
+  assert.equal(blockedValidArchive.work.status, "ARCHIVED");
+  assert.equal(blockedValidArchive.classification, "BLOCKED_VALID");
+  assert.equal(blockedValidArchive.closure_claimed, false);
 });
 
 test("stale cancellation is tenant-scoped, dual-audited, archived and idempotent without completion", async () => {

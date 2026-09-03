@@ -2417,7 +2417,7 @@ export function createWorkContinuityV2Store({
     }
     const workId = uuid(input.work_id);
     const expectedClassification = String(input.expected_classification || "").trim().toUpperCase();
-    if (!['STALE', 'ABANDONED'].includes(expectedClassification)) {
+    if (!['STALE', 'ABANDONED', 'BLOCKED_VALID'].includes(expectedClassification)) {
       fail("historical_bridge_archive_expected_classification_invalid");
     }
     const reason = text(input.reason, "historical_bridge_archive_reason_required", 1_000);
