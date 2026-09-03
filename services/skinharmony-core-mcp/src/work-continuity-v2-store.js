@@ -17,6 +17,13 @@ import {
 } from "./work-continuity-runtime.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
+// This is a diagnostic-presence lease only.  It is created by Nyra before an
+// exact Work read and deliberately grants no execution authority.  Historical
+// bridge archival must not mistake that server-created read context for live
+// Work execution, while still refusing every real lease, branch or unleased
+// active participant.
+const NYRA_READ_ONLY_LEASE_PURPOSE = "Nyra governed read-only Work context";
+
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
@@ -2460,21 +2467,39 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, work.legacy_work_id]);
       const legacy = legacyResult.rows[0];
       if (!legacy) fail("historical_bridge_archive_legacy_work_not_found");
-      const [participants, leases] = await Promise.all([
-        client.query(`SELECT status,expires_at FROM core_continuity_participants
+      const [participants, leases, branches] = await Promise.all([
+        client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
-        client.query(`SELECT status,expires_at FROM core_continuity_leases
+        client.query(`SELECT session_id,branch_id,purpose,status,expires_at FROM core_continuity_leases
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
+        client.query(`SELECT branch_id FROM core_continuity_branches
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
       ]);
       const currentTime = now().getTime();
-      const activeParticipant = participants.rows.some((row) => row.status === "active" &&
+      const activeParticipants = participants.rows.filter((row) => row.status === "active" &&
         new Date(row.expires_at).getTime() > currentTime);
-      const activeLease = leases.rows.some((row) => row.status === "active" &&
+      const activeLeases = leases.rows.filter((row) => row.status === "active" &&
         new Date(row.expires_at).getTime() > currentTime);
-      if (activeParticipant || activeLease) fail("historical_bridge_archive_active_work_denied");
+      const hasOnlyReadLease = (sessionId) => {
+        const sessionLeases = activeLeases.filter((row) => row.session_id === sessionId);
+        return sessionLeases.length > 0 && sessionLeases.every((row) =>
+          row.branch_id == null && row.purpose === NYRA_READ_ONLY_LEASE_PURPOSE);
+      };
+      const activeExecutionLease = activeLeases.some((row) =>
+        row.branch_id != null || row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE);
+      const activeExecutionParticipant = activeParticipants.some((row) =>
+        row.branch_id != null || !hasOnlyReadLease(row.session_id));
+      if (branches.rows.length || activeExecutionLease || activeExecutionParticipant) {
+        fail("historical_bridge_archive_active_work_denied");
+      }
+      // Read contexts do not revive a historical Work.  Keep their audit rows
+      // in the coordination ledger, but omit them from staleness evaluation;
+      // all execution-capable participation remains in the calculation.
       const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
-        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
-        leases: leases.rows }, now());
+        participants: participants.rows
+          .filter((row) => !hasOnlyReadLease(row.session_id))
+          .map((row) => ({ ...row, active: row.status === "active" })),
+        leases: leases.rows.filter((row) => row.purpose !== NYRA_READ_ONLY_LEASE_PURPOSE) }, now());
       if (stale.classification !== expectedClassification) {
         fail("historical_bridge_archive_classification_conflict");
       }
