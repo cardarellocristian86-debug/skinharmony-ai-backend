@@ -466,9 +466,16 @@ export function createNyraGovernedContinueHandler({
       // for the exact server-selected logical presence before Generic Core
       // Join evaluates it. This grants no execution authority and leaves every
       // owner, Work ACL, Core Join and closure gate inside the finalizer intact.
-      await ensureFinalizeWorkBinding({
-        work_id: String(args.work_id).toLowerCase(),
-      }, identity);
+      try {
+        await ensureFinalizeWorkBinding({
+          work_id: String(args.work_id).toLowerCase(),
+        }, identity);
+      } catch (error) {
+        // A terminal Work cannot acquire a new read lease by design. Let the
+        // terminal replay reach its own owner/ACL/closure verification path;
+        // every other binding failure remains a hard stop.
+        if (error?.message !== "continuity_work_terminal") throw error;
+      }
       return finalizeVerifiedWork({
         work_id: String(args.work_id).toLowerCase(),
         idempotency_key: String(args.idempotency_key).trim(),

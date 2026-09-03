@@ -177,6 +177,43 @@ test("fails closed before verified finalization when logical lease binding is un
   assert.equal(finalized, false);
 });
 
+test("replays a terminal verified Work when its read lease correctly rejects a new binding", async () => {
+  const sequence = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: {
+      claim: async () => { throw new Error("continuation store must not be used"); },
+      complete: unused,
+      readCompletedOperation: unused,
+    },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => {
+      sequence.push("binding");
+      throw new Error("continuity_work_terminal");
+    },
+    finalizeVerifiedWork: async () => {
+      sequence.push("finalize");
+      return { structuredContent: { ok: true, result: { terminal_replay: true } }, content: [] };
+    },
+  });
+
+  const result = await handler({
+    operation: "finalize_verified_work",
+    work_id: WORK_ID,
+    idempotency_key: "replay-terminal-verified-work",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-terminal-replay",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.terminal_replay, true);
+  assert.deepEqual(sequence, ["binding", "finalize"]);
+});
+
 function identity(overrides = {}) {
   return {
     kind: "oauth",
