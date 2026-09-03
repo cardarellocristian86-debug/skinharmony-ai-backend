@@ -633,6 +633,7 @@ test("continuity schema is persistent, tenant-scoped and append-only", () => {
   assert.equal(runtime.remediationStore.backend, "tenant_work_gallery_postgresql");
   assert.ok(WORK_EVENT_TYPES.has("drift_detected"));
   assert.ok(WORK_EVENT_TYPES.has("memory_verified"));
+  assert.ok(WORK_EVENT_TYPES.has("nyra_read_binding_attested"));
 });
 
 test("coordination overview deduplicates one physical session and derives working only from an active lease", async () => {

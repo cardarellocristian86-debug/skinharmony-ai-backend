@@ -29,6 +29,9 @@ export const WORK_EVENT_TYPES = new Set([
   "synthetic_incident_reconciled", "terminal_coordination_reconciled",
   "legacy_work_reconciled_closed",
   "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
+  // Server-only audit event emitted after an exact signed Nyra read binding
+  // is made non-operational for historical-archive classification.
+  "nyra_read_binding_attested",
 ]);
 
 const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
