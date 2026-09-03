@@ -852,7 +852,7 @@ const nyraPrecommitGateBinding = object({
 // the compact ChatGPT connector catalog over its import budget.
 const nyraPrecommitTicketGate = {
   type: "object",
-  maxProperties: 21,
+  maxProperties: 22,
 };
 const nyraDirectiveBinding = object({
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },

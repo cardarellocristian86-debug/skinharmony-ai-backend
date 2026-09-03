@@ -400,6 +400,8 @@ function nativePrecommitTicketGateFixture(overrides = {}) {
     workspace_digest: "4".repeat(64),
     supersession_digest: "5".repeat(64),
     reconciliation_digest: "6".repeat(64),
+    v2_scope_snapshot_digest: "8".repeat(64),
+    v2_scope_tasks: [],
     legacy_evidence_ids: [],
     replacement_evidence_ids: [],
     fulfilled: false,

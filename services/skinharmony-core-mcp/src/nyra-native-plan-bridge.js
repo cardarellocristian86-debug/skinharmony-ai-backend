@@ -6,6 +6,7 @@ const PROJECT = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/;
 const REPOSITORY = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 const BRANCH = /^(?!.*\.\.)(?!\/)(?!.*\/$)[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/;
 const CHECK = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,159}$/;
+const RELEASE_BINDING_RESOLUTION_SCHEMA_VERSION = "nyra_project_release_binding_resolution_v1";
 
 function text(value, maximum = 8_000) {
   return String(value || "").replaceAll("\u0000", " ").trim().slice(0, maximum);
@@ -45,10 +46,51 @@ export function parseNyraProjectReleaseBindings(value) {
   });
 }
 
-export function resolveNyraProjectReleaseBinding(bindings, { tenantId, projectId } = {}) {
-  return (Array.isArray(bindings) ? bindings : []).find((binding) =>
-    binding.tenant_id === tenantId && binding.project_id === projectId,
-  ) || null;
+function releaseBindingResolution(binding, { tenantId, projectId, mode }) {
+  const material = Object.freeze({
+    schema_version: RELEASE_BINDING_RESOLUTION_SCHEMA_VERSION,
+    mode,
+    tenant_id: tenantId,
+    requested_project_id: projectId,
+    resolved_project_id: binding.project_id,
+    binding_digest: digest(binding),
+  });
+  return Object.freeze({
+    ...material,
+    binding,
+    resolution_digest: digest(material),
+  });
+}
+
+export function resolveNyraProjectReleaseBindingResolution(bindings, { tenantId, projectId } = {}) {
+  const requestedTenantId = typeof tenantId === "string" ? tenantId.trim() : "";
+  const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
+  if (!TENANT.test(requestedTenantId) || !PROJECT.test(requestedProjectId)) return null;
+
+  // Never use a global singleton as a fallback: repository scope may only be
+  // inherited from the authenticated tenant. An exact project binding remains
+  // authoritative even when that tenant owns several release bindings.
+  const tenantBindings = (Array.isArray(bindings) ? bindings : []).filter((binding) =>
+    binding?.tenant_id === requestedTenantId,
+  );
+  const exact = tenantBindings.find((binding) => binding?.project_id === requestedProjectId);
+  if (exact) {
+    return releaseBindingResolution(exact, {
+      tenantId: requestedTenantId,
+      projectId: requestedProjectId,
+      mode: "exact_project",
+    });
+  }
+  if (tenantBindings.length !== 1) return null;
+  return releaseBindingResolution(tenantBindings[0], {
+    tenantId: requestedTenantId,
+    projectId: requestedProjectId,
+    mode: "tenant_singleton_fallback",
+  });
+}
+
+export function resolveNyraProjectReleaseBinding(bindings, scope = {}) {
+  return resolveNyraProjectReleaseBindingResolution(bindings, scope)?.binding || null;
 }
 
 export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, binding } = {}) {
@@ -81,8 +123,8 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
     "Independently verify the builder evidence, required checks, changed scope, and rollback readiness.",
     "Run in a distinct native agent session; never reuse the builder identity or session.",
     precommit
-      ? "For this precommit phase, submit matching precommit evidence and acceptance evidence for every server-issued criterion; live verification is deferred to release."
-      : "For this release phase, submit acceptance evidence and live verification after the deployment readback.",
+      ? "For this precommit phase, submit matching precommit evidence, attest every server-issued constraint, and attest only objective or acceptance criteria already genuinely provable; leave future-only objective or acceptance criteria deferred without inventing evidence. For a V2-bound task, include the exact server-issued v2-task:<v2_task_digest> reference after reading its immutable task binding. Live verification is deferred to release."
+      : "For this release phase, submit acceptance evidence for every server-issued criterion and live verification after the deployment readback.",
     "Do not edit, merge, deploy, or authorize external actions. Report evidence and any blocking discrepancy.",
   ].join(" ");
   return {

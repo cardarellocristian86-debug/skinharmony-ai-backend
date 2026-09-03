@@ -966,8 +966,8 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_native_agents")) {
       const [tenantId, workId, planId, taskId, agentId, hostType, hostTaskId,
-        taskKind, taskDigest, v2TaskId, coordinatorFingerprint, assignmentCapabilityDigest,
-        boundBy, leaseExpiresAt] = parameters;
+        taskKind, taskDigest, v2TaskId, v2TaskDigest, coordinatorFingerprint,
+        assignmentCapabilityDigest, boundBy, leaseExpiresAt] = parameters;
       this.nativeAgents.set(key(tenantId, planId, taskId), {
         tenant_id: tenantId,
         work_id: workId,
@@ -979,6 +979,7 @@ class ContinuityPool {
         task_kind: taskKind,
         task_digest: taskDigest,
         v2_task_id: v2TaskId,
+        v2_task_digest: v2TaskDigest,
         coordinator_session_fingerprint: coordinatorFingerprint,
         assignment_capability_digest: assignmentCapabilityDigest,
         native_session_fingerprint: null,
@@ -991,7 +992,7 @@ class ContinuityPool {
       });
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,")) {
+    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.host_type,a.host_task_id,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
         candidate.tenant_id === tenantId &&
@@ -1004,6 +1005,7 @@ class ContinuityPool {
           task_id: row.task_id,
           task_digest: row.task_digest,
           v2_task_id: row.v2_task_id,
+          v2_task_digest: row.v2_task_digest,
           host_type: row.host_type,
           host_task_id: row.host_task_id,
           coordinator_session_fingerprint: row.coordinator_session_fingerprint,
@@ -1015,7 +1017,7 @@ class ContinuityPool {
         rowCount: row && plan ? 1 : 0,
       };
     }
-    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,")) {
+    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
         candidate.tenant_id === tenantId &&
@@ -1029,6 +1031,7 @@ class ContinuityPool {
           task_kind: row.task_kind,
           task_digest: row.task_digest,
           v2_task_id: row.v2_task_id,
+          v2_task_digest: row.v2_task_digest,
           plan: plan.plan,
           plan_digest: plan.plan_digest,
           plan_status: plan.status,
@@ -3545,6 +3548,7 @@ test("precommit-native reports agree on one server-digested workspace before a c
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "precommit-report-session",
+    constraints: [],
   }, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
@@ -3635,11 +3639,6 @@ test("precommit-native reports agree on one server-digested workspace before a c
       transport_bound: true,
     },
   };
-  const acceptanceEvidence = planned.plan.acceptance_contract.criteria.map((criterion) => ({
-    criterion_digest: criterion.criterion_digest,
-    passed: true,
-    evidence_refs: [`verified:${criterion.criterion_id}`],
-  }));
   const verifierInput = {
     work_id: work.work_id,
     plan_id: planId,
@@ -3654,9 +3653,17 @@ test("precommit-native reports agree on one server-digested workspace before a c
       verifies_task_ids: ["build"],
       tests: [{ name: "independent node --test", passed: true }],
       evidence_refs: ["review:tracked-diff"],
-      acceptance_evidence: acceptanceEvidence,
+      acceptance_evidence: [],
     },
   };
+  await assert.rejects(runtime.reportNativeAgent(verifierIdentity, {
+    ...verifierInput,
+    report: {
+      ...verifierInput.report,
+      commit_sha: "c".repeat(40),
+      precommit_evidence: null,
+    },
+  }), /native_agent_acceptance_evidence_invalid/);
   await assert.rejects(runtime.reportNativeAgent(verifierIdentity, {
     ...verifierInput,
     report: {

@@ -314,6 +314,8 @@ function nativePrecommitGate(overrides = {}) {
     workspace_digest: "f".repeat(64),
     supersession_digest: "1".repeat(64),
     reconciliation_digest: "2".repeat(64),
+    v2_scope_snapshot_digest: "4".repeat(64),
+    v2_scope_tasks: [],
     legacy_evidence_ids: [],
     replacement_evidence_ids: [],
     fulfilled: false,

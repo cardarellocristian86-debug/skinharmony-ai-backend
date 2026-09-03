@@ -10,6 +10,11 @@ import {
   deriveProgress,
   resolveWorkRequest,
 } from "./work-continuity-v2.js";
+import {
+  buildNativeV2TaskBinding,
+  evaluateTaskScopedNativeVerifierEvidence,
+  verifiedNativePrecommitWorkspaceDigest,
+} from "./work-continuity-runtime.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 
 const ADDITIVE_SCHEMA_SQL = `
@@ -24,14 +29,24 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_session_fingerprint 
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_version varchar(64) NOT NULL DEFAULT 'work_priority_v1';
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_context jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL DEFAULT true;
+ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 1;
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_agent_id varchar(128);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_session_fingerprint varchar(128);
 ALTER TABLE IF EXISTS tenant_work_native_verifier_evidence ADD COLUMN IF NOT EXISTS v2_task_id uuid;
+ALTER TABLE IF EXISTS tenant_work_native_verifier_evidence ADD COLUMN IF NOT EXISTS v2_task_digest char(64);
 ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate ADD COLUMN IF NOT EXISTS gate_source varchar(48)
   NOT NULL DEFAULT 'legacy_evidence_reconciliation';
+ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate
+  ADD COLUMN IF NOT EXISTS v2_scope_snapshot_digest char(64);
+ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate
+  ADD COLUMN IF NOT EXISTS v2_scope_tasks jsonb;
 ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate_supersession ADD COLUMN IF NOT EXISTS gate_source varchar(48)
   NOT NULL DEFAULT 'legacy_evidence_reconciliation';
+ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate_supersession
+  ADD COLUMN IF NOT EXISTS v2_scope_snapshot_digest char(64);
+ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate_supersession
+  ADD COLUMN IF NOT EXISTS v2_scope_tasks jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_work_legacy_identity_idx
   ON tenant_work (tenant_id, legacy_work_id) WHERE legacy_work_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS tenant_work_core_join (
@@ -158,6 +173,8 @@ INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260901_native_precommit_ticket_gate_v2') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260901_precommit_ticket_gate_claim_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260903_native_v2_task_revision_v1') ON CONFLICT DO NOTHING;
 `;
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -248,11 +265,20 @@ function reportHasPassingTests(report) {
     report.tests.every((item) => item?.passed === true);
 }
 
-function reportHasProvenVerifierEvidence(report) {
-  return Array.isArray(report?.evidence_refs) && report.evidence_refs.length > 0 &&
-    Array.isArray(report?.acceptance_evidence) && report.acceptance_evidence.length > 0 &&
-    report.acceptance_evidence.every((item) => item?.passed === true &&
+function reportHasProvenVerifierEvidence(report, {
+  matchingPrecommitEvidence = false,
+  matchingV2TaskBinding = false,
+} = {}) {
+  const acceptanceEvidence = Array.isArray(report?.acceptance_evidence)
+    ? report.acceptance_evidence
+    : [];
+  const acceptanceProven = acceptanceEvidence.length > 0 &&
+    acceptanceEvidence.every((item) => item?.passed === true &&
       Array.isArray(item?.evidence_refs) && item.evidence_refs.length > 0);
+  const precommitProven = acceptanceEvidence.length === 0 &&
+    matchingPrecommitEvidence === true && matchingV2TaskBinding === true;
+  return Array.isArray(report?.evidence_refs) && report.evidence_refs.length > 0 &&
+    (acceptanceProven || precommitProven);
 }
 
 function plainRecord(value) {
@@ -1165,6 +1191,21 @@ function independentlyVerifiedGenericEvidence(item, work = {}) {
   );
 }
 
+function authoritativeNativeReleaseEvidence(item, work = {}) {
+  return Boolean(
+    item?.kind === "owner_manual_merge_release" &&
+    independentlyVerifiedGenericEvidence(item, work) &&
+    item?.metadata?.schema_version ===
+      "tenant_work_owner_manual_merge_release_evidence_v1" &&
+    item?.metadata?.tenant_id === work?.tenant_id &&
+    item?.metadata?.work_id === work?.work_id &&
+    item?.metadata?.note === "owner_manual_merge" &&
+    item?.metadata?.provider_execution === false &&
+    item?.verified_by_agent_id === "universal_core_owner_manual_merge_release" &&
+    item?.digest === objectDigest(item.metadata)
+  );
+}
+
 export function deriveGenericClosureReadiness(state = {}) {
   const work = plainRecord(state.work) ? state.work : {};
   const tasks = Array.isArray(state.tasks)
@@ -1180,12 +1221,21 @@ export function deriveGenericClosureReadiness(state = {}) {
   const requiredTasksComplete = tasks.length > 0 && completedTasks.length === tasks.length;
   const independentVerificationPersisted = evidence.length > 0 &&
     independentlyVerifiedEvidence.length === evidence.length;
+  // This evidence kind is intrinsically task-scoped.  Only the separate,
+  // server-verified full-release path may add Work-wide closure authority.
+  const nativeTaskEvidencePresent = evidence.some((item) =>
+    item?.kind === "native_verifier_terminal_report");
+  const nativeReleaseAuthorityPersisted = evidence.some((item) =>
+    authoritativeNativeReleaseEvidence(item, work));
+  const nativeTaskEvidenceOnly = nativeTaskEvidencePresent &&
+    !nativeReleaseAuthorityPersisted;
   const coreJoinPersisted = Boolean(state.join);
   const missing = [];
   if (!tasks.length) missing.push("required_tasks_missing");
   else if (!requiredTasksComplete) missing.push("required_tasks_incomplete");
   if (!evidence.length) missing.push("required_evidence_missing");
   else if (!independentVerificationPersisted) missing.push("independent_verification_missing");
+  if (nativeTaskEvidenceOnly) missing.push("native_closure_required");
   if (!coreJoinPersisted) missing.push("core_join_missing");
   return Object.freeze({
     ready: missing.length === 0,
@@ -1197,6 +1247,8 @@ export function deriveGenericClosureReadiness(state = {}) {
     completed_required_task_count: completedTasks.length,
     required_evidence_count: evidence.length,
     independently_verified_evidence_count: independentlyVerifiedEvidence.length,
+    native_release_authority_persisted: nativeReleaseAuthorityPersisted,
+    native_task_evidence_only: nativeTaskEvidenceOnly,
     missing: Object.freeze(missing),
   });
 }
@@ -1798,9 +1850,14 @@ export function createWorkContinuityV2Store({
     if (!isAdmin(actor)) fail("legacy_bridge_owner_required");
     const workId = uuid(work_id);
     return transaction(async (client) => {
-      const work = await loadWork(client, actor, workId, true);
-      assertPermission(canAdminister, work, actor);
-      if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
+      // Cross-fabric transactions always acquire Core before the V2 Work row.
+      // Read the candidate first without a lock, then revalidate it after the
+      // Core row has been locked or created in this same transaction.
+      const observedWork = await loadWork(client, actor, workId, false);
+      assertPermission(canAdminister, observedWork, actor);
+      if (observedWork.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
+      const observedBridgeInput = legacyBridgeInput(observedWork);
+      const observedBridgeDigest = objectDigest(observedBridgeInput);
       const existing = await client.query(`SELECT w.project_id,w.status,a.anchor,a.intent_digest
         FROM core_continuity_works w
         LEFT JOIN core_continuity_intent_anchors a
@@ -1809,6 +1866,9 @@ export function createWorkContinuityV2Store({
         FOR UPDATE OF w`, [actor.tenant_id, workId]);
       const legacy = existing.rows[0];
       if (legacy) {
+        const work = await loadWork(client, actor, workId, true);
+        assertPermission(canAdminister, work, actor);
+        if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
         if (legacy.project_id !== work.project_id || !plainRecord(legacy.anchor) ||
             legacy.anchor.schema_version !== "intent_anchor_v1" || legacy.anchor.immutable !== true ||
             !HASH.test(String(legacy.intent_digest || "")) ||
@@ -1826,7 +1886,7 @@ export function createWorkContinuityV2Store({
           execution_authorized: false,
         };
       }
-      const reconstructed = await legacyRuntime.ensureWithClient(client, identity, legacyBridgeInput(work), {
+      const reconstructed = await legacyRuntime.ensureWithClient(client, identity, observedBridgeInput, {
         creationAuthorized: true,
       });
       const projectedEvent = reconstructed.intent_event || reconstructed.event;
@@ -1834,6 +1894,12 @@ export function createWorkContinuityV2Store({
           !Number.isSafeInteger(Number(projectedEvent?.sequence_number)) ||
           Number(projectedEvent.sequence_number) < 1 || !HASH.test(String(projectedEvent.event_hash || ""))) {
         fail("legacy_bridge_reconstruction_invalid");
+      }
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id !== workId ||
+          objectDigest(legacyBridgeInput(work)) !== observedBridgeDigest) {
+        fail("legacy_bridge_source_changed");
       }
       const updated = await client.query(`UPDATE tenant_work SET
           legacy_projection_sequence=$3,legacy_projection_event_hash=$4,legacy_projection_updated_at=now(),updated_at=now()
@@ -2840,13 +2906,90 @@ export function createWorkContinuityV2Store({
         VALUES ($1,$2,$3,$4,$5,$6,$7,false,CASE WHEN $6::varchar='completed' THEN now() ELSE NULL END)
         ON CONFLICT (tenant_id,task_id) DO UPDATE
         SET title=EXCLUDED.title,weight=EXCLUDED.weight,status=EXCLUDED.status,
-          required=EXCLUDED.required,completed_at=EXCLUDED.completed_at
+          required=EXCLUDED.required,acceptance_verified=false,
+          completed_at=EXCLUDED.completed_at
         WHERE tenant_work_task.work_id=EXCLUDED.work_id
         RETURNING work_id`,
       [actor.tenant_id, taskId, workId, task.title, task.weight, task.status, task.required]);
       if (persisted.rows[0]?.work_id !== workId) fail("tenant_work_task_binding_conflict");
       return refreshDerivedWithClient(client, actor, workId);
     });
+  }
+  async function resolveNativeTaskBindingWithClient(client, source = {}) {
+    if (!client || typeof client.query !== "function") {
+      fail("native_v2_task_binding_transaction_required");
+    }
+    if (source.server_owned !== true) fail("native_v2_task_binding_server_owned_required");
+    const tenantId = text(source.tenant_id, "native_v2_task_binding_tenant_invalid", 64);
+    const workId = uuid(source.work_id, "native_v2_task_binding_work_invalid");
+    const closureRevalidation = source.closure_revalidation === true;
+    const taskId = source.task_id === undefined || source.task_id === null
+      ? null
+      : uuid(source.task_id, "native_v2_task_binding_task_invalid");
+    if (!closureRevalidation && !taskId) fail("native_v2_task_binding_task_invalid");
+    let linkedWork = null;
+    if (closureRevalidation) {
+      const linked = await client.query(`SELECT work_id,work_type FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2 FOR UPDATE`,
+      [tenantId, workId]);
+      if (!linked.rows[0]) fail("native_v2_task_binding_work_invalid");
+      linkedWork = linked.rows[0];
+    }
+    const result = closureRevalidation
+      ? await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified,revision
+          FROM tenant_work_task
+          WHERE tenant_id=$1 AND work_id=$2
+          ORDER BY task_id FOR UPDATE`, [tenantId, workId])
+      : await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified,revision
+          FROM tenant_work_task
+          WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+        [tenantId, workId, taskId]);
+    const task = closureRevalidation && taskId
+      ? result.rows.find((candidate) =>
+          String(candidate.task_id).toLowerCase() === taskId.toLowerCase())
+      : closureRevalidation ? null : result.rows[0];
+    if ((!closureRevalidation || taskId) &&
+        (!task || !["planned", "completed"].includes(task.status))) {
+      fail("native_v2_task_binding_not_found");
+    }
+    const binding = task ? {
+        ...buildNativeV2TaskBinding({
+          tenant_id: tenantId,
+          work_id: workId,
+          task_id: task.task_id,
+          title: task.title,
+          weight: Number(task.weight),
+          required: task.required,
+        }),
+        status: task.status,
+        acceptance_verified: task.acceptance_verified === true,
+        revision: Number(task.revision),
+      } : {
+        schema_version: "native_v2_work_task_bindings_v1",
+        tenant_id: tenantId,
+        work_id: workId.toLowerCase(),
+      };
+    if (closureRevalidation) {
+      binding.work_type = String(linkedWork.work_type || "");
+      binding.v2_task_governed = !(
+        binding.work_type === "legacy" && result.rows.length === 0
+      );
+      binding.work_task_bindings = Object.freeze(result.rows.map((candidate) =>
+        Object.freeze({
+          ...buildNativeV2TaskBinding({
+            tenant_id: tenantId,
+            work_id: workId,
+            task_id: candidate.task_id,
+            title: candidate.title,
+            weight: Number(candidate.weight),
+            required: candidate.required,
+          }),
+          status: candidate.status,
+          acceptance_verified: candidate.acceptance_verified === true,
+          revision: Number(candidate.revision),
+        })));
+    }
+    return Object.freeze(binding);
   }
   async function recordEvidence(identity, input = {}) {
     await initialize();
@@ -3234,11 +3377,17 @@ export function createWorkContinuityV2Store({
     const reportDigest = digest(source.report_digest, "native_verifier_evidence_report_digest_invalid");
     const receiptId = uuid(source.receipt_id, "native_verifier_evidence_receipt_invalid");
     const receiptDigest = digest(source.receipt_digest, "native_verifier_evidence_receipt_digest_invalid");
+    const taskEvaluationDigest = digest(
+      source.task_evaluation_digest,
+      "native_verifier_evidence_evaluation_digest_invalid",
+    );
+    const legacyReplayOnlyRequested = source.legacy_replay_only === true;
     if (!/^[a-f0-9]{16,64}$/.test(sessionFingerprint) ||
         !/^ags_[a-f0-9]{32}$/.test(presenceSignature)) {
       fail("native_verifier_evidence_presence_invalid");
     }
-    const native = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.status,a.report,a.report_digest,
+    const native = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,
+        a.status,a.report,a.report_digest,a.coordinator_session_fingerprint,
         a.agent_id,
         a.native_session_fingerprint,a.native_presence_signature,p.plan,p.status AS plan_status
       FROM core_continuity_native_agents a
@@ -3256,10 +3405,13 @@ export function createWorkContinuityV2Store({
         nativeRow.native_session_fingerprint !== sessionFingerprint ||
         nativeRow.native_presence_signature !== presenceSignature ||
         nativeRow.report?.schema_version !== "native_agent_report_v1" ||
-        nativeRow.report?.verdict !== "approved") {
+        objectDigest({ status: nativeRow.status, report: nativeRow.report }) !== nativeRow.report_digest ||
+        nativeRow.report?.verdict !== "approved" ||
+        nativeRow.report?.correction_required === true ||
+        nativeRow.coordinator_session_fingerprint === sessionFingerprint) {
       fail("native_verifier_evidence_source_binding_invalid");
     }
-    if (!reportHasPassingTests(nativeRow.report) || !reportHasProvenVerifierEvidence(nativeRow.report)) {
+    if (!reportHasPassingTests(nativeRow.report)) {
       fail("native_verifier_evidence_task_scope_invalid");
     }
     // The V2 task id is not supplied by the verifier report.  It is bound
@@ -3269,6 +3421,31 @@ export function createWorkContinuityV2Store({
       ? uuid(nativeRow.v2_task_id, "native_verifier_evidence_task_binding_invalid")
       : null;
     if (!v2TaskId) fail("native_verifier_evidence_task_binding_missing");
+    const suppliedV2TaskDigest = String(source.v2_task_digest || "").trim().toLowerCase();
+    if (nativeRow.v2_task_digest && suppliedV2TaskDigest !== nativeRow.v2_task_digest) {
+      fail("native_verifier_evidence_task_binding_invalid");
+    }
+    const scopedAgents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
+        coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,
+        v2_task_id,v2_task_digest
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+      ORDER BY task_id FOR UPDATE`, [tenantId, legacyWorkId, planId]);
+    const scopedEvaluation = evaluateTaskScopedNativeVerifierEvidence({
+      plan: nativeRow.plan,
+      agents: scopedAgents.rows,
+      verifier_task_id: taskId,
+    });
+    const historicalV1Replay = legacyReplayOnlyRequested &&
+      scopedAgents.rows
+        .filter((agent) =>
+          String(agent.v2_task_id || "").trim().toLowerCase() === v2TaskId)
+        .every((agent) => !agent.v2_task_digest) &&
+      Boolean(nativeRow.report?.precommit_evidence);
+    if ((!historicalV1Replay && scopedEvaluation.promotable !== true) ||
+        scopedEvaluation.evaluation_digest !== taskEvaluationDigest) {
+      fail("native_verifier_evidence_task_scope_invalid");
+    }
     const verifiedTaskIds = Array.isArray(nativeRow.report?.verifies_task_ids)
       ? [...new Set(nativeRow.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean))]
       : [];
@@ -3286,7 +3463,7 @@ export function createWorkContinuityV2Store({
     const verifiedBuilderTaskIds = verifiedTaskIds.filter((taskId) =>
       canonicalBuilderTaskDigests.has(taskId));
     if (!verifiedBuilderTaskIds.length) fail("native_verifier_evidence_source_binding_invalid");
-    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,v2_task_id,report,report_digest,
+    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,v2_task_id,v2_task_digest,report,report_digest,
         native_session_fingerprint,native_presence_signature
       FROM core_continuity_native_agents
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
@@ -3318,6 +3495,26 @@ export function createWorkContinuityV2Store({
     ) {
       fail("native_verifier_evidence_independence_invalid");
     }
+    const verifierWorkspaceDigest = verifiedNativePrecommitWorkspaceDigest(
+      nativeRow.report?.precommit_evidence,
+    );
+    const scopedPrecommitPresent = Boolean(nativeRow.report?.precommit_evidence) ||
+      verifiedBuilders.rows.some((row) => Boolean(row.report?.precommit_evidence));
+    const matchingPrecommitEvidence = Boolean(
+      verifierWorkspaceDigest && verifiedBuilders.rows.length &&
+      verifiedBuilders.rows.every((row) =>
+        verifiedNativePrecommitWorkspaceDigest(row.report?.precommit_evidence) ===
+          verifierWorkspaceDigest),
+    );
+    if (scopedPrecommitPresent && !matchingPrecommitEvidence) {
+      fail("native_verifier_evidence_task_scope_invalid");
+    }
+    if (!historicalV1Replay && !reportHasProvenVerifierEvidence(nativeRow.report, {
+      matchingPrecommitEvidence,
+      matchingV2TaskBinding: HASH.test(String(scopedEvaluation.v2_task_digest || "")),
+    })) {
+      fail("native_verifier_evidence_task_scope_invalid");
+    }
     const receipt = await client.query(`SELECT receipt_type,agent_id,payload,payload_digest
       FROM core_continuity_native_receipts
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND receipt_id=$4
@@ -3348,14 +3545,48 @@ export function createWorkContinuityV2Store({
           work.created_by_session_fingerprint === sessionFingerprint)) {
       fail("native_verifier_evidence_independence_invalid");
     }
-    const v2Task = await client.query(`SELECT task_id,status,acceptance_verified
+    const v2Task = await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified
       FROM tenant_work_task
       WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
       FOR UPDATE`, [tenantId, work.work_id, v2TaskId]);
-    if (v2Task.rows[0]?.status !== "completed") {
+    if (!v2Task.rows[0] || !["planned", "completed"].includes(v2Task.rows[0].status)) {
       fail("native_verifier_evidence_task_binding_invalid");
     }
-    const material = {
+    const currentV2TaskBinding = buildNativeV2TaskBinding({
+      tenant_id: tenantId,
+      work_id: work.work_id,
+      task_id: v2Task.rows[0].task_id,
+      title: v2Task.rows[0].title,
+      weight: Number(v2Task.rows[0].weight),
+      required: v2Task.rows[0].required,
+    });
+    const matchingV2TaskBinding = Boolean(
+      HASH.test(String(nativeRow.v2_task_digest || "")) &&
+      nativeRow.v2_task_digest === currentV2TaskBinding.v2_task_digest &&
+      scopedEvaluation.v2_task_digest === currentV2TaskBinding.v2_task_digest &&
+      verifiedBuilders.rows.every((row) =>
+        row.v2_task_digest === currentV2TaskBinding.v2_task_digest),
+    );
+    const historicalV1ReplayStateValid = historicalV1Replay &&
+      v2Task.rows[0].status === "completed" &&
+      v2Task.rows[0].acceptance_verified === true;
+    if (!historicalV1ReplayStateValid && ((nativeRow.v2_task_digest && !matchingV2TaskBinding) ||
+        (v2Task.rows[0].status === "planned" && !matchingV2TaskBinding) ||
+        (nativeRow.report.acceptance_evidence.length === 0 && !matchingV2TaskBinding))) {
+      fail("native_verifier_evidence_task_binding_invalid");
+    }
+    const { title_preview: _v2TaskTitlePreview, ...canonicalV2TaskBinding } =
+      currentV2TaskBinding;
+    const verifiedBuilderBindingsV1 = verifiedBuilders.rows.map((row) => ({
+      task_id: row.task_id,
+      task_digest: row.task_digest,
+      v2_task_id: row.v2_task_id,
+      agent_id: row.agent_id,
+      session_fingerprint: row.native_session_fingerprint,
+      presence_signature: row.native_presence_signature,
+      report_digest: row.report_digest,
+    })).sort((left, right) => left.task_id.localeCompare(right.task_id));
+    const legacyMaterial = {
       schema_version: "native_verifier_terminal_evidence_v1",
       tenant_id: tenantId,
       work_id: work.work_id,
@@ -3366,29 +3597,41 @@ export function createWorkContinuityV2Store({
       v2_task_id: v2TaskId,
       verifier_agent_id: agentId,
       verifier_session_fingerprint: sessionFingerprint,
-      verified_builder_bindings: verifiedBuilders.rows.map((row) => ({
-        task_id: row.task_id,
-        task_digest: row.task_digest,
-        v2_task_id: row.v2_task_id,
-        agent_id: row.agent_id,
-        session_fingerprint: row.native_session_fingerprint,
-        presence_signature: row.native_presence_signature,
-        report_digest: row.report_digest,
-      })).sort((left, right) => left.task_id.localeCompare(right.task_id)),
+      verified_builder_bindings: verifiedBuilderBindingsV1,
       native_receipt_id: receiptId,
       native_receipt_digest: receiptDigest,
       report_digest: reportDigest,
     };
+    const material = matchingV2TaskBinding ? {
+      ...legacyMaterial,
+      schema_version: "native_verifier_terminal_evidence_v2",
+      v2_task_digest: currentV2TaskBinding.v2_task_digest,
+      v2_task_binding: canonicalV2TaskBinding,
+      task_evaluation_digest: taskEvaluationDigest,
+      scoped_report_bindings: scopedEvaluation.scoped_report_bindings,
+      verified_builder_bindings: verifiedBuilderBindingsV1.map((binding) => ({
+        ...binding,
+        v2_task_digest: currentV2TaskBinding.v2_task_digest,
+      })),
+    } : legacyMaterial;
     const evidenceDigest = objectDigest(material);
-    const existing = await client.query(`SELECT evidence_id,task_digest,v2_task_id,verifier_agent_id,
+    const metadata = stable({
+      ...material,
+      source: "server_native_verifier_terminal_report",
+      authority: "evidence_only",
+      execution_authorized: false,
+    });
+    const existing = await client.query(`SELECT evidence_id,task_digest,v2_task_id,v2_task_digest,verifier_agent_id,
         verifier_session_fingerprint,native_receipt_id,native_receipt_digest,report_digest,evidence_digest
       FROM tenant_work_native_verifier_evidence
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND task_id=$4
       FOR UPDATE`, [tenantId, work.work_id, planId, taskId]);
+    if (!existing.rows[0] && historicalV1Replay) return null;
     if (existing.rows[0]) {
       const row = existing.rows[0];
       if (row.task_digest !== nativeRow.task_digest ||
           row.v2_task_id !== v2TaskId ||
+          (row.v2_task_digest || null) !== (material.v2_task_digest || null) ||
           row.verifier_agent_id !== agentId ||
           row.verifier_session_fingerprint !== sessionFingerprint ||
           row.native_receipt_id !== receiptId ||
@@ -3398,17 +3641,22 @@ export function createWorkContinuityV2Store({
         fail("native_verifier_evidence_replay_conflict");
       }
       const evidence = await client.query(`SELECT digest,independently_verified,verified_by_agent_id,
-          verified_by_session_fingerprint FROM tenant_work_evidence
+          verified_by_session_fingerprint,metadata FROM tenant_work_evidence
         WHERE tenant_id=$1 AND evidence_id=$2 AND work_id=$3`,
       [tenantId, row.evidence_id, work.work_id]);
       const evidenceRow = evidence.rows[0];
       if (!evidenceRow || evidenceRow.digest !== evidenceDigest ||
           evidenceRow.independently_verified !== true ||
           evidenceRow.verified_by_agent_id !== agentId ||
-          evidenceRow.verified_by_session_fingerprint !== sessionFingerprint) {
+          evidenceRow.verified_by_session_fingerprint !== sessionFingerprint ||
+          objectDigest(evidenceRow.metadata) !== objectDigest(metadata)) {
         fail("native_verifier_evidence_replay_integrity_failed");
       }
       if (ARCHIVE_STATUSES.has(String(work.status || "").toUpperCase())) {
+        if (v2Task.rows[0].status !== "completed" ||
+            v2Task.rows[0].acceptance_verified !== true) {
+          fail("native_verifier_evidence_replay_integrity_failed");
+        }
         const derived = await deriveWorkStateWithClient(client, {
           tenant_id: tenantId,
           user_id: "core_native_verifier_evidence_bridge",
@@ -3417,44 +3665,43 @@ export function createWorkContinuityV2Store({
           team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
         }, work.work_id, { persist: false });
         return Object.freeze({
-          schema_version: "native_verifier_terminal_evidence_v1",
+          schema_version: material.schema_version,
           evidence_id: row.evidence_id,
           evidence_digest: evidenceDigest,
           report_digest: reportDigest,
           receipt_id: receiptId,
+          v2_task_digest: material.v2_task_digest,
+          task_evaluation_digest: taskEvaluationDigest,
           derived,
           idempotent_replay: true,
         });
       }
       assertOperationalWorkMutation(work);
-      await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
-        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
-          AND status='completed'`, [tenantId, work.work_id, v2TaskId]);
-      const derived = await refreshDerivedWithClient(client, {
+      if (v2Task.rows[0].status !== "completed" ||
+          v2Task.rows[0].acceptance_verified !== true) {
+        fail("native_verifier_evidence_replay_integrity_failed");
+      }
+      const derived = await deriveWorkStateWithClient(client, {
         tenant_id: tenantId,
         user_id: "core_native_verifier_evidence_bridge",
         agent_id: agentId,
         session_fingerprint: sessionFingerprint,
         team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
-      }, work.work_id);
+      }, work.work_id, { persist: false });
       return Object.freeze({
-        schema_version: "native_verifier_terminal_evidence_v1",
+        schema_version: material.schema_version,
         evidence_id: row.evidence_id,
         evidence_digest: evidenceDigest,
         report_digest: reportDigest,
         receipt_id: receiptId,
+        v2_task_digest: material.v2_task_digest,
+        task_evaluation_digest: taskEvaluationDigest,
         derived,
         idempotent_replay: true,
       });
     }
     assertOperationalWorkMutation(work);
     const evidenceId = crypto.randomUUID();
-    const metadata = stable({
-      ...material,
-      source: "server_native_verifier_terminal_report",
-      authority: "evidence_only",
-      execution_authorized: false,
-    });
     await client.query(`INSERT INTO tenant_work_evidence
       (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
        verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
@@ -3463,16 +3710,20 @@ export function createWorkContinuityV2Store({
       agentId, sessionFingerprint, JSON.stringify(metadata),
     ]);
     await client.query(`INSERT INTO tenant_work_native_verifier_evidence
-      (tenant_id,work_id,plan_id,task_id,task_digest,v2_task_id,verifier_agent_id,
+      (tenant_id,work_id,plan_id,task_id,task_digest,v2_task_id,v2_task_digest,verifier_agent_id,
        verifier_session_fingerprint,native_receipt_id,native_receipt_digest,
        report_digest,evidence_id,evidence_digest)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [
       tenantId, work.work_id, planId, taskId, nativeRow.task_digest, v2TaskId,
-      agentId, sessionFingerprint, receiptId, receiptDigest, reportDigest, evidenceId, evidenceDigest,
+      material.v2_task_digest || null, agentId, sessionFingerprint, receiptId, receiptDigest,
+      reportDigest, evidenceId, evidenceDigest,
     ]);
-    await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
+    const promotedTask = await client.query(`UPDATE tenant_work_task SET status='completed',
+        acceptance_verified=true,completed_at=coalesce(completed_at,now())
       WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
-        AND status='completed'`, [tenantId, work.work_id, v2TaskId]);
+        AND (status='completed' OR (status='planned' AND $4::boolean=true)) RETURNING task_id`,
+    [tenantId, work.work_id, v2TaskId, matchingV2TaskBinding]);
+    if (!promotedTask.rows[0]) fail("native_verifier_evidence_task_binding_invalid");
     const event = await appendV2Event(client, {
       tenant_id: tenantId,
       user_id: "core_native_verifier_evidence_bridge",
@@ -3487,6 +3738,8 @@ export function createWorkContinuityV2Store({
       report_digest: reportDigest,
       evidence_id: evidenceId,
       evidence_digest: evidenceDigest,
+      task_evaluation_digest: taskEvaluationDigest,
+      v2_task_digest: material.v2_task_digest,
       execution_authorized: false,
     });
     const derived = await refreshDerivedWithClient(client, {
@@ -3497,11 +3750,13 @@ export function createWorkContinuityV2Store({
       team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
     }, work.work_id);
     return Object.freeze({
-      schema_version: "native_verifier_terminal_evidence_v1",
+      schema_version: material.schema_version,
       evidence_id: evidenceId,
       evidence_digest: evidenceDigest,
       report_digest: reportDigest,
       receipt_id: receiptId,
+      v2_task_digest: material.v2_task_digest,
+      task_evaluation_digest: taskEvaluationDigest,
       event,
       derived,
       idempotent_replay: false,
@@ -3591,6 +3846,27 @@ export function createWorkContinuityV2Store({
     const currentSupersessionDigest = nativePlanSupersessionDigest(planRows);
     const driftCodes = [];
     const drift = (code) => { if (!driftCodes.includes(code)) driftCodes.push(code); };
+    let v2TaskScope = null;
+    if (nativeGate) {
+      try {
+        const evaluationScope = normalizeNativePrecommitScope(
+          evaluation?.evaluation?.native_v2_precommit_scope,
+        );
+        const gateScope = normalizeNativePrecommitScope({
+          schema_version: "native_v2_precommit_scope_v1",
+          scope_snapshot_digest: gate.v2_scope_snapshot_digest,
+          v2_task_governed: evaluationScope.v2_task_governed,
+          tasks: gate.v2_scope_tasks,
+        });
+        if (objectDigest(evaluationScope) !== objectDigest(gateScope)) {
+          drift("precommit_gate_v2_scope_drift");
+        } else {
+          v2TaskScope = gateScope;
+        }
+      } catch {
+        drift("precommit_gate_v2_scope_drift");
+      }
+    }
     if (gate.action_kind !== "git.commit" || gate.gate_kind !== "ticket_acquisition") {
       drift("precommit_gate_kind_invalid");
     }
@@ -3647,6 +3923,10 @@ export function createWorkContinuityV2Store({
       workspace_digest: gate.workspace_digest,
       supersession_digest: gate.supersession_digest,
       reconciliation_digest: gate.reconciliation_digest,
+      ...(nativeGate ? {
+        v2_scope_snapshot_digest: gate.v2_scope_snapshot_digest || null,
+        v2_scope_tasks: v2TaskScope?.tasks || [],
+      } : {}),
       legacy_evidence_ids: mappings.map((row) => row.legacy_evidence_id).sort(),
       replacement_evidence_ids: mappings.map((row) => row.replacement_evidence_id).sort(),
       fulfilled: Boolean(fulfillment),
@@ -3694,14 +3974,23 @@ export function createWorkContinuityV2Store({
       fail("precommit_gate_claim_host_invalid");
     }
     return transaction(async (client) => {
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("tenant_work_not_found");
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       const gate = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
-      const existingResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id
+      let scopeTasks = Object.freeze([]);
+      const existingResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
+          a.abandonment_digest
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
             AND f.gate_projection_digest=c.gate_projection_digest
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest
+            AND a.claim_id=c.claim_id
         WHERE c.tenant_id=$1 AND c.work_id=$2 AND
           (c.gate_projection_digest=$3 OR c.idempotency_key=$4) FOR UPDATE OF c`,
       [actor.tenant_id, workId, projectionDigest, idempotencyKey]);
@@ -3713,13 +4002,49 @@ export function createWorkContinuityV2Store({
           existing.host_session_fingerprint === hostSessionFingerprint &&
           existing.idempotency_key === idempotencyKey;
         if (!exact) fail("precommit_gate_claim_replay_conflict");
+        if (existing.abandonment_digest) fail("precommit_gate_claim_abandoned");
+        if (existing.fulfilled_ticket_id) return precommitClaimProjection(existing, true);
+        if (gate?.schema_version === "precommit_ticket_gate_v2") {
+          scopeTasks = await lockAndValidateNativePrecommitScope(client, actor, workId, gate);
+          const freezes = await client.query(`SELECT task_id,revision,v2_task_digest,
+              scope_snapshot_digest,gate_projection_digest
+            FROM tenant_work_precommit_scope_freeze
+            WHERE tenant_id=$1 AND work_id=$2 AND claim_id=$3
+            ORDER BY task_id FOR UPDATE`, [actor.tenant_id, workId, existing.claim_id]);
+          const expectedFreezes = scopeTasks.map((task) => ({
+            task_id: task.task_id,
+            revision: task.revision,
+            v2_task_digest: task.v2_task_digest,
+            scope_snapshot_digest: gate.v2_scope_snapshot_digest,
+            gate_projection_digest: projectionDigest,
+          }));
+          if (objectDigest(freezes.rows.map((row) => ({ ...row,
+            revision: Number(row.revision),
+          }))) !== objectDigest(expectedFreezes)) {
+            fail("precommit_gate_claim_v2_freeze_invalid");
+          }
+        }
         return precommitClaimProjection(existing, true);
       }
+      const activeClaim = await client.query(`SELECT c.claim_id
+        FROM tenant_work_precommit_ticket_gate_claim c
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
+          ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
+            AND f.gate_projection_digest=c.gate_projection_digest AND f.claim_id=c.claim_id
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        WHERE c.tenant_id=$1 AND c.work_id=$2 AND f.claim_id IS NULL AND a.claim_id IS NULL
+        LIMIT 1 FOR UPDATE OF c`, [actor.tenant_id, workId]);
+      if (activeClaim.rows[0]) fail("precommit_gate_claim_active");
       assertOperationalWorkMutation(work);
       if (!gate || gate.fresh !== true || gate.projection_digest !== projectionDigest) {
         fail("precommit_gate_claim_gate_invalid");
       }
       if (gate.fulfilled === true) fail("precommit_gate_claim_gate_invalid");
+      if (gate.schema_version === "precommit_ticket_gate_v2") {
+        scopeTasks = await lockAndValidateNativePrecommitScope(client, actor, workId, gate);
+      }
       const claimId = crypto.randomUUID();
       const row = { claim_id: claimId, tenant_id: actor.tenant_id, work_id: workId,
         gate_projection_digest: projectionDigest, continuation_ref: continuationRef,
@@ -3734,10 +4059,20 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, workId, projectionDigest, claimId, continuationRef, requestDigest,
         delegationId, actionDigest, hostSessionFingerprint, idempotencyKey,
         projection.claim_digest, actor.user_id]);
+      for (const task of scopeTasks) {
+        await client.query(`INSERT INTO tenant_work_precommit_scope_freeze
+          (tenant_id,work_id,gate_projection_digest,claim_id,task_id,revision,
+           v2_task_digest,scope_snapshot_digest)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [actor.tenant_id, workId,
+          projectionDigest, claimId, task.task_id, task.revision,
+          task.v2_task_digest, gate.v2_scope_snapshot_digest]);
+      }
       await appendV2Event(client, actor, workId, "precommit_ticket_gate_claimed", {
         claim_id: claimId, claim_digest: projection.claim_digest,
         gate_projection_digest: projectionDigest, continuation_ref: continuationRef,
         request_digest: requestDigest, delegation_id: delegationId, action_digest: actionDigest,
+        v2_scope_snapshot_digest: gate?.v2_scope_snapshot_digest || null,
+        frozen_v2_task_ids: scopeTasks.map((task) => task.task_id),
         host_session_fingerprint: hostSessionFingerprint, execution_authorized: false,
       });
       return projection;
@@ -3769,10 +4104,13 @@ export function createWorkContinuityV2Store({
       }
       const found = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
           f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
-          r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator
+          r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,a.abandonment_digest
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id AND f.gate_projection_digest=c.gate_projection_digest
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
         LEFT JOIN LATERAL (SELECT cr.ticket_id
           FROM tenant_work_precommit_ticket_gate_claim_reconciliation cr
           WHERE cr.tenant_id=c.tenant_id AND cr.work_id=c.work_id AND cr.claim_id=c.claim_id
@@ -3797,6 +4135,7 @@ export function createWorkContinuityV2Store({
       }
       const recoveredTicketId = recovered.fulfilled_ticket_id || recovered.reconciled_ticket_id || null;
       const recoverySource = recovered.fulfilled_ticket_id ? "fulfillment"
+        : recovered.abandonment_digest ? "abandonment"
         : recovered.reconciled_ticket_id ? "reconciliation"
           : recovered.before_ticket_locator === true ? "before_ticket_locator" : "claim";
       gateClaim = precommitClaimProjection(found.rows[0], true);
@@ -3813,11 +4152,14 @@ export function createWorkContinuityV2Store({
     }
     const result = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
         f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
-        r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator
+        r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,a.abandonment_digest
       FROM tenant_work_precommit_ticket_gate_claim c
       LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
         ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
           AND f.gate_projection_digest=c.gate_projection_digest
+      LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+        ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+          AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
       LEFT JOIN LATERAL (SELECT cr.ticket_id
         FROM tenant_work_precommit_ticket_gate_claim_reconciliation cr
         WHERE cr.tenant_id=c.tenant_id AND cr.work_id=c.work_id AND cr.claim_id=c.claim_id
@@ -3842,6 +4184,7 @@ export function createWorkContinuityV2Store({
     }
     const recoveredTicketId = row.fulfilled_ticket_id || row.reconciled_ticket_id || null;
     const recoverySource = row.fulfilled_ticket_id ? "fulfillment"
+      : row.abandonment_digest ? "abandonment"
       : row.reconciled_ticket_id ? "reconciliation"
         : row.before_ticket_locator === true ? "before_ticket_locator" : "claim";
     return Object.freeze({ schema_version: "precommit_ticket_gate_recovery_v1",
@@ -3913,6 +4256,208 @@ export function createWorkContinuityV2Store({
         reconciliation_digest: reconciliationDigest, replay: false });
     });
   }
+  async function abandonInactivePrecommitTicketGateClaim(identity, input = {}) {
+    await initialize();
+    if (input.server_owned !== true) fail("precommit_claim_abandonment_server_owned_required");
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id, "precommit_claim_abandonment_work_invalid");
+    const gateClaim = input.gate_claim;
+    const claimMaterial = gateClaim && { ...gateClaim };
+    if (claimMaterial) delete claimMaterial.claim_digest;
+    if (!gateClaim || gateClaim.schema_version !== "precommit_ticket_gate_claim_v1" ||
+        objectDigest(claimMaterial) !== gateClaim.claim_digest || gateClaim.work_id !== workId) {
+      fail("precommit_claim_abandonment_claim_invalid");
+    }
+    const readback = input.core_delegation_readback;
+    const readbackMaterial = readback && { ...readback };
+    if (readbackMaterial) delete readbackMaterial.readback_digest;
+    const exactReadbackKeys = ["authority", "delegation_id", "effective_state", "expires_at",
+      "provider_execution", "readback_digest", "revoked_at", "schema_version",
+      "signature_digest", "state", "tenant_id", "work_id"];
+    if (!plainRecord(readback) ||
+        Object.keys(readback).sort().join("\0") !== exactReadbackKeys.sort().join("\0") ||
+        readback.schema_version !== "core_precommit_claim_inactive_readback_v1" ||
+        readback.authority !== "universal_core" || readback.provider_execution !== false ||
+        readback.tenant_id !== actor.tenant_id || uuid(readback.work_id) !== workId ||
+        readback.delegation_id !== gateClaim.delegation_id ||
+        !["expired", "revoked"].includes(readback.effective_state) ||
+        !HASH.test(String(readback.signature_digest || "")) ||
+        objectDigest(readbackMaterial) !== readback.readback_digest) {
+      fail("precommit_claim_abandonment_readback_invalid");
+    }
+    const expiresAt = new Date(readback.expires_at);
+    const revokedAt = readback.revoked_at === null ? null : new Date(readback.revoked_at);
+    if (!Number.isFinite(expiresAt.getTime()) ||
+        (revokedAt && !Number.isFinite(revokedAt.getTime())) ||
+        (readback.effective_state === "revoked" &&
+          (readback.state !== "revoked" || !revokedAt))) {
+      fail("precommit_claim_abandonment_readback_invalid");
+    }
+    return transaction(async (client) => {
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("precommit_claim_abandonment_core_work_invalid");
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      const claim = (await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate_claim
+        WHERE tenant_id=$1 AND work_id=$2 AND claim_id=$3 FOR UPDATE`,
+      [actor.tenant_id, workId, gateClaim.claim_id])).rows[0];
+      if (!claim || claim.claim_digest !== precommitClaimProjection(claim, false).claim_digest ||
+          claim.gate_projection_digest !== gateClaim.gate_projection_digest ||
+          claim.delegation_id !== gateClaim.delegation_id ||
+          claim.request_digest !== gateClaim.request_digest ||
+          claim.action_digest !== gateClaim.action_digest ||
+          claim.host_session_fingerprint !== gateClaim.host_session_fingerprint ||
+          claim.idempotency_key !== gateClaim.idempotency_key) {
+        fail("precommit_claim_abandonment_claim_invalid");
+      }
+      const fulfillment = await client.query(`SELECT ticket_id
+        FROM tenant_work_precommit_ticket_gate_claim_fulfillment
+        WHERE tenant_id=$1 AND work_id=$2 AND gate_projection_digest=$3 FOR UPDATE`,
+      [actor.tenant_id, workId, claim.gate_projection_digest]);
+      if (fulfillment.rows[0]) fail("precommit_claim_abandonment_ticket_live");
+      const databaseNow = new Date((await client.query("SELECT now() AS database_now")).rows[0].database_now);
+      if ((readback.effective_state === "expired" && expiresAt.getTime() > databaseNow.getTime()) ||
+          (readback.effective_state === "revoked" && revokedAt.getTime() > databaseNow.getTime())) {
+        fail("precommit_claim_abandonment_delegation_active");
+      }
+      const material = {
+        schema_version: "precommit_ticket_gate_claim_abandonment_v1",
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        gate_projection_digest: claim.gate_projection_digest,
+        claim_id: claim.claim_id,
+        delegation_id: claim.delegation_id,
+        delegation_effective_state: readback.effective_state,
+        delegation_expires_at: expiresAt.toISOString(),
+        delegation_revoked_at: revokedAt?.toISOString() || null,
+        core_readback_digest: readback.readback_digest,
+      };
+      const abandonmentDigest = objectDigest(material);
+      const existing = await client.query(`SELECT *
+        FROM tenant_work_precommit_ticket_gate_claim_abandonment
+        WHERE tenant_id=$1 AND work_id=$2 AND gate_projection_digest=$3 FOR UPDATE`,
+      [actor.tenant_id, workId, claim.gate_projection_digest]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].abandonment_digest !== abandonmentDigest) {
+          fail("precommit_claim_abandonment_replay_conflict");
+        }
+        return Object.freeze({ ...material, abandonment_digest: abandonmentDigest,
+          idempotent_replay: true });
+      }
+      assertOperationalWorkMutation(work);
+      await client.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim_abandonment
+        (tenant_id,work_id,gate_projection_digest,claim_id,delegation_id,
+         delegation_effective_state,delegation_expires_at,delegation_revoked_at,
+         core_readback_digest,abandonment_digest)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [actor.tenant_id, workId,
+        claim.gate_projection_digest, claim.claim_id, claim.delegation_id,
+        readback.effective_state, expiresAt.toISOString(), revokedAt?.toISOString() || null,
+        readback.readback_digest, abandonmentDigest]);
+      await appendV2Event(client, actor, workId, "precommit_ticket_claim_abandoned", {
+        claim_id: claim.claim_id,
+        gate_projection_digest: claim.gate_projection_digest,
+        delegation_id: claim.delegation_id,
+        delegation_effective_state: readback.effective_state,
+        core_readback_digest: readback.readback_digest,
+        abandonment_digest: abandonmentDigest,
+        execution_authorized: false,
+      });
+      return Object.freeze({ ...material, abandonment_digest: abandonmentDigest,
+        idempotent_replay: false });
+    });
+  }
+  function normalizeNativePrecommitScope(value) {
+    if (!plainRecord(value) || value.schema_version !== "native_v2_precommit_scope_v1" ||
+        typeof value.v2_task_governed !== "boolean" ||
+        !Array.isArray(value.tasks) || value.tasks.length > 128) {
+      fail("native_precommit_gate_v2_scope_invalid");
+    }
+    const scopeSnapshotDigest = digest(value.scope_snapshot_digest,
+      "native_precommit_gate_v2_scope_invalid");
+    const seen = new Set();
+    const tasks = value.tasks.map((item) => {
+      if (!plainRecord(item) ||
+          Object.keys(item).sort().join("\0") !==
+            ["revision", "task_id", "v2_task_digest"].sort().join("\0")) {
+        fail("native_precommit_gate_v2_scope_invalid");
+      }
+      const taskId = uuid(item.task_id, "native_precommit_gate_v2_scope_invalid");
+      const revision = Number(item.revision);
+      if (!Number.isSafeInteger(revision) || revision < 1 || seen.has(taskId)) {
+        fail("native_precommit_gate_v2_scope_invalid");
+      }
+      seen.add(taskId);
+      return Object.freeze({
+        task_id: taskId,
+        v2_task_digest: digest(item.v2_task_digest,
+          "native_precommit_gate_v2_scope_invalid"),
+        revision,
+      });
+    }).sort((left, right) => left.task_id.localeCompare(right.task_id));
+    if (value.v2_task_governed === true && tasks.length === 0) {
+      fail("native_precommit_gate_v2_scope_invalid");
+    }
+    return Object.freeze({
+      schema_version: "native_v2_precommit_scope_v1",
+      scope_snapshot_digest: scopeSnapshotDigest,
+      v2_task_governed: value.v2_task_governed,
+      tasks: Object.freeze(tasks),
+    });
+  }
+  async function lockAndValidateNativePrecommitScope(client, actor, workId, gate) {
+    if (gate?.schema_version !== "precommit_ticket_gate_v2" ||
+        gate.gate_source !== "native_closure_evaluation" ||
+        !HASH.test(String(gate.v2_scope_snapshot_digest || "")) ||
+        !Array.isArray(gate.v2_scope_tasks)) {
+      fail("precommit_gate_claim_v2_scope_invalid");
+    }
+    const expectedTasks = gate.v2_scope_tasks;
+    if (!expectedTasks.length) return Object.freeze([]);
+    const current = await client.query(`SELECT task_id,title,weight,required,status,
+        acceptance_verified,revision
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=ANY($3::uuid[])
+      ORDER BY task_id FOR UPDATE`,
+    [actor.tenant_id, workId, expectedTasks.map((item) => item.task_id)]);
+    if (current.rows.length !== expectedTasks.length) {
+      fail("precommit_gate_claim_v2_scope_changed");
+    }
+    const currentById = new Map(current.rows.map((row) => [String(row.task_id), row]));
+    for (const expected of expectedTasks) {
+      const row = currentById.get(expected.task_id);
+      const binding = row && buildNativeV2TaskBinding({
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        task_id: row.task_id,
+        title: row.title,
+        weight: Number(row.weight),
+        required: row.required,
+      });
+      if (!row || binding.v2_task_digest !== expected.v2_task_digest ||
+          Number(row.revision) !== expected.revision || row.status !== "completed" ||
+          row.acceptance_verified !== true) {
+        fail("precommit_gate_claim_v2_scope_changed");
+      }
+    }
+    const agents = await client.query(`SELECT v2_task_id,v2_task_digest
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND v2_task_id IS NOT NULL
+      ORDER BY task_id`, [actor.tenant_id, workId, gate.plan_id]);
+    const agentTaskIds = [...new Set(agents.rows.map((row) =>
+      String(row.v2_task_id).toLowerCase()))].sort();
+    const expectedTaskIds = expectedTasks.map((item) => item.task_id).sort();
+    if (objectDigest(agentTaskIds) !== objectDigest(expectedTaskIds) ||
+        agents.rows.some((row) => {
+          const expected = expectedTasks.find((item) =>
+            item.task_id === String(row.v2_task_id).toLowerCase());
+          return !expected || (row.v2_task_digest &&
+            row.v2_task_digest !== expected.v2_task_digest);
+        })) {
+      fail("precommit_gate_claim_v2_scope_changed");
+    }
+    return Object.freeze(expectedTasks);
+  }
   async function materializeNativePrecommitTicketGateWithClient(client, source = {}) {
     if (!client || typeof client.query !== "function") fail("native_precommit_gate_transaction_required");
     if (source.server_owned !== true) fail("native_precommit_gate_server_owned_required");
@@ -3922,7 +4467,11 @@ export function createWorkContinuityV2Store({
     const evaluationId = uuid(source.evaluation_id, "native_precommit_gate_evaluation_invalid");
     const evaluationDigest = digest(source.evaluation_digest, "native_precommit_gate_evaluation_digest_invalid");
     const workspaceDigest = digest(source.workspace_digest, "native_precommit_gate_workspace_digest_invalid");
+    const v2TaskScope = normalizeNativePrecommitScope(source.v2_task_scope);
     const actor = { tenant_id: tenantId, user_id: "core_native_precommit_gate", agent_id: "core_native_precommit_gate" };
+    const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
+    if (!coreWork.rows[0]) fail("native_precommit_gate_work_invalid");
     const workResult = await client.query(`SELECT * FROM tenant_work
       WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
     const work = workResult.rows[0];
@@ -3964,7 +4513,9 @@ export function createWorkContinuityV2Store({
           existing.gate_source === "native_closure_evaluation" &&
           existing.plan_id === planId && existing.evaluation_id === evaluationId &&
           existing.evaluation_digest === evaluationDigest &&
-          existing.workspace_digest === workspaceDigest) {
+          existing.workspace_digest === workspaceDigest &&
+          existing.v2_scope_snapshot_digest === v2TaskScope.scope_snapshot_digest &&
+          objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks)) {
         return Object.freeze({ ...existing, idempotent_replay: true });
       }
       fail("tenant_work_terminal");
@@ -3989,7 +4540,9 @@ export function createWorkContinuityV2Store({
         evaluation.evaluation?.schema_version !== "native_closure_evaluation_v1" ||
         evaluation.evaluation?.closed !== false || evaluation.evaluation?.commit_ticket_ready !== true ||
         evaluation.evaluation?.precommit_verification?.ready !== true ||
-        evaluation.evaluation?.precommit_verification?.workspace_digest !== workspaceDigest) {
+        evaluation.evaluation?.precommit_verification?.workspace_digest !== workspaceDigest ||
+        objectDigest(evaluation.evaluation?.native_v2_precommit_scope) !==
+          objectDigest(v2TaskScope)) {
       fail("native_precommit_gate_evaluation_not_current");
     }
     const existing = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
@@ -3997,12 +4550,25 @@ export function createWorkContinuityV2Store({
       if (existing.schema_version === "precommit_ticket_gate_v2" && existing.gate_source === "native_closure_evaluation" &&
           existing.plan_id === planId && existing.evaluation_id === evaluationId &&
           existing.evaluation_digest === evaluationDigest && existing.workspace_digest === workspaceDigest &&
+          existing.v2_scope_snapshot_digest === v2TaskScope.scope_snapshot_digest &&
+          objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks) &&
           existing.supersession_digest === supersessionDigest) {
         return Object.freeze({ ...existing, idempotent_replay: true });
       }
       if (existing.schema_version !== "precommit_ticket_gate_v2" ||
           existing.gate_source !== "native_closure_evaluation" || existing.fulfilled === true ||
           existing.fresh === true) fail("native_precommit_gate_conflict");
+      const activeClaim = await client.query(`SELECT c.claim_id
+        FROM tenant_work_precommit_ticket_gate_claim c
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
+          ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
+            AND f.gate_projection_digest=c.gate_projection_digest AND f.claim_id=c.claim_id
+        LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        WHERE c.tenant_id=$1 AND c.work_id=$2 AND f.claim_id IS NULL AND a.claim_id IS NULL
+        LIMIT 1 FOR UPDATE OF c`, [tenantId, workId]);
+      if (activeClaim.rows[0]) fail("native_precommit_gate_claim_active");
       const latest = await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate_supersession
         WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
           AND gate_kind='ticket_acquisition' ORDER BY gate_version DESC LIMIT 1 FOR UPDATE`,
@@ -4011,17 +4577,22 @@ export function createWorkContinuityV2Store({
       const material = { schema_version: "native_precommit_gate_material_v1", tenant_id: tenantId,
         work_id: workId, task_id: existing.task_id, plan_id: planId, evaluation_id: evaluationId,
         evaluation_digest: evaluationDigest, workspace_digest: workspaceDigest,
+        v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
+        v2_scope_tasks: v2TaskScope.tasks,
         supersession_digest: supersessionDigest, gate_source: "native_closure_evaluation", mappings: [],
         gate_version: nextVersion, supersedes_reconciliation_digest: existing.reconciliation_digest };
       const reconciliationDigest = objectDigest(material);
       await client.query(`INSERT INTO tenant_work_precommit_ticket_gate_supersession
         (tenant_id,work_id,gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
-         workspace_digest,supersession_digest,reconciliation_digest,supersedes_reconciliation_digest,
+         workspace_digest,v2_scope_snapshot_digest,v2_scope_tasks,supersession_digest,
+         reconciliation_digest,supersedes_reconciliation_digest,
          gate_source,action_kind,gate_kind,created_by_user_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'native_closure_evaluation',
-          'git.commit','ticket_acquisition',$12)`, [tenantId, workId, nextVersion, existing.task_id,
-        planId, evaluationId, evaluationDigest, workspaceDigest, supersessionDigest,
-        reconciliationDigest, existing.reconciliation_digest, actor.user_id]);
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,
+          'native_closure_evaluation','git.commit','ticket_acquisition',$14)`,
+      [tenantId, workId, nextVersion, existing.task_id, planId, evaluationId,
+        evaluationDigest, workspaceDigest, v2TaskScope.scope_snapshot_digest,
+        JSON.stringify(v2TaskScope.tasks), supersessionDigest, reconciliationDigest,
+        existing.reconciliation_digest, actor.user_id]);
       const projection = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
       if (projection?.fresh !== true || projection.schema_version !== "precommit_ticket_gate_v2") {
         fail("native_precommit_gate_projection_invalid");
@@ -4036,17 +4607,24 @@ export function createWorkContinuityV2Store({
     const material = { schema_version: "native_precommit_gate_material_v1", tenant_id: tenantId,
       work_id: workId, task_id: taskId, plan_id: planId, evaluation_id: evaluationId,
       evaluation_digest: evaluationDigest, workspace_digest: workspaceDigest,
+      v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
+      v2_scope_tasks: v2TaskScope.tasks,
       supersession_digest: supersessionDigest, gate_source: "native_closure_evaluation", mappings: [] };
     const reconciliationDigest = objectDigest(material);
     await client.query(`INSERT INTO tenant_work_precommit_ticket_gate
       (tenant_id,work_id,task_id,plan_id,evaluation_id,evaluation_digest,workspace_digest,
-       supersession_digest,reconciliation_digest,gate_source,action_kind,gate_kind,created_by_user_id)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'native_closure_evaluation','git.commit','ticket_acquisition',$10)`,
+       v2_scope_snapshot_digest,v2_scope_tasks,supersession_digest,reconciliation_digest,
+       gate_source,action_kind,gate_kind,created_by_user_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,
+        'native_closure_evaluation','git.commit','ticket_acquisition',$12)`,
     [tenantId, workId, taskId, planId, evaluationId, evaluationDigest, workspaceDigest,
+      v2TaskScope.scope_snapshot_digest, JSON.stringify(v2TaskScope.tasks),
       supersessionDigest, reconciliationDigest, actor.user_id]);
     await appendV2Event(client, actor, workId, "native_precommit_ticket_gate_materialized", {
       task_id: taskId, plan_id: planId, evaluation_id: evaluationId, evaluation_digest: evaluationDigest,
       workspace_digest: workspaceDigest, supersession_digest: supersessionDigest,
+      v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
+      v2_scope_tasks: v2TaskScope.tasks,
       reconciliation_digest: reconciliationDigest, gate_source: "native_closure_evaluation",
       action_kind: "git.commit", gate_kind: "ticket_acquisition", execution_authorized: false,
     });
@@ -4081,6 +4659,9 @@ export function createWorkContinuityV2Store({
       fail("precommit_reconcile_mappings_invalid");
     }
     return transaction(async (client) => {
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("tenant_work_not_found");
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       if (work.legacy_work_id !== workId) fail("precommit_reconcile_native_work_binding_missing");
@@ -4332,6 +4913,9 @@ export function createWorkContinuityV2Store({
       fail("precommit_ticket_fulfillment_readback_invalid");
     }
     return transaction(async (client) => {
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("tenant_work_not_found");
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       const gate = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
@@ -4350,14 +4934,19 @@ export function createWorkContinuityV2Store({
             gateClaim.work_id !== workId || gateClaim.gate_projection_digest !== gateProjectionDigest) {
           fail("precommit_ticket_fulfillment_claim_invalid");
         }
-        const claimResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id
+        const claimResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
+            a.abandonment_digest
           FROM tenant_work_precommit_ticket_gate_claim c
           LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
             ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
               AND f.gate_projection_digest=c.gate_projection_digest
+          LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+            ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+              AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
           WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.gate_projection_digest=$3 FOR UPDATE OF c`,
         [actor.tenant_id, workId, gateProjectionDigest]);
         claim = claimResult.rows[0];
+        if (claim?.abandonment_digest) fail("precommit_ticket_fulfillment_claim_abandoned");
         const immutableClaimDigest = claim && precommitClaimProjection(claim, false).claim_digest;
         if (!claim || claim.claim_id !== gateClaim.claim_id || claim.work_id !== gateClaim.work_id ||
             claim.claim_digest !== immutableClaimDigest ||
@@ -4403,6 +4992,7 @@ export function createWorkContinuityV2Store({
           fulfillment_digest: existing.rows[0].fulfillment_digest, idempotent_replay: true });
       }
       assertOperationalWorkMutation(work);
+      if (nativeGate) await lockAndValidateNativePrecommitScope(client, actor, workId, gate);
       const ticketDigest = objectDigest(ticket);
       const material = { schema_version: "precommit_ticket_fulfillment_v1",
         tenant_id: actor.tenant_id, work_id: workId, task_id: gate.task_id,
@@ -5125,6 +5715,9 @@ export function createWorkContinuityV2Store({
     });
     const readiness = deriveGenericClosureReadiness(state);
     if (!readiness.required_tasks_complete) fail("generic_core_join_tasks_incomplete");
+    if (readiness.native_task_evidence_only) {
+      fail("generic_core_join_native_closure_required");
+    }
     if (!state.evidence.length ||
         state.evidence.some((item) => item.independently_verified !== true)) {
       fail("generic_core_join_evidence_incomplete");
@@ -5205,8 +5798,7 @@ export function createWorkContinuityV2Store({
       const readiness = deriveGenericClosureReadiness(state);
       if (!readiness.ready) fail("work_closure_gate_unsatisfied");
       const ownerManualMergeClosure = state.evidence.some((item) =>
-        item.kind === "owner_manual_merge_release" &&
-        item.metadata?.note === "owner_manual_merge");
+        authoritativeNativeReleaseEvidence(item, state.work));
       const finalEvidenceDigest = crypto.createHash("sha256").update(JSON.stringify(state.evidence.map((item) => item.digest).sort())).digest("hex");
       const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: 10_000 }, {
         adapter, server_verified_closure_context: { schema_version: "work_closure_context_v1",
@@ -5284,10 +5876,12 @@ export function createWorkContinuityV2Store({
     readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     claimPrecommitTicketGate, reconcilePrecommitTicketGateClaim, readPrecommitTicketGateClaimRecovery,
+    abandonInactivePrecommitTicketGateClaim,
     materializeNativePrecommitTicketGateWithClient,
     fulfillPrecommitTicketTask,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
-    recordTask, recordEvidence, recordOwnerManualMergeReleaseEvidence,
+    recordTask, resolveNativeTaskBindingWithClient, recordEvidence,
+    recordOwnerManualMergeReleaseEvidence,
     recordNativeVerifierEvidenceWithClient,
     persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,

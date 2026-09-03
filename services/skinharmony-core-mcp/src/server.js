@@ -215,6 +215,7 @@ const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
   nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
   nativePrecommitGateBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
+  nativeV2TaskBindingResolverRequired: config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -234,6 +235,12 @@ const workContinuityV2StoreReady = workContinuityV2Store
 void workContinuityV2StoreReady?.catch(() => {});
 if (workContinuityRuntime && workContinuityV2Store) {
   workContinuityRuntime.setWorkEventProjector(workContinuityV2Store.projectLegacyEvent);
+  workContinuityRuntime.setNativeV2TaskBindingResolver(
+    async (client, source) => {
+      await workContinuityV2StoreReady;
+      return workContinuityV2Store.resolveNativeTaskBindingWithClient(client, source);
+    },
+  );
   // The report-to-evidence bridge is internal and shares the report
   // transaction. It is intentionally not exposed as an MCP capability.
   workContinuityRuntime.setNativeVerifierEvidenceBridge(
@@ -1746,6 +1753,53 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         workContinuityV2Store.reconcilePrecommitTicketGateClaim(
           withTenantWorkAcl(identity), request,
         ),
+      abandonInactivePrecommitTicketGateClaim: async (request, identity) => {
+        const claim = request?.gate_claim;
+        const coreResult = await coreHandlers.host_native_delegation_read({
+          delegation_id: claim?.delegation_id,
+        }, identity);
+        const payload = coreResult?.structuredContent;
+        const delegation = payload?.delegation;
+        if (payload?.ok !== true || payload.tenant_id !== identity.tenantId ||
+            !delegation || delegation.delegation_id !== claim?.delegation_id ||
+            delegation.grant?.tenant_id !== identity.tenantId ||
+            delegation.grant?.work_id !== request.work_id ||
+            !["active", "expired", "revoked"].includes(delegation.effective_state) ||
+            !Number.isFinite(Date.parse(delegation.grant?.expires_at || "")) ||
+            typeof delegation.signature !== "string" || delegation.signature.length < 16) {
+          throw new Error("precommit_claim_abandonment_core_readback_invalid");
+        }
+        if (delegation.effective_state === "active") return null;
+        const readbackMaterial = {
+          schema_version: "core_precommit_claim_inactive_readback_v1",
+          authority: "universal_core",
+          tenant_id: identity.tenantId,
+          work_id: request.work_id,
+          delegation_id: delegation.delegation_id,
+          effective_state: delegation.effective_state,
+          state: String(delegation.state || ""),
+          expires_at: new Date(delegation.grant.expires_at).toISOString(),
+          revoked_at: delegation.revoked_at
+            ? new Date(delegation.revoked_at).toISOString()
+            : null,
+          signature_digest: crypto.createHash("sha256")
+            .update(delegation.signature).digest("hex"),
+          provider_execution: false,
+        };
+        const coreDelegationReadback = Object.freeze({
+          ...readbackMaterial,
+          readback_digest: crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical(readbackMaterial))).digest("hex"),
+        });
+        return workContinuityV2Store.abandonInactivePrecommitTicketGateClaim(
+          withTenantWorkAcl(identity), {
+            server_owned: true,
+            work_id: request.work_id,
+            gate_claim: claim,
+            core_delegation_readback: coreDelegationReadback,
+          },
+        );
+      },
       readPrecommitTicketGateClaimRecovery: (request, identity) =>
         workContinuityV2Store.readPrecommitTicketGateClaimRecovery(
           withTenantWorkAcl(identity), request,

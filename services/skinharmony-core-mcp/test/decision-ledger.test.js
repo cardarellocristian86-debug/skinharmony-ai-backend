@@ -114,7 +114,8 @@ test("ledger reports are always filtered by authenticated tenant", async () => {
   assert.equal(report.tenant_id, "tenant-b");
   assert.equal(report.events.core_requested_confirmation, 2);
   assert.equal(report.metrics.confirmation_rate_percent, 100);
-  const reportQueries = pool.calls.filter((call) => /core_(?:decision_events|ai_work_sessions)/.test(call.sql) && /WHERE tenant_id=\$1/.test(call.sql));
+  const reportQueries = pool.calls.filter((call) => /^SELECT/.test(call.sql.trim()) &&
+    /core_(?:decision_events|ai_work_sessions)/.test(call.sql) && /WHERE tenant_id=\$1/.test(call.sql));
   assert.ok(reportQueries.length >= 2);
   assert.ok(reportQueries.every((call) => call.params[0] === "tenant-b"));
 });

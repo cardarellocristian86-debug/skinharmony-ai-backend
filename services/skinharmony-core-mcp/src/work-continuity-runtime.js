@@ -813,6 +813,40 @@ function acceptanceContractIntegrityValid(contract) {
   }
 }
 
+export function buildPrecommitAcceptancePolicy(acceptanceContract) {
+  if (!acceptanceContractIntegrityValid(acceptanceContract)) {
+    throw new Error("native_precommit_acceptance_contract_invalid");
+  }
+  const material = {
+    schema_version: "native_precommit_acceptance_policy_v1",
+    acceptance_contract_digest: digest(acceptanceContract),
+    required_criterion_digests: acceptanceContract.criteria
+      .filter((criterion) => criterion.criterion_kind === "constraint")
+      .map((criterion) => criterion.criterion_digest)
+      .sort(),
+    deferred_criterion_digests: acceptanceContract.criteria
+      .filter((criterion) => ["objective", "acceptance"].includes(criterion.criterion_kind))
+      .map((criterion) => criterion.criterion_digest)
+      .sort(),
+  };
+  return Object.freeze({
+    ...material,
+    required_criterion_digests: Object.freeze(material.required_criterion_digests),
+    deferred_criterion_digests: Object.freeze(material.deferred_criterion_digests),
+    policy_digest: digest(material),
+  });
+}
+
+function precommitAcceptancePolicyIntegrityValid(acceptanceContract, policy) {
+  try {
+    requireObject(policy, "native_precommit_acceptance_policy");
+    const expected = buildPrecommitAcceptancePolicy(acceptanceContract);
+    return digest(policy) === digest(expected);
+  } catch {
+    return false;
+  }
+}
+
 function bindCoreWorkPlan(corePlan, localPlan, {
   workId,
   intentDigest,
@@ -976,6 +1010,11 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
   const builders = agents.filter((agent) => taskById.get(agent.task_id)?.kind === "builder");
   const verifiers = agents.filter((agent) => taskById.get(agent.task_id)?.kind === "verifier");
   for (const agent of agents) {
+    if (agent.report?.schema_version === "native_agent_report_v1" &&
+        (!SHA256_DIGEST.test(String(agent.report_digest || "")) ||
+        digest({ status: agent.status, report: agent.report }) !== agent.report_digest)) {
+      missing.push(`native_agent_report_integrity_failed:${agent.task_id}`);
+    }
     if (agent.report?.correction_required === true) {
       missing.push(`correction_required:${agent.task_id}`);
     }
@@ -1085,7 +1124,7 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
   }
   const targetCommit = String(builders[0]?.report?.commit_sha || "").toLowerCase();
   const targetPrecommit = builders[0]?.report?.precommit_evidence || null;
-  const targetWorkspaceDigest = String(targetPrecommit?.workspace_digest || "").toLowerCase();
+  const targetWorkspaceDigest = verifiedNativePrecommitWorkspaceDigest(targetPrecommit) || "";
   if (plan.release_mode === "external_ticket_required") {
     if (builders.length !== 1) missing.push("single_builder_required");
     if (!/^[a-f0-9]{40}$/.test(targetCommit)) missing.push("builder_target_commit_missing");
@@ -1096,12 +1135,12 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
         missing.push(`verifier_reviewed_commit_mismatch:${verifier.agent_id}`);
       }
     }
-    if (targetWorkspaceDigest) {
-      if (!/^[a-f0-9]{64}$/.test(targetWorkspaceDigest)) {
+    if (targetPrecommit) {
+      if (!targetWorkspaceDigest) {
         missing.push("builder_precommit_evidence_invalid");
       }
       for (const verifier of independentVerifiers) {
-        if (String(verifier.report?.precommit_evidence?.workspace_digest || "").toLowerCase() !==
+        if (verifiedNativePrecommitWorkspaceDigest(verifier.report?.precommit_evidence) !==
             targetWorkspaceDigest) {
           missing.push(`verifier_precommit_evidence_mismatch:${verifier.agent_id}`);
         }
@@ -1148,16 +1187,47 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     test_evidence: testEvidence,
     report_bindings: reportBindings,
   });
-  const commitOnlyGaps = new Set([
+  const precommitAcceptancePolicyPresent = plan.precommit_acceptance_policy !== undefined &&
+    plan.precommit_acceptance_policy !== null;
+  const precommitAcceptancePolicyValid = precommitAcceptancePolicyPresent &&
+    acceptanceContractValid &&
+    precommitAcceptancePolicyIntegrityValid(
+      acceptanceContract,
+      plan.precommit_acceptance_policy,
+    );
+  const precommitDeferredGaps = new Set([
     "builder_target_commit_missing",
     ...independentVerifiers.map((verifier) =>
       `verifier_reviewed_commit_missing:${verifier.agent_id}`),
+    ...(precommitAcceptancePolicyValid ? ["live_verification_missing"] : []),
   ]);
+  const deferredCriterionDigests = new Set(
+    precommitAcceptancePolicyValid
+      ? plan.precommit_acceptance_policy.deferred_criterion_digests
+      : [],
+  );
+  const precommitDeferredAcceptanceGaps = new Set(
+    precommitAcceptancePolicyValid
+      ? acceptanceContract.criteria
+        .filter((criterion) => deferredCriterionDigests.has(criterion.criterion_digest))
+        .map((criterion) => `acceptance_evidence_missing:${criterion.criterion_id}`)
+      : [],
+  );
+  const isPrecommitDeferredGap = (item) =>
+    precommitDeferredGaps.has(item) || precommitDeferredAcceptanceGaps.has(item);
+  // A commit is the prerequisite for merge, deploy and live-readback proof, so
+  // absent positive closure evidence cannot make that same commit impossible.
+  // Only missing objective/acceptance proof is deferred here; every constraint
+  // still requires positive precommit evidence. Explicit dissent, unproven
+  // assertions, failed tests, correction requests, scope/coverage failures and
+  // identity or precommit-evidence mismatches remain in `missing` and fail.
   const commitTicketReady = Boolean(
+    plan.release_mode === "external_ticket_required" &&
+    (!precommitAcceptancePolicyPresent || precommitAcceptancePolicyValid) &&
     !targetCommit &&
     /^[a-f0-9]{64}$/.test(targetWorkspaceDigest) &&
     missing.length > 0 &&
-    missing.every((item) => commitOnlyGaps.has(item))
+    missing.every(isPrecommitDeferredGap)
   );
   return {
     schema_version: "native_closure_evaluation_v1",
@@ -1176,6 +1246,15 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     target_commit: targetCommit || null,
     precommit_verification: {
       ready: commitTicketReady,
+      acceptance_policy_mode: !precommitAcceptancePolicyPresent
+        ? "legacy_strict"
+        : precommitAcceptancePolicyValid ? "policy_v1" : "invalid",
+      acceptance_policy_valid: precommitAcceptancePolicyPresent
+        ? precommitAcceptancePolicyValid
+        : null,
+      acceptance_policy_digest: precommitAcceptancePolicyValid
+        ? plan.precommit_acceptance_policy.policy_digest
+        : null,
       workspace_digest: targetWorkspaceDigest || null,
       base_commit: /^[a-f0-9]{40}$/.test(String(targetPrecommit?.base_commit || ""))
         ? String(targetPrecommit.base_commit).toLowerCase()
@@ -1235,7 +1314,68 @@ export function normalizeNativePrecommitEvidence(value) {
   });
 }
 
-// A terminal verifier report may promote one already-completed V2 task into
+export function verifiedNativePrecommitWorkspaceDigest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const allowedKeys = new Set([
+    "schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files",
+    "workspace_digest",
+  ]);
+  if (Object.keys(value).length !== allowedKeys.size ||
+      Object.keys(value).some((key) => !allowedKeys.has(key))) return null;
+  const supplied = String(value.workspace_digest || "").toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(supplied)) return null;
+  try {
+    const normalized = normalizeNativePrecommitEvidence({
+      schema_version: value.schema_version,
+      diff_mode: value.diff_mode,
+      base_commit: value.base_commit,
+      diff_digest: value.diff_digest,
+      changed_files: value.changed_files,
+    });
+    return normalized.workspace_digest === supplied ? supplied : null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildNativeV2TaskBinding(value = {}) {
+  const tenantId = String(value.tenant_id || "").trim();
+  const workId = uuid(value.work_id, "native_v2_task_work_invalid").toLowerCase();
+  const taskId = uuid(value.task_id || value.v2_task_id, "native_v2_task_id_invalid").toLowerCase();
+  const exactTitle = value.title === undefined || value.title === null
+    ? null
+    : String(value.title).trim();
+  const suppliedTitleDigest = String(value.title_digest || "").trim().toLowerCase();
+  const titleDigest = exactTitle !== null
+    ? digest({ schema_version: "native_v2_task_title_v1", title: exactTitle })
+    : suppliedTitleDigest;
+  const titlePreview = exactTitle !== null
+    ? safeText(exactTitle, 2_000).trim()
+    : safeText(value.title_preview, 2_000).trim();
+  const weight = Number(value.weight);
+  if (!tenantId || tenantId.length > 64 || !titlePreview ||
+      (exactTitle !== null && (!exactTitle || exactTitle.length > 2_000)) ||
+      !SHA256_DIGEST.test(titleDigest) || !Number.isInteger(weight) || weight < 1 ||
+      typeof value.required !== "boolean") {
+    throw new Error("native_v2_task_definition_invalid");
+  }
+  const material = {
+    schema_version: "native_v2_task_binding_v1",
+    tenant_id: tenantId,
+    work_id: workId,
+    task_id: taskId,
+    title_digest: titleDigest,
+    weight,
+    required: value.required,
+  };
+  return Object.freeze({
+    ...material,
+    title_preview: titlePreview,
+    v2_task_digest: digest(material),
+  });
+}
+
+// A terminal verifier report may promote one bound planned-or-completed V2 task into
 // independently verified evidence before the Work as a whole is eligible for
 // closure.  This deliberately does not reuse evaluateNativeClosure(): that
 // evaluator is the Work-wide gate and must continue to require every accepted
@@ -1258,19 +1398,30 @@ export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], ve
   }
   const v2TaskId = String(verifier.v2_task_id || "").trim().toLowerCase();
   if (!v2TaskId) missing.push("task_scoped_v2_task_binding_missing");
+  const v2TaskDigest = String(verifier.v2_task_digest || "").trim().toLowerCase();
   const builders = agents.filter((agent) =>
     taskById.get(agent?.task_id)?.kind === "builder" &&
     String(agent?.v2_task_id || "").trim().toLowerCase() === v2TaskId);
   if (!builders.length) missing.push("task_scoped_builder_missing");
-  const scopedAgents = [verifier, ...builders];
+  const peerVerifiers = agents.filter((agent) =>
+    agent?.task_id !== verifier.task_id &&
+    taskById.get(agent?.task_id)?.kind === "verifier" &&
+    String(agent?.v2_task_id || "").trim().toLowerCase() === v2TaskId);
+  if (peerVerifiers.some((agent) =>
+    agent.status !== "completed" || agent.report?.verdict !== "approved")) {
+    missing.push("task_scoped_peer_verifier_not_approved");
+  }
+  const scopedAgents = [verifier, ...peerVerifiers, ...builders];
   const reportedSessions = new Set();
   for (const agent of scopedAgents) {
     const task = taskById.get(agent?.task_id);
     if (!task || agent.status !== "completed") {
       missing.push(`task_scoped_task_not_completed:${String(agent?.task_id || "unknown")}`);
     }
-    if (!/^[a-f0-9]{64}$/i.test(String(agent?.report_digest || ""))) {
-      missing.push(`task_scoped_report_digest_missing:${String(agent?.task_id || "unknown")}`);
+    if (!/^[a-f0-9]{64}$/i.test(String(agent?.report_digest || "")) ||
+        (agent?.report?.schema_version === "native_agent_report_v1" &&
+        digest({ status: agent?.status, report: agent?.report }) !== agent?.report_digest)) {
+      missing.push(`task_scoped_report_integrity_failed:${String(agent?.task_id || "unknown")}`);
     }
     const session = String(agent?.native_session_fingerprint || "");
     if (
@@ -1313,12 +1464,80 @@ export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], ve
       missing.push("task_scoped_verifier_independence_invalid");
     }
   }
+  for (const peer of peerVerifiers) {
+    const peerVerifiedTaskIds = new Set(
+      Array.isArray(peer.report?.verifies_task_ids)
+        ? peer.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean)
+        : [],
+    );
+    if (builders.some((builder) => !peerVerifiedTaskIds.has(builder.task_id)) ||
+        builders.some((builder) => builder.agent_id === peer.agent_id)) {
+      missing.push(`task_scoped_peer_verifier_scope_invalid:${peer.task_id}`);
+    }
+    const peerEvidence = Array.isArray(peer.report?.acceptance_evidence)
+      ? peer.report.acceptance_evidence
+      : [];
+    if (!Array.isArray(peer.report?.evidence_refs) || !peer.report.evidence_refs.length ||
+        peerEvidence.some((item) => item?.passed !== true) ||
+        peerEvidence.some((item) =>
+          !Array.isArray(item?.evidence_refs) || item.evidence_refs.length === 0)) {
+      missing.push(`task_scoped_peer_verifier_evidence_invalid:${peer.task_id}`);
+    }
+  }
+  const verificationAgents = [verifier, ...peerVerifiers];
+  const verifierWorkspaceDigest = verifiedNativePrecommitWorkspaceDigest(
+    verifier.report?.precommit_evidence,
+  );
+  const scopedPrecommitPresent = verificationAgents.some((agent) =>
+    Boolean(agent.report?.precommit_evidence)) ||
+    builders.some((builder) => Boolean(builder.report?.precommit_evidence));
+  const matchingPrecommitEvidence = Boolean(
+    verifierWorkspaceDigest && builders.length && verificationAgents.every((agent) =>
+      verifiedNativePrecommitWorkspaceDigest(agent.report?.precommit_evidence) ===
+        verifierWorkspaceDigest) &&
+    builders.every((builder) =>
+      verifiedNativePrecommitWorkspaceDigest(builder.report?.precommit_evidence) ===
+        verifierWorkspaceDigest),
+  );
+  const matchingV2TaskBinding = Boolean(
+    SHA256_DIGEST.test(v2TaskDigest) && builders.length &&
+    verificationAgents.every((agent) =>
+      String(agent.v2_task_digest || "").trim().toLowerCase() === v2TaskDigest) &&
+    builders.every((builder) =>
+      String(builder.v2_task_digest || "").trim().toLowerCase() === v2TaskDigest),
+  );
+  const scopedV2TaskBindingPresent = scopedAgents.some((agent) =>
+    Boolean(String(agent?.v2_task_digest || "").trim()));
+  if (scopedV2TaskBindingPresent && !matchingV2TaskBinding) {
+    missing.push("task_scoped_v2_task_binding_mismatch");
+  }
+  if (scopedPrecommitPresent && (!matchingPrecommitEvidence || !matchingV2TaskBinding)) {
+    missing.push("task_scoped_precommit_evidence_mismatch");
+  }
   const verifierEvidence = Array.isArray(verifier.report?.acceptance_evidence)
     ? verifier.report.acceptance_evidence
     : [];
   if (!Array.isArray(verifier.report?.evidence_refs) || !verifier.report.evidence_refs.length ||
-      !verifierEvidence.length) {
+      (!verifierEvidence.length && (!matchingPrecommitEvidence || !matchingV2TaskBinding))) {
     missing.push("task_scoped_verifier_evidence_missing");
+  }
+  for (const verificationAgent of verificationAgents) {
+    const agentAcceptanceEvidence = Array.isArray(verificationAgent.report?.acceptance_evidence)
+      ? verificationAgent.report.acceptance_evidence
+      : [];
+    if (agentAcceptanceEvidence.length) continue;
+    const peer = verificationAgent.task_id !== verifier.task_id;
+    if (!matchingPrecommitEvidence || !matchingV2TaskBinding) {
+      missing.push(peer
+        ? `task_scoped_peer_verifier_evidence_invalid:${verificationAgent.task_id}`
+        : "task_scoped_verifier_evidence_missing");
+    }
+    if (!Array.isArray(verificationAgent.report?.evidence_refs) ||
+        !verificationAgent.report.evidence_refs.includes(`v2-task:${v2TaskDigest}`)) {
+      missing.push(peer
+        ? `task_scoped_peer_v2_task_attestation_missing:${verificationAgent.task_id}`
+        : "task_scoped_v2_task_attestation_missing");
+    }
   }
   if (verifierEvidence.some((item) => item?.passed !== true)) {
     missing.push("task_scoped_verifier_evidence_rejected");
@@ -1327,13 +1546,29 @@ export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], ve
     !Array.isArray(item?.evidence_refs) || item.evidence_refs.length === 0)) {
     missing.push("task_scoped_verifier_evidence_unproven");
   }
-  return Object.freeze({
+  const scopedReportBindings = scopedAgents.map((agent) => ({
+    task_id: String(agent?.task_id || ""),
+    task_kind: String(taskById.get(agent?.task_id)?.kind || agent?.task_kind || ""),
+    agent_id: String(agent?.agent_id || ""),
+    report_digest: String(agent?.report_digest || "").toLowerCase(),
+    native_session_fingerprint: String(agent?.native_session_fingerprint || "").toLowerCase(),
+    v2_task_id: String(agent?.v2_task_id || "").toLowerCase() || null,
+    v2_task_digest: String(agent?.v2_task_digest || "").toLowerCase() || null,
+  })).sort((left, right) => left.task_id.localeCompare(right.task_id));
+  const material = {
     schema_version: "native_task_scoped_verifier_evaluation_v1",
     promotable: missing.length === 0,
     missing: [...new Set(missing)],
     verifier_task_id: verifier.task_id,
     v2_task_id: v2TaskId || null,
+    v2_task_digest: matchingV2TaskBinding ? v2TaskDigest : null,
     builder_task_ids: builders.map((builder) => builder.task_id).sort(),
+    scoped_report_bindings: scopedReportBindings,
+    precommit_workspace_digest: matchingPrecommitEvidence ? verifierWorkspaceDigest : null,
+  };
+  return Object.freeze({
+    ...material,
+    evaluation_digest: digest(material),
   });
 }
 
@@ -2025,6 +2260,8 @@ ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS native_presence_signature varchar(80);
 ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS v2_task_id uuid;
+ALTER TABLE core_continuity_native_agents
+  ADD COLUMN IF NOT EXISTS v2_task_digest char(64);
 CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_native_agents_session_once_idx
   ON core_continuity_native_agents (tenant_id,plan_id,native_session_fingerprint)
   WHERE native_session_fingerprint IS NOT NULL;
@@ -2270,6 +2507,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ? options.nativePrecommitGateBridge
     : null;
   const nativePrecommitGateBridgeRequired = options.nativePrecommitGateBridgeRequired === true;
+  let nativeV2TaskBindingResolver = typeof options.nativeV2TaskBindingResolver === "function"
+    ? options.nativeV2TaskBindingResolver
+    : null;
+  const nativeV2TaskBindingResolverRequired =
+    options.nativeV2TaskBindingResolverRequired === true;
   const failureInjector = typeof options.failureInjector === "function"
     ? options.failureInjector
     : null;
@@ -2316,12 +2558,28 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return crypto.createHash("sha256").update(capability).digest("hex");
   }
 
-  function nativeAssignmentBinding({ v2_task_id: v2TaskId, ...binding } = {}) {
+  function nativeAssignmentBinding({
+    v2_task_id: v2TaskId,
+    v2_task_digest: v2TaskDigest,
+    ...binding
+  } = {}) {
     // Keep historical capabilities valid: a pre-v2-task binding was signed
     // without this property and must not be silently reinterpreted.  New
     // bindings include it in the signature and can therefore promote exactly
     // one V2 task through the verifier bridge.
-    return v2TaskId ? { ...binding, v2_task_id: uuid(v2TaskId, "native_agent_v2_task_invalid") } : binding;
+    if (!v2TaskId) return binding;
+    const bound = {
+      ...binding,
+      v2_task_id: uuid(v2TaskId, "native_agent_v2_task_invalid").toLowerCase(),
+    };
+    if (v2TaskDigest !== undefined && v2TaskDigest !== null) {
+      const normalizedDigest = String(v2TaskDigest).trim().toLowerCase();
+      if (!SHA256_DIGEST.test(normalizedDigest)) {
+        throw new Error("native_agent_v2_task_digest_invalid");
+      }
+      bound.v2_task_digest = normalizedDigest;
+    }
+    return bound;
   }
 
   function nativeReporterPresence(identity, agentId) {
@@ -2369,7 +2627,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       input.assignment_capability,
     );
     await initialize();
-    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,
+    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.host_type,a.host_task_id,
         a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
         a.lease_expires_at>clock_timestamp() AS lease_active,
         p.status AS plan_status
@@ -2403,6 +2661,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       coordinator_session_fingerprint: row.coordinator_session_fingerprint,
       lease_expires_at: leaseExpiresAt.toISOString(),
       v2_task_id: row.v2_task_id,
+      v2_task_digest: row.v2_task_digest,
     }));
     if (
       row.assignment_capability_digest !== suppliedAssignmentDigest ||
@@ -2425,6 +2684,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       task_id: row.task_id,
       task_digest: row.task_digest,
       ...(row.v2_task_id ? { v2_task_id: row.v2_task_id } : {}),
+      ...(row.v2_task_digest ? { v2_task_digest: row.v2_task_digest } : {}),
       lease_expires_at: leaseExpiresAt.toISOString(),
       execution_authorized: false,
     });
@@ -2439,7 +2699,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const admission = await admitNativeAgentReport(identity, input);
     const context = workContext(identity, input);
     await initialize();
-    const current = await pool.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,
+    const current = await pool.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,
         p.plan,p.plan_digest,p.status AS plan_status
       FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
         ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
@@ -2452,8 +2712,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (
       row.task_id !== admission.task_id ||
       row.task_digest !== admission.task_digest ||
-      String(row.v2_task_id || "") !== String(admission.v2_task_id || "")
+      String(row.v2_task_id || "") !== String(admission.v2_task_id || "") ||
+      String(row.v2_task_digest || "") !== String(admission.v2_task_digest || "")
     ) {
+      throw new Error("native_agent_acceptance_contract_binding_changed");
+    }
+    const v2TaskBinding = row.v2_task_digest
+      ? await resolveNativeV2TaskBinding(pool, context, row.v2_task_id)
+      : null;
+    if (v2TaskBinding && v2TaskBinding.v2_task_digest !== row.v2_task_digest) {
       throw new Error("native_agent_acceptance_contract_binding_changed");
     }
     if (row.task_kind !== "verifier") {
@@ -2484,6 +2751,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_id: row.task_id,
         task_digest: row.task_digest,
         ...(row.v2_task_id ? { v2_task_id: row.v2_task_id } : {}),
+        ...(row.v2_task_digest ? { v2_task_digest: row.v2_task_digest } : {}),
+        ...(v2TaskBinding ? { v2_task_binding: v2TaskBinding } : {}),
       }),
       acceptance_contract: Object.freeze({
         schema_version: contract.schema_version,
@@ -2557,6 +2826,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return assertOperationalWorkState(await lockWorkState(client, context));
   }
 
+  async function assertNoUnfulfilledPrecommitClaim(client, context) {
+    if ((!nativePrecommitGateBridge && !nativePrecommitGateBridgeRequired) ||
+        (!nativeV2TaskBindingResolver && !nativeV2TaskBindingResolverRequired)) return;
+    const relation = await client.query(
+      "SELECT to_regclass('public.tenant_work_precommit_ticket_gate_claim') AS claim_relation, " +
+      "to_regclass('public.tenant_work_precommit_ticket_gate_claim_fulfillment') AS fulfillment_relation, " +
+      "to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') AS abandonment_relation",
+    );
+    if (!relation.rows[0]?.claim_relation || !relation.rows[0]?.fulfillment_relation ||
+        !relation.rows[0]?.abandonment_relation) return;
+    const pending = await client.query(`SELECT 1 AS pending
+      FROM public.tenant_work_precommit_ticket_gate_claim c
+      LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_fulfillment f
+        ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
+          AND f.gate_projection_digest=c.gate_projection_digest
+          AND f.claim_id=c.claim_id
+      LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_abandonment a
+        ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+          AND a.gate_projection_digest=c.gate_projection_digest
+          AND a.claim_id=c.claim_id
+      WHERE c.tenant_id=$1 AND c.work_id=$2
+        AND f.claim_id IS NULL AND a.claim_id IS NULL
+      LIMIT 1`, [context.tenantId, context.workId]);
+    if (pending.rows[0]) throw new Error("native_agent_precommit_claim_active");
+  }
+
   async function lockGalleryWork(client, context, { allowTerminal = false } = {}) {
     const state = await lockWorkState(client, context);
     if (!allowTerminal) assertOperationalWorkState(state);
@@ -2623,6 +2918,357 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     nativePrecommitGateBridge = bridge;
     return true;
+  }
+
+  function setNativeV2TaskBindingResolver(resolver) {
+    if (typeof resolver !== "function") {
+      throw new Error("native_v2_task_binding_resolver_invalid");
+    }
+    if (nativeV2TaskBindingResolver && nativeV2TaskBindingResolver !== resolver) {
+      throw new Error("native_v2_task_binding_resolver_already_configured");
+    }
+    nativeV2TaskBindingResolver = resolver;
+    return true;
+  }
+
+  async function resolveNativeV2TaskBinding(client, context, v2TaskId, {
+    closureRevalidation = false,
+  } = {}) {
+    if (!v2TaskId) return null;
+    const canonicalV2TaskId = String(v2TaskId).toLowerCase();
+    if (!nativeV2TaskBindingResolver) {
+      if (nativeV2TaskBindingResolverRequired) {
+        throw new Error("native_v2_task_binding_resolver_unavailable");
+      }
+      return null;
+    }
+    const resolved = await nativeV2TaskBindingResolver(client, {
+      server_owned: true,
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      task_id: canonicalV2TaskId,
+      closure_revalidation: closureRevalidation === true,
+    });
+    const expected = buildNativeV2TaskBinding(resolved || {});
+    if (expected.tenant_id !== context.tenantId ||
+        expected.work_id !== String(context.workId).toLowerCase() ||
+        expected.task_id !== canonicalV2TaskId ||
+        resolved?.v2_task_digest !== expected.v2_task_digest) {
+      throw new Error("native_v2_task_binding_resolution_invalid");
+    }
+    if (!closureRevalidation && resolved?.acceptance_verified === true) {
+      throw new Error("native_v2_task_already_verified");
+    }
+    if (!closureRevalidation) return expected;
+    if (!Array.isArray(resolved?.work_task_bindings) ||
+        !resolved.work_task_bindings.length) {
+      throw new Error("native_v2_work_task_bindings_missing");
+    }
+    const seen = new Set();
+    const workTaskBindings = resolved.work_task_bindings.map((item) => {
+      const canonical = buildNativeV2TaskBinding(item || {});
+      const revision = Number(item?.revision);
+      if (canonical.tenant_id !== context.tenantId ||
+          canonical.work_id !== String(context.workId).toLowerCase() ||
+          item?.v2_task_digest !== canonical.v2_task_digest ||
+          !Number.isSafeInteger(revision) || revision < 1 ||
+          seen.has(canonical.task_id)) {
+        throw new Error("native_v2_work_task_binding_invalid");
+      }
+      seen.add(canonical.task_id);
+      return Object.freeze({
+        ...canonical,
+        status: String(item?.status || ""),
+        acceptance_verified: item?.acceptance_verified === true,
+        revision,
+      });
+    }).sort((left, right) => left.task_id.localeCompare(right.task_id));
+    if (!seen.has(canonicalV2TaskId)) {
+      throw new Error("native_v2_task_binding_resolution_invalid");
+    }
+    return Object.freeze({
+      ...expected,
+      status: String(resolved?.status || ""),
+      acceptance_verified: resolved?.acceptance_verified === true,
+      revision: Number(resolved?.revision),
+      work_type: String(resolved?.work_type || ""),
+      v2_task_governed: resolved?.v2_task_governed === true,
+      work_task_bindings: Object.freeze(workTaskBindings),
+    });
+  }
+
+  async function resolveNativeV2WorkTaskBindings(client, context) {
+    if (!nativeV2TaskBindingResolver) {
+      if (nativeV2TaskBindingResolverRequired) {
+        throw new Error("native_v2_task_binding_resolver_unavailable");
+      }
+      return null;
+    }
+    const resolved = await nativeV2TaskBindingResolver(client, {
+      server_owned: true,
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      task_id: null,
+      closure_revalidation: true,
+    });
+    const workType = String(resolved?.work_type || "");
+    const governed = resolved?.v2_task_governed === true;
+    if (resolved?.schema_version !== "native_v2_work_task_bindings_v1" ||
+        resolved?.tenant_id !== context.tenantId ||
+        String(resolved?.work_id || "").toLowerCase() !==
+          String(context.workId).toLowerCase() ||
+        !Array.isArray(resolved?.work_task_bindings) ||
+        (!governed && (workType !== "legacy" || resolved.work_task_bindings.length !== 0))) {
+      throw new Error("native_v2_work_task_bindings_invalid");
+    }
+    const seen = new Set();
+    const bindings = resolved.work_task_bindings.map((item) => {
+      const canonical = buildNativeV2TaskBinding(item || {});
+      const revision = Number(item?.revision);
+      if (canonical.tenant_id !== context.tenantId ||
+          canonical.work_id !== String(context.workId).toLowerCase() ||
+          item?.v2_task_digest !== canonical.v2_task_digest ||
+          !Number.isSafeInteger(revision) || revision < 1 ||
+          seen.has(canonical.task_id)) {
+        throw new Error("native_v2_work_task_binding_invalid");
+      }
+      seen.add(canonical.task_id);
+      return Object.freeze({
+        ...canonical,
+        status: String(item?.status || ""),
+        acceptance_verified: item?.acceptance_verified === true,
+        revision,
+      });
+    }).sort((left, right) => left.task_id.localeCompare(right.task_id));
+    return Object.freeze({
+      schema_version: "native_v2_work_task_bindings_v1",
+      tenant_id: context.tenantId,
+      work_id: String(context.workId).toLowerCase(),
+      work_type: workType,
+      v2_task_governed: governed,
+      bindings: Object.freeze(bindings),
+    });
+  }
+
+  async function nativeV2TaskClosureSnapshot(client, context, agents = []) {
+    const referencedAgents = agents.filter((agent) =>
+      Boolean(String(agent?.v2_task_id || "").trim()) ||
+      Boolean(String(agent?.v2_task_digest || "").trim()));
+    const boundAgents = referencedAgents.filter((agent) =>
+      Boolean(String(agent?.v2_task_id || "").trim()));
+    const scopeMissing = [];
+    const workMissing = [];
+    for (const agent of referencedAgents.filter((candidate) =>
+      !String(candidate?.v2_task_id || "").trim())) {
+      scopeMissing.push(`native_v2_task_id_missing:${String(agent?.task_id || "unknown")}`);
+    }
+    const byTask = new Map();
+    for (const agent of boundAgents) {
+      const taskId = String(agent.v2_task_id || "").trim().toLowerCase();
+      const taskDigest = String(agent.v2_task_digest || "").trim().toLowerCase();
+      const bindings = byTask.get(taskId) || [];
+      bindings.push({
+        native_task_id: String(agent.task_id || ""),
+        native_agent_id: String(agent.agent_id || ""),
+        v2_task_digest: taskDigest || null,
+      });
+      byTask.set(taskId, bindings);
+    }
+    const taskBindings = [];
+    let hasLegacyBindings = false;
+    let resolvedWorkTasks = null;
+    try {
+      resolvedWorkTasks = await resolveNativeV2WorkTaskBindings(client, context);
+    } catch {
+      scopeMissing.push("native_v2_work_task_bindings_unavailable");
+      workMissing.push("native_v2_work_task_bindings_unavailable");
+    }
+    if (!resolvedWorkTasks) {
+      if (!nativeV2TaskBindingResolver &&
+          (nativeV2TaskBindingResolverRequired || referencedAgents.length)) {
+        scopeMissing.push("native_v2_task_binding_resolver_unavailable");
+        workMissing.push("native_v2_task_binding_resolver_unavailable");
+      } else if (!nativeV2TaskBindingResolverRequired && !referencedAgents.length) {
+        return null;
+      }
+    } else {
+      const governed = resolvedWorkTasks.v2_task_governed === true;
+      if (!governed && referencedAgents.length) {
+        scopeMissing.push("native_v2_ungoverned_work_has_task_bindings");
+      }
+      const currentByTask = new Map(resolvedWorkTasks.bindings
+        .map((binding) => [binding.task_id, binding]));
+      const relevantTaskIds = new Set([
+        ...byTask.keys(),
+        ...resolvedWorkTasks.bindings
+          .filter((binding) => binding.required === true)
+          .map((binding) => binding.task_id),
+      ]);
+      if (governed && !boundAgents.length) {
+        scopeMissing.push("native_v2_task_scope_unbound");
+      }
+      if (governed &&
+          ![...currentByTask.values()].some((binding) => binding.required === true)) {
+        workMissing.push("native_v2_required_tasks_missing");
+      }
+      for (const taskId of [...relevantTaskIds].sort()) {
+        const current = currentByTask.get(taskId);
+        const nativeBindings = byTask.get(taskId) || [];
+        if (!current) {
+          if (nativeBindings.length) {
+            scopeMissing.push(`native_v2_task_binding_unavailable:${taskId}`);
+          }
+          workMissing.push(`native_v2_task_binding_unavailable:${taskId}`);
+          continue;
+        }
+        if (current.status !== "completed" || current.acceptance_verified !== true) {
+          if (nativeBindings.length) {
+            scopeMissing.push(`native_v2_task_acceptance_not_current:${taskId}`);
+          }
+          if (current.required === true) {
+            workMissing.push(`native_v2_task_acceptance_not_current:${taskId}`);
+          }
+        }
+        const suppliedDigests = nativeBindings.map((binding) =>
+          binding.v2_task_digest).filter(Boolean);
+        const bindingMode = !nativeBindings.length
+          ? "unbound_required"
+          : suppliedDigests.length === 0
+            ? "legacy_snapshot"
+            : suppliedDigests.length === nativeBindings.length &&
+                new Set(suppliedDigests).size === 1 &&
+                suppliedDigests[0] === current.v2_task_digest
+              ? "digest_bound"
+              : "invalid";
+        if (bindingMode === "legacy_snapshot") hasLegacyBindings = true;
+        if (bindingMode === "invalid") {
+          scopeMissing.push(`native_v2_task_binding_changed:${taskId}`);
+        }
+        const {
+          title_preview: _titlePreview,
+          status: _status,
+          acceptance_verified: _acceptanceVerified,
+          ...canonicalBinding
+        } = current;
+        taskBindings.push({
+          ...canonicalBinding,
+          status: current.status,
+          acceptance_verified: current.acceptance_verified,
+          revision: current.revision,
+          binding_mode: bindingMode,
+          native_bindings: nativeBindings.sort((left, right) =>
+            left.native_task_id.localeCompare(right.native_task_id)),
+        });
+      }
+      const bindingModes = new Set(taskBindings
+        .map((binding) => binding.binding_mode)
+        .filter((mode) => ["legacy_snapshot", "digest_bound"].includes(mode)));
+      if (bindingModes.size > 1) {
+        scopeMissing.push("native_v2_task_binding_mixed_generation");
+      }
+    }
+    const baseMaterial = {
+      schema_version: "native_v2_task_closure_snapshot_v1",
+      tenant_id: context.tenantId,
+      work_id: String(context.workId).toLowerCase(),
+      v2_task_governed: resolvedWorkTasks?.v2_task_governed ?? null,
+      work_type: resolvedWorkTasks?.work_type || null,
+    };
+    const scopeMaterial = {
+      ...baseMaterial,
+      snapshot_scope: "native_plan_task_cohort",
+      task_bindings: taskBindings.filter((binding) =>
+        binding.native_bindings.length > 0),
+    };
+    const workMaterial = {
+      ...baseMaterial,
+      snapshot_scope: "all_required_work_tasks",
+      task_bindings: taskBindings,
+    };
+    const uniqueScopeMissing = [...new Set(scopeMissing)];
+    const uniqueWorkMissing = [...new Set(workMissing)];
+    const scopeValid = uniqueScopeMissing.length === 0;
+    const workValid = scopeValid && uniqueWorkMissing.length === 0;
+    return Object.freeze({
+      ...workMaterial,
+      valid: workValid,
+      scope_valid: scopeValid,
+      work_valid: workValid,
+      scope_missing: Object.freeze(uniqueScopeMissing),
+      work_missing: Object.freeze(uniqueWorkMissing),
+      missing: Object.freeze([...new Set([...uniqueScopeMissing, ...uniqueWorkMissing])]),
+      has_legacy_bindings: hasLegacyBindings,
+      scope_snapshot_digest: digest(scopeMaterial),
+      work_snapshot_digest: digest(workMaterial),
+      snapshot_digest: digest(workMaterial),
+    });
+  }
+
+  async function assertNativeV2TaskClosureSnapshot(
+    client,
+    context,
+    agents,
+    expectedDigest = null,
+    { mode = "work" } = {},
+  ) {
+    const snapshot = await nativeV2TaskClosureSnapshot(client, context, agents);
+    if (!snapshot) {
+      if (expectedDigest || nativeV2TaskBindingResolverRequired) {
+        throw new Error("native_v2_task_closure_binding_changed");
+      }
+      return null;
+    }
+    const valid = mode === "scope" ? snapshot.scope_valid : snapshot.work_valid;
+    const currentDigest = mode === "scope"
+      ? snapshot.scope_snapshot_digest
+      : snapshot.work_snapshot_digest;
+    if (!valid || !expectedDigest || currentDigest !== expectedDigest) {
+      throw new Error("native_v2_task_closure_binding_changed");
+    }
+    return snapshot;
+  }
+
+  function bindNativeV2TaskSnapshotToEvaluation(evaluation, snapshot) {
+    if (!snapshot) return evaluation;
+    const snapshotMissing = snapshot.work_valid ? [] : snapshot.missing;
+    const missing = [...new Set([...(evaluation.missing || []), ...snapshotMissing])];
+    const scopeValid = snapshot.scope_valid === true;
+    const workValid = snapshot.work_valid === true;
+    const precommitScope = Object.freeze({
+      schema_version: "native_v2_precommit_scope_v1",
+      scope_snapshot_digest: snapshot.scope_snapshot_digest,
+      v2_task_governed: snapshot.v2_task_governed === true,
+      tasks: Object.freeze(snapshot.task_bindings
+        .filter((binding) => binding.native_bindings.length > 0)
+        .map((binding) => Object.freeze({
+          task_id: binding.task_id,
+          v2_task_digest: binding.v2_task_digest,
+          revision: binding.revision,
+        }))
+        .sort((left, right) => left.task_id.localeCompare(right.task_id))),
+    });
+    return Object.freeze({
+      ...evaluation,
+      closed: evaluation.closed === true && workValid,
+      missing,
+      precommit_verification: Object.freeze({
+        ...evaluation.precommit_verification,
+        ready: evaluation.precommit_verification?.ready === true && scopeValid,
+      }),
+      commit_ticket_ready: evaluation.commit_ticket_ready === true && scopeValid,
+      native_v2_task_bindings_verified: scopeValid,
+      native_v2_work_tasks_verified: workValid,
+      native_v2_task_scope_snapshot_digest: snapshot.scope_snapshot_digest,
+      native_v2_precommit_scope: precommitScope,
+      native_v2_work_snapshot_digest: snapshot.work_snapshot_digest,
+      native_v2_task_snapshot_digest: snapshot.work_snapshot_digest,
+      native_v2_required_task_count: snapshot.task_bindings
+        .filter((binding) => binding.required === true).length,
+      native_v2_task_revision_digest: digest(snapshot.task_bindings.map((binding) => ({
+        task_id: binding.task_id,
+        revision: binding.revision,
+      }))),
+    });
   }
 
   async function transaction(fn) {
@@ -3437,6 +4083,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "resume", input,
       async () => {
         await lockOperationalWork(client, context);
+        await assertNoUnfulfilledPrecommitClaim(client, context);
         const result = await client.query(`SELECT w.*,c.capsule_id,c.capsule,c.capsule_digest,c.supervisor_approved
           FROM core_continuity_works w LEFT JOIN LATERAL (
             SELECT * FROM core_continuity_capsules WHERE tenant_id=w.tenant_id AND work_id=w.work_id
@@ -3467,8 +4114,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE tenant_id=$1 AND work_id=$2 AND status IN ('planned','verified')
           ORDER BY created_at FOR UPDATE`,
         [context.tenantId, context.workId]);
+        if (openPlans.rows.some((row) =>
+          row.status === "verified" &&
+          row.plan?.coordinator_session_fingerprint !== coordinatorSessionFingerprint)) {
+          // A Core Join may already have produced a still-usable external
+          // action ticket. Session rotation cannot revoke that authority.
+          throw new Error("native_agent_plan_replacement_conflict");
+        }
         const supersededPlanIds = openPlans.rows
           .filter((row) =>
+            row.status === "planned" &&
             row.plan?.coordinator_session_fingerprint !== coordinatorSessionFingerprint)
           .map((row) => row.plan_id);
         if (supersededPlanIds.length) {
@@ -4698,6 +5353,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       },
       async () => {
         await lockOperationalWork(client, context);
+        await assertNoUnfulfilledPrecommitClaim(client, context);
         const work = await client.query(`SELECT w.work_id,w.current_version,a.anchor,a.intent_digest,
             v.architecture,v.architecture_digest
           FROM core_continuity_works w JOIN core_continuity_intent_anchors a
@@ -4726,6 +5382,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
           throw new Error("native_agent_plan_replacement_conflict");
         }
         const planVersion = Number(priorPlan?.plan_version || 0) + 1;
+        const acceptanceContract = buildAcceptanceContract(
+          work.rows[0].anchor,
+          work.rows[0].intent_digest,
+          {
+            architecture_version: Number(work.rows[0].current_version),
+            architecture: work.rows[0].architecture,
+            architecture_digest: work.rows[0].architecture_digest,
+          },
+        );
         const plan = {
           ...basePlan,
           ...(input.launch_request?.schema_version === "nyra_host_launch_request_v1" &&
@@ -4737,15 +5402,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
               verifier_task_id: "verify", distinct_session_required: true, host_execution_required: true,
             } } : {}),
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
-          acceptance_contract: buildAcceptanceContract(
-            work.rows[0].anchor,
-            work.rows[0].intent_digest,
-            {
-              architecture_version: Number(work.rows[0].current_version),
-              architecture: work.rows[0].architecture,
-              architecture_digest: work.rows[0].architecture_digest,
-            },
-          ),
+          acceptance_contract: acceptanceContract,
+          precommit_acceptance_policy: buildPrecommitAcceptancePolicy(acceptanceContract),
           core_authority: bindCoreWorkPlan(options.corePlan, basePlan, {
             workId: context.workId,
             intentDigest: work.rows[0].intent_digest,
@@ -4927,7 +5585,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const taskId = identifier(input.task_id, "task_id", 120);
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
-    const v2TaskId = input.v2_task_id === undefined ? null : uuid(input.v2_task_id, "native_agent_v2_task_invalid");
+    const v2TaskId = input.v2_task_id === undefined
+      ? null
+      : uuid(input.v2_task_id, "native_agent_v2_task_invalid").toLowerCase();
     const hostType = String(input.host_type || "");
     if (!NATIVE_HOST_TYPES.has(hostType)) throw new Error("native_agent_host_type_invalid");
     const coordinatorSessionFingerprint = nativeCoordinatorFingerprint(identity);
@@ -4945,7 +5605,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId]);
       const plan = planResult.rows[0]?.plan;
       const task = plan?.tasks?.find((candidate) => candidate.task_id === taskId);
-      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND plan_id=$2 AND
@@ -4971,6 +5631,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           "native_agent_lease",
         ).toISOString(),
         v2_task_id: row.v2_task_id,
+        v2_task_digest: row.v2_task_digest,
       }));
       if (row.task_id !== taskId || row.agent_id !== agentId ||
           row.host_type !== hostType || row.host_task_id !== hostTaskId ||
@@ -5022,7 +5683,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY task_id FOR UPDATE`,
       [context.tenantId, context.workId, planId]);
-      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND plan_id=$2 AND
@@ -5048,6 +5709,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
             "native_agent_lease",
           ).toISOString(),
           v2_task_id: row.v2_task_id,
+          v2_task_digest: row.v2_task_digest,
         }));
         if (row.task_id !== taskId || row.agent_id !== agentId ||
             row.host_type !== hostType || row.host_task_id !== hostTaskId ||
@@ -5090,6 +5752,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         leaseClock.rows[0]?.lease_expires_at,
         "native_agent_lease",
       ).toISOString();
+      const v2TaskBinding = await resolveNativeV2TaskBinding(
+        client,
+        context,
+        v2TaskId,
+      );
       const assignmentBinding = nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
@@ -5102,16 +5769,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
         coordinator_session_fingerprint: coordinatorSessionFingerprint,
         lease_expires_at: leaseExpiresAt,
         v2_task_id: v2TaskId,
+        v2_task_digest: v2TaskBinding?.v2_task_digest,
       });
       const assignment = assignmentCapability(assignmentBinding);
       const assignmentDigest = assignmentCapabilityDigest(assignment);
       await client.query(`INSERT INTO core_continuity_native_agents
         (tenant_id,work_id,plan_id,task_id,agent_id,host_type,host_task_id,task_kind,task_digest,v2_task_id,
-         coordinator_session_fingerprint,assignment_capability_digest,bound_by,lease_expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+         v2_task_digest,coordinator_session_fingerprint,assignment_capability_digest,bound_by,lease_expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [context.tenantId, context.workId, planId, taskId, agentId, hostType, hostTaskId,
-        task.kind, task.task_digest, v2TaskId, coordinatorSessionFingerprint, assignmentDigest,
-        context.actor, leaseExpiresAt]);
+        task.kind, task.task_digest, v2TaskId, v2TaskBinding?.v2_task_digest || null,
+        coordinatorSessionFingerprint, assignmentDigest, context.actor, leaseExpiresAt]);
       const binding = {
         task_id: taskId,
         agent_id: agentId,
@@ -5120,6 +5788,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_kind: task.kind,
         task_digest: task.task_digest,
         ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
+        ...(v2TaskBinding ? { v2_task_digest: v2TaskBinding.v2_task_digest } : {}),
+        ...(v2TaskBinding ? { v2_task_binding: v2TaskBinding } : {}),
         coordinator_session_fingerprint: coordinatorSessionFingerprint,
         assignment_capability_digest: assignmentDigest,
         status: "bound",
@@ -5140,6 +5810,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         host_type: hostType,
         task_digest: task.task_digest,
         ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
+        ...(v2TaskBinding ? { v2_task_digest: v2TaskBinding.v2_task_digest } : {}),
         assignment_capability_digest: assignmentDigest,
       });
       return {
@@ -5236,7 +5907,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           a.report,a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
-          p.plan,p.status AS plan_status,a.v2_task_id
+          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
         WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
@@ -5258,6 +5929,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           "native_agent_lease",
         ).toISOString(),
         v2_task_id: row.v2_task_id,
+        v2_task_digest: row.v2_task_digest,
       }));
       if (row.host_type !== reporterPresence.host_type) {
         throw new Error("native_agent_reporter_host_scope_mismatch");
@@ -5307,7 +5979,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
           a.lease_expires_at>clock_timestamp() AS lease_active,
-          p.plan,p.status AS plan_status,a.v2_task_id
+          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
         WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
@@ -5343,6 +6015,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           "native_agent_lease",
         ).toISOString(),
         v2_task_id: row.v2_task_id,
+        v2_task_digest: row.v2_task_digest,
       }));
       if (
         row.assignment_capability_digest !== suppliedAssignmentDigest ||
@@ -5377,8 +6050,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
           (row.plan?.acceptance_contract?.criteria || [])
             .map((criterion) => criterion.criterion_digest),
         );
+        const emptyAcceptanceAllowed = status === "completed" && Boolean(report.precommit_evidence);
         if (
-          !report.acceptance_evidence.length ||
+          (!emptyAcceptanceAllowed && !report.acceptance_evidence.length) ||
           report.acceptance_evidence.some((item) => !allowedCriteria.has(item.criterion_digest))
         ) {
           throw new Error("native_agent_acceptance_evidence_invalid");
@@ -5411,7 +6085,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       } else if (report.acceptance_evidence.length) {
         throw new Error("native_agent_acceptance_evidence_verifier_only");
       }
-      const bridgeVerifierEvidence = async (receipt = null) => {
+      const bridgeVerifierEvidence = async (receipt = null, { legacyReplayOnly = false } = {}) => {
         if (row.task_kind !== "verifier" || status !== "completed" ||
             report.verdict !== "approved" || !row.v2_task_id) {
           return null;
@@ -5420,7 +6094,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         // bound to the verifier's exact V2 task and its independently reported
         // builders; evaluateNativeClosure remains the separate Work-wide gate.
         const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
-            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,v2_task_id
+            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,
+            v2_task_id,v2_task_digest
           FROM core_continuity_native_agents
           WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
           ORDER BY task_id FOR UPDATE`, [context.tenantId, context.workId, planId]);
@@ -5429,7 +6104,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
           agents: agents.rows,
           verifier_task_id: row.task_id,
         });
-        if (evaluation.promotable !== true) return null;
+        const historicalV1Replay = legacyReplayOnly &&
+          evaluation.promotable !== true &&
+          agents.rows
+            .filter((agent) =>
+              String(agent.v2_task_id || "").trim().toLowerCase() ===
+                String(row.v2_task_id || "").trim().toLowerCase())
+            .every((agent) => !agent.v2_task_digest) &&
+          Boolean(report.precommit_evidence);
+        if (evaluation.promotable !== true && !historicalV1Replay) return null;
         let boundReceipt = receipt;
         if (!boundReceipt) {
           const result = await client.query(`SELECT receipt_id,payload_digest
@@ -5452,6 +6135,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
           agent_id: agentId,
           session_fingerprint: reporterPresence.session_fingerprint,
           presence_signature: reporterPresence.signature,
+          v2_task_digest: row.v2_task_digest,
+          task_evaluation_digest: evaluation.evaluation_digest,
+          legacy_replay_only: historicalV1Replay,
           report_digest: reportDigest,
           receipt_id: boundReceipt.receipt_id,
           receipt_digest: boundReceipt.payload_digest,
@@ -5466,7 +6152,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           throw new Error("native_agent_report_conflict");
         }
         const v2Evidence = nativeVerifierEvidenceBridge
-          ? await bridgeVerifierEvidence()
+          ? await bridgeVerifierEvidence(null, { legacyReplayOnly: true })
           : null;
         if (row.task_kind === "verifier" && status === "completed" &&
             report.verdict === "approved" && row.v2_task_id &&
@@ -5565,6 +6251,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           });
         }
         await lockOperationalWork(client, context);
+        await assertNoUnfulfilledPrecommitClaim(client, context);
         const planResult = await client.query(`SELECT p.plan,p.plan_digest,p.status,a.intent_digest
           FROM core_continuity_native_plans p JOIN core_continuity_intent_anchors a
             ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
@@ -5582,10 +6269,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           throw new Error("native_agent_intent_binding_mismatch");
         }
         const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
-            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,
+            v2_task_id,v2_task_digest
           FROM core_continuity_native_agents WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
           ORDER BY task_id`, [context.tenantId, context.workId, planId]);
-        const evaluation = evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows });
+        const nativeV2TaskSnapshot = await nativeV2TaskClosureSnapshot(
+          client,
+          context,
+          agents.rows,
+        );
+        const evaluation = bindNativeV2TaskSnapshotToEvaluation(
+          evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows }),
+          nativeV2TaskSnapshot,
+        );
         const evaluationId = crypto.randomUUID();
         const evaluationDigest = digest(evaluation);
         if (evaluation.closed && !input.release) {
@@ -5625,6 +6321,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
                 evaluation_id: evaluationId,
                 evaluation_digest: evaluationDigest,
                 workspace_digest: evaluation.precommit_verification.workspace_digest,
+                ...(evaluation.native_v2_precommit_scope ? {
+                  v2_task_scope: evaluation.native_v2_precommit_scope,
+                } : {}),
                 evaluated_by: context.actor,
               })
             : null;
@@ -5642,6 +6341,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
             String(precommitTicketGate?.evaluation_id || "").toLowerCase() !== evaluationId.toLowerCase() ||
             precommitTicketGate?.evaluation_digest !== evaluationDigest ||
             precommitTicketGate?.workspace_digest !== evaluation.precommit_verification.workspace_digest ||
+            (evaluation.native_v2_precommit_scope && (
+              precommitTicketGate?.v2_scope_snapshot_digest !==
+                evaluation.native_v2_precommit_scope.scope_snapshot_digest ||
+              digest(precommitTicketGate?.v2_scope_tasks) !==
+                digest(evaluation.native_v2_precommit_scope.tasks)
+            )) ||
             precommitTicketGate?.action_kind !== "git.commit" ||
             precommitTicketGate?.gate_kind !== "ticket_acquisition" ||
             precommitTicketGate?.fresh !== true || precommitTicketGate?.fulfilled !== false ||
@@ -5719,6 +6424,25 @@ export function createWorkContinuityRuntime(config, options = {}) {
         [context.tenantId, context.workId, planId]);
         if (!plan.rows[0]) throw new Error("native_agent_plan_not_found");
         assertNativePlanEvaluable(plan.rows[0].status);
+        if (replay.closed === true || replay.commit_ticket_ready === true) {
+          const expectedSnapshotDigest = replay.closed === true
+            ? replay.native_v2_work_snapshot_digest ||
+                replay.native_v2_task_snapshot_digest || null
+            : replay.native_v2_task_scope_snapshot_digest || null;
+          if (expectedSnapshotDigest || nativeV2TaskBindingResolverRequired) {
+            const agents = await client.query(`SELECT task_id,agent_id,v2_task_id,v2_task_digest
+              FROM core_continuity_native_agents
+              WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+              ORDER BY task_id`, [context.tenantId, context.workId, planId]);
+            await assertNativeV2TaskClosureSnapshot(
+              client,
+              context,
+              agents.rows,
+              expectedSnapshotDigest,
+              { mode: replay.closed === true ? "work" : "scope" },
+            );
+          }
+        }
         const reconciliation = await reconcileSyntheticClosureGapIncidents(
           client,
           context,
@@ -5763,11 +6487,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
         throw new Error("continuity_core_join_local_integrity_failed");
       }
       const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
-          coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+          coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,
+          v2_task_id,v2_task_digest
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY task_id`,
       [context.tenantId, context.workId, planId]);
+      await assertNativeV2TaskClosureSnapshot(
+        client,
+        context,
+        agents.rows,
+        row.evaluation.native_v2_work_snapshot_digest ||
+          row.evaluation.native_v2_task_snapshot_digest || null,
+      );
       const requestedMaterial = buildCoreJoinMaterial({
         tenantId: context.tenantId,
         workId: context.workId,
@@ -5955,10 +6687,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return transaction(async (client) => {
       await lockWorkRow(client, context);
       const latest = await client.query(`SELECT p.status,j.release_intent,j.release_intent_digest,
-          j.core_join_record,j.core_join_record_digest,j.verdict_id
+          j.core_join_record,j.core_join_record_digest,j.verdict_id,e.evaluation
         FROM core_continuity_release_joins j
         JOIN core_continuity_native_plans p
           ON p.tenant_id=j.tenant_id AND p.work_id=j.work_id AND p.plan_id=j.plan_id
+        JOIN core_continuity_closure_evaluations e
+          ON e.tenant_id=j.tenant_id AND e.work_id=j.work_id
+          AND e.plan_id=j.plan_id AND e.evaluation_id=j.evaluation_id
         WHERE j.tenant_id=$1 AND j.work_id=$2 AND j.plan_id=$3
         ORDER BY j.renewal_generation DESC,j.created_at DESC,j.verdict_id DESC
         LIMIT 1 FOR UPDATE`,
@@ -5967,6 +6702,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (!row) throw new Error("continuity_persisted_release_not_found");
       if (!["verified", "closed"].includes(row.status)) {
         throw new Error("native_agent_plan_not_release_ready");
+      }
+      const expectedV2WorkSnapshot = row.evaluation?.native_v2_work_snapshot_digest ||
+        row.evaluation?.native_v2_task_snapshot_digest || null;
+      if (expectedV2WorkSnapshot || nativeV2TaskBindingResolverRequired) {
+        const agents = await client.query(`SELECT task_id,agent_id,v2_task_id,v2_task_digest
+          FROM core_continuity_native_agents
+          WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+          ORDER BY task_id FOR UPDATE`, [context.tenantId, context.workId, planId]);
+        await assertNativeV2TaskClosureSnapshot(
+          client,
+          context,
+          agents.rows,
+          expectedV2WorkSnapshot,
+        );
       }
       const releaseIntent = requireObject(row.release_intent, "core_release_intent");
       const coreJoinRecord = requireObject(row.core_join_record, "core_join_record");
@@ -6035,11 +6784,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
         throw new Error("continuity_core_join_local_integrity_failed");
       }
       const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
-          coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+          coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,
+          v2_task_id,v2_task_digest
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY task_id`,
       [context.tenantId, context.workId, planId]);
+      await assertNativeV2TaskClosureSnapshot(
+        client,
+        context,
+        agents.rows,
+        row.evaluation.native_v2_work_snapshot_digest ||
+          row.evaluation.native_v2_task_snapshot_digest || null,
+      );
       const release = {
         base_branch: releaseIntent.base_branch,
         delivery_branch: releaseIntent.delivery_branch,
@@ -6443,6 +7200,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
           digest(row.core_join_record) !== row.core_join_record_digest
         ) {
           throw new Error("native_agent_plan_not_release_ready");
+        }
+        const expectedV2WorkSnapshot = row.evaluation.native_v2_work_snapshot_digest ||
+          row.evaluation.native_v2_task_snapshot_digest || null;
+        if (expectedV2WorkSnapshot || nativeV2TaskBindingResolverRequired) {
+          const agents = await client.query(`SELECT task_id,agent_id,v2_task_id,v2_task_digest
+            FROM core_continuity_native_agents
+            WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+            ORDER BY task_id FOR UPDATE`, [context.tenantId, context.workId, planId]);
+          await assertNativeV2TaskClosureSnapshot(
+            client,
+            context,
+            agents.rows,
+            expectedV2WorkSnapshot,
+          );
         }
         const planHostType = String(row.plan.host_type || "");
         const receiptHostKind = String(receipt.host_kind || "");
@@ -7743,6 +8514,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     setWorkEventProjector,
     setNativeVerifierEvidenceBridge,
     setNativePrecommitGateBridge,
+    setNativeV2TaskBindingResolver,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,
