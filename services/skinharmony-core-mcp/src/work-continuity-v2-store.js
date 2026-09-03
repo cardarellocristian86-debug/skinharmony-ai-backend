@@ -2437,7 +2437,11 @@ export function createWorkContinuityV2Store({
       work_id: workId,
       expected_classification: expectedClassification,
       reason,
-      revoke_unattested_read_only_bindings: revokeUnattestedReadOnlyBindings,
+      // Preserve the v1 digest byte-for-byte when this new, opt-in action is
+      // absent.  Existing archived Work retries must remain replayable.
+      ...(revokeUnattestedReadOnlyBindings
+        ? { revoke_unattested_read_only_bindings: true }
+        : {}),
     });
     const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
     return transaction(async (client) => {
@@ -2466,6 +2470,12 @@ export function createWorkContinuityV2Store({
           classification: payload.classification,
           legacy_status: payload.legacy_status,
           closure_claimed: false,
+          revoked_unattested_read_only_binding_count: Number(
+            payload.revoked_unattested_read_only_binding_count || 0,
+          ),
+          revoked_unattested_read_only_session_count: Number(
+            payload.revoked_unattested_read_only_session_count || 0,
+          ),
           event_hash: replay.rows[0].event_hash,
           idempotent_replay: true,
         };

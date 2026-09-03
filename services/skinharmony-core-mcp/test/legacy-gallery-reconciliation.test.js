@@ -333,6 +333,8 @@ test("historical bridged archive retains the legacy record, requires stale inact
   const eventCount = pool.v2Events.length;
   const replay = await runtime.archiveHistoricalBridgedWork(identity(), args);
   assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.revoked_unattested_read_only_binding_count, 0);
+  assert.equal(replay.revoked_unattested_read_only_session_count, 0);
   assert.equal(pool.v2Events.length, eventCount);
 
   const activePool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", activePresence: true });
@@ -361,6 +363,14 @@ test("historical bridged archive retains the legacy record, requires stale inact
   assert.equal(ownerRevokedArchive.revoked_unattested_read_only_binding_count, 1);
   assert.equal(ownerRevokedArchive.revoked_unattested_read_only_session_count, 1);
   assert.equal(ownerRevokedReadOnlyPool.leases[0].status, "expired");
+  const ownerRevokedReplay = await store(ownerRevokedReadOnlyPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    revoke_unattested_read_only_bindings: true,
+    idempotency_key: "archive-historical-bridge-owner-revoke-0001",
+  });
+  assert.equal(ownerRevokedReplay.idempotent_replay, true);
+  assert.equal(ownerRevokedReplay.revoked_unattested_read_only_binding_count, 1);
+  assert.equal(ownerRevokedReplay.revoked_unattested_read_only_session_count, 1);
 
   const branchPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", activeBranch: true });
   branchPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
