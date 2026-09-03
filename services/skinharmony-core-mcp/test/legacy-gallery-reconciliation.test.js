@@ -143,6 +143,12 @@ class ReconciliationPool {
         item.payload.idempotency_key_digest === params[2]);
       return { rows: row ? [{ ...row }] : [] };
     }
+    if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,")) {
+      const row = [...this.v2Events].reverse().find((item) => item.tenant_id === params[0] &&
+        item.work_id === params[1] && item.event_type === "historical_bridge_archived_v1" &&
+        item.payload.idempotency_key_digest === params[2]);
+      return { rows: row ? [{ ...row }] : [] };
+    }
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_participants")) {
       return { rows: params[1] === SOURCE ? this.participants.map((row) => ({ ...row })) : [] };
     }
@@ -152,6 +158,10 @@ class ReconciliationPool {
     if (q.startsWith("SELECT status,updated_at FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
       return { rows: row ? [{ status: row.status, updated_at: row.updated_at }] : [] };
+    }
+    if (q.startsWith("SELECT work_id,status,updated_at FROM core_continuity_works")) {
+      const row = this.legacy.get(`${params[0]}:${params[1]}`);
+      return { rows: row ? [{ work_id: row.work_id, status: row.status, updated_at: row.updated_at }] : [] };
     }
     if (q.startsWith("SELECT work_id,project_id,status FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
@@ -193,6 +203,17 @@ class ReconciliationPool {
         successor_work_id: params[4], superseded_by_work_id: params[4], updated_at: NOW.toISOString(),
       });
       return { rows: [{ closed_at: work.closed_at, archived_at: work.archived_at }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status='ARCHIVED'")) {
+      const key = `${params[0]}:${params[1]}`;
+      const work = this.works.get(key);
+      if (!work || work.status !== params[4]) return { rows: [], rowCount: 0 };
+      Object.assign(work, {
+        status: "ARCHIVED", archived_at: NOW.toISOString(), archived_from_status: params[2],
+        archived_reason: params[3], closure_type: "historical_bridge_archive",
+        closure_reason: params[3], assignment_status: "REVOKED", updated_at: NOW.toISOString(),
+      });
+      return { rows: [{ ...work }], rowCount: 1 };
     }
     if (q.startsWith("UPDATE core_continuity_works SET status=$3")) {
       const key = `${params[0]}:${params[1]}`;
@@ -246,6 +267,45 @@ test("legacy reconciliation tool is owner-confirmed, exact and preserves termina
     ["CANCEL", "SUPERSEDE", "REPAIR_COMPLETED_PROJECTION"]);
   assert(catalog.inputSchema.properties.status.enum.includes("cancelled"));
   assert(catalog.inputSchema.properties.status.enum.includes("superseded"));
+});
+
+test("historical bridged archive is owner-confirmed and never claims a closure", () => {
+  const tool = WORK_CONTINUITY_TOOLS.find((item) => item.name === "tenant_work_historical_archive_v3");
+  assert.equal(tool.annotations.readOnlyHint, false);
+  assert.equal(tool._meta["skinharmony/ownerConfirmationRequired"], true);
+  assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
+  assert.deepEqual(tool.inputSchema.properties.expected_classification.enum, ["STALE", "ABANDONED"]);
+});
+
+test("historical bridged archive retains the legacy record, requires stale inactivity, and replays exactly", async () => {
+  const pool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
+  const linked = pool.works.get(`tenant-a:${SOURCE}`);
+  linked.work_type = "software_git";
+  const runtime = store(pool);
+  const args = {
+    work_id: SOURCE,
+    expected_classification: "STALE",
+    reason: "The immutable native task binding changed, so this historical bridge cannot be honestly closed.",
+    idempotency_key: "archive-historical-bridge-0001",
+  };
+  const first = await runtime.archiveHistoricalBridgedWork(identity(), args);
+  assert.equal(first.work.status, "ARCHIVED");
+  assert.equal(first.classification, "STALE");
+  assert.equal(first.closure_claimed, false);
+  assert.equal(pool.legacy.get(`tenant-a:${SOURCE}`).status, "release_ready");
+  assert.equal(pool.works.get(`tenant-a:${SOURCE}`).closed_at, null);
+  assert.equal(pool.v2Events.at(-1).event_type, "historical_bridge_archived_v1");
+  assert.equal(pool.v2Events.at(-1).payload.closure_claimed, false);
+
+  const eventCount = pool.v2Events.length;
+  const replay = await runtime.archiveHistoricalBridgedWork(identity(), args);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.v2Events.length, eventCount);
+
+  const activePool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", activePresence: true });
+  activePool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  await assert.rejects(store(activePool).archiveHistoricalBridgedWork(identity(), args),
+    /historical_bridge_archive_active_work_denied/);
 });
 
 test("stale cancellation is tenant-scoped, dual-audited, archived and idempotent without completion", async () => {

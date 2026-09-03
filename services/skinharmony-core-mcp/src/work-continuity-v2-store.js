@@ -2394,6 +2394,120 @@ export function createWorkContinuityV2Store({
       };
     });
   }
+  // A linked V2 Work can outlive the native plan that originally governed it.
+  // This is deliberately not a closure path: it preserves both ledgers,
+  // records why the item left the operational Gallery, and can never claim
+  // completed acceptance, receipt, or deployment evidence.
+  async function archiveHistoricalBridgedWork(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("historical_bridge_archive_owner_required");
+    const confirmationReference = String(identity.confirmationReference || "").trim();
+    if (identity.ownerConfirmed !== true || !confirmationReference || confirmationReference.length > 240) {
+      fail("historical_bridge_archive_owner_confirmation_required");
+    }
+    const workId = uuid(input.work_id);
+    const expectedClassification = String(input.expected_classification || "").trim().toUpperCase();
+    if (!['STALE', 'ABANDONED'].includes(expectedClassification)) {
+      fail("historical_bridge_archive_expected_classification_invalid");
+    }
+    const reason = text(input.reason, "historical_bridge_archive_reason_required", 1_000);
+    const idempotencyKey = galleryIdempotencyKey(
+      input.idempotency_key,
+      "historical_bridge_archive_idempotency_key_required",
+    );
+    const requestDigest = objectDigest({
+      schema_version: "tenant_work_historical_bridge_archive_request_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      expected_classification: expectedClassification,
+      reason,
+    });
+    const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (!work.legacy_work_id || work.work_type === "legacy") {
+        fail("historical_bridge_archive_work_type_invalid");
+      }
+      const replay = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,
+          previous_event_hash,event_hash
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2
+          AND event_type='historical_bridge_archived_v1'
+          AND payload->>'idempotency_key_digest'=$3
+        ORDER BY sequence_number DESC LIMIT 1`,
+      [actor.tenant_id, workId, idempotencyKeyDigest]);
+      if (replay.rows[0]) {
+        const payload = replay.rows[0].payload || {};
+        if (payload.request_digest !== requestDigest ||
+            payload.schema_version !== "tenant_work_historical_bridge_archive_event_v1") {
+          fail("historical_bridge_archive_idempotency_conflict");
+        }
+        return {
+          schema_version: "tenant_work_historical_bridge_archive_v1",
+          work: payload.work,
+          classification: payload.classification,
+          legacy_status: payload.legacy_status,
+          closure_claimed: false,
+          event_hash: replay.rows[0].event_hash,
+          idempotent_replay: true,
+        };
+      }
+      if (!OPERATIONAL_STATUSES.has(work.status)) fail("historical_bridge_archive_status_invalid");
+      const legacyResult = await client.query(`SELECT work_id,status,updated_at
+        FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+      [actor.tenant_id, work.legacy_work_id]);
+      const legacy = legacyResult.rows[0];
+      if (!legacy) fail("historical_bridge_archive_legacy_work_not_found");
+      const [participants, leases] = await Promise.all([
+        client.query(`SELECT status,expires_at FROM core_continuity_participants
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
+        client.query(`SELECT status,expires_at FROM core_continuity_leases
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
+      ]);
+      const currentTime = now().getTime();
+      const activeParticipant = participants.rows.some((row) => row.status === "active" &&
+        new Date(row.expires_at).getTime() > currentTime);
+      const activeLease = leases.rows.some((row) => row.status === "active" &&
+        new Date(row.expires_at).getTime() > currentTime);
+      if (activeParticipant || activeLease) fail("historical_bridge_archive_active_work_denied");
+      const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
+        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases: leases.rows }, now());
+      if (stale.classification !== expectedClassification) {
+        fail("historical_bridge_archive_classification_conflict");
+      }
+      const archived = await client.query(`UPDATE tenant_work SET
+          status='ARCHIVED',archived_at=now(),archived_from_status=$3::varchar,archived_reason=$4,
+          closure_type='historical_bridge_archive',closure_reason=$4,assignment_status='REVOKED',updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
+        RETURNING *`, [actor.tenant_id, workId, work.status, reason, work.status]);
+      if (!archived.rows[0]) fail("historical_bridge_archive_status_conflict");
+      const normalized = normalizeWork(archived.rows[0]);
+      const event = await appendV2Event(client, actor, workId, "historical_bridge_archived_v1", {
+        schema_version: "tenant_work_historical_bridge_archive_event_v1",
+        from_status: work.status,
+        reason,
+        classification: stale.classification,
+        legacy_work_id: work.legacy_work_id,
+        legacy_status: String(legacy.status || "").toLowerCase(),
+        request_digest: requestDigest,
+        idempotency_key_digest: idempotencyKeyDigest,
+        closure_claimed: false,
+        work: normalized,
+      });
+      return {
+        schema_version: "tenant_work_historical_bridge_archive_v1",
+        work: normalized,
+        classification: stale.classification,
+        legacy_status: String(legacy.status || "").toLowerCase(),
+        closure_claimed: false,
+        event_hash: event.event_hash,
+        idempotent_replay: false,
+      };
+    });
+  }
   async function reopenWork(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -5934,7 +6048,8 @@ export function createWorkContinuityV2Store({
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
     ensureLegacyBridge,
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
-    readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
+    readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
+    archiveHistoricalBridgedWork, reopenWork,
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     claimPrecommitTicketGate, reconcilePrecommitTicketGateClaim, readPrecommitTicketGateClaimRecovery,
     abandonInactivePrecommitTicketGateClaim,
