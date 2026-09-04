@@ -25,6 +25,54 @@ import { createRetryablePostgresInitializer } from "../../shared/retryable-postg
 const NYRA_READ_ONLY_LEASE_PURPOSE = "Nyra governed read-only Work context";
 const HISTORICAL_BLOCKED_TIMESTAMP_REPAIR_MIN_AGE_MS = 72 * 60 * 60 * 1_000;
 
+function isAttestedNyraReadOnlyLease(row) {
+  return row?.branch_id == null && row?.purpose === NYRA_READ_ONLY_LEASE_PURPOSE &&
+    row?.nyra_read_binding_attested === true;
+}
+
+// A signed Nyra diagnostic binding grants no execution authority.  It must
+// remain auditable, but it cannot turn a dormant legacy Work into an active
+// execution or prevent its owner-confirmed historical reconciliation.  Keep
+// every other live lease or participant in the staleness input fail-closed.
+function stalenessExecutionActivity(participants = [], leases = [], at = Date.now()) {
+  const activeLeasesBySession = new Map();
+  const activeParticipantsBySession = new Map();
+  for (const lease of leases) {
+    if (lease?.status !== "active" || new Date(lease.expires_at).getTime() <= at) continue;
+    const rows = activeLeasesBySession.get(lease.session_id) || [];
+    rows.push(lease);
+    activeLeasesBySession.set(lease.session_id, rows);
+  }
+  for (const participant of participants) {
+    if (participant?.status !== "active" || new Date(participant.expires_at).getTime() <= at) continue;
+    const rows = activeParticipantsBySession.get(participant.session_id) || [];
+    rows.push(participant);
+    activeParticipantsBySession.set(participant.session_id, rows);
+  }
+  const readOnlySessions = new Set(
+    [...activeLeasesBySession.entries()]
+      .filter(([sessionId, rows]) => {
+        const sessionParticipants = activeParticipantsBySession.get(sessionId) || [];
+        return rows.length > 0 && sessionParticipants.length > 0 &&
+          rows.every(isAttestedNyraReadOnlyLease) &&
+          sessionParticipants.every((participant) => participant.branch_id == null);
+      })
+      .map(([sessionId]) => sessionId),
+  );
+  return {
+    participants: participants.filter((participant) => !readOnlySessions.has(participant.session_id)),
+    leases: leases.filter((lease) => !readOnlySessions.has(lease.session_id)),
+    read_only_binding_count: [...activeLeasesBySession.values()]
+      .flat()
+      .filter(isAttestedNyraReadOnlyLease).length,
+    execution_activity_count: participants.filter((participant) =>
+      !readOnlySessions.has(participant.session_id) && participant.status === "active" &&
+      new Date(participant.expires_at).getTime() > at).length +
+      leases.filter((lease) => !readOnlySessions.has(lease.session_id) && lease.status === "active" &&
+        new Date(lease.expires_at).getTime() > at).length,
+  };
+}
+
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
@@ -5488,13 +5536,14 @@ export function createWorkContinuityV2Store({
       }
       const sourceId = work.legacy_work_id;
       const [participants, leases] = await Promise.all([
-        query("SELECT status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
-        query("SELECT status,expires_at FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
+        query("SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
+        query("SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
       ]);
-      const activity = {
-        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
-        leases: leases.rows,
-      };
+      const activity = stalenessExecutionActivity(
+        participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases.rows,
+        now().getTime(),
+      );
       const authoritative = await query(
         "SELECT status,updated_at FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2",
         [actor.tenant_id, sourceId],
@@ -5509,9 +5558,15 @@ export function createWorkContinuityV2Store({
       const projectedTimestampValid = Number.isFinite(projectedUpdatedAtMs);
       const timestampProjectionDrift = !authoritativeTimestampValid || !projectedTimestampValid ||
         Math.abs(authoritativeUpdatedAtMs - projectedUpdatedAtMs) > 5 * 60_000;
-      const stale = classifyStaleWork({ ...work,
+      const staleFromExecution = classifyStaleWork({ ...work,
         updated_at: authoritativeTimestampValid ? authoritativeUpdatedAt : null,
         ...activity });
+      // Keep the decision fail-closed even if a future classifier revision
+      // stops consuming a new execution-activity field: a live non-read-only
+      // participant or lease can never be offered for reconciliation.
+      const stale = activity.execution_activity_count > 0
+        ? { classification: "ACTIVE_VALID", reasons: ["effective_execution_activity"] }
+        : staleFromExecution;
       const authoritativeV2Status = authoritativeStatus
         ? mapLegacyStatus(authoritativeStatus)
         : null;
@@ -5542,6 +5597,8 @@ export function createWorkContinuityV2Store({
         successor_required_for_supersede: !projectionDrift && reconcilable,
         server_closure_evidence_required: completedProjectionRepair ||
           (reconcilable && authoritativeStatus === "release_ready"),
+        read_only_binding_count: activity.read_only_binding_count,
+        execution_activity_count: activity.execution_activity_count,
         ...stale });
     }
     return { dry_run: true, classifications: result };
@@ -5662,17 +5719,22 @@ export function createWorkContinuityV2Store({
         fail("legacy_reconciliation_already_closed");
       }
 
-      const participants = await client.query(`SELECT status,expires_at FROM core_continuity_participants
+      const participants = await client.query(`SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
-      const leases = await client.query(`SELECT status,expires_at FROM core_continuity_leases
+      const leases = await client.query(`SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      const activity = stalenessExecutionActivity(
+        participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases.rows,
+        now().getTime(),
+      );
       const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
-        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
-        leases: leases.rows }, now());
+        participants: activity.participants,
+        leases: activity.leases }, now());
       const currentTime = now().getTime();
-      const activeParticipant = participants.rows.some((row) => row.status === "active" &&
+      const activeParticipant = activity.participants.some((row) => row.status === "active" &&
         new Date(row.expires_at).getTime() > currentTime);
-      const activeLease = leases.rows.some((row) => row.status === "active" &&
+      const activeLease = activity.leases.some((row) => row.status === "active" &&
         new Date(row.expires_at).getTime() > currentTime);
       if (activeParticipant || activeLease) fail("legacy_reconciliation_active_work_denied");
       if (stale.classification !== expectedClassification) {
