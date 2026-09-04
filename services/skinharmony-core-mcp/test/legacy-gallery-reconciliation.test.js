@@ -232,6 +232,18 @@ class ReconciliationPool {
         item.work_id === params[1] && params[2].includes(item.event_type));
       return { rows: row ? [{ event_type: row.event_type, event_hash: row.event_hash }] : [] };
     }
+    if (q.startsWith("UPDATE tenant_work SET legacy_projection_sequence=$3")) {
+      const work = this.works.get(`${params[0]}:${params[1]}`);
+      if (!work || Number(work.legacy_projection_sequence || 0) >= Number(params[2])) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(work, {
+        legacy_projection_sequence: params[2],
+        legacy_projection_event_hash: params[3],
+        legacy_projection_updated_at: params[4],
+      });
+      return { rows: [{ ...work }], rowCount: 1 };
+    }
     if (q.startsWith("UPDATE tenant_work SET status=$3")) {
       const key = `${params[0]}:${params[1]}`;
       const work = this.works.get(key);
@@ -363,6 +375,7 @@ test("historical bridged archive retains the legacy record, requires stale inact
   });
   assert.equal(projectedAfterArchive.status, "ARCHIVED");
   assert.equal(projectedAfterArchive.closed_at, null);
+  assert.equal(projectedAfterArchive.legacy_projection_sequence, 1);
 
   const eventCount = pool.v2Events.length;
   const replay = await runtime.archiveHistoricalBridgedWork(identity(), args);

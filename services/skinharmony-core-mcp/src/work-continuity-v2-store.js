@@ -2145,7 +2145,18 @@ export function createWorkContinuityV2Store({
           // regression and making the Work unreadable/replay-inaccessible.
           if (linkedCanonicalWork && current.status === "ARCHIVED" &&
               current.closure_type === "historical_bridge_archive") {
-            return current;
+            // Consume the immutable legacy event even though it cannot alter
+            // the V2 terminal state.  Otherwise catalog/backfill workers see
+            // the same source sequence forever and report a projection on
+            // every pass.
+            const preserved = await client.query(`UPDATE tenant_work SET
+                legacy_projection_sequence=$3,legacy_projection_event_hash=$4,
+                legacy_projection_updated_at=$5::timestamptz
+              WHERE tenant_id=$1 AND work_id=$2
+                AND COALESCE(legacy_projection_sequence,0) < $3
+              RETURNING *`, [actor.tenant_id, current.work_id,
+              sourceEvent.sequence_number, sourceEvent.event_hash, now()]);
+            return normalizeWork(preserved.rows[0] || current);
           }
           fail("legacy_projection_terminal_regression_denied");
         }
