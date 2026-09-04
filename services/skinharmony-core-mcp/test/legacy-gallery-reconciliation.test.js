@@ -81,6 +81,7 @@ function v2Row(workId, status, projectId = "skinharmony-ai-backend") {
 class ReconciliationPool {
   constructor({ sourceStatus = "active", sourceV2Status = "ACTIVE", activePresence = false,
     readOnlyPresence = false, spoofedReadOnlyPresence = false, branchedReadOnlyParticipant = false, activeBranch = false,
+    emptyBootstrapBranches = false, bootstrapBranchHistory = false,
     successor = false, successorEvidence = false, sourceClosureEvidence = false } = {}) {
     this.legacy = new Map([[`tenant-a:${SOURCE}`, legacyRow(SOURCE, sourceStatus)]]);
     this.works = new Map([[`tenant-a:${SOURCE}`, v2Row(SOURCE, sourceV2Status)]]);
@@ -111,6 +112,24 @@ class ReconciliationPool {
         status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
       : [];
     this.branches = activeBranch ? [{ branch_id: "33333333-3333-4333-8333-333333333333" }] : [];
+    this.autopilotRuns = [];
+    this.autopilotAssignments = [];
+    if (emptyBootstrapBranches) {
+      this.branches = [{
+        branch_id: "33333333-3333-4333-8333-333333333333", branch_key: "execution_planning",
+        title: "Nyra Core branch: execution_planning",
+        objective: `Core-required phase implementation; verdict ${"a".repeat(64)}`,
+        created_by: "nyra_autopilot", status: "active",
+      }];
+      this.autopilotRuns = [{ run_id: "55555555-5555-4555-8555-555555555555", plan_digest: "b".repeat(64),
+        status: "materialized", plan: { core_orchestration: { verdict_digest: "a".repeat(64) },
+          required_nyra_branches: [{ id: "execution_planning", work_phase: "implementation" }] } }];
+      this.autopilotAssignments = [{ assignment_id: "66666666-6666-4666-8666-666666666666", status: "offered" }];
+      if (bootstrapBranchHistory) {
+        this.participants.push({ session_id: "old-bootstrap-executor", branch_id: this.branches[0].branch_id,
+          status: "expired", expires_at: OLD });
+      }
+    }
     this.v2Events = [];
     this.legacyEvents = [];
     this.tasks = [];
@@ -190,8 +209,26 @@ class ReconciliationPool {
         q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) {
       return { rows: params[1] === SOURCE ? this.leases.map((row) => ({ ...row })) : [] };
     }
-    if (q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
+    if (q.startsWith("SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches") ||
+        q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
       return { rows: params[1] === SOURCE ? this.branches.map((row) => ({ ...row })) : [] };
+    }
+    if (q.startsWith("SELECT run_id,plan,plan_digest,status FROM core_nyra_autopilot_runs")) {
+      return { rows: this.autopilotRuns.map((row) => ({ ...row })) };
+    }
+    if (q.startsWith("SELECT assignment_id,status FROM core_nyra_autopilot_assignments")) {
+      return { rows: this.autopilotAssignments.map((row) => ({ ...row })) };
+    }
+    if (q.startsWith("SELECT branch_id FROM core_continuity_messages")) {
+      return { rows: [] };
+    }
+    if (q.startsWith("SELECT branch_id FROM core_continuity_participants") && q.includes("ANY($3::uuid[])")) {
+      return { rows: this.participants.filter((row) => params[2].includes(row.branch_id))
+        .map((row) => ({ branch_id: row.branch_id })) };
+    }
+    if (q.startsWith("SELECT branch_id FROM core_continuity_leases") && q.includes("ANY($3::uuid[])")) {
+      return { rows: this.leases.filter((row) => params[2].includes(row.branch_id))
+        .map((row) => ({ branch_id: row.branch_id })) };
     }
     if (q.startsWith("SELECT status,updated_at FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
@@ -273,6 +310,22 @@ class ReconciliationPool {
       });
       return { rows: [{ ...work }], rowCount: 1 };
     }
+    if (q.startsWith("UPDATE core_continuity_branches SET status='retired'")) {
+      const rows = this.branches.filter((row) => row.status === "active" && params[2].includes(row.branch_id));
+      for (const row of rows) row.status = "retired";
+      return { rows: rows.map((row) => ({ branch_id: row.branch_id, branch_key: row.branch_key })), rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_nyra_autopilot_assignments SET status='cancelled'")) {
+      const rows = this.autopilotAssignments.filter((row) => row.status === "offered");
+      for (const row of rows) row.status = "cancelled";
+      return { rows: rows.map((row) => ({ assignment_id: row.assignment_id })), rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_nyra_autopilot_runs SET status='cancelled'")) {
+      const row = this.autopilotRuns.find((item) => item.status === "materialized");
+      if (!row) return { rows: [], rowCount: 0 };
+      row.status = "cancelled";
+      return { rows: [{ run_id: row.run_id }], rowCount: 1 };
+    }
     if (q.startsWith("UPDATE core_continuity_leases SET status='expired'")) {
       const leaseIds = new Set(params[2]);
       const released = this.leases.filter((lease) => leaseIds.has(lease.lease_id) &&
@@ -350,6 +403,7 @@ test("historical bridged archive is owner-confirmed and never claims a closure",
   assert.deepEqual(tool.inputSchema.properties.expected_classification.enum, ["STALE", "ABANDONED", "BLOCKED_VALID"]);
   assert.equal(tool.inputSchema.properties.revoke_unattested_read_only_bindings.type, "boolean");
   assert.equal(tool.inputSchema.properties.repair_unattested_historical_timestamp.type, "boolean");
+  assert.equal(tool.inputSchema.properties.retire_empty_bootstrap_branches.type, "boolean");
 });
 
 test("historical bridged archive retains the legacy record, requires stale inactivity, and replays exactly", async () => {
@@ -428,6 +482,33 @@ test("historical bridged archive retains the legacy record, requires stale inact
   branchPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
   await assert.rejects(store(branchPool).archiveHistoricalBridgedWork(identity(), args),
     /historical_bridge_archive_active_work_denied/);
+
+  const bootstrapPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED", emptyBootstrapBranches: true });
+  bootstrapPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  await assert.rejects(store(bootstrapPool).archiveHistoricalBridgedWork(identity(), args),
+    /historical_bridge_archive_active_work_denied/);
+  const bootstrapArchive = await store(bootstrapPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    retire_empty_bootstrap_branches: true,
+    idempotency_key: "archive-empty-bootstrap-branches-0001",
+  });
+  assert.equal(bootstrapArchive.work.status, "ARCHIVED");
+  assert.equal(bootstrapArchive.retired_empty_bootstrap_branch_count, 1);
+  assert.equal(bootstrapArchive.cancelled_empty_bootstrap_assignment_count, 1);
+  assert.equal(typeof bootstrapArchive.bootstrap_branch_audit_event_hash, "string");
+  assert.equal(bootstrapPool.branches[0].status, "retired");
+  assert.equal(bootstrapPool.autopilotAssignments[0].status, "cancelled");
+  assert.equal(bootstrapPool.autopilotRuns[0].status, "cancelled");
+
+  const touchedBootstrapPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED",
+    emptyBootstrapBranches: true, bootstrapBranchHistory: true });
+  touchedBootstrapPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  await assert.rejects(store(touchedBootstrapPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    retire_empty_bootstrap_branches: true,
+    idempotency_key: "archive-touched-bootstrap-branches-0001",
+  }), /historical_bridge_archive_bootstrap_branch_activity_denied/);
+  assert.equal(touchedBootstrapPool.branches[0].status, "active");
 
   const blockedValidPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
   blockedValidPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
