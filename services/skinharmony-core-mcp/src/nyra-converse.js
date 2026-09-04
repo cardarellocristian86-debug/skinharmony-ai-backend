@@ -2543,6 +2543,7 @@ export function createNyraConversePreflight({
   resolveContinuityProjectBinding,
   workContinuityRuntime,
   hostType,
+  verifyRequestedWork = null,
 } = {}) {
   if (
     typeof workPreflight !== "function" ||
@@ -2560,6 +2561,13 @@ export function createNyraConversePreflight({
     // Conversation obtains its authenticated Work binding inside the target
     // handler and accepts no caller-made preflight or authority envelope.
     const resumeArgs = await resolveSingleActiveWork(identity, args, workContinuityRuntime);
+    // Resolve an explicit canonical ID before legacy project binding or lease
+    // acquisition.  This distinguishes a genuine tenant-local absence (404)
+    // from an ACL denial (403), and prevents an unknown UUID from becoming an
+    // opaque continuity error or an unbound successful conversation.
+    if (boundedWorkId(resumeArgs.work_id) && typeof verifyRequestedWork === "function") {
+      await verifyRequestedWork(identity, resumeArgs.work_id);
+    }
     const preflightArgs = {
       request: resumeArgs.message,
       target_system: "nyra_conversational_runtime",

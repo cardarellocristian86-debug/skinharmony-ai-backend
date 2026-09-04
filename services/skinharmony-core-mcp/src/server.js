@@ -1688,6 +1688,27 @@ const nyraConverseHandler = createNyraConverseHandler({
     resolveContinuityProjectBinding,
     workContinuityRuntime: governedLegacyReadRuntime,
     hostType,
+    verifyRequestedWork: async (identity, workId) => {
+      requireTenantWorkCapability(identity, "read");
+      if (!workContinuityV2Store?.readWork) {
+        throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+      }
+      try {
+        return await workContinuityV2Store.readWork(
+          withTenantWorkAcl(identity),
+          { work_id: workId },
+        );
+      } catch (error) {
+        const reason = String(error?.code || error?.message || "");
+        if (reason === "tenant_work_not_found" || reason === "legacy_work_not_found") {
+          throw legacyWorkAclError("nyra_converse_work_not_found", 404);
+        }
+        if (reason === "work_acl_denied" || reason.startsWith("tenant_work_membership_")) {
+          throw legacyWorkAclError("continuity_work_acl_denied", 403);
+        }
+        throw error;
+      }
+    },
   }),
   interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
   readControlContext: async (identity, args) => {
