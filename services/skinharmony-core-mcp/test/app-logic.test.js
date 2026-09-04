@@ -488,6 +488,20 @@ test("routes normal actions through generic preflight without deadlocking Work b
     true,
     "lookalike capability names must not inherit the reconciliation exemption",
   );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "tenant_work_historical_archive_v3",
+    }),
+    false,
+    "historical archive must inspect the stale Work before continuity creates a technical lease",
+  );
+  assert.equal(
+    requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id: "tenant_work_historical_archive_v3",
+    }),
+    true,
+    "historical archive must retain exact Work ACL while bypassing continuity preflight",
+  );
 });
 
 test("Airlock controls never invoke generic preflight before the public plan is open", () => {
