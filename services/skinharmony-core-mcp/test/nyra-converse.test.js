@@ -849,6 +849,28 @@ test("returns explicit Work-not-found instead of an unbound success", async () =
     error?.message === "nyra_converse_work_not_found" && error?.status === 404);
 });
 
+test("checks an explicit Work ID before legacy continuity can mask its absence", async () => {
+  const calls = { preflight: 0, verified: 0 };
+  const preflight = createNyraConversePreflight({
+    workPreflight: async () => { calls.preflight += 1; return preflightFixture(); },
+    ensureContinuity: async () => {},
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: { readIntent: async () => { throw new Error("must-not-run"); } },
+    hostType: () => "chatgpt_native",
+    verifyRequestedWork: async () => {
+      calls.verified += 1;
+      const error = new Error("nyra_converse_work_not_found");
+      error.status = 404;
+      throw error;
+    },
+  });
+  await assert.rejects(preflight({
+    message: "Leggi stato del Work.",
+    work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  }, identity()), (error) => error?.message === "nyra_converse_work_not_found" && error?.status === 404);
+  assert.deepEqual(calls, { preflight: 0, verified: 1 });
+});
+
 test("uses a host-translated multilingual gap question only as a read-only Nyra hint", async () => {
   const hint = {
     schema_version: "nyra_semantic_intent_hint_v1",
