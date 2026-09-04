@@ -133,6 +133,20 @@ class ReconciliationPool {
     if (!params.length && Array.isArray(sql?.values)) params = sql.values;
     this.calls.push({ sql: q, params });
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [] };
+    if (q.startsWith("SELECT w.work_id,w.project_id,w.parent_work_id,w.idea,w.objective,w.status,w.created_at,w.updated_at,w.next_action,")) {
+      const row = this.legacy.get(`${params[0]}:${params[1]}`);
+      return { rows: row ? [{
+        ...row,
+        source_sequence_number: 1,
+        source_event_type: "work_resumed",
+        source_event_hash: "f".repeat(64),
+        source_event_payload: {},
+        terminal_sequence_number: null,
+        terminal_event_type: null,
+        terminal_event_hash: null,
+        terminal_event_payload: null,
+      }] : [] };
+    }
     if (q.startsWith("SELECT work_id,project_id,parent_work_id,idea,objective,status,created_at,updated_at,next_action FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
       return { rows: row ? [{ ...row }] : [] };
@@ -340,6 +354,15 @@ test("historical bridged archive retains the legacy record, requires stale inact
   assert.equal(pool.works.get(`tenant-a:${SOURCE}`).closed_at, null);
   assert.equal(pool.v2Events.at(-1).event_type, "historical_bridge_archived_v1");
   assert.equal(pool.v2Events.at(-1).payload.closure_claimed, false);
+
+  // A later legacy projector pass must preserve this V2-only archival.  The
+  // legacy source deliberately remains release_ready, so re-projecting it is
+  // not a permission to regress the Gallery Work back to an operational state.
+  const projectedAfterArchive = await runtime.projectLegacyWork(identity(), {
+    legacy_work_id: SOURCE,
+  });
+  assert.equal(projectedAfterArchive.status, "ARCHIVED");
+  assert.equal(projectedAfterArchive.closed_at, null);
 
   const eventCount = pool.v2Events.length;
   const replay = await runtime.archiveHistoricalBridgedWork(identity(), args);

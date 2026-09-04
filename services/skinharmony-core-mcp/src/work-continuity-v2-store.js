@@ -2138,6 +2138,15 @@ export function createWorkContinuityV2Store({
         const projectedSequence = Number(current.legacy_projection_sequence || 0);
         if (projectedSequence >= sourceEvent.sequence_number) return current;
         if (ARCHIVE_STATUSES.has(current.status) && !ARCHIVE_STATUSES.has(status)) {
+          // Historical bridge archival deliberately terminals only the V2
+          // Gallery record and preserves the legacy Work unchanged.  A later
+          // projector pass must therefore leave that archival receipt intact,
+          // rather than treating the preserved legacy BLOCKED state as a
+          // regression and making the Work unreadable/replay-inaccessible.
+          if (linkedCanonicalWork && current.status === "ARCHIVED" &&
+              current.closure_type === "historical_bridge_archive") {
+            return current;
+          }
           fail("legacy_projection_terminal_regression_denied");
         }
         const projectionUpdatedAt = now();
