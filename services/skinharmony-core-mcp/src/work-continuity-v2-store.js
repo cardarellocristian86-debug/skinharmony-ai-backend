@@ -36,15 +36,27 @@ function isAttestedNyraReadOnlyLease(row) {
 // every other live lease or participant in the staleness input fail-closed.
 function stalenessExecutionActivity(participants = [], leases = [], at = Date.now()) {
   const activeLeasesBySession = new Map();
+  const activeParticipantsBySession = new Map();
   for (const lease of leases) {
     if (lease?.status !== "active" || new Date(lease.expires_at).getTime() <= at) continue;
     const rows = activeLeasesBySession.get(lease.session_id) || [];
     rows.push(lease);
     activeLeasesBySession.set(lease.session_id, rows);
   }
+  for (const participant of participants) {
+    if (participant?.status !== "active" || new Date(participant.expires_at).getTime() <= at) continue;
+    const rows = activeParticipantsBySession.get(participant.session_id) || [];
+    rows.push(participant);
+    activeParticipantsBySession.set(participant.session_id, rows);
+  }
   const readOnlySessions = new Set(
     [...activeLeasesBySession.entries()]
-      .filter(([, rows]) => rows.length > 0 && rows.every(isAttestedNyraReadOnlyLease))
+      .filter(([sessionId, rows]) => {
+        const sessionParticipants = activeParticipantsBySession.get(sessionId) || [];
+        return rows.length > 0 && sessionParticipants.length > 0 &&
+          rows.every(isAttestedNyraReadOnlyLease) &&
+          sessionParticipants.every((participant) => participant.branch_id == null);
+      })
       .map(([sessionId]) => sessionId),
   );
   return {

@@ -80,7 +80,7 @@ function v2Row(workId, status, projectId = "skinharmony-ai-backend") {
 
 class ReconciliationPool {
   constructor({ sourceStatus = "active", sourceV2Status = "ACTIVE", activePresence = false,
-    readOnlyPresence = false, spoofedReadOnlyPresence = false, activeBranch = false,
+    readOnlyPresence = false, spoofedReadOnlyPresence = false, branchedReadOnlyParticipant = false, activeBranch = false,
     successor = false, successorEvidence = false, sourceClosureEvidence = false } = {}) {
     this.legacy = new Map([[`tenant-a:${SOURCE}`, legacyRow(SOURCE, sourceStatus)]]);
     this.works = new Map([[`tenant-a:${SOURCE}`, v2Row(SOURCE, sourceV2Status)]]);
@@ -97,6 +97,10 @@ class ReconciliationPool {
       : [];
     if (readOnlyPresence || spoofedReadOnlyPresence) {
       this.participants.push({ session_id: "nyra-read-session", branch_id: null,
+        status: "active", expires_at: "2026-08-12T00:00:00.000Z" });
+    }
+    if (branchedReadOnlyParticipant) {
+      this.participants.push({ session_id: "nyra-read-session", branch_id: "branched-execution",
         status: "active", expires_at: "2026-08-12T00:00:00.000Z" });
     }
     this.leases = (readOnlyPresence || spoofedReadOnlyPresence)
@@ -655,6 +659,21 @@ test("attested Nyra read-only bindings do not mask a stale legacy Work", async (
   assert.deepEqual(spoofedClassification.allowed_actions, []);
   assert.equal(spoofedClassification.read_only_binding_count, 0);
   assert.equal(spoofedClassification.execution_activity_count, 2);
+
+  const branched = new ReconciliationPool({ readOnlyPresence: true, branchedReadOnlyParticipant: true });
+  const branchedDryRun = await store(branched).reconcileStaleDryRun(identity());
+  const branchedClassification = branchedDryRun.classifications.find((item) => item.work_id === SOURCE);
+  assert.equal(branchedClassification.classification, "ACTIVE_VALID");
+  assert.deepEqual(branchedClassification.allowed_actions, []);
+  assert.equal(branchedClassification.execution_activity_count, 3);
+  await assert.rejects(store(branched).reconcileLegacyClosed(identity(), {
+    work_id: SOURCE,
+    action: "CANCEL",
+    expected_status: "active",
+    expected_classification: "STALE",
+    reason: "A branch-bound participant is active and must never be treated as diagnostic-only.",
+    idempotency_key: "branched-read-binding-must-not-close-0001",
+  }), /legacy_reconciliation_active_work_denied/);
 });
 
 test("stale dry-run suppresses actions when authoritative V1 time is invalid", async () => {
