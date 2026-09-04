@@ -2502,6 +2502,12 @@ export function createWorkContinuityV2Store({
     // the historical bridge anomaly caused by a pre-attestation diagnostic
     // resume that refreshed only the legacy/V2 projection timestamps.
     const repairUnattestedHistoricalTimestamp = input.repair_unattested_historical_timestamp === true;
+    // Core materializes phase branches before a Nyra assignment has done any
+    // work.  Those rows are useful planning records, but a stranded set of
+    // them must not make an otherwise stale historical bridge impossible to
+    // archive forever.  This is intentionally an explicit owner action and
+    // has a much narrower predicate than a normal branch closure.
+    const retireEmptyBootstrapBranches = input.retire_empty_bootstrap_branches === true;
     const idempotencyKey = galleryIdempotencyKey(
       input.idempotency_key,
       "historical_bridge_archive_idempotency_key_required",
@@ -2519,6 +2525,9 @@ export function createWorkContinuityV2Store({
         : {}),
       ...(repairUnattestedHistoricalTimestamp
         ? { repair_unattested_historical_timestamp: true }
+        : {}),
+      ...(retireEmptyBootstrapBranches
+        ? { retire_empty_bootstrap_branches: true }
         : {}),
     });
     const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
@@ -2556,6 +2565,13 @@ export function createWorkContinuityV2Store({
           revoked_unattested_read_only_session_count: Number(
             payload.revoked_unattested_read_only_session_count || 0,
           ),
+          retired_empty_bootstrap_branch_count: Number(
+            payload.retired_empty_bootstrap_branch_count || 0,
+          ),
+          cancelled_empty_bootstrap_assignment_count: Number(
+            payload.cancelled_empty_bootstrap_assignment_count || 0,
+          ),
+          bootstrap_branch_audit_event_hash: payload.bootstrap_branch_audit_event_hash || null,
           event_hash: replay.rows[0].event_hash,
           idempotent_replay: true,
         };
@@ -2630,9 +2646,112 @@ export function createWorkContinuityV2Store({
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
         client.query(`SELECT lease_id,session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
-        client.query(`SELECT branch_id FROM core_continuity_branches
-          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
+        client.query(`SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active'`, [actor.tenant_id, work.legacy_work_id]),
       ]);
+      let retiredEmptyBootstrapBranches = [];
+      let cancelledEmptyBootstrapAssignmentCount = 0;
+      let bootstrapBranchAuditEventHash = null;
+      if (branches.rows.length && retireEmptyBootstrapBranches) {
+        // Every active branch must be an exact, untouched materialization of
+        // one persisted Core verdict.  A manually opened branch, a partial
+        // set, or any branch ever bound to a participant, lease or message is
+        // ambiguous execution and remains an unconditional blocker.
+        // Lock order is Core Work (locked above), then run, then branch.  It
+        // matches Nyra materialization and avoids an archive/materialization
+        // deadlock while preserving a transactionally re-read branch set.
+        const runs = await client.query(`SELECT run_id,plan,plan_digest,status FROM core_nyra_autopilot_runs
+          WHERE tenant_id=$1 AND work_id=$2 AND status='materialized'
+          ORDER BY architecture_version DESC,created_at DESC FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
+        const matchingRun = runs.rows.find((run) => {
+          const plan = plainRecord(run.plan) ? run.plan : {};
+          const orchestration = plainRecord(plan.core_orchestration) ? plan.core_orchestration : {};
+          const required = Array.isArray(plan.required_nyra_branches) ? plan.required_nyra_branches : [];
+          if (!HASH.test(String(orchestration.verdict_digest || "")) || required.length !== branches.rows.length ||
+              new Set(required.map((item) => item?.id)).size !== required.length) return false;
+          const requiredById = new Map(required.map((item) => [item?.id, item]));
+          return branches.rows.every((branch) => {
+            const requiredBranch = requiredById.get(branch.branch_key);
+            return requiredBranch && branch.created_by === "nyra_autopilot" &&
+              branch.title === `Nyra Core branch: ${branch.branch_key}` &&
+              branch.objective === `Core-required phase ${requiredBranch.work_phase}; verdict ${orchestration.verdict_digest}`;
+          });
+        });
+        if (!matchingRun) fail("historical_bridge_archive_bootstrap_branch_ineligible");
+        const lockedBranches = await client.query(`SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
+        if (lockedBranches.rows.length !== branches.rows.length ||
+            lockedBranches.rows.some((row) => !branches.rows.some((before) => before.branch_id === row.branch_id))) {
+          fail("historical_bridge_archive_bootstrap_branch_conflict");
+        }
+        branches.rows = lockedBranches.rows;
+        const branchIds = branches.rows.map((row) => row.branch_id);
+        const [branchParticipants, branchLeases, branchMessages, assignments] = await Promise.all([
+          client.query(`SELECT branch_id FROM core_continuity_participants
+            WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) FOR UPDATE`,
+          [actor.tenant_id, work.legacy_work_id, branchIds]),
+          client.query(`SELECT branch_id FROM core_continuity_leases
+            WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) FOR UPDATE`,
+          [actor.tenant_id, work.legacy_work_id, branchIds]),
+          client.query(`SELECT branch_id FROM core_continuity_messages
+            WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) FOR UPDATE`,
+          [actor.tenant_id, work.legacy_work_id, branchIds]),
+          client.query(`SELECT assignment_id,status FROM core_nyra_autopilot_assignments
+            WHERE tenant_id=$1 AND work_id=$2
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(
+                COALESCE(task_contract->'materialized_nyra_branches','[]'::jsonb)
+              ) branch_binding WHERE branch_binding->>'branch_id'=ANY($3::varchar[])) FOR UPDATE`,
+          [actor.tenant_id, work.legacy_work_id, branchIds]),
+        ]);
+        if (branchParticipants.rows.length || branchLeases.rows.length || branchMessages.rows.length ||
+            assignments.rows.some((row) => row.status !== "offered")) {
+          fail("historical_bridge_archive_bootstrap_branch_activity_denied");
+        }
+        const retired = await client.query(`UPDATE core_continuity_branches
+          SET status='retired',updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) AND status='active'
+          RETURNING branch_id,branch_key`, [actor.tenant_id, work.legacy_work_id, branchIds]);
+        if (retired.rows.length !== branchIds.length) fail("historical_bridge_archive_bootstrap_branch_conflict");
+        retiredEmptyBootstrapBranches = retired.rows;
+        if (assignments.rows.length) {
+          const cancelled = await client.query(`UPDATE core_nyra_autopilot_assignments
+            SET status='cancelled',updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=ANY($3::uuid[]) AND status='offered'
+            RETURNING assignment_id`, [actor.tenant_id, work.legacy_work_id,
+            assignments.rows.map((row) => row.assignment_id)]);
+          if (cancelled.rows.length !== assignments.rows.length) fail("historical_bridge_archive_bootstrap_assignment_conflict");
+          cancelledEmptyBootstrapAssignmentCount = cancelled.rows.length;
+        }
+        const cancelledRun = await client.query(`UPDATE core_nyra_autopilot_runs
+          SET status='cancelled',updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND status='materialized'
+          RETURNING run_id`, [actor.tenant_id, work.legacy_work_id, matchingRun.run_id]);
+        if (!cancelledRun.rows[0]) fail("historical_bridge_archive_bootstrap_run_conflict");
+        const previousLegacyEvent = await client.query(`SELECT sequence_number,event_hash FROM core_continuity_events
+          WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
+        [actor.tenant_id, work.legacy_work_id]);
+        const legacySequence = Number(previousLegacyEvent.rows[0]?.sequence_number || 0) + 1;
+        const bootstrapPayload = {
+          schema_version: "nyra_empty_bootstrap_branch_retirement_v1",
+          run_id: matchingRun.run_id,
+          plan_digest: matchingRun.plan_digest,
+          branch_keys: retiredEmptyBootstrapBranches.map((row) => row.branch_key).sort(),
+          cancelled_assignment_count: cancelledEmptyBootstrapAssignmentCount,
+          reason_digest: objectDigest(reason),
+        };
+        const bootstrapEvent = {
+          tenant_id: actor.tenant_id, work_id: work.legacy_work_id, sequence_number: legacySequence,
+          event_type: "nyra_empty_bootstrap_branches_retired", payload: bootstrapPayload,
+          previous_event_hash: previousLegacyEvent.rows[0]?.event_hash || null,
+        };
+        bootstrapBranchAuditEventHash = objectDigest(bootstrapEvent);
+        await client.query(`INSERT INTO core_continuity_events
+          (tenant_id,work_id,event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_by)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id, work.legacy_work_id,
+          crypto.randomUUID(), legacySequence, bootstrapEvent.event_type, JSON.stringify(bootstrapPayload),
+          bootstrapEvent.previous_event_hash, bootstrapBranchAuditEventHash, actor.agent_id || actor.user_id]);
+        branches.rows = [];
+      }
       const currentTime = now().getTime();
       const activeParticipants = participants.rows.filter((row) => row.status === "active" &&
         new Date(row.expires_at).getTime() > currentTime);
@@ -2761,6 +2880,9 @@ export function createWorkContinuityV2Store({
         idempotency_key_digest: idempotencyKeyDigest,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
+        retired_empty_bootstrap_branch_count: retiredEmptyBootstrapBranches.length,
+        cancelled_empty_bootstrap_assignment_count: cancelledEmptyBootstrapAssignmentCount,
+        bootstrap_branch_audit_event_hash: bootstrapBranchAuditEventHash,
         closure_claimed: false,
         work: normalized,
       });
@@ -2774,6 +2896,9 @@ export function createWorkContinuityV2Store({
         blocked_timestamp_repair: blockedTimestampRepair,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
+        retired_empty_bootstrap_branch_count: retiredEmptyBootstrapBranches.length,
+        cancelled_empty_bootstrap_assignment_count: cancelledEmptyBootstrapAssignmentCount,
+        bootstrap_branch_audit_event_hash: bootstrapBranchAuditEventHash,
         event_hash: event.event_hash,
         idempotent_replay: false,
       };

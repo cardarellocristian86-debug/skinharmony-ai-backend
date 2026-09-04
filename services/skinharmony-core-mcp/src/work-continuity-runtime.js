@@ -5032,9 +5032,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
           ON CONFLICT (tenant_id,work_id,branch_key) DO UPDATE SET
             updated_at=core_continuity_branches.updated_at
+          WHERE core_continuity_branches.status='active'
           RETURNING branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at`,
         [context.tenantId, context.workId, branchId, parentBranchId, branchKey,
           safeText(input.title, 240), safeText(input.objective, 4_000), context.actor]);
+        if (!branch.rows[0]) throw new Error("continuity_branch_retired");
         const reboundLeases = await client.query(`UPDATE core_continuity_leases
           SET status='expired',released_at=coalesce(released_at,now())
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND status='active'

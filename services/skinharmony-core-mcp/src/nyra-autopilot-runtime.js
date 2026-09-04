@@ -265,6 +265,10 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       throw new Error("nyra_autopilot_core_verdict_blocked");
     }
     return transaction(async (client) => {
+      // Keep Core Work -> run -> branch as the single lock order.  Historical
+      // bridge archival uses the same sequence before retiring empty shells.
+      await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [run.tenant_id, run.work_id]);
       const current = await client.query(`SELECT status FROM core_nyra_autopilot_runs
         WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`, [run.tenant_id, run.work_id, run.run_id]);
       if (!current.rows[0]) throw new Error("nyra_autopilot_run_not_found");
@@ -450,6 +454,14 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         return { tenant_id: tenantId, work_id: workId, run_id: runId, project_id: row.project_id, architecture_version: Number(row.current_version),
           intent_digest: row.intent_digest, plan, plan_digest: plan.plan_digest, status: "pending", idempotent_replay: false };
       });
+      // A historical archive tombstones this exact plan only after proving its
+      // branches and every branch-bound assignment were untouched.  A future
+      // reconcile must leave that tombstone terminal rather than trying to
+      // materialize retired keys or converting it into a retry loop.
+      if (run.status === "cancelled") {
+        return { tenant_id: tenantId, work_id: workId, run_id: run.run_id, status: "skipped_historical_archive",
+          retryable: false, execution_authorized: false, idempotent_replay: true };
+      }
       if (run.plan.core_orchestration?.verdict === "BLOCK") {
         if (run.status === "blocked") {
           return { tenant_id: tenantId, work_id: workId, run_id: run.run_id, status: "blocked",
