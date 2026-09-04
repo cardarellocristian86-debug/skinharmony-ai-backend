@@ -2647,7 +2647,7 @@ export function createWorkContinuityV2Store({
         client.query(`SELECT lease_id,session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases
           WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
         client.query(`SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches
-          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]),
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active'`, [actor.tenant_id, work.legacy_work_id]),
       ]);
       let retiredEmptyBootstrapBranches = [];
       let cancelledEmptyBootstrapAssignmentCount = 0;
@@ -2657,6 +2657,9 @@ export function createWorkContinuityV2Store({
         // one persisted Core verdict.  A manually opened branch, a partial
         // set, or any branch ever bound to a participant, lease or message is
         // ambiguous execution and remains an unconditional blocker.
+        // Lock order is Core Work (locked above), then run, then branch.  It
+        // matches Nyra materialization and avoids an archive/materialization
+        // deadlock while preserving a transactionally re-read branch set.
         const runs = await client.query(`SELECT run_id,plan,plan_digest,status FROM core_nyra_autopilot_runs
           WHERE tenant_id=$1 AND work_id=$2 AND status='materialized'
           ORDER BY architecture_version DESC,created_at DESC FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
@@ -2675,6 +2678,13 @@ export function createWorkContinuityV2Store({
           });
         });
         if (!matchingRun) fail("historical_bridge_archive_bootstrap_branch_ineligible");
+        const lockedBranches = await client.query(`SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
+        if (lockedBranches.rows.length !== branches.rows.length ||
+            lockedBranches.rows.some((row) => !branches.rows.some((before) => before.branch_id === row.branch_id))) {
+          fail("historical_bridge_archive_bootstrap_branch_conflict");
+        }
+        branches.rows = lockedBranches.rows;
         const branchIds = branches.rows.map((row) => row.branch_id);
         const [branchParticipants, branchLeases, branchMessages, assignments] = await Promise.all([
           client.query(`SELECT branch_id FROM core_continuity_participants
@@ -2687,8 +2697,11 @@ export function createWorkContinuityV2Store({
             WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) FOR UPDATE`,
           [actor.tenant_id, work.legacy_work_id, branchIds]),
           client.query(`SELECT assignment_id,status FROM core_nyra_autopilot_assignments
-            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`,
-          [actor.tenant_id, work.legacy_work_id, matchingRun.run_id]),
+            WHERE tenant_id=$1 AND work_id=$2
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(
+                COALESCE(task_contract->'materialized_nyra_branches','[]'::jsonb)
+              ) branch_binding WHERE branch_binding->>'branch_id'=ANY($3::varchar[])) FOR UPDATE`,
+          [actor.tenant_id, work.legacy_work_id, branchIds]),
         ]);
         if (branchParticipants.rows.length || branchLeases.rows.length || branchMessages.rows.length ||
             assignments.rows.some((row) => row.status !== "offered")) {
@@ -2703,8 +2716,9 @@ export function createWorkContinuityV2Store({
         if (assignments.rows.length) {
           const cancelled = await client.query(`UPDATE core_nyra_autopilot_assignments
             SET status='cancelled',updated_at=now()
-            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND status='offered'
-            RETURNING assignment_id`, [actor.tenant_id, work.legacy_work_id, matchingRun.run_id]);
+            WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=ANY($3::uuid[]) AND status='offered'
+            RETURNING assignment_id`, [actor.tenant_id, work.legacy_work_id,
+            assignments.rows.map((row) => row.assignment_id)]);
           if (cancelled.rows.length !== assignments.rows.length) fail("historical_bridge_archive_bootstrap_assignment_conflict");
           cancelledEmptyBootstrapAssignmentCount = cancelled.rows.length;
         }
