@@ -2338,7 +2338,18 @@ const baseHandlers = {
       return continuityTextResult({ ok: true,
         result: await workContinuityV2Store.archiveHistoricalBridgedWork(
           withTenantWorkAcl(identity), args,
-        ) });
+        ),
+        // This capability is declared as dedicated-Core-gated.  The
+        // authorization above is server-owned, so return its attestation to
+        // the dynamic wrapper as well; otherwise the archive may commit and
+        // then be incorrectly surfaced to the caller as an unverified error.
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        },
+      });
     },
     tenant_work_reopen_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
