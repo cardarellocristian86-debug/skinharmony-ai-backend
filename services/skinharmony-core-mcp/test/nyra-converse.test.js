@@ -1712,6 +1712,7 @@ test("expands an E360 checkpoint into the real pending Work task and bounded evi
     project_id: "nyra_core",
     work_revision: null,
     intent_digest: null,
+    read_only: false,
   });
   assert.equal(directive.work_context.available, true);
   assert.equal(directive.work_context.work_revision, 4);

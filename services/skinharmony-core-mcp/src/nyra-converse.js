@@ -2804,7 +2804,13 @@ export function createNyraConverseHandler({
         project_id: boundedPreflight.work.project_id,
         work_revision: boundedPreflight.dialogue.work_revision,
         intent_digest: boundedPreflight.dialogue.intent_digest,
+        // A state/checkpoint question must never validate a write-only
+        // precommit ticket.  Consequential routes still receive the full gate.
+        read_only: intentRoute.canonical_intent.consequential_intent !== true,
       });
+      if (!rawDirectiveContext && args.work_id) {
+        throw fail("nyra_converse_work_not_found", 404);
+      }
       workContext = requireWorkDirectiveContext(
         rawDirectiveContext,
         identity,
