@@ -488,7 +488,9 @@ function harness({
     },
     readDirectiveContext: directiveContext === undefined ? null : async (authenticatedIdentity, args) => {
       calls.readDirectiveContext.push({ args, identity: authenticatedIdentity });
-      return directiveContext;
+      return typeof directiveContext === "function"
+        ? directiveContext(authenticatedIdentity, args)
+        : directiveContext;
     },
     openContinuation,
     listWorkChoices: listWorkChoices === undefined ? null : async (authenticatedIdentity, args) => {
@@ -806,6 +808,45 @@ test("reads Nyra's persistent self-model without opening or binding a Work", asy
   assert.match(payload.host_response_contract.reply_seed, /nyra_converse/);
   assert.deepEqual(validateToolArguments(
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("keeps a Work status read free of write-only precommit validation", async () => {
+  const context = directiveContextFixture();
+  const { handler, calls } = harness({
+    directiveContext: (_identity, args) => ({
+      ...context,
+      // A malformed historic write gate must not be loaded into a state or
+      // checkpoint read. Production omits it server-side when read_only.
+      ...(args.read_only === true ? { precommit_ticket_gate: null } : {
+        precommit_ticket_gate: { malformed: true },
+      }),
+    }),
+  });
+  const response = await handler({
+    message: "Leggi stato, progresso, blocker e checkpoint del Work.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  assert.equal(calls.readDirectiveContext.length, 1);
+  assert.equal(calls.readDirectiveContext[0].args.read_only, true);
+  assert.equal(response.structuredContent.work.work_id, WORK_ID);
+  assert.equal(response.structuredContent.work.work_bound, true);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.precommit_ticket_gate,
+    null);
+});
+
+test("returns explicit Work-not-found instead of an unbound success", async () => {
+  const missing = preflightFixture();
+  missing.structuredContent.work_preflight.continuity.work_id = null;
+  missing.structuredContent.work_preflight.nyra_control_context.work_id = null;
+  const unknownWorkId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  await assert.rejects(harness({ preflightResult: missing }).handler({
+    message: "Leggi stato e checkpoint del Work.",
+    work_id: unknownWorkId,
+    project_id: "nyra_core",
+  }, identity()), (error) =>
+    error?.message === "nyra_converse_work_not_found" && error?.status === 404);
 });
 
 test("uses a host-translated multilingual gap question only as a read-only Nyra hint", async () => {
