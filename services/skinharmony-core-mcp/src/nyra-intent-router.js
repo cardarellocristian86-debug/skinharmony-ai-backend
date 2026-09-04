@@ -33,8 +33,12 @@ const ACCESS_MUTATION = /\b(?:grant|revoke|abilita|disabilita|abilitare|disabili
 const GLOBAL_CONTROL_READ = /(?:\b(?:che|quali|mostra(?:mi)?|dimmi|fammi\s+vedere|elenca(?:mi)?|lista|what|which|show|tell|list)\b.{0,80}\b(?:funzion\w*|functions?|features?|controll\w*|controls?|toggles?|modalit(?:à|a)|runtime|nyra|core|entity\s*360|e360|semantic\s+scope\s+guard|dialog(?:o|ue)|converse)\b|\b(?:funzion\w*|functions?|features?|controll\w*|controls?|toggles?)\b.{0,80}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off|stato|status)\b|\b(?:nyra\s+)?(?:converse|dialog(?:o|ue)|semantic\s+scope\s+guard|entity\s*360|e360)\b.{0,80}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off|stato|status)\b|(?:^|\s)(?:è|e|era|erano|risulta|result|is|was|are|do\s+you\s+have)(?=\s|$).{0,40}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off)\b.{0,80}\b(?:nyra\s+)?(?:converse|dialog(?:o|ue)|semantic\s+scope\s+guard|entity\s*360|e360)\b)/iu;
 const GLOBAL_CONTROL_STATUS_QUESTION = /(?:\b(?:hai|avete|have|has|do\s+you\s+have)\b.{0,80}\b(?:entity\s*360|e360|nyra\s+converse|dialog(?:o|ue)|semantic\s+scope\s+guard|scope\s+guard|work\s+continuity|research\s+airlock)\b.{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|active|inactive|enabled|disabled|on|off|shadow|enforced|stato|status)\b|\b(?:quali|che|what|which)\b.{0,80}(?:funzion\w*|capacità|capacita|capability|capabilities|controll\w*).{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|shadow|enforced|autorizz\w*|owner|conferm\w*)\b|\b(?:per\s+quali|which)\b.{0,80}\b(?:azioni|actions?)\b.{0,80}\b(?:owner|conferm\w*|autorizz\w*)\b)/iu;
 const NYRA_ADVISORY_READ = /\bnyra\b|\b(?:chi\s+sei|come\s+funzioni|cosa\s+ti\s+manca|cosa\s+puoi|qual(?:\s|')*[èe]\s+la\s+differenza)\b|\b(?:entity\s*360|e360)\b.{0,100}\bsemantic\s+scope\s+guard\b/iu;
-const NYRA_SELF_MODEL_READ = /\b(?:self[\s_-]?model|modello\s+(?:di\s+)?(?:te|nyra)|who\s+are\s+you|chi\s+sei|your\s+(?:limits?|capabilities)|tuoi\s+(?:limiti|capacità|capacita))\b/iu;
+const NYRA_SELF_MODEL_READ = /\b(?:self[\s_-]?model|modello\s+(?:di\s+)?(?:te|nyra)|modello\s+operativo|operational\s+model|separazione\s+tra\s+nyra\s+e\s+(?:universal\s+)?core|separation\s+between\s+nyra\s+and\s+(?:universal\s+)?core|who\s+are\s+you|chi\s+sei|your\s+(?:limits?|capabilities)|tuoi\s+(?:limiti|capacità|capacita))\b/iu;
 const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;
+// The semantic hint accepts multilingual questions, but classification still
+// needs one bounded non-English gap form to preserve the requested subtype.
+// It is descriptive only and cannot grant authority or open a Work.
+const NYRA_HOST_GAP_READ = /(?:¿?qué|que)\s+necesitas\s+para\s+trabajar\s+mejor/iu;
 const DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
 const GLOBAL_READ_DOMAIN = /\b(?:nyra|universal\s+core|core|icf|entity\s*360|e360|self[\s_-]?model|autodiagnos\w*|self[\s_-]?diagnos\w*|software\s+(?:atlas|architecture)|architecture\s+atlas|memori\w*|memory|gallery|verified[\s_-]?learning|capabilit\w*|funzion\w*)\b/iu;
 const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|commit|push|pull\s+request|\bpr\b|merge|deploy(?:ed|ing)?|publish\w*|release|rollback)\b/iu;
@@ -400,9 +404,11 @@ export function classifyNyraIntent({
     scope_salt: boundedTenantId,
   });
   const semanticIntake = normalizeSemanticHint(semanticHint, text);
-  // A question that names a Work is never a global-control read. A stale
-  // host-supplied work_id must not turn a global status read into a binding.
-  const explicitWorkScope = /\b(?:work|lavoro)\b/iu.test(text);
+  // A question that names a Work, or carries a syntactically valid Work ID,
+  // is never a global-control/advisory read. The ID is still authenticated by
+  // the Work preflight below; this only prevents the chat layer from dropping
+  // an explicit scope before that validation can happen.
+  const explicitWorkScope = safeId(workId) || /\b(?:work|lavoro)\b/iu.test(text);
   // “Nyra Converse è attiva?” is a state predicate, not an imperative.
   // Strip only that bounded predicate before looking for a mutation verb; a
   // following clitic imperative ("Attivala") still wins and stays in Core.
@@ -458,15 +464,15 @@ export function classifyNyraIntent({
   // rejects it whenever local evidence sees an operation, a Work bootstrap or
   // a consequential noun.  Direct lexical matches keep the common requests
   // available even for hosts that do not emit a semantic hint.
-  const safeIntrospectionRead = actionClauses.length === 0 && !workBootstrap &&
+  const safeIntrospectionRead = !safeId(workId) && actionClauses.length === 0 && !workBootstrap &&
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     clauses.every((clause) => clause.action_candidates.length === 0) &&
     semanticAssessment.disposition === "allow" &&
     (NYRA_SELF_MODEL_READ.test(text) || NYRA_GAP_READ.test(text));
-  const safeDistilledLessonsRead = actionClauses.length === 0 && !workBootstrap &&
+  const safeDistilledLessonsRead = !safeId(workId) && actionClauses.length === 0 && !workBootstrap &&
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);
-  const hostHintIntrospectionRead = semanticIntake.state === "CANDIDATE" &&
+  const hostHintIntrospectionRead = !safeId(workId) && semanticIntake.state === "CANDIDATE" &&
     semanticIntake.route_candidate === "NYRA_INTROSPECTION_READ" &&
     actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
     clauses.every((clause) => clause.action_candidates.length === 0) &&
@@ -509,13 +515,17 @@ export function classifyNyraIntent({
   } else if (safeDistilledLessonsRead) {
     intent = "distilled_lessons_read"; route = "ADVISORY_READ"; confidence = 0.99; reason = "bounded_distilled_lessons_read";
   } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
-    intent = NYRA_SELF_MODEL_READ.test(text) ? "nyra_self_model_read" : "nyra_gap_read";
+    // A semantic hint identifies the bounded class, never an action.  Within
+    // that class only an explicit gap question selects the gap read; every
+    // other self-model question must retain its operational-model answer.
+    intent = (NYRA_GAP_READ.test(text) || NYRA_HOST_GAP_READ.test(text))
+      ? "nyra_gap_read" : "nyra_self_model_read";
     route = "ADVISORY_READ";
     confidence = safeIntrospectionRead ? 0.99 : 0.86;
     reason = safeIntrospectionRead
       ? "bounded_nyra_introspection_read"
       : "host_semantic_hint_nyra_introspection_read";
-  } else if (advisoryReadQuestion || comparativeAuthorityRead) {
+  } else if ((advisoryReadQuestion || comparativeAuthorityRead) && !safeId(workId)) {
     intent = "advisory_read";
     route = "ADVISORY_READ";
     confidence = 0.96;

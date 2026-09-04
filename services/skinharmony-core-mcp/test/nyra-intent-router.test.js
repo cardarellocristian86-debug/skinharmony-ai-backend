@@ -158,9 +158,30 @@ test("routes Nyra self-model and gap reads without a Work, including a validated
   const multilingual = classify("¿Qué necesitas para trabajar mejor?", { semanticHint: hint });
   assert.equal(multilingual.intent, "nyra_gap_read");
   assert.equal(multilingual.route, "ADVISORY_READ");
+  const operationalModel = classify(
+    "Spiega il tuo modello operativo e la separazione tra Nyra e Universal Core.",
+    { semanticHint: hint },
+  );
+  assert.equal(operationalModel.intent, "nyra_self_model_read");
+  assert.equal(operationalModel.route, "ADVISORY_READ");
+  assert.equal(operationalModel.canonical_intent.work_requirement, "NONE");
+  assert.deepEqual(operationalModel.canonical_intent.requested_now, []);
   assert.equal(classify("¿Qué necesitas para trabajar mejor? Haz deploy.", {
     semanticHint: hint,
   }).route, "CORE_CONTEXT_THEN_NYRA");
+});
+
+test("never discards an explicit Work ID through an advisory read shortcut", () => {
+  const workId = "db06f362-8de3-526f-949b-69128f975349";
+  for (const message of [
+    "Nyra, chi sei?",
+    "Spiega il tuo modello operativo e la separazione tra Nyra e Universal Core.",
+    "Nyra, qual è la differenza tra ciò che puoi leggere e ciò che puoi autorizzare?",
+  ]) {
+    const route = classify(message, { workId });
+    assert.notEqual(route.route, "ADVISORY_READ", message);
+    assert.equal(route.core_preflight_required, true, message);
+  }
 });
 
 test("accepts only a bound, read-only host semantic hint and never lets it override action scope", () => {

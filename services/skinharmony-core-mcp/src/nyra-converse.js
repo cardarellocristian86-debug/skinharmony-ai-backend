@@ -397,7 +397,17 @@ function requireBoundPreflight(result, identity, args) {
     throw fail("nyra_converse_project_binding_mismatch", 409);
   }
   const projectId = continuityProjectId || controlProjectId || boundedProjectId(args.project_id);
-  if (args.work_id && workId !== String(args.work_id)) {
+  const requestedWorkId = boundedWorkId(args.work_id);
+  // The client supplied a syntactically valid canonical ID.  Once the
+  // authenticated preflight cannot bind that same ID, this is absence rather
+  // than an unbound advisory answer.  Returning an explicit 404 keeps an AI
+  // from treating "progress unavailable" as evidence that a nonexistent Work
+  // is a real but empty one.  A different bound ID remains a 409: that is a
+  // genuine context-integrity failure, not absence.
+  if (requestedWorkId && !workId) {
+    throw fail("nyra_converse_work_not_found", 404);
+  }
+  if (requestedWorkId && workId !== requestedWorkId) {
     throw fail("nyra_converse_work_binding_mismatch", 409);
   }
   // In a direct Nyra conversation project_id is only a client-side lookup
