@@ -1531,7 +1531,7 @@ async function readNyraDirectiveContext(identity, args) {
       tenantWorkIdentity,
       { work_id: args.work_id },
     );
-    const precommitTicketGate = typeof workContinuityV2Store.readPrecommitTicketGate === "function"
+    const precommitTicketGate = args.read_only === true ? null : typeof workContinuityV2Store.readPrecommitTicketGate === "function"
       ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
           work_id: args.work_id,
         })
