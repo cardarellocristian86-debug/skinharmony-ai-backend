@@ -843,19 +843,19 @@ test("unavailable semantic scope context remains observable in shadow and fails 
     /SEMANTIC_SCOPE_CONTEXT_UNAVAILABLE/);
 
   const enforce = harness({ allowedActions: ["git.commit"], semanticScopeGuard: unavailableGuard,
-    semanticScopeMode: "ENFORCE" });
+    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: () => ({
+      entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+    }) });
   const enforceDelegation = await enforce.governance.issueDelegation(enforce.delegationInput);
   await assert.rejects(() => issueCommitTicket(enforce.governance, enforceDelegation.delegation_id),
     /semantic_scope_hold/);
 });
 
-test("missing semantic context fails closed for a medium-risk effect in enforce mode", async () => {
+test("enforce mode cannot start without a semantic context resolver", () => {
   const guard = createSemanticScopeGuard({ mode: "ENFORCE" });
-  const subject = harness({ allowedActions: ["git.commit"], semanticScopeGuard: guard,
-    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: null });
-  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
-  await assert.rejects(() => issueCommitTicket(subject.governance, delegation.delegation_id),
-    /semantic_scope_hold/);
+  assert.throws(() => harness({ allowedActions: ["git.commit"], semanticScopeGuard: guard,
+    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: null }),
+  /semantic_scope_context_resolver_required/);
 });
 
 async function issueMergeTicket(governance, delegationId, overrides = {}) {

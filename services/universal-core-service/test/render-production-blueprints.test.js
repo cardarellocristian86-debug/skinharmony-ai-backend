@@ -45,9 +45,9 @@ test("production blueprints pause automatic deploys and bound monorepo builds", 
   }
 });
 
-test("Universal Core production Blueprint enforces the semantic scope guard", () => {
+test("Universal Core production Blueprint keeps semantic scope observational until resolver wiring", () => {
   const blueprint = read("render-universal-core.yaml");
-  assert.equal(envValue(blueprint, "CORE_SEMANTIC_SCOPE_MODE"), "ENFORCE");
+  assert.equal(envValue(blueprint, "CORE_SEMANTIC_SCOPE_MODE"), "SHADOW");
 });
 
 test("Rust postinstall supports an early non-Rust service exit", () => {
