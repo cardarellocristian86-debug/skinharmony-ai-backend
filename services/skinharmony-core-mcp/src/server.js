@@ -588,14 +588,19 @@ const coreHandlers = createCoreHandlers(config, {
   // Control Room's Work percentage.  It is intentionally separate from the
   // generic Work preflight: a status read must not trigger a second planning
   // pipeline or accept client-supplied progress.
-  readControlRoomWorkContext: async (identity, args) => normalizeNyraDirectiveContext(
-    await readNyraDirectiveContext(identity, args),
-    identity,
-    {
-      work_id: args.work_id,
-      project_id: args.project_id,
-    },
-  ),
+  readControlRoomWorkContext: async (identity, args) => {
+    const context = await readNyraDirectiveContext(identity, { ...args, read_only: true });
+    if (!context) return null;
+    return normalizeNyraDirectiveContext(
+      context,
+      identity,
+      {
+        work_id: args.work_id,
+        project_id: args.project_id,
+      },
+      { readOnly: true },
+    );
+  },
   readControlRoomCoordinationOverview: async (identity, args = {}) => {
     try {
       const overview = await coordinationOverviewAuthorized(identity, { ...args, limit: 100 });
@@ -926,10 +931,64 @@ async function materializeNyraControlContext(identity, continuity, operation, {
   });
 }
 
-async function ensureContinuity(identity, args, toolName, preflightResult, { resumeExisting = false } = {}) {
+async function ensureContinuity(identity, args, toolName, preflightResult, {
+  resumeExisting = false,
+  readOnly = false,
+  verifiedWork = null,
+} = {}) {
   if (!workContinuityRuntime || !config.workContinuityAutoCaptureEnabled) return null;
   const sessionId = identity.agentPresence?.session_id || args.session_id;
   if (!sessionId) throw new Error("continuity_session_required");
+  if (readOnly) {
+    const work = verifiedWork?.work;
+    if (!work || String(work.work_id || "").toLowerCase() !== String(args.work_id || "").toLowerCase() ||
+        work.tenant_id !== identity.tenantId) {
+      throw legacyWorkAclError("nyra_converse_work_not_found", 404);
+    }
+    const projectId = String(work.project_id || args.project_id || "").trim();
+    if (!projectId) throw legacyWorkAclError("continuity_work_binding_unavailable", 503);
+    const visibleWorks = typeof workContinuityV2Store?.listWorks === "function"
+      ? await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), { view: "operational" })
+      : [];
+    let operational = null;
+    if (typeof workContinuityRuntime.readNyraOperationalState === "function") {
+      try {
+        operational = await workContinuityRuntime.readNyraOperationalState(identity, {
+          work_id: work.work_id,
+          project_id: projectId,
+        });
+      } catch (error) {
+        if (String(error?.code || error?.message || "") !== "continuity_work_not_found") throw error;
+      }
+    }
+    const operationalRevision = Number(operational?.work_revision || 0);
+    const continuity = Object.freeze({
+      tenant_id: identity.tenantId,
+      project_id: projectId,
+      work_id: work.work_id,
+      state: String(work.status || "unknown").toLowerCase(),
+      work_revision: Number.isSafeInteger(operationalRevision) && operationalRevision > 0
+        ? operationalRevision
+        : null,
+      intent_digest: work.intent_digest || operational?.intent_digest || null,
+      next_action: work.next_action || null,
+    });
+    const controlContext = buildNyraControlContext({
+      continuity,
+      operational: {
+        ...(operational || {}),
+        ...(continuity.work_revision ? { work_revision: continuity.work_revision } : {}),
+        ...(continuity.intent_digest ? { intent_digest: continuity.intent_digest } : {}),
+        gallery: {
+          state: "available",
+          work_count: visibleWorks.length,
+        },
+      },
+      operation: toolName,
+    });
+    attachContinuity(preflightResult, continuity, controlContext);
+    return continuity;
+  }
   const initialMessage = summarizeToolRequest(toolName, args);
   const host = hostType(identity, args);
   const authorizedResumeWorkIds = resumeExisting

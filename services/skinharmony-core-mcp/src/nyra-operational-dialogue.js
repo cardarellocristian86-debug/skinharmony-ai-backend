@@ -111,7 +111,10 @@ export function diagnoseNyraOperationalState({ continuity = {}, operational = {}
       remaining_action: "verify_or_create_checkpoint",
     });
   }
-  if (normalized.gallery.state !== "available" || normalized.gallery.work_count < 1) {
+  const terminalWork = new Set(["completed", "cancelled", "superseded", "archived"])
+    .has(String(continuity.state || continuity.status || "").toLowerCase());
+  if (normalized.gallery.state !== "available" ||
+      (normalized.gallery.work_count < 1 && !terminalWork)) {
     return Object.freeze({
       schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
       state: "gallery_projection_stale",

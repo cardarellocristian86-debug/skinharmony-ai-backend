@@ -836,6 +836,49 @@ test("keeps a Work status read free of write-only precommit validation", async (
     null);
 });
 
+test("keeps blocker diagnostics visible in a mixed status-read question", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["tenant_binding_stale"];
+  interpretation.structuredContent.result.selected_by_core.allowed_alternatives = [
+    "Restore the tenant-scoped binding",
+  ];
+  const { handler, calls } = harness({ interpretationResult: interpretation });
+  const response = await handler({
+    message: "Leggi lo stato del Work e spiegami perché è bloccato.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(calls.preflight[0].args.read_only, true);
+  assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "BLOCK");
+  assert.equal(response.structuredContent.interpretation.governance_diagnostics.state, "BLOCKED");
+  assert.equal(response.structuredContent.orchestration_directive.next_actions[0].summary,
+    "Restore the tenant-scoped binding");
+
+  const cause = await harness({ interpretationResult: interpretation }).handler({
+    message: "Mostrami lo stato del Work e la causa del blocker.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(cause.structuredContent.orchestration_directive.decision.disposition, "BLOCK");
+  assert.equal(cause.structuredContent.interpretation.governance_diagnostics.state, "BLOCKED");
+
+  for (const message of [
+    "Mostrami i blocker e dimmi come risolverli.",
+    "Show blockers and how to fix them.",
+    "Quali task mancano e come li completo?",
+    "Leggi stato e proponi una remediation.",
+  ]) {
+    const diagnostic = await harness({ interpretationResult: interpretation }).handler({
+      message,
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+    }, identity());
+    assert.equal(diagnostic.structuredContent.orchestration_directive.decision.disposition, "BLOCK",
+      `mixed diagnostic must retain Core remediation: ${message}`);
+  }
+});
+
 test("keeps an explicitly fenced Work read read-only when its last verb names an external action", async () => {
   const context = directiveContextFixture();
   const { handler, calls } = harness({
@@ -853,8 +896,17 @@ test("keeps an explicitly fenced Work read read-only when its last verb names an
     locale: "it",
   }, identity());
   assert.equal(calls.readDirectiveContext[0].args.read_only, true);
+  assert.equal(calls.preflight[0].args.read_only, true);
   assert.equal(response.structuredContent.intent_routing.route.canonical_intent.operation_class, "READ_ONLY");
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
+  assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.deepEqual(response.structuredContent.orchestration_directive.needs, []);
+  assert.deepEqual(response.structuredContent.orchestration_directive.next_actions, []);
+  assert.deepEqual(response.structuredContent.orchestration_directive.permitted_progress, ["READ_ONLY"]);
+  assert.equal(response.structuredContent.interpretation.owner_confirmation_required, false);
+  assert.equal(response.structuredContent.host_response_contract.connected_ai_brief.state, "WAITING");
+  assert.deepEqual(response.structuredContent.host_response_contract.connected_ai_brief.steps, []);
+  assert.deepEqual(response.structuredContent.host_response_contract.connected_ai_brief.expected_evidence, []);
   assert.equal(response.structuredContent.work.work_id, WORK_ID);
 });
 
@@ -870,6 +922,26 @@ test("never turns a read-only Work query into an owner ticket when Core marks it
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.owner_confirmation_required, false);
   assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+});
+
+test("does not leak a Core-selected action or blocked risk into a factual Work read", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.primary_action_id = "action:external_release";
+  interpretation.structuredContent.result.selected_by_core.primary_action_label = "Deploy the release";
+  interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["release_ticket_missing"];
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Leggi stato e checkpoint del Work. Sola lettura: non modificare nulla.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  const payload = response.structuredContent;
+  assert.equal(payload.interpretation.selected_action_id, null);
+  assert.equal(payload.interpretation.selected_action, null);
+  assert.equal(payload.interpretation.selected_action_available, false);
+  assert.equal(payload.interpretation.risk_band, "low");
+  assert.equal(payload.interpretation.governance_diagnostics.state, "READY");
+  assert.deepEqual(payload.orchestration_directive.next_actions, []);
 });
 
 test("returns explicit Work-not-found instead of an unbound success", async () => {
@@ -905,6 +977,85 @@ test("checks an explicit Work ID before legacy continuity can mask its absence",
     work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   }, identity()), (error) => error?.message === "nyra_converse_work_not_found" && error?.status === 404);
   assert.deepEqual(calls, { preflight: 0, verified: 1 });
+});
+
+test("passes a verified Work into the state-pure read-only continuity path", async () => {
+  const calls = { preflight: [], continuity: [], legacyIntent: 0 };
+  const verifiedWork = directiveContextFixture({ status: "COMPLETED" });
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture();
+    },
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: { readIntent: async () => {
+      calls.legacyIntent += 1;
+      throw new Error("v2_read_must_not_require_legacy_anchor");
+    } },
+    hostType: () => "chatgpt_native",
+    verifyRequestedWork: async () => verifiedWork,
+  });
+  await preflight({
+    message: "Leggi lo stato. Sola lettura.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    read_only: true,
+  }, identity());
+  assert.equal(calls.preflight.length, 1);
+  assert.deepEqual(calls.continuity[0][4], {
+    resumeExisting: true,
+    readOnly: true,
+    verifiedWork,
+  });
+  assert.equal(calls.legacyIntent, 0);
+  assert.equal(calls.preflight[0].project_id, "nyra_core");
+});
+
+test("keeps an unbound read-only fence in selection flow without a false missing-Work error", async () => {
+  const calls = { preflight: 0, continuity: 0, verified: 0 };
+  const preflight = createNyraConversePreflight({
+    workPreflight: async () => { calls.preflight += 1; return preflightFixture(); },
+    ensureContinuity: async () => { calls.continuity += 1; },
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: { readIntent: async () => { throw new Error("must-not-run"); } },
+    hostType: () => "chatgpt_native",
+    verifyRequestedWork: async () => { calls.verified += 1; throw new Error("must-not-run"); },
+  });
+  await preflight({
+    message: "Leggi lo stato in sola lettura.",
+    read_only: true,
+    canonical_intent: { work_requirement: "EXISTING" },
+  }, identity());
+  assert.deepEqual(calls, { preflight: 1, continuity: 0, verified: 0 });
+});
+
+test("normalizes terminal Work readbacks against the canonical read binding", () => {
+  const raw = directiveContextFixture({
+    projectId: "canonical-project",
+    workRevision: 9,
+    status: "COMPLETED",
+  });
+  const normalized = normalizeNyraDirectiveContext(
+    raw,
+    identity(),
+    { work_id: WORK_ID, project_id: "stale-host-project", work_revision: 2 },
+    { readOnly: true },
+  );
+  assert.equal(normalized.project_id, "canonical-project");
+  assert.equal(normalized.work_revision, 9);
+  assert.equal(normalized.status, "COMPLETED");
+});
+
+test("read-only normalization never falls back to a caller project when V2 binding is absent", () => {
+  const raw = directiveContextFixture({ projectId: "canonical-project" });
+  raw.work.project_id = null;
+  assert.throws(() => normalizeNyraDirectiveContext(
+    raw,
+    identity(),
+    { work_id: WORK_ID.toUpperCase(), project_id: "stale-host-project" },
+    { readOnly: true },
+  ), /nyra_converse_directive_context_binding_invalid/);
 });
 
 test("uses a host-translated multilingual gap question only as a read-only Nyra hint", async () => {
@@ -2440,7 +2591,7 @@ test("rejects malformed execution claims and quarantines upstream completion lan
   assert.equal(response.structuredContent.host_response_contract.next_action, "Answer the owner");
 });
 
-test("requires a verified closure before reporting a completed Work", async () => {
+test("reads an unverified completed Work without a ticket and reports only verified closure", async () => {
   const preflight = preflightFixture();
   preflight.structuredContent.work_preflight.continuity.state = "completed";
   preflight.structuredContent.work_preflight.nyra_control_context.work_state = "completed";
@@ -2464,8 +2615,14 @@ test("requires a verified closure before reporting a completed Work", async () =
     work_id: WORK_ID,
     project_id: "nyra_core",
   }, identity());
-  assert.equal(incomplete.structuredContent.orchestration_directive.decision.disposition, "INSUFFICIENT_CONTEXT");
-  assert.equal(incomplete.structuredContent.orchestration_directive.problem.code, "verified_closure_required");
+  assert.equal(incomplete.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(incomplete.structuredContent.orchestration_directive.problem, null);
+  assert.deepEqual(incomplete.structuredContent.orchestration_directive.needs, []);
+  assert.deepEqual(incomplete.structuredContent.orchestration_directive.next_actions, []);
+  assert.deepEqual(incomplete.structuredContent.orchestration_directive.decision.reason_codes, []);
+  assert.equal(incomplete.structuredContent.interpretation.governance_diagnostics.state, "READY");
+  assert.match(incomplete.structuredContent.host_response_contract.reply_seed,
+    /closure non è verificata/);
 
   const closureProjection = {
     schema_version: "tenant_work_closure_verification_v1",
@@ -2579,6 +2736,16 @@ test("binds direct Nyra conversation to Work project when the host sends a stale
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.preflight[0].project_id, "nyra_core");
   assert.equal(calls.continuity[0][1].project_id, "nyra_core");
+});
+
+test("canonicalizes an uppercase Work UUID through the full conversation binding", async () => {
+  const response = await harness().handler({
+    message: "Leggi lo stato del Work.",
+    work_id: WORK_ID.toUpperCase(),
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(response.structuredContent.work.work_id, WORK_ID);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.work_id, WORK_ID);
 });
 
 test("restores the sole operational Work before Nyra's single governed preflight", async () => {
