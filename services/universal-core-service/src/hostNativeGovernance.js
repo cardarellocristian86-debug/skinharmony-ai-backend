@@ -2460,6 +2460,10 @@ export function createHostNativeGovernance({
   }
   if (configuredSemanticScopeMode !== "OFF" && (!semanticScopeGuard
     || typeof semanticScopeGuard.check !== "function")) fail("semantic_scope_guard_required");
+  if (configuredSemanticScopeMode === "ENFORCE"
+    && typeof semanticScopeContextResolver !== "function") {
+    fail("semantic_scope_context_resolver_required");
+  }
   if (semanticScopeContextResolver !== null && typeof semanticScopeContextResolver !== "function") {
     fail("semantic_scope_context_resolver_invalid");
   }
