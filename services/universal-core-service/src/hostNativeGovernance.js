@@ -2510,19 +2510,27 @@ export function createHostNativeGovernance({
     };
     return Object.freeze({ ...unsigned, decision_digest: hostNativeDigest(unsigned) });
   };
+  const resolveSemanticScopeContext = async ({ delegation, action, tenantId, phase } = {}) => {
+    if (configuredSemanticScopeMode === "OFF") return null;
+    try {
+      const resolved = await semanticScopeContextResolver?.({ tenant_id: tenantId,
+        work_id: delegation.grant.work_id, action: clone(action), phase });
+      return resolved || Object.freeze({ unavailable: true });
+    } catch {
+      return Object.freeze({ unavailable: true });
+    }
+  };
   const semanticScopeDecision = ({ delegation, action, tenantId, hostKind, hostSessionFingerprint,
-    phase, previousScopeState = null, authorityReservationRef = null } = {}) => {
+    phase, entity360 = null, previousScopeState = null,
+    authorityReservationRef = null } = {}) => {
     if (configuredSemanticScopeMode === "OFF") return null;
     const branch = actionBranch(action) || action.service_id || action.target_commit || "root";
     const effect = actionEffect(action.kind);
-    let entity360 = null;
-    try {
-      entity360 = semanticScopeContextResolver?.({ tenant_id: tenantId,
-        work_id: delegation.grant.work_id, action: clone(action), phase }) || null;
-    } catch {
-      entity360 = null;
-    }
     const riskTier = actionRisk(action.kind);
+    if (entity360?.unavailable === true) {
+      return semanticScopeUnavailableDecision({ delegation, tenantId, hostKind,
+        hostSessionFingerprint, riskTier, authorityReservationRef });
+    }
     try {
       return semanticScopeGuard.check({
         tenant_id: tenantId,
@@ -2555,15 +2563,19 @@ export function createHostNativeGovernance({
         risk_tier: riskTier, previous_scope_state: previousScopeState,
         evidence_refs: entity360?.evidence_refs || [], data_egress: false,
         entity360_snapshot_stale: entity360?.stale === true,
-        semantic_ambiguous: !entity360?.entity360_snapshot_ref,
+        semantic_ambiguous: entity360?.ambiguous === true
+          || !entity360?.entity360_snapshot_ref,
       });
     } catch {
       return semanticScopeUnavailableDecision({ delegation, tenantId, hostKind,
         hostSessionFingerprint, riskTier, authorityReservationRef });
     }
   };
+  // ENFORCE may persist authority only after an exact ALLOW. REVALIDATE and
+  // REDACT are non-final outcomes; treating either as authorization would let
+  // snapshot drift or an unapplied redaction cross the effect boundary.
   const semanticScopeEnforcedDenial = (decision) => configuredSemanticScopeMode === "ENFORCE"
-    && ["BLOCK", "HOLD"].includes(decision?.action);
+    && decision?.action !== "ALLOW";
   const assertSoftwareConsumerFresh = (trusted = {}) => {
     if (trusted.software_closure_fresh_until === undefined) return;
     const freshUntil = Date.parse(trusted.software_closure_fresh_until || "");
@@ -3300,6 +3312,8 @@ export function createHostNativeGovernance({
     nyra_work_automation_provider_execution: false,
     semantic_scope_guard_mode: configuredSemanticScopeMode,
     semantic_scope_guard_configured: configuredSemanticScopeMode !== "OFF",
+    semantic_scope_context_resolver_configured:
+      typeof semanticScopeContextResolver === "function",
     semanticScopeMetrics() {
       return semanticScopeGuard && typeof semanticScopeGuard.metrics === "function"
         ? semanticScopeGuard.metrics()
@@ -5576,6 +5590,12 @@ export function createHostNativeGovernance({
           }
         }
       }
+      const semanticScopeContextAtIssue = await resolveSemanticScopeContext({
+        delegation,
+        action,
+        tenantId,
+        phase: "ISSUE",
+      });
       assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
@@ -5638,6 +5658,7 @@ export function createHostNativeGovernance({
           hostKind: host_kind,
           hostSessionFingerprint: host_session_fingerprint,
           phase: "ISSUE",
+          entity360: semanticScopeContextAtIssue,
         });
         if (semanticScopeEnforcedDenial(semanticScopeAtIssue)) {
           fail(`semantic_scope_${semanticScopeAtIssue.action.toLowerCase()}`);
@@ -5997,6 +6018,44 @@ export function createHostNativeGovernance({
       const freshStandingMerge = bootstrapTicket
         ? await requireFreshStandingMergeReadback(initial, bootstrapTicket, nowValue)
         : null;
+      const reservationDelegation = bootstrapTicket
+        ? initial.delegations[bootstrapTicket.ticket.delegation_id]
+        : null;
+      let reservationId = null;
+      let semanticScopeAtReservation = null;
+      if (bootstrapTicket
+        && bootstrapTicket.ticket.tenant_id === tenantId
+        && bootstrapTicket.state === "issued"
+        && Date.parse(bootstrapTicket.ticket.expires_at) > nowValue
+        && bootstrapTicket.ticket.host_session_fingerprint === String(
+          input.host_session_fingerprint || "",
+        ).trim()
+        && delegationActive(reservationDelegation, nowValue)) {
+        reservationId = makeId("hnr", {
+          ticket_id: bootstrapTicket.ticket.ticket_id,
+          nowValue,
+        });
+        const semanticScopeContextAtReservation = await resolveSemanticScopeContext({
+          delegation: reservationDelegation,
+          action: bootstrapTicket.ticket.action,
+          tenantId,
+          phase: "RESERVATION",
+        });
+        semanticScopeAtReservation = semanticScopeDecision({
+          delegation: reservationDelegation,
+          action: bootstrapTicket.ticket.action,
+          tenantId,
+          hostKind: bootstrapTicket.ticket.host_kind,
+          hostSessionFingerprint: bootstrapTicket.ticket.host_session_fingerprint,
+          phase: "RESERVATION",
+          entity360: semanticScopeContextAtReservation,
+          previousScopeState: bootstrapTicket.ticket.semantic_scope_at_issue?.binding || null,
+          authorityReservationRef: reservationId,
+        });
+        if (semanticScopeEnforcedDenial(semanticScopeAtReservation)) {
+          fail(`semantic_scope_${semanticScopeAtReservation.action.toLowerCase()}`);
+        }
+      }
       if (bootstrapTicket?.ticket?.bootstrap_release_exception_candidate) {
         if (!bootstrapReleaseExceptionStore || typeof bootstrapReleaseExceptionStore.consume !== "function") {
           fail("bootstrap_release_exception_store_unavailable");
@@ -6055,20 +6114,7 @@ export function createHostNativeGovernance({
             successorUsage: 0,
           });
         }
-        const reservationId = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });
-        const semanticScopeAtReservation = semanticScopeDecision({
-          delegation,
-          action: record.ticket.action,
-          tenantId,
-          hostKind: record.ticket.host_kind,
-          hostSessionFingerprint: record.ticket.host_session_fingerprint,
-          phase: "RESERVATION",
-          previousScopeState: record.ticket.semantic_scope_at_issue?.binding || null,
-          authorityReservationRef: reservationId,
-        });
-        if (semanticScopeEnforcedDenial(semanticScopeAtReservation)) {
-          fail(`semantic_scope_${semanticScopeAtReservation.action.toLowerCase()}`);
-        }
+        if (!reservationId) fail("semantic_scope_reservation_context_invalid");
         const usage = actionUsage(
           record.ticket.action.kind,
           record.ticket.action,

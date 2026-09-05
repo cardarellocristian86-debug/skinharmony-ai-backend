@@ -1496,6 +1496,17 @@ export function createPostgresEntity360AdapterRegistry({ pool, policy, nsct = nu
   if (!pool || typeof pool.connect !== "function") fail("entity360_adapter_pool_required", 503);
   const compiledPolicy = compileEntity360Policy(policy);
   const nsctOwnerReadLimits = sourceOwnerReadLimits(compiledPolicy, "nsct");
+  const adapterVersions = Object.freeze([
+    "architecture_map_entity360_adapter_v1",
+    "event_ledger_entity360_adapter_v2",
+    "genesis_entity360_adapter_v1",
+    "icf_entity360_adapter_v2",
+    "impact_map_entity360_adapter_v1",
+    "intent_entity360_adapter_v1",
+    "nsct_entity360_adapter_v1",
+    "security_intelligence_entity360_adapter_v1",
+    "work_continuity_entity360_adapter_v1",
+  ]);
 
   async function transaction(callback) {
     const client = await pool.connect();
@@ -1559,17 +1570,38 @@ export function createPostgresEntity360AdapterRegistry({ pool, policy, nsct = nu
 
   return Object.freeze({
     schema_version: "entity_360_adapter_registry_v1",
-    adapter_versions: Object.freeze([
-      "architecture_map_entity360_adapter_v1",
-      "event_ledger_entity360_adapter_v2",
-      "genesis_entity360_adapter_v1",
-      "icf_entity360_adapter_v2",
-      "impact_map_entity360_adapter_v1",
-      "intent_entity360_adapter_v1",
-      "nsct_entity360_adapter_v1",
-      "security_intelligence_entity360_adapter_v1",
-      "work_continuity_entity360_adapter_v1",
-    ]),
+    adapter_versions: adapterVersions,
+    async health() {
+      try {
+        const probe = await transaction(async (client) => client.query(
+          "SELECT current_setting('transaction_read_only') AS read_only",
+        ));
+        const readOnly = String(probe.rows[0]?.read_only || "").toLowerCase() === "on";
+        return Object.freeze({
+          schema_version: "entity_360_adapter_registry_health_v1",
+          state: readOnly ? "ready" : "write_transaction_detected",
+          ready: readOnly,
+          registry_schema_version: "entity_360_adapter_registry_v1",
+          adapter_versions: adapterVersions,
+          consistent_cut: "postgres_repeatable_read",
+          read_only: readOnly,
+          provider_mutation: false,
+          execution_authorized: false,
+        });
+      } catch {
+        return Object.freeze({
+          schema_version: "entity_360_adapter_registry_health_v1",
+          state: "unavailable",
+          ready: false,
+          registry_schema_version: "entity_360_adapter_registry_v1",
+          adapter_versions: adapterVersions,
+          consistent_cut: "postgres_repeatable_read",
+          read_only: true,
+          provider_mutation: false,
+          execution_authorized: false,
+        });
+      }
+    },
     async resolveCandidates({ tenant_id, entity_type, identity } = {}) {
       const tenantId = requiredText(tenant_id, "entity360_adapter_tenant_required", 120);
       const report = [];

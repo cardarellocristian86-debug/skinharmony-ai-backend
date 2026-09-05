@@ -2438,8 +2438,9 @@ function rebuildQualificationManifest(snapshot, policy) {
 export function assembleEntity360Snapshot(input = {}, options = {}) {
   const policy = options.policy?.policy_digest ? options.policy : compileEntity360Policy(options.policy);
   const ontology = compileEntity360Ontology(options.ontology);
-  const bitemporalEnabled = options.bitemporal_mode === "SHADOW";
-  if (options.bitemporal_mode !== undefined && !["OFF", "SHADOW"].includes(options.bitemporal_mode)) {
+  const bitemporalEnabled = ["SHADOW", "ENFORCE"].includes(options.bitemporal_mode);
+  if (options.bitemporal_mode !== undefined
+    && !["OFF", "SHADOW", "ENFORCE"].includes(options.bitemporal_mode)) {
     fail("entity360_bitemporal_mode_invalid");
   }
   const adapterRegistryVersion = text(options.adapter_registry_version,

@@ -285,6 +285,7 @@ import {
   normalizeEntity360Mode,
 } from "./entity360Runtime.js";
 import { createSemanticScopeGuard } from "./semanticScopeGuard.js";
+import { createEntity360SemanticScopeContextResolver } from "./semanticScopeContextResolver.js";
 import { registerEntity360Routes } from "./entity360Routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -6645,6 +6646,23 @@ export function createUniversalCoreService(options = {}) {
           : "fail_closed_unavailable");
   let hostNativeGovernance = options.hostNativeGovernance || null;
   let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
+  let entity360RuntimeForSemanticScope = null;
+  const semanticScopeModeInput = options.semanticScopeMode
+    ?? process.env.CORE_SEMANTIC_SCOPE_MODE
+    ?? hostNativeGovernance?.semantic_scope_guard_mode
+    ?? "SHADOW";
+  let semanticScopeContextRuntime = null;
+  try {
+    semanticScopeContextRuntime = createEntity360SemanticScopeContextResolver({
+      mode: semanticScopeModeInput,
+      getEntity360Runtime: () => entity360RuntimeForSemanticScope,
+      contextResolver: options.semanticScopeContextResolver || null,
+      maxSnapshotAgeMs: options.semanticScopeMaxSnapshotAgeMs
+        ?? process.env.CORE_SEMANTIC_SCOPE_MAX_SNAPSHOT_AGE_MS,
+    });
+  } catch {
+    semanticScopeContextRuntime = null;
+  }
   const hostNativeRequiredChecksPolicyResolver =
     serverResolverRegistry?.required_checks?.resolver
     || options.hostNativeRequiredChecksPolicyResolver
@@ -6789,10 +6807,10 @@ export function createUniversalCoreService(options = {}) {
             standingReleaseEmergencyStopFlag.value,
           standingReleaseBaseProtectionResolver,
           semanticScopeGuard: options.semanticScopeGuard || createSemanticScopeGuard({
-            mode: options.semanticScopeMode || process.env.CORE_SEMANTIC_SCOPE_MODE || "SHADOW",
+            mode: semanticScopeModeInput,
           }),
-          semanticScopeMode: options.semanticScopeMode || process.env.CORE_SEMANTIC_SCOPE_MODE || "SHADOW",
-          semanticScopeContextResolver: options.semanticScopeContextResolver || null,
+          semanticScopeMode: semanticScopeModeInput,
+          semanticScopeContextResolver: semanticScopeContextRuntime?.resolve || null,
         });
         hostNativeGovernanceState = "ready";
       } catch (error) {
@@ -7142,12 +7160,13 @@ export function createUniversalCoreService(options = {}) {
       : null));
   const nyraPrecoreModeRaw = String(options.nyraPrecoreDecisionMode ?? process.env.NYRA_PRECORE_DECISION_MODE ?? "OFF").trim().toUpperCase();
   const nyraPrecoreMode = ["OFF", "ADVISORY"].includes(nyraPrecoreModeRaw) ? nyraPrecoreModeRaw : "INVALID";
+  let nyraPrecoreDecisionSigner = null;
   let nyraPrecoreDecisionStore = null;
   let nyraPrecoreDecisionError = null;
   let nyraPrecoreDecisionState = nyraPrecoreMode === "INVALID" ? "configuration_invalid" : "disabled";
   if (softwareCognitionEnabled && nyraPrecoreMode === "ADVISORY" && nyraPolicyRegistryPostgresPool) {
     try {
-      const signer = options.nyraPrecoreDecisionSigner || createNyraPolicyRegistryCoreRemoteSigner({
+      nyraPrecoreDecisionSigner = options.nyraPrecoreDecisionSigner || createNyraPolicyRegistryCoreRemoteSigner({
         origin: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN,
         path: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH,
         service: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE,
@@ -7157,20 +7176,20 @@ export function createUniversalCoreService(options = {}) {
         publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY,
         fetchImpl: options.nyraPrecoreDecisionSignerFetch || globalThis.fetch,
         allowedPurposes: new Set([NYRA_PRECORE_SIGNING_PURPOSE]), responseSignatureAlgorithm: "ed25519",
+        probePurpose: NYRA_PRECORE_SIGNING_PURPOSE,
         authorityScope: "ADVISORY_NON_EXECUTABLE",
       });
-      const verifier = createNyraPrecoreVerificationKeyring({ activeVerifier: signer,
+      const verifier = createNyraPrecoreVerificationKeyring({ activeVerifier: nyraPrecoreDecisionSigner,
         verificationKeys: options.nyraPrecoreDecisionVerificationKeys
           ?? process.env.CORE_NYRA_PRECORE_VERIFY_KEYRING_JSON ?? {} });
       nyraPrecoreDecisionStore = options.nyraPrecoreDecisionStore || createPostgresNyraPrecoreDecisionStore({
-        pool: nyraPolicyRegistryPostgresPool, signer, verifier,
+        pool: nyraPolicyRegistryPostgresPool, signer: nyraPrecoreDecisionSigner, verifier,
       });
       nyraPrecoreDecisionState = "initializing";
     } catch (error) {
       nyraPrecoreDecisionStore = null;
       nyraPrecoreDecisionState = "signer_unavailable";
-      nyraPrecoreDecisionError = String(error?.code || error?.message
-        || "nyra_precore_signer_unavailable").slice(0, 160);
+      nyraPrecoreDecisionError = "nyra_precore_signer_unavailable";
     }
   }
   const softwareCognitionRuntime = softwareCognitionEnabled && (options.softwareCognitionRuntime
@@ -7185,11 +7204,50 @@ export function createUniversalCoreService(options = {}) {
       }
       return initializePostgresWithRetry(() => softwareCognitionRuntime.initialize());
     })
-      .then(async () => { if (nyraPrecoreDecisionStore) await nyraPrecoreDecisionStore.initialize(); softwareCognitionState = "ready";
-        if (nyraPrecoreDecisionStore) nyraPrecoreDecisionState = "ready"; })
+      .then(async (initialization) => {
+        if (initialization?.ready !== true) {
+          throw new Error("software_cognition_initialization_not_ready");
+        }
+        if (nyraPrecoreDecisionStore) {
+          try {
+            await nyraPrecoreDecisionStore.initialize();
+          } catch (error) {
+            nyraPrecoreDecisionState = "initialization_failed";
+            nyraPrecoreDecisionError = "nyra_precore_initialization_failed";
+          }
+          if (nyraPrecoreDecisionState === "initializing") {
+            let probeReady = false;
+            let signerHealth = null;
+            try {
+              probeReady = typeof nyraPrecoreDecisionSigner?.probe === "function"
+                && await nyraPrecoreDecisionSigner.probe() === true;
+              signerHealth = typeof nyraPrecoreDecisionSigner?.health === "function"
+                ? nyraPrecoreDecisionSigner.health()
+                : null;
+            } catch { /* a pre-Core advisory signer outage must not disable NSCT */ }
+            if (probeReady && signerHealth?.signer_state === "ready") {
+              nyraPrecoreDecisionState = "ready";
+              nyraPrecoreDecisionError = null;
+            } else {
+              nyraPrecoreDecisionState = "signer_unavailable";
+              nyraPrecoreDecisionError = "nyra_precore_signer_probe_failed";
+            }
+          }
+        }
+        softwareCognitionState = "ready";
+        softwareCognitionInitializationError = null;
+      })
       .catch((error) => {
         softwareCognitionState = "initialization_failed";
-        softwareCognitionInitializationError = String(error?.code || error?.message || "software_cognition_initialization_failed").slice(0, 160);
+        const code = String(error?.code || error?.message || "");
+        softwareCognitionInitializationError = new Set([
+          "causal_continuity_initialization_required",
+          "software_cognition_initialization_not_ready",
+        ]).has(code) ? code : "software_cognition_initialization_failed";
+        if (nyraPrecoreDecisionState === "initializing") {
+          nyraPrecoreDecisionState = "initialization_failed";
+          nyraPrecoreDecisionError = "software_cognition_initialization_required";
+        }
         try { audit.append("core_software_cognition_unavailable", { reason: softwareCognitionInitializationError }); } catch { /* readiness state is authoritative */ }
       });
   }
@@ -7202,13 +7260,15 @@ export function createUniversalCoreService(options = {}) {
       entity360Configuration = options.entity360Configuration || loadEntity360Configuration({
         policyPath: options.entity360PolicyPath || process.env.CORE_ENTITY360_POLICY_PATH,
         ontologyPath: options.entity360OntologyPath || process.env.CORE_ENTITY360_ONTOLOGY_PATH,
+        enforcementPolicyPath: options.entity360EnforcementPolicyPath
+          || process.env.CORE_ENTITY360_ENFORCEMENT_POLICY_PATH,
       });
     }
   } catch (error) {
     entity360Mode = "INVALID";
     entity360ConfigurationError = String(error?.code || error?.message || "entity360_configuration_invalid").slice(0, 160);
   }
-  const entity360Enabled = entity360Mode === "SHADOW";
+  const entity360Enabled = ["SHADOW", "ENFORCE"].includes(entity360Mode);
   const entity360IcfStoreDependencyRequired = entity360Enabled
     && options.icfStore !== undefined && options.icfStore !== null;
   const entity360IcfStoreDependencyReady = !entity360IcfStoreDependencyRequired
@@ -7311,6 +7371,7 @@ export function createUniversalCoreService(options = {}) {
         adapterRegistry: entity360AdapterRegistry,
         policy: entity360Configuration.policy,
         ontology: entity360Configuration.ontology,
+        enforcementPolicy: entity360Configuration.enforcement_policy,
         mode: entity360Mode,
         qualificationSigner: entity360QualificationSigner,
         qualificationVerifier: entity360QualificationVerifier,
@@ -7318,6 +7379,7 @@ export function createUniversalCoreService(options = {}) {
           process.env.CORE_ENTITY360_BITEMPORAL_MODE || "OFF",
       })
       : null));
+  entity360RuntimeForSemanticScope = entity360Runtime || null;
   let entity360State = entity360Mode === "INVALID"
     ? "configuration_invalid"
     : entity360Mode === "OFF"
@@ -7348,6 +7410,11 @@ export function createUniversalCoreService(options = {}) {
         catch { /* readiness state remains authoritative */ }
       })
     : Promise.resolve();
+  if (semanticScopeContextRuntime) {
+    void entity360Initialization
+      .then(() => semanticScopeContextRuntime.initialize())
+      .catch(() => { /* resolver health remains the bounded readiness authority */ });
+  }
   const evaluateNyraPrecoreAlignment = async (tenantId, workId, coreAllowed) => {
     if (nyraPrecoreMode !== "ADVISORY" || nyraPrecoreDecisionState !== "ready"
       || !nyraPrecoreDecisionStore?.readHeadForWork || !softwareCognitionStore) {
@@ -8894,7 +8961,30 @@ export function createUniversalCoreService(options = {}) {
       state: entity360State,
       mode: entity360Mode,
       initialization_error: entity360InitializationError,
-      shadow_non_mutating: true,
+      shadow_non_mutating: entity360Mode === "SHADOW",
+      context_non_authoritative: true,
+      enforcement_ready: false,
+      authority_owner: "UNIVERSAL_CORE",
+      core_decision_only: true,
+      entity360_self_approval: false,
+      provider_mutation: false,
+      execution_authorized: false,
+    };
+    let semanticScopeContextHealth = semanticScopeContextRuntime?.health?.() || {
+      schema_version: "semantic_scope_context_resolver_health_v1",
+      mode: String(semanticScopeModeInput || "").trim().toUpperCase() || null,
+      state: "unavailable",
+      configured: false,
+      ready: false,
+      readiness_required: String(semanticScopeModeInput || "").trim().toUpperCase() === "ENFORCE",
+      readiness_ready: false,
+      source: null,
+      entity360_authority_mode: String(semanticScopeModeInput || "").trim().toUpperCase()
+        === "ENFORCE" ? "CORE_ENFORCED_DATA_ONLY" : "SHADOW_DATA_ONLY",
+      initialization_attempts: 0,
+      resolve_attempts: 0,
+      resolve_failures: 0,
+      error: "semantic_scope_context_resolver_unavailable",
       execution_authorized: false,
     };
     let actionEvaluatorIdempotencyHealth = {
@@ -8947,7 +9037,7 @@ export function createUniversalCoreService(options = {}) {
           ? () => probe.check()
           : null;
       const [postgresResult, policyResult, proofResult, airlockResult, causalResult,
-        entity360Result, actionIdempotencyResult] = await Promise.all([
+        entity360Result, actionIdempotencyResult, semanticScopeContextResult] = await Promise.all([
         hostNativeProductionReadinessRequired && governedAgentPostgresConfigured && postgresCheck
           ? boundedSingleFlightHealthProbe("postgres_major", postgresCheck)
           : Promise.resolve({ ok: true, value: normalizePostgresMajorVerification(null) }),
@@ -8979,6 +9069,11 @@ export function createUniversalCoreService(options = {}) {
             error: null,
           };
         }),
+        semanticScopeContextRuntime
+          ? boundedSingleFlightHealthProbe("semantic_scope_context", () =>
+            semanticScopeContextRuntime.refresh())
+          : Promise.resolve({ ok: false,
+            error: "semantic_scope_context_resolver_unavailable" }),
       ]);
       if (postgresResult.ok) {
         governedAgentPostgresVersion = normalizePostgresMajorVerification(postgresResult.value);
@@ -9036,7 +9131,13 @@ export function createUniversalCoreService(options = {}) {
           state: entity360Result.timed_out ? "health_timeout" : "health_failed",
           mode: entity360Mode,
           error: entity360Result.error,
-          shadow_non_mutating: true,
+          shadow_non_mutating: entity360Mode === "SHADOW",
+          context_non_authoritative: true,
+          enforcement_ready: false,
+          authority_owner: "UNIVERSAL_CORE",
+          core_decision_only: true,
+          entity360_self_approval: false,
+          provider_mutation: false,
           execution_authorized: false,
         };
       }
@@ -9050,6 +9151,17 @@ export function createUniversalCoreService(options = {}) {
               actionEvaluatorIdempotencyState,
             error: actionIdempotencyResult.error || actionEvaluatorIdempotencyError ||
               "core_action_idempotency_store_unavailable",
+          };
+      semanticScopeContextHealth = semanticScopeContextResult.ok
+        && semanticScopeContextResult.value
+        && typeof semanticScopeContextResult.value === "object"
+        ? semanticScopeContextResult.value
+        : {
+            ...semanticScopeContextHealth,
+            state: semanticScopeContextResult.timed_out ? "health_timeout" : "unavailable",
+            ready: false,
+            readiness_ready: semanticScopeContextHealth.readiness_required !== true,
+            error: "semantic_scope_context_resolver_unavailable",
           };
     }
     const hostNativeProductionReadinessReasons = [];
@@ -9248,6 +9360,59 @@ export function createUniversalCoreService(options = {}) {
       && genericWorkCoreJoinStoreState === "ready"
       && genericWorkCoreJoinDistributedReady
       && genericWorkCoreJoinSignerReady;
+    const nyraPrecoreSignerStatus = (() => {
+      let current;
+      try { current = nyraPrecoreDecisionSigner?.health?.(); } catch { current = null; }
+      const signerState = String(current?.signer_state || "");
+      const probeAttempts = Number(current?.probe_attempts);
+      const keyId = String(current?.key_id || "");
+      const fingerprint = String(current?.public_key_fingerprint || "");
+      const targetCommit = String(current?.target_commit || "");
+      return {
+        signer_state: new Set(["configured", "ready", "rejected", "unavailable"])
+          .has(signerState) ? signerState : nyraPrecoreDecisionSigner ? "unavailable" : null,
+        probe_purpose: current?.probe_purpose === NYRA_PRECORE_SIGNING_PURPOSE
+          ? current.probe_purpose : null,
+        probe_attempts: Number.isSafeInteger(probeAttempts) && probeAttempts >= 0
+          ? probeAttempts : 0,
+        key_id: /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(keyId) ? keyId : null,
+        public_key_fingerprint: /^[a-f0-9]{64}$/.test(fingerprint) ? fingerprint : null,
+        target_commit: /^[a-f0-9]{40}$/.test(targetCommit) ? targetCommit : null,
+      };
+    })();
+    const softwareCognitionReadinessRequired = softwareCognitionMode === "ENFORCED";
+    const softwareCognitionReadinessReady = !softwareCognitionReadinessRequired
+      || softwareCognitionState === "ready";
+    const semanticScopeGuardMode = typeof hostNativeGovernance?.semantic_scope_guard_mode === "string" &&
+      ["OFF", "SHADOW", "ENFORCE"].includes(hostNativeGovernance.semantic_scope_guard_mode)
+      ? hostNativeGovernance.semantic_scope_guard_mode
+      : ["OFF", "SHADOW", "ENFORCE"].includes(semanticScopeContextHealth.mode)
+        ? semanticScopeContextHealth.mode
+        : null;
+    const semanticScopeGuardConfigured = typeof hostNativeGovernance?.semantic_scope_guard_configured === "boolean"
+      ? hostNativeGovernance.semantic_scope_guard_configured
+      : semanticScopeContextHealth.configured === true;
+    const semanticScopeContextResolverBound =
+      hostNativeGovernance?.semantic_scope_context_resolver_configured === true;
+    const semanticScopeReadinessRequired = semanticScopeGuardMode === "ENFORCE";
+    const semanticScopeReadinessReady = !semanticScopeReadinessRequired || (
+      semanticScopeGuardConfigured === true
+      && semanticScopeContextResolverBound
+      && semanticScopeContextHealth.ready === true
+      && semanticScopeContextHealth.state === "ready"
+    );
+    const entity360ReadinessRequired = entity360Mode === "ENFORCE";
+    const entity360ReadinessReady = !entity360ReadinessRequired || (
+      entity360State === "ready" && entity360Health.ready === true
+      && entity360Health.mode === "ENFORCE"
+      && entity360Health.enforcement_ready === true
+      && entity360Health.authority_owner === "UNIVERSAL_CORE"
+      && entity360Health.core_decision_only === true
+      && entity360Health.entity360_self_approval === false
+      && entity360Health.provider_mutation === false
+      && semanticScopeGuardMode === "ENFORCE"
+      && semanticScopeReadinessReady
+    );
     const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
@@ -9256,6 +9421,9 @@ export function createUniversalCoreService(options = {}) {
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
       && actionEvaluatorIdempotencyProductionReady
+      && softwareCognitionReadinessReady
+      && semanticScopeReadinessReady
+      && entity360ReadinessReady
       // When the operator excludes Generic Join from global readiness, every
       // failure in that capability remains local so Core can authorize its
       // recovery. An invalid gate flag resolves to true and still fails closed.
@@ -9271,14 +9439,9 @@ export function createUniversalCoreService(options = {}) {
       && (!requireDeepBranchV2Readiness || deepBranchV2RemoteReadiness?.ready === true);
     const causalInitializationDegraded = causalBootstrapLivenessReady;
     const healthStatusReady = renderReady
-      || (!requireDeepBranchV2Readiness && !strictReadiness && causalInitializationDegraded);
-    const semanticScopeGuardMode = typeof hostNativeGovernance?.semantic_scope_guard_mode === "string" &&
-      ["OFF", "SHADOW", "ENFORCE"].includes(hostNativeGovernance.semantic_scope_guard_mode)
-      ? hostNativeGovernance.semantic_scope_guard_mode
-      : null;
-    const semanticScopeGuardConfigured = typeof hostNativeGovernance?.semantic_scope_guard_configured === "boolean"
-      ? hostNativeGovernance.semantic_scope_guard_configured
-      : null;
+      || (!requireDeepBranchV2Readiness && !strictReadiness && causalInitializationDegraded
+        && softwareCognitionReadinessReady && semanticScopeReadinessReady
+        && entity360ReadinessReady);
     let semanticScopeGuardRawMetrics = null;
     try {
       semanticScopeGuardRawMetrics = typeof hostNativeGovernance?.semanticScopeMetrics === "function"
@@ -9410,11 +9573,16 @@ export function createUniversalCoreService(options = {}) {
         icf_event_digest_v2_dependency: entity360IcfStoreDependency,
         configured: entity360Mode !== "OFF" && entity360Mode !== "INVALID",
         tenant_shadow_disable_available: Boolean(entity360Runtime),
-        production_required: false,
-        global_readiness_gate: false,
+        tenant_rollback_modes: entity360Mode === "ENFORCE"
+          ? ["SHADOW", "OFF"] : ["OFF"],
+        production_required: entity360ReadinessRequired,
+        global_readiness_gate: entity360ReadinessRequired,
+        global_readiness_ready: entity360ReadinessReady,
         feature_flag_default: "OFF",
         deployment_mode_ceiling: entity360Mode,
         current_path_authoritative: true,
+        production_context_gate_enforced: entity360Mode === "ENFORCE"
+          && entity360ReadinessReady,
         production_decision_mutation: false,
         execution_authorized: false,
       },
@@ -9422,15 +9590,32 @@ export function createUniversalCoreService(options = {}) {
         schema_version: "nyra_software_cognition_v1",
         state: softwareCognitionState,
         ready: softwareCognitionState === "ready",
+        readiness_required: softwareCognitionReadinessRequired,
+        readiness_ready: softwareCognitionReadinessReady,
         backend: softwareCognitionStore ? "postgresql_append_only_v1" : "unavailable",
         rollout_mode: softwareCognitionMode,
         execution_authorized: false,
         authority: "universal_core",
-        error: softwareCognitionInitializationError,
+        error: softwareCognitionInitializationError === null
+          ? null
+          : new Set([
+            "software_cognition_mode_invalid",
+            "software_cognition_initialization_failed",
+            "software_cognition_initialization_not_ready",
+            "causal_continuity_initialization_required",
+          ]).has(softwareCognitionInitializationError)
+            ? softwareCognitionInitializationError
+            : "software_cognition_initialization_failed",
         nyra_precore_decision: { schema_version: "nyra_precore_decision_v1", mode: nyraPrecoreMode,
           state: nyraPrecoreDecisionState, ready: nyraPrecoreDecisionState === "ready",
           authority_scope: "ADVISORY_NON_EXECUTABLE", execution_authorized: false,
           signer_required: true, signer_purpose: NYRA_PRECORE_SIGNING_PURPOSE,
+          signer_state: nyraPrecoreSignerStatus.signer_state,
+          signer_probe_purpose: nyraPrecoreSignerStatus.probe_purpose,
+          signer_probe_attempts: nyraPrecoreSignerStatus.probe_attempts,
+          signer_key_id: nyraPrecoreSignerStatus.key_id,
+          signer_public_key_fingerprint: nyraPrecoreSignerStatus.public_key_fingerprint,
+          signer_target_commit: nyraPrecoreSignerStatus.target_commit,
           verification_key_count: nyraPrecoreDecisionStore?.verification_key_count || 0,
           error: nyraPrecoreDecisionError },
       },
@@ -9604,6 +9789,35 @@ export function createUniversalCoreService(options = {}) {
         // remains non-authoritative and cannot change guard mode or policy.
         semantic_scope_guard_mode: semanticScopeGuardMode,
         semantic_scope_guard_configured: semanticScopeGuardConfigured,
+        semantic_scope_context_resolver_configured:
+          semanticScopeContextResolverBound && semanticScopeContextHealth.configured === true,
+        semantic_scope_guard_readiness_required: semanticScopeReadinessRequired,
+        semantic_scope_guard_readiness_ready: semanticScopeReadinessReady,
+        semantic_scope_context_resolver: {
+          schema_version: "semantic_scope_context_resolver_health_v1",
+          state: semanticScopeContextHealth.state,
+          configured: semanticScopeContextHealth.configured === true,
+          ready: semanticScopeContextHealth.ready === true,
+          source: semanticScopeContextHealth.source || null,
+          entity360_authority_mode: semanticScopeContextHealth.entity360_authority_mode ===
+              "CORE_ENFORCED_DATA_ONLY"
+            ? "CORE_ENFORCED_DATA_ONLY" : "SHADOW_DATA_ONLY",
+          max_snapshot_age_ms: Number.isSafeInteger(
+            semanticScopeContextHealth.max_snapshot_age_ms,
+          ) ? semanticScopeContextHealth.max_snapshot_age_ms : null,
+          initialization_attempts: Number.isSafeInteger(
+            semanticScopeContextHealth.initialization_attempts,
+          ) ? semanticScopeContextHealth.initialization_attempts : 0,
+          resolve_attempts: Number.isSafeInteger(semanticScopeContextHealth.resolve_attempts)
+            ? semanticScopeContextHealth.resolve_attempts : 0,
+          resolve_failures: Number.isSafeInteger(semanticScopeContextHealth.resolve_failures)
+            ? semanticScopeContextHealth.resolve_failures : 0,
+          error: semanticScopeContextHealth.error ===
+              "semantic_scope_context_resolver_unavailable"
+            ? semanticScopeContextHealth.error
+            : null,
+          execution_authorized: false,
+        },
         semantic_scope_guard_metrics: semanticScopeGuardMetrics,
         nyra_work_automation_v3: {
           configured: Boolean(nyraWorkAutomation),

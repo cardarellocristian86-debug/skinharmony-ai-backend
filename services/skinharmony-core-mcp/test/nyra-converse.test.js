@@ -331,6 +331,7 @@ function directiveContextFixture({
       work_id: WORK_ID,
       project_id: projectId,
       status,
+      progress_bp: 3_750,
       intent_digest: INTENT_DIGEST,
       objective: "Prepare the canonical Entity 360 architecture and governed delivery",
       next_action: "E360-02 — ADR boundaries",
@@ -839,6 +840,12 @@ test("keeps a Work status read free of write-only precommit validation", async (
   assert.equal(response.structuredContent.work.work_bound, true);
   assert.equal(response.structuredContent.orchestration_directive.work_context.precommit_ticket_gate,
     null);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.progress_bp, 3_750);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.checkpoint_available,
+    false);
+  assert.equal(response.structuredContent.interpretation.opened_branch_count, 0);
+  assert.match(response.structuredContent.host_response_contract.reply_seed,
+    /progresso 37\.5%; blocker required_tasks_incomplete, required_evidence_unverified; checkpoint non disponibile; closure verificata no/i);
 });
 
 test("keeps blocker diagnostics visible in a mixed status-read question", async () => {

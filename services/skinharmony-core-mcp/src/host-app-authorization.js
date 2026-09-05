@@ -266,7 +266,8 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   // This is a tenant-wide configuration action, not a Work mutation.  Keep it
   // above the entity_360_ Work prefix so both direct and compact dynamic
   // invocation require the Core-wide grant.
-  if (["entity_360_shadow_enable", "entity_360_shadow_disable", "nyra_autopilot_enable"]
+  if (["entity_360_shadow_enable", "entity_360_enforce_enable",
+    "entity_360_shadow_disable", "nyra_autopilot_enable"]
     .includes(name)) {
     return HOST_APP_CAPABILITIES.CORE_OPERATE;
   }

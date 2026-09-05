@@ -45,9 +45,29 @@ test("production blueprints pause automatic deploys and bound monorepo builds", 
   }
 });
 
-test("Universal Core production Blueprint keeps semantic scope observational until resolver wiring", () => {
+test("Universal Core production Blueprint enforces verified software and Entity360 context", () => {
   const blueprint = read("render-universal-core.yaml");
-  assert.equal(envValue(blueprint, "CORE_SEMANTIC_SCOPE_MODE"), "SHADOW");
+  assert.equal(envValue(blueprint, "SOFTWARE_COGNITION_MODE"), "ENFORCED");
+  assert.equal(envValue(blueprint, "CORE_ENTITY360_MODE"), "ENFORCE");
+  assert.equal(envValue(blueprint, "CORE_ENTITY360_BITEMPORAL_MODE"), "ENFORCE");
+  assert.equal(envValue(blueprint, "CORE_SEMANTIC_SCOPE_MODE"), "ENFORCE");
+  assert.equal(envValue(blueprint, "CORE_SEMANTIC_SCOPE_MAX_SNAPSHOT_AGE_MS"), "900000");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE"), "enforced");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED"), "true");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED"), "true");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED"), "true");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED"), "true");
+  assert.equal(envValue(blueprint, "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE"),
+    "core_deterministic_recompile");
+
+  const nyraBlueprint = read("render-nyra.yaml");
+  assert.equal(envValue(nyraBlueprint, "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED"), "true");
+  assert.equal(envValue(nyraBlueprint, "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED"), "true");
+  assert.equal(envValue(nyraBlueprint, "NYRA_POLICY_REGISTRY_SIGNER_MODE"), "remote");
+
+  const mcpBlueprint = read("render-core-mcp.yaml");
+  assert.equal(envValue(mcpBlueprint, "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED"), "true");
+  assert.equal(envValue(mcpBlueprint, "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED"), "true");
 });
 
 test("Rust postinstall supports an early non-Rust service exit", () => {

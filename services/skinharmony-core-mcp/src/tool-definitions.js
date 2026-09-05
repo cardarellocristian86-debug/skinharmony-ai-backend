@@ -1124,6 +1124,8 @@ const nyraOrchestrationDirectiveSchema = object({
     intent_digest: nyraDirectiveDigest,
     context_digest: nyraDirectiveDigest,
     status: nyraConverseNullableText(24),
+    progress_bp: { type: ["integer", "null"], minimum: 0, maximum: 10_000 },
+    checkpoint_available: { type: "boolean" },
     acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
     required_task_count: { type: "integer", minimum: 0, maximum: 64 },
     pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
@@ -1147,7 +1149,8 @@ const nyraOrchestrationDirectiveSchema = object({
     closure_verified: { type: "boolean" },
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
-    "status", "acceptance_criteria_count", "required_task_count", "pending_required_task_count",
+    "status", "progress_bp", "checkpoint_available", "acceptance_criteria_count",
+    "required_task_count", "pending_required_task_count",
     "required_evidence_count", "unverified_required_evidence_count", "precommit_ticket_gate",
     "precommit_ticket_gate_applicable", "precommit_pending_required_task_count",
     "precommit_unverified_required_evidence_count", "next_required_task", "closure_verified",
@@ -1612,8 +1615,8 @@ const nyraContinueInputSchema = Object.freeze({
 });
 
 export const TOOLS = [
-  tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
-  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived Core and Work status, blockers and next action. Never mutates or grants authority.", object({
+  tool("core_health", "Core health", "Read Core health.", object(), ["core:read"]),
+  tool("nyra_control_room_status", "Nyra Control Room", "Read live Core/Work status, blockers and next action; no mutation or authority.", object({
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
   }), ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
@@ -1673,14 +1676,14 @@ export const TOOLS = [
     compiler_input: policyRegistryCompilerInput,
     ...policyRegistryOwnerProperties,
   }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "compiler_input", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
-  tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request Core-governed rollback to one exact activated snapshot.", object({
+  tool("nyra_policy_registry_rollback", "Rollback Nyra policy", "Roll back one activated snapshot through Core.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,
     domain_pack_id: policyRegistryDomainPackId,
     target_snapshot_digest: policyRegistrySha256,
     ...policyRegistryOwnerProperties,
   }, ["work_id", "operation_id", "domain_pack_id", "target_snapshot_digest", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
-  tool("nyra_policy_registry_reconcile", "Reconcile a governed Nyra policy operation", "Reconcile one exact interrupted Policy Registry operation.", object({
+  tool("nyra_policy_registry_reconcile", "Reconcile Nyra policy", "Reconcile one interrupted policy operation.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,
     ...policyRegistryOwnerProperties,
@@ -1689,7 +1692,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Nyra dialogue; Core gates effects.", object({
+  tool("nyra_converse", "Nyra dialogue", "Nyra dialogue; Core gates effects.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
@@ -1721,7 +1724,7 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_continue", "Nyra: continue one governed request", "Continue a governed Nyra Work.", nyraContinueInputSchema, ["core:govern"], false, true, {
+  tool("nyra_continue", "Continue Nyra Work", "Continue one governed Work.", nyraContinueInputSchema, ["core:govern"], false, true, {
     ownerConfirmationRequired: false,
     meta: {
       "skinharmony/dedicatedCoreGate": true,
@@ -1739,7 +1742,7 @@ export const TOOLS = [
       "skinharmony/externalSideEffect": false,
     },
   }),
-  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded capabilities by group.", object({
+  tool("core_capability_catalog", "Core capability catalog", "Discover bounded capabilities.", object({
     group: identifier,
     capability_id: identifier,
     include_schema: { type: "boolean" },
@@ -1758,7 +1761,7 @@ export const TOOLS = [
       assignment_capability: { type: "string", pattern: "^hnac_[A-Za-z0-9_-]{43}$" },
     }, ["work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability"]),
   }), ["core:read"]),
-  tool("core_branch_registry", "Read Core branch intelligence", "Read Core branch registry, taxonomy, maturity or authenticated authorization view.", object({
+  tool("core_branch_registry", "Core branch registry", "Read branch taxonomy, maturity and authorization.", object({
     view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },
     branches: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
   }), ["core:read"]),
@@ -1775,7 +1778,7 @@ export const TOOLS = [
   tool("core_evidence_recent", "Read recent Core evidence", "Read a bounded list of tenant-scoped Core evidence records.", object({
     limit: { type: "integer", minimum: 1, maximum: 100 },
   }), ["core:read"]),
-  tool("core_semantic_select", "Select semantic candidates", "Rank bounded semantic candidates through Core without publishing or execution.", object({
+  tool("core_semantic_select", "Core semantic select", "Rank candidates without publication or execution.", object({
     candidates: { type: "array", minItems: 1, maxItems: 500, items: semanticCandidate },
     query: text(4_000),
     capability_ids: { type: "array", maxItems: 500, uniqueItems: true, items: identifier },
@@ -1784,7 +1787,7 @@ export const TOOLS = [
     intent: { type: "string", maxLength: 240 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
   }), ["core:read"]),
-  tool("core_capability_read", "Read a dynamic Core capability", "Invoke one registered read capability.", object({
+  tool("core_capability_read", "Core capability read", "Run one registered read.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
@@ -1793,7 +1796,7 @@ export const TOOLS = [
     // is consumed by the gateway only and is never forwarded to `arguments`.
     session_id: identifier,
   }, ["capability_id", "catalog_revision"]), ["core:read"]),
-  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one Core-governed mutation.", object({
+  tool("core_capability_invoke", "Core capability invoke", "Run one Core-governed mutation.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },

@@ -1397,10 +1397,11 @@ export function createCoreHandlers(config, options = {}) {
     enabled,
     route,
   } = {}) {
-    // Keep the two supported transitions closed over by this adapter. MCP
+    // Keep the supported transitions closed over by this adapter. MCP
     // callers never select a tenant-wide Entity 360 mode themselves.
     if (![
       ["SHADOW", true, "entity_360_shadow_enable"],
+      ["ENFORCED", true, "entity_360_enforce_enable"],
       ["OFF", false, "entity_360_shadow_disable"],
     ].some(([allowedMode, allowedEnabled, allowedRoute]) => (
       mode === allowedMode && enabled === allowedEnabled && route === allowedRoute
@@ -1433,6 +1434,19 @@ export function createCoreHandlers(config, options = {}) {
       useTenantGateway: true,
       body: { ...transition, owner_context: owner },
     });
+    const readback = payload?.result;
+    if (payload?.ok !== true || readback?.mode !== mode ||
+      readback?.enabled !== enabled || readback?.execution_authorized !== false ||
+      readback?.production_decision_changed !== false ||
+      (mode === "ENFORCED" && (
+        readback?.authority_owner !== "UNIVERSAL_CORE" ||
+        readback?.entity360_self_approval !== false ||
+        readback?.provider_mutation !== false ||
+        !/^[a-f0-9]{64}$/.test(String(readback?.policy_digest || "")) ||
+        !/^[a-f0-9]{64}$/.test(String(readback?.enforcement_authority_digest || ""))
+      ))) {
+      throw new Error("entity360_feature_flag_readback_invalid");
+    }
     return {
       ...payload,
       dedicated_core_gate: {
@@ -1452,6 +1466,16 @@ export function createCoreHandlers(config, options = {}) {
       mode: "SHADOW",
       enabled: true,
       route: "entity_360_shadow_enable",
+    });
+  }
+
+  async function entity360EnforceEnableCoreRequest(args = {}, identity = {}) {
+    return entity360FeatureFlagCoreRequest({
+      args,
+      identity,
+      mode: "ENFORCED",
+      enabled: true,
+      route: "entity_360_enforce_enable",
     });
   }
 
@@ -5101,6 +5125,12 @@ export function createCoreHandlers(config, options = {}) {
   // lease and never expose a generic configuration transport to MCP tools.
   Object.defineProperty(handlers, "entity360ShadowEnableCoreRequest", {
     value: entity360ShadowEnableCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(handlers, "entity360EnforceEnableCoreRequest", {
+    value: entity360EnforceEnableCoreRequest,
     enumerable: false,
     configurable: false,
     writable: false,

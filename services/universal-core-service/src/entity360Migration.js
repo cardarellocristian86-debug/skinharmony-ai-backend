@@ -9,6 +9,7 @@ import { withPostgresMigrationSession } from "../../shared/retryable-postgres-in
 export const ENTITY360_MIGRATION_ID = "20260825_001_entity360_v1";
 export const ENTITY360_MIGRATION_LOCK = "skinharmony:universal-core:entity360:migration:v1";
 export const ENTITY360_SHADOW_MODE_MIGRATION_ID = "20260827_002_entity360_shadow_mode_guard_v1";
+export const ENTITY360_ENFORCEMENT_MIGRATION_ID = "20260905_003_entity360_v2_enforcement";
 
 export const ENTITY360_MIGRATIONS = Object.freeze([
   Object.freeze({
@@ -18,6 +19,10 @@ export const ENTITY360_MIGRATIONS = Object.freeze([
   Object.freeze({
     migration_id: ENTITY360_SHADOW_MODE_MIGRATION_ID,
     url: new URL("../migrations/20260827_002_entity360_shadow_mode_guard_up.sql", import.meta.url),
+  }),
+  Object.freeze({
+    migration_id: ENTITY360_ENFORCEMENT_MIGRATION_ID,
+    url: new URL("../migrations/20260905_003_entity360_v2_enforcement_up.sql", import.meta.url),
   }),
 ]);
 
@@ -201,10 +206,19 @@ function verifySchemaReadback(readback, expected) {
       !readback.backfill_checkpoint_truncate_guard) {
     fail("entity360_migration_integrity_readback_failed");
   }
-  if (expectedMigrations.some((item) => item.migration_id === ENTITY360_SHADOW_MODE_MIGRATION_ID)
+  const enforcementMigrationExpected = expectedMigrations.some((item) =>
+    item.migration_id === ENTITY360_ENFORCEMENT_MIGRATION_ID);
+  if (!enforcementMigrationExpected
+    && expectedMigrations.some((item) => item.migration_id === ENTITY360_SHADOW_MODE_MIGRATION_ID)
     && !readback.feature_shadow_only_guard) {
     fail("entity360_migration_integrity_readback_failed", {
       missing_guard: "core_entity360_feature_shadow_only_check",
+    });
+  }
+  if (enforcementMigrationExpected && (!readback.feature_v2_mode_guard
+    || readback.feature_shadow_only_guard)) {
+    fail("entity360_migration_integrity_readback_failed", {
+      missing_guard: "core_entity360_feature_v2_mode_check",
     });
   }
   return readback;
@@ -340,6 +354,11 @@ export function createEntity360Migrator({ pool } = {}) {
              ) AS feature_shadow_only_guard,
              EXISTS (
                SELECT 1 FROM pg_constraint
+                WHERE conrelid=to_regclass('core_entity360_feature_flags')
+                  AND conname='core_entity360_feature_v2_mode_check'
+             ) AS feature_v2_mode_guard,
+             EXISTS (
+               SELECT 1 FROM pg_constraint
                 WHERE conrelid=to_regclass('core_entity360_backfill_checkpoints')
                   AND conname='core_entity360_backfill_non_destructive_check'
              ) AS backfill_non_destructive_guard,
@@ -379,6 +398,7 @@ export function createEntity360Migrator({ pool } = {}) {
       backfill_tenant_fk: integrity.rows[0]?.backfill_tenant_fk === true,
       feature_enforcement_guard: integrity.rows[0]?.feature_enforcement_guard === true,
       feature_shadow_only_guard: integrity.rows[0]?.feature_shadow_only_guard === true,
+      feature_v2_mode_guard: integrity.rows[0]?.feature_v2_mode_guard === true,
       backfill_non_destructive_guard: integrity.rows[0]?.backfill_non_destructive_guard === true,
       backfill_cursor_binding_guard: integrity.rows[0]?.backfill_cursor_binding_guard === true,
       backfill_state_guard: integrity.rows[0]?.backfill_state_guard === true,

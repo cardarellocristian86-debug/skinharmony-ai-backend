@@ -1,0 +1,18 @@
+{
+  "schema_version": "entity_360_enforcement_policy_v2",
+  "policy_version": "entity_360_core_enforcement_policy_v2",
+  "mode": "ENFORCE",
+  "authority_owner": "UNIVERSAL_CORE",
+  "failure_policy": "FAIL_CLOSED",
+  "snapshot_schema_version": "entity_360_snapshot_v2",
+  "adapter_registry_schema_version": "entity_360_adapter_registry_v1",
+  "store_backend": "entity360_postgres_append_only_v1",
+  "migration_id": "20260905_003_entity360_v2_enforcement",
+  "bitemporal_mode": "ENFORCE",
+  "tenant_feature_mode": "ENFORCED",
+  "rollback_mode": "SHADOW",
+  "decision_receipt_schema_version": "host_native_action_ticket_v1",
+  "context_statuses": ["READY"],
+  "provider_mutation": false,
+  "entity360_self_approval": false
+}

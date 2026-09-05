@@ -15,9 +15,10 @@ const DIGEST = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$/u;
 const REGISTRY_KINDS = new Set(["SCHEMA", "ONTOLOGY", "ADAPTER", "POLICY", "SOURCE"]);
 const REGISTRY_STATUSES = new Set(["ACTIVE", "DEPRECATED", "REVOKED"]);
-// Entity 360 v1 can record observations only. Promotion is a new governed
-// release, never a tenant-row value or a persistence-layer escape hatch.
-const FEATURE_MODES = new Set(["OFF", "SHADOW"]);
+// ENFORCED is a tenant-scoped Core gate, not execution authority. It is valid
+// only with exact policy and server-derived enforcement authority digests;
+// OFF and SHADOW remain rollback-safe states.
+const FEATURE_MODES = new Set(["OFF", "SHADOW", "ENFORCED"]);
 const BACKFILL_STATES = new Set(["PENDING", "RUNNING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"]);
 const BACKFILL_TERMINAL_STATES = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const BACKFILL_TRANSITIONS = Object.freeze({
@@ -242,7 +243,9 @@ export function createPostgresEntity360Store({ pool, policy, ontology, qualifica
         postgres_major: Math.floor(Number(probe.rows[0]?.version_num || 0) / 10_000),
         database_time: probe.rows[0]?.database_now,
         migration: readback.migration,
+        migrations: readback.migrations,
         schema_verified: readback.schema_manifest_matches === true,
+        feature_v2_mode_guard: readback.feature_v2_mode_guard === true,
         schema_manifest_digest: readback.schema_manifest_digest,
         expected_schema_manifest_digest: readback.expected_schema_manifest_digest,
       };
@@ -336,9 +339,13 @@ export function createPostgresEntity360Store({ pool, policy, ontology, qualifica
     const config = plain(raw?.config || {}, "entity360_feature_config_invalid");
     const configDigest = entity360Digest(config);
     const policyDigest = raw?.policy_digest ? digest(raw.policy_digest, "entity360_policy_digest_invalid") : null;
-    if ((mode === "OFF" && enabled) || (mode === "SHADOW" && !enabled)
-      || (mode === "OFF" && policyDigest !== null) || (mode === "SHADOW" && policyDigest === null)
-      || enforcementAuthorityDigest !== null) {
+    const validOff = mode === "OFF" && !enabled && policyDigest === null
+      && enforcementAuthorityDigest === null;
+    const validShadow = mode === "SHADOW" && enabled && policyDigest !== null
+      && enforcementAuthorityDigest === null;
+    const validEnforced = mode === "ENFORCED" && enabled && policyDigest !== null
+      && enforcementAuthorityDigest !== null;
+    if (!validOff && !validShadow && !validEnforced) {
       fail("entity360_feature_flag_state_invalid", 403);
     }
     const expectedRevision = integer(raw?.expected_revision, "entity360_feature_expected_revision_invalid");

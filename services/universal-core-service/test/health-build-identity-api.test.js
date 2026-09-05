@@ -127,7 +127,7 @@ async function withEnv(values, run) {
   }
 }
 
-async function readHealth(options = {}) {
+async function readHealth(options = {}, pathname = "/healthz") {
   const storageRoot = fs.mkdtempSync(
     path.join(os.tmpdir(), "host-native-readiness-"),
   );
@@ -136,7 +136,7 @@ async function readHealth(options = {}) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const response = await fetch(
-      `http://127.0.0.1:${server.address().port}/healthz`,
+      `http://127.0.0.1:${server.address().port}${pathname}`,
     );
     return { response, health: await response.json() };
   } finally {
@@ -611,20 +611,70 @@ test("health exposes bounded Semantic Scope Guard readback without authority or 
     .includes("must-not-leak"), false);
 });
 
-test("health tolerates unavailable Semantic Scope Guard telemetry without exposing its error", async () => {
-  const { response, health } = await readHealth({
+test("ENFORCE fails readiness when its context resolver is absent and hides telemetry errors", async () => {
+  const options = {
     hostNativeGovernance: {
       ...READY_HOST_NATIVE_GOVERNANCE,
       semantic_scope_guard_mode: "ENFORCE",
       semantic_scope_guard_configured: true,
       semanticScopeMetrics: () => { throw new Error("scope-telemetry-secret"); },
     },
-  });
-  assert.equal(response.status, 200);
+  };
+  const { response, health } = await readHealth(options);
+  const readiness = await readHealth(options, "/readyz");
+  assert.equal(response.status, 503);
+  assert.equal(readiness.response.status, 503);
   assert.equal(health.host_native_governance.semantic_scope_guard_mode, "ENFORCE");
   assert.equal(health.host_native_governance.semantic_scope_guard_configured, true);
+  assert.equal(health.host_native_governance.semantic_scope_guard_readiness_required, true);
+  assert.equal(health.host_native_governance.semantic_scope_guard_readiness_ready, false);
+  assert.equal(health.host_native_governance.semantic_scope_context_resolver.state, "unavailable");
+  assert.equal(health.host_native_governance.semantic_scope_context_resolver.ready, false);
   assert.equal(health.host_native_governance.semantic_scope_guard_metrics, null);
   assert.equal(JSON.stringify(health).includes("scope-telemetry-secret"), false);
+});
+
+test("ENFORCE readiness requires a ready context resolver while SHADOW remains observable", async () => {
+  const readyResolver = async () => ({
+    entity360_snapshot_ref: `entity360_snapshot:${"a".repeat(64)}`,
+    as_of_valid_time: "2026-09-05T10:00:00.000Z",
+    as_of_knowledge_time: "2026-09-05T10:00:00.000Z",
+  });
+  readyResolver.health = async () => ({ ready: true });
+  const enforced = await readHealth({
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: readyResolver,
+    hostNativeGovernance: {
+      ...READY_HOST_NATIVE_GOVERNANCE,
+      semantic_scope_guard_mode: "ENFORCE",
+      semantic_scope_guard_configured: true,
+      semantic_scope_context_resolver_configured: true,
+    },
+  });
+  assert.equal(enforced.response.status, 200);
+  assert.equal(enforced.health.host_native_governance.semantic_scope_guard_readiness_ready, true);
+  assert.equal(enforced.health.host_native_governance.semantic_scope_context_resolver.state, "ready");
+  assert.equal(enforced.health.host_native_governance.semantic_scope_context_resolver.source,
+    "injected_resolver");
+
+  const unavailableResolver = async () => { throw new Error("resolver-secret"); };
+  unavailableResolver.health = async () => ({ ready: false, secret: "resolver-secret" });
+  const shadow = await readHealth({
+    semanticScopeMode: "SHADOW",
+    semanticScopeContextResolver: unavailableResolver,
+    hostNativeGovernance: {
+      ...READY_HOST_NATIVE_GOVERNANCE,
+      semantic_scope_guard_mode: "SHADOW",
+      semantic_scope_guard_configured: true,
+      semantic_scope_context_resolver_configured: true,
+    },
+  });
+  assert.equal(shadow.response.status, 200);
+  assert.equal(shadow.health.host_native_governance.semantic_scope_guard_readiness_required, false);
+  assert.equal(shadow.health.host_native_governance.semantic_scope_guard_readiness_ready, true);
+  assert.equal(shadow.health.host_native_governance.semantic_scope_context_resolver.state,
+    "unavailable");
+  assert.equal(JSON.stringify(shadow.health).includes("resolver-secret"), false);
 });
 
 test("production host-native readiness requires gateway, separated signing, DTT, and PostgreSQL", async () => {

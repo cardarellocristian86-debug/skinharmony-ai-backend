@@ -177,11 +177,11 @@ test("PostgreSQL Entity 360 exact catalog manifest rejects isolated schema drift
         await pool.query(`ALTER TABLE core_entity360_feature_flags
           ADD CONSTRAINT core_entity360_feature_enforcement_check CHECK (true)`);
       }],
-      ["shadow_only_check", async (pool) => {
+      ["v2_mode_check", async (pool) => {
         await pool.query(`ALTER TABLE core_entity360_feature_flags
-          DROP CONSTRAINT core_entity360_feature_shadow_only_check`);
+          DROP CONSTRAINT core_entity360_feature_v2_mode_check`);
         await pool.query(`ALTER TABLE core_entity360_feature_flags
-          ADD CONSTRAINT core_entity360_feature_shadow_only_check CHECK (true)`);
+          ADD CONSTRAINT core_entity360_feature_v2_mode_check CHECK (true)`);
       }],
       ["foreign_key_action", async (pool) => {
         const foreignKey = await pool.query(`SELECT conname FROM pg_constraint
@@ -268,7 +268,7 @@ test("PostgreSQL Entity 360 exact catalog manifest rejects isolated schema drift
     }
   });
 
-test("PostgreSQL Entity 360 feature persistence accepts only OFF or SHADOW",
+test("PostgreSQL Entity360 feature persistence enforces exact OFF, SHADOW, and ENFORCED bindings",
   { skip: !DATABASE_URL }, async () => {
     const pg = await import("pg");
     const adminPool = new pg.default.Pool({ connectionString: DATABASE_URL, max: 2 });
@@ -286,18 +286,23 @@ test("PostgreSQL Entity 360 feature persistence accepts only OFF or SHADOW",
            config,config_digest,revision,updated_by)
           VALUES ($1,'shadow','SHADOW',true,$3,NULL,$2::jsonb,$4,0,$5)`,
         [common[0], common[1], "b".repeat(64), common[2], common[3]]);
-        await assert.rejects(() => pool.query(`INSERT INTO core_entity360_feature_flags
+        await pool.query(`INSERT INTO core_entity360_feature_flags
           (tenant_id,flag_id,mode,enabled,policy_digest,enforcement_authority_digest,
            config,config_digest,revision,updated_by)
           VALUES ($1,'enforced','ENFORCED',true,$3,$4,$2::jsonb,$5,0,$6)`,
+        [common[0], common[1], "c".repeat(64), "d".repeat(64), common[2], common[3]]);
+        await assert.rejects(() => pool.query(`INSERT INTO core_entity360_feature_flags
+          (tenant_id,flag_id,mode,enabled,policy_digest,enforcement_authority_digest,
+           config,config_digest,revision,updated_by)
+          VALUES ($1,'invalid-enforced','ENFORCED',false,$3,$4,$2::jsonb,$5,0,$6)`,
         [common[0], common[1], "c".repeat(64), "d".repeat(64), common[2], common[3]]),
-        /core_entity360_feature_shadow_only_check/);
+        /core_entity360_feature_v2_mode_check/);
         await assert.rejects(() => pool.query(`INSERT INTO core_entity360_feature_flags
           (tenant_id,flag_id,mode,enabled,policy_digest,enforcement_authority_digest,
            config,config_digest,revision,updated_by)
           VALUES ($1,'invalid-shadow','SHADOW',false,$3,NULL,$2::jsonb,$4,0,$5)`,
         [common[0], common[1], "e".repeat(64), common[2], common[3]]),
-        /core_entity360_feature_shadow_only_check/);
+        /core_entity360_feature_v2_mode_check/);
       });
     } finally {
       await adminPool.end();

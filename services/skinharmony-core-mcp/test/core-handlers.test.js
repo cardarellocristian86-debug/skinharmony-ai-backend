@@ -1039,6 +1039,60 @@ test("Entity 360 SHADOW activation is owner-bound, tenant-gateway-only and canno
   assert.equal(calls.length, 1);
 });
 
+test("Entity 360 ENFORCED activation is hardcoded and rejects inexact Core readback", async () => {
+  const calls = [];
+  let resultMode = "ENFORCED";
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-commercial-key" },
+    tenantGatewayKey: "g".repeat(48),
+    tenantContextSigningSecret: "t".repeat(48),
+    ownerContextSigningSecret: "o".repeat(48),
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeCodexEnabled: true,
+    godModeTenantIds: ["codexai"],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {
+        mode: resultMode, enabled: true, policy_digest: "a".repeat(64),
+        enforcement_authority_digest: "b".repeat(64),
+        authority_owner: "UNIVERSAL_CORE", entity360_self_approval: false,
+        provider_mutation: false, execution_authorized: false,
+        production_decision_changed: false,
+      } }), { status: 201, headers: { "content-type": "application/json" } });
+    },
+  });
+  const owner = { tenantId: "codexai", kind: "codex", role: "owner_root",
+    godMode: true, subject: "codex", ownerConfirmed: true };
+  const result = await handlers.entity360EnforceEnableCoreRequest({
+    expected_revision: 1,
+    idempotency_key: "entity360-enforce-enable-a",
+    mode: "OFF",
+    enabled: false,
+  }, owner);
+  assert.equal(result.result.mode, "ENFORCED");
+  assert.equal(result.dedicated_core_gate.route, "entity_360_enforce_enable");
+  assert.equal(calls[0].url.pathname, "/v1/entity-360/admin/feature-flag");
+  assert.equal(calls[0].body.mode, "ENFORCED");
+  assert.equal(calls[0].body.enabled, true);
+  assert.equal(calls[0].body.expected_revision, 1);
+  assert.equal(calls[0].body.owner_context.owner_verified, true);
+  resultMode = "SHADOW";
+  await assert.rejects(() => handlers.entity360EnforceEnableCoreRequest({
+    expected_revision: 2,
+    idempotency_key: "entity360-enforce-enable-b",
+  }, owner), /entity360_feature_flag_readback_invalid/u);
+  resultMode = "ENFORCED";
+  await assert.rejects(() => handlers.entity360EnforceEnableCoreRequest({
+    expected_revision: 2,
+    idempotency_key: "entity360-enforce-enable-c",
+  }, { ...owner, kind: "oauth", godMode: false,
+    ownerConfirmed: false }), /owner_confirmation_required/u);
+  assert.equal(calls.length, 2);
+});
+
 test("Entity 360 SHADOW disable is owner-bound, tenant-gateway-only and hardcodes OFF", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

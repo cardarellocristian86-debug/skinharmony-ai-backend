@@ -180,14 +180,14 @@ services:
         value: universal-core-generic-join-v1
       - key: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
         sync: false
-      # Policy Registry mutations remain code-dark until Universal Core reports
-      # the exact enforced, distributed and cryptographically verified E2E
-      # health contract. MCP holds no Policy Registry signer, proof or Nyra S2S
-      # secret; it forwards only authenticated Work and owner contexts.
+      # Policy Registry lifecycle is exposed only after Universal Core proves
+      # the enforced, distributed and cryptographically verified E2E health
+      # contract. MCP forwards authenticated Work/Owner context and holds no
+      # activation authority of its own.
       - key: NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED
-        value: "false"
+        value: "true"
       - key: NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED
-        value: "false"
+        value: "true"
       # Core MCP is the existing isolated signer custody boundary. Target
       # commits are operator-rotated atomically with Universal Core; signing
       # material remains provisioned only in Render and is never generated or

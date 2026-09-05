@@ -5838,7 +5838,7 @@ export function createWorkContinuityV2Store({
           owner_confirmation_required: false,
           successor_required_for_supersede: false,
           server_closure_evidence_required: false,
-          ...classifyStaleWork({ ...work, ...activity }),
+          ...classifyStaleWork({ ...work, ...activity }, now()),
         });
         continue;
       }
@@ -5868,7 +5868,7 @@ export function createWorkContinuityV2Store({
         Math.abs(authoritativeUpdatedAtMs - projectedUpdatedAtMs) > 5 * 60_000;
       const staleFromExecution = classifyStaleWork({ ...work,
         updated_at: authoritativeTimestampValid ? authoritativeUpdatedAt : null,
-        ...activity });
+        ...activity }, now());
       // Keep the decision fail-closed even if a future classifier revision
       // stops consuming a new execution-activity field: a live non-read-only
       // participant or lease can never be offered for reconciliation.
@@ -5884,6 +5884,11 @@ export function createWorkContinuityV2Store({
         ["STALE", "ABANDONED"].includes(stale.classification);
       const completedProjectionRepair = legacyReconciliationEligible && !projectionDrift && authoritativeTimestampValid &&
         stale.classification === "COMPLETED_BUT_UNCLOSED";
+      const blockedSupersedable = legacyReconciliationEligible && !projectionDrift
+        && !timestampProjectionDrift && authoritativeTimestampValid
+        && authoritativeStatus === "blocked"
+        && stale.classification === "BLOCKED_VALID"
+        && activity.execution_activity_count === 0;
       result.push({ work_id: work.work_id, work_code: work.work_code,
         parent_work_id: work.parent_work_id || null, successor_work_id: work.successor_work_id || null,
         superseded_by_work_id: work.superseded_by_work_id || null,
@@ -5898,13 +5903,17 @@ export function createWorkContinuityV2Store({
         legacy_reconciliation_eligible: legacyReconciliationEligible,
         allowed_actions: completedProjectionRepair
           ? ["REPAIR_COMPLETED_PROJECTION"]
-          : reconcilable
-            ? (authoritativeStatus === "release_ready" ? ["SUPERSEDE"] : ["CANCEL", "SUPERSEDE"])
-            : [],
-        owner_confirmation_required: reconcilable || completedProjectionRepair,
-        successor_required_for_supersede: !projectionDrift && reconcilable,
+          : blockedSupersedable
+            ? ["SUPERSEDE"]
+            : reconcilable
+              ? (authoritativeStatus === "release_ready" ? ["SUPERSEDE"] : ["CANCEL", "SUPERSEDE"])
+              : [],
+        owner_confirmation_required: reconcilable || completedProjectionRepair
+          || blockedSupersedable,
+        successor_required_for_supersede: !projectionDrift
+          && (reconcilable || blockedSupersedable),
         server_closure_evidence_required: completedProjectionRepair ||
-          (reconcilable && authoritativeStatus === "release_ready"),
+          blockedSupersedable || (reconcilable && authoritativeStatus === "release_ready"),
         read_only_binding_count: activity.read_only_binding_count,
         execution_activity_count: activity.execution_activity_count,
         ...stale });
@@ -5933,7 +5942,7 @@ export function createWorkContinuityV2Store({
       fail("legacy_reconciliation_expected_status_invalid");
     }
     const expectedClassification = String(input.expected_classification || "").trim().toUpperCase();
-    if (!["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"].includes(expectedClassification)) {
+    if (!["STALE", "ABANDONED", "BLOCKED_VALID", "COMPLETED_BUT_UNCLOSED"].includes(expectedClassification)) {
       fail("legacy_reconciliation_expected_classification_invalid");
     }
     const reason = text(input.reason, "legacy_reconciliation_reason_required", 1_000);
@@ -5950,6 +5959,10 @@ export function createWorkContinuityV2Store({
     if (!projectionRepair && (expectedStatus === "completed" ||
         expectedClassification === "COMPLETED_BUT_UNCLOSED")) {
       fail("legacy_reconciliation_completed_action_invalid");
+    }
+    if (expectedClassification === "BLOCKED_VALID"
+      && (expectedStatus !== "blocked" || action !== "SUPERSEDE")) {
+      fail("legacy_blocked_reconciliation_successor_required");
     }
     const targetStatus = action === "SUPERSEDE"
       ? "SUPERSEDED"
@@ -6077,10 +6090,13 @@ export function createWorkContinuityV2Store({
         const successorLegacy = successorLegacyResult.rows[0] || null;
         const successorV2 = successorV2Result.rows[0] || null;
         if (!successorLegacy && !successorV2) fail("legacy_reconciliation_successor_not_found");
-        if ((successorLegacy?.project_id || successorV2?.project_id) !== legacy.project_id) {
+        const successorProjects = [successorLegacy?.project_id, successorV2?.project_id]
+          .filter(Boolean);
+        if (!successorProjects.length || successorProjects.some((projectId) =>
+          projectId !== legacy.project_id)) {
           fail("legacy_reconciliation_successor_project_mismatch");
         }
-        if (expectedStatus === "release_ready") {
+        if (expectedStatus === "release_ready" || expectedClassification === "BLOCKED_VALID") {
           const successorV2Id = successorV2?.work_id || successorWorkId;
           const verifiedV2 = await client.query(`SELECT
               r.receipt_digest,f.report_digest,tw.status
@@ -6107,7 +6123,8 @@ export function createWorkContinuityV2Store({
                 report_digest: verifiedV2.rows[0].report_digest,
               }),
             };
-          } else if (String(successorLegacy?.status || "").toLowerCase() === "completed" &&
+          } else if (expectedClassification !== "BLOCKED_VALID" &&
+              String(successorLegacy?.status || "").toLowerCase() === "completed" &&
               verifiedLegacy.rows[0]) {
             serverEvidence = {
               source: "legacy_closure_finalized_event",
@@ -6118,11 +6135,15 @@ export function createWorkContinuityV2Store({
               }),
             };
           } else {
-            fail("legacy_release_ready_server_evidence_required");
+            fail(expectedClassification === "BLOCKED_VALID"
+              ? "legacy_blocked_successor_server_evidence_required"
+              : "legacy_release_ready_server_evidence_required");
           }
         }
-      } else if (expectedStatus === "release_ready") {
-        fail("legacy_release_ready_server_evidence_required");
+      } else if (expectedStatus === "release_ready" || expectedClassification === "BLOCKED_VALID") {
+        fail(expectedClassification === "BLOCKED_VALID"
+          ? "legacy_blocked_successor_server_evidence_required"
+          : "legacy_release_ready_server_evidence_required");
       }
 
       const updatedV2 = await client.query(`UPDATE tenant_work SET

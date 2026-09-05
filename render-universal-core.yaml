@@ -63,26 +63,26 @@ services:
         value: "15000"
       - key: CORE_SERVICE_ADMIN_KEY
         sync: false
-      # NSCT stays advisory. Signed Nyra pre-Core decisions remain OFF until
-      # the existing Nyra signer purpose and all public pins/S2S bindings are
-      # provisioned and verified; this flag never accepts ENFORCED.
+      # Software Cognition is authoritative for release-impact and closure
+      # checks. Startup/readiness fail closed unless its PostgreSQL runtime is
+      # initialized; signed Nyra pre-Core advice remains a separate OFF flag.
       - key: SOFTWARE_COGNITION_MODE
-        value: ADVISORY
-      # Entity 360 v1 is live only as an immutable context/evidence shadow.
-      # It cannot alter production decisions or authorize execution; promotion
-      # beyond SHADOW requires a separate Core-governed release.
+        value: ENFORCED
+      # Entity360 v2 supplies verified context only. Universal Core remains the
+      # sole decision authority; startup/readiness fail closed unless policy,
+      # adapters, migration, Store and bitemporal verification are all READY.
       - key: CORE_ENTITY360_MODE
-        value: SHADOW
-      # Bitemporal projection is observe-only. It never changes an
-      # authorization decision; promotion to ENFORCE requires a separate
-      # governed release after shadow evidence is reviewed.
+        value: ENFORCE
+      # Every production context cut is bitemporal and bound into the Core
+      # action-ticket receipt. Tenant rollback remains available via SHADOW/OFF.
       - key: CORE_ENTITY360_BITEMPORAL_MODE
-        value: SHADOW
-      # Keep semantic scope observational until the asynchronous Entity360
-      # context resolver and its readiness gate are wired. ENFORCE without that
-      # resolver fail-closes every host-native effect as ambiguous.
+        value: ENFORCE
+      # Effects proceed only on a final ALLOW over fresh, verified Entity360 v2
+      # context. HOLD/BLOCK/REVALIDATE/REDACT and dependency loss fail closed.
       - key: CORE_SEMANTIC_SCOPE_MODE
-        value: SHADOW
+        value: ENFORCE
+      - key: CORE_SEMANTIC_SCOPE_MAX_SNAPSHOT_AGE_MS
+        value: "900000"
       - key: NYRA_PRECORE_DECISION_MODE
         value: "OFF"
       - key: CORE_MCP_TENANT_GATEWAY_KEY
@@ -233,28 +233,33 @@ services:
         value: "3600"
       - key: CORE_DISTILLATION_REQUIRES_REVIEW
         value: "true"
-      # Evaluate Policy Registry constraints on every decision. Enforcement
-      # becomes mandatory only after a signed, quorum-approved snapshot exists.
+      # Evaluate and enforce Policy Registry constraints on every decision.
+      # Missing, unsigned or stale snapshots fail closed.
       - key: CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE
-        value: advisory_evaluate
-      # Policy Registry activation remains code-dark until the external Core
-      # signer, Nyra attester and distributed PostgreSQL proof path are pinned
-      # and independently verified. Core holds public verification material
-      # only; never add an in-process/private signing key here.
+        value: enforced
+      # External Core signer, Nyra attester, deterministic compiler provenance
+      # and the distributed PostgreSQL proof path are all mandatory. Core holds
+      # public verification material only; never add a private signing key.
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE
-        value: disabled
+        value: core_deterministic_recompile
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET
         value: "256"
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_JSON
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST
+        sync: false
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
-        value: disabled
+        value: remote
       - key: CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
         value: codexai
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID

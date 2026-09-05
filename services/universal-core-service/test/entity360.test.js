@@ -19,9 +19,11 @@ import {
   verifyEntity360IdentityLineage,
   verifyEntity360Snapshot as verifyEntity360SnapshotKernel,
 } from "../src/entity360.js";
-import { ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE, ENTITY_360_SHADOW_OBSERVER_SCOPE,
+import { ENTITY_360_CORE_ENFORCEMENT_SCOPE, ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE,
+  ENTITY_360_SHADOW_OBSERVER_SCOPE,
   createEntity360Runtime as createEntity360RuntimeKernel,
   loadEntity360Configuration } from "../src/entity360Runtime.js";
+import { ENTITY_360_ENFORCEMENT_MIGRATION_ID } from "../src/entity360Enforcement.js";
 import { createEntity360ProjectionCache } from "../src/entity360ProjectionCache.js";
 import { createHostNativeDomainSigner, createHostNativeDomainVerifier }
   from "../src/hostNativeGovernance.js";
@@ -42,7 +44,8 @@ const DIGEST_A = "a".repeat(64);
 const DIGEST_B = "b".repeat(64);
 const DIGEST_C = "c".repeat(64);
 const DIGEST_D = "d".repeat(64);
-const { policy: POLICY, ontology: ONTOLOGY } = loadEntity360Configuration();
+const { policy: POLICY, ontology: ONTOLOGY,
+  enforcement_policy: ENFORCEMENT_POLICY } = loadEntity360Configuration();
 const POLICY_SOURCE = JSON.parse(readFileSync(new URL("../config/entity360-policy.v1.json", import.meta.url), "utf8"));
 
 const QUALIFICATION_SECRET = "entity360-test-qualification-secret-material-v1";
@@ -1481,6 +1484,12 @@ const CORE_SHADOW_OBSERVER_IDENTITY = Object.freeze({ tenant_id: TENANT, work_id
   authority_scope: [ENTITY_360_SHADOW_OBSERVER_SCOPE],
   provenance: { session_fingerprint: "core-shadow-observer-test",
     actor_provenance: "universal_core_server_internal", client_type: "core_internal" } });
+const CORE_ENFORCEMENT_IDENTITY = Object.freeze({ tenant_id: TENANT, work_id: WORK_ID,
+  legacy_work_id: WORK_ID, actor_id: "universal_core:semantic_scope_context_resolver",
+  actor_role: "universal_core_context_resolver",
+  authority_scope: [ENTITY_360_CORE_ENFORCEMENT_SCOPE],
+  provenance: { session_fingerprint: "core-enforcement-context-test",
+    actor_provenance: "universal_core_server_internal", client_type: "core_internal" } });
 
 function workPreflight({ tenant = TENANT, workId = WORK_ID,
   state = "routed_waiting_for_core_verdict" } = {}) {
@@ -1900,6 +1909,119 @@ test("feature flags accept only the exact Core operator and server-owned OFF or 
   assert.equal(off.policy_digest, null);
   assert.equal(off.revision, 2);
   assert.equal(off.execution_authorized, false);
+});
+
+test("Entity360 v2 enforcement is Core-only, deterministic, restart-safe and rollback-safe", async () => {
+  const { store, adapterRegistry, setFeatureFlag } = memoryRuntimeDependencies();
+  store.kind = "entity360_postgres_append_only_v1";
+  store.health = async () => ({
+    ok: true,
+    schema_verified: true,
+    kind: "entity360_postgres_append_only_v1",
+    backend: "entity360_postgres_append_only_v1",
+    migration: { application_state: "COMPLETED", checkpoint: "READBACK_VERIFIED" },
+    migrations: [{ migration_id: ENTITY_360_ENFORCEMENT_MIGRATION_ID,
+      application_state: "COMPLETED", checkpoint: "READBACK_VERIFIED" }],
+    feature_v2_mode_guard: true,
+  });
+  adapterRegistry.schema_version = "entity_360_adapter_registry_v1";
+  let adapterReady = true;
+  adapterRegistry.health = async () => ({
+    schema_version: "entity_360_adapter_registry_health_v1",
+    state: adapterReady ? "ready" : "unavailable",
+    ready: adapterReady,
+    registry_schema_version: "entity_360_adapter_registry_v1",
+    adapter_versions: adapterRegistry.adapter_versions,
+    consistent_cut: "postgres_repeatable_read",
+    read_only: true,
+    provider_mutation: false,
+    execution_authorized: false,
+  });
+  const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
+    ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCED",
+    bitemporalMode: "ENFORCE", now: () => Date.parse(AT) });
+  const initialized = await runtime.initialize();
+  assert.equal(initialized.mode, "ENFORCE");
+  assert.equal(initialized.enforcement_ready, true);
+  assert.equal(initialized.core_decision_only, true);
+  assert.equal(initialized.entity360_self_approval, false);
+  assert.equal(initialized.provider_mutation, false);
+  assert.match(initialized.enforcement_authority_digest, /^[a-f0-9]{64}$/u);
+
+  const feature = await runtime.invoke("entity_360_feature_flag_write",
+    CORE_OPERATOR_IDENTITY, { mode: "ENFORCE", enabled: true, expected_revision: 1,
+      idempotency_key: "entity360-v2-enforce" });
+  assert.equal(feature.mode, "ENFORCED");
+  assert.equal(feature.enforcement_authority_digest,
+    initialized.enforcement_authority_digest);
+  const assembled = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY,
+    expected_revision: 0, idempotency_key: "entity360-v2-snapshot", as_of: AT,
+  });
+  assert.equal(assembled.snapshot.schema_version, "entity_360_snapshot_v2");
+  assert.equal(assembled.enforcement_mode, true);
+  assert.equal(assembled.execution_authorized, false);
+
+  const request = { tenant_id: TENANT, work_id: WORK_ID,
+    action: { kind: "git.commit", branch: "agent/entity360-v2" }, phase: "ISSUE" };
+  const first = await runtime.resolveEnforcementContext(CORE_ENFORCEMENT_IDENTITY, request);
+  const replay = await runtime.resolveEnforcementContext(CORE_ENFORCEMENT_IDENTITY, request);
+  assert.equal(first.receipt.receipt_digest, replay.receipt.receipt_digest);
+  assert.equal(first.receipt.snapshot_digest,
+    assembled.snapshot.deterministic_immutable_digest);
+  assert.equal(first.receipt.decision_authority, "UNIVERSAL_CORE");
+  assert.equal(first.receipt.entity360_self_approval, false);
+  assert.equal(first.receipt.provider_mutation, false);
+  assert.equal(first.execution_authorized, false);
+
+  const restarted = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
+    ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
+    bitemporalMode: "ENFORCED", now: () => Date.parse(AT) });
+  const restartHealth = await restarted.initialize();
+  assert.equal(restartHealth.ready, true);
+  assert.equal(restartHealth.enforcement_authority_digest,
+    initialized.enforcement_authority_digest);
+  const restartedContext = await restarted.resolveEnforcementContext(
+    CORE_ENFORCEMENT_IDENTITY, request,
+  );
+  assert.equal(restartedContext.receipt.receipt_digest, first.receipt.receipt_digest);
+
+  await assert.rejects(() => runtime.resolveEnforcementContext({
+    ...CORE_ENFORCEMENT_IDENTITY, tenant_id: OTHER_TENANT,
+  }, request), /entity360_cross_tenant_request/u);
+  setFeatureFlag({ ...feature, enforcement_authority_digest: "f".repeat(64) });
+  await assert.rejects(() => runtime.resolveEnforcementContext(
+    CORE_ENFORCEMENT_IDENTITY, request,
+  ), /entity360_tenant_enforcement_authority_mismatch/u);
+  setFeatureFlag(feature);
+
+  adapterReady = false;
+  const unhealthy = await runtime.health();
+  assert.equal(unhealthy.ready, false);
+  assert.equal(unhealthy.enforcement_ready, false);
+  const rollback = await runtime.invoke("entity_360_feature_flag_write",
+    CORE_OPERATOR_IDENTITY, { mode: "SHADOW", enabled: true,
+      expected_revision: feature.revision, idempotency_key: "entity360-v2-rollback-shadow" });
+  assert.equal(rollback.mode, "SHADOW");
+  assert.equal(rollback.enforcement_authority_digest, null);
+  assert.equal(rollback.execution_authorized, false);
+});
+
+test("Entity360 ENFORCE construction rejects incomplete policy, bitemporal, or adapter readiness", () => {
+  const { store, adapterRegistry } = memoryRuntimeDependencies();
+  const readyRegistry = { ...adapterRegistry, health: async () => ({ ready: true }) };
+  assert.throws(() => createEntity360Runtime({ store, adapterRegistry: readyRegistry,
+    policy: POLICY, ontology: ONTOLOGY, mode: "ENFORCE", bitemporalMode: "ENFORCE" }),
+  /entity360_enforcement_policy_schema_invalid/u);
+  assert.throws(() => createEntity360Runtime({ store, adapterRegistry: readyRegistry,
+    policy: POLICY, ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY,
+    mode: "ENFORCE", bitemporalMode: "SHADOW" }),
+  /entity360_enforcement_bitemporal_required/u);
+  assert.throws(() => createEntity360Runtime({ store,
+    adapterRegistry: { ...adapterRegistry, health: undefined }, policy: POLICY,
+    ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY,
+    mode: "ENFORCE", bitemporalMode: "ENFORCE" }),
+  /entity360_enforcement_adapter_readiness_required/u);
 });
 
 test("runtime rejects caller-supplied evidence and cross-tenant input", async () => {

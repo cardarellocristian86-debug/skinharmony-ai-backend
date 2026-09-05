@@ -248,7 +248,7 @@ test("public migration verification requires the terminal governed registry chec
   "exact manifest drift remains the authoritative error when a trigger is disabled");
 });
 
-test("full migration chain fails closed without the durable SHADOW-only guard", () => {
+test("full migration chain requires the durable v2 mode guard", () => {
   const migrationDigests = ENTITY360_MIGRATIONS.map((item, index) => ({
     migration_id: item.migration_id,
     sql_digest: String(index + 1).repeat(64),
@@ -265,7 +265,8 @@ test("full migration chain fails closed without the durable SHADOW-only guard", 
     snapshot_chain_guard: true,
     backfill_tenant_fk: true,
     feature_enforcement_guard: true,
-    feature_shadow_only_guard: true,
+    feature_shadow_only_guard: false,
+    feature_v2_mode_guard: true,
     backfill_non_destructive_guard: true,
     backfill_cursor_binding_guard: true,
     backfill_state_guard: true,
@@ -277,12 +278,12 @@ test("full migration chain fails closed without the durable SHADOW-only guard", 
   };
   assert.equal(verifyEntity360CompletedMigrationReadback(readback, migrationDigests), readback);
   assert.throws(() => verifyEntity360CompletedMigrationReadback({ ...readback,
-    feature_shadow_only_guard: false,
+    feature_v2_mode_guard: false,
   }, migrationDigests), (error) => error.code === "entity360_migration_integrity_readback_failed"
-    && error.details?.missing_guard === "core_entity360_feature_shadow_only_check");
+    && error.details?.missing_guard === "core_entity360_feature_v2_mode_check");
 });
 
-test("feature-flag persistence admits only OFF or policy-bound SHADOW", async () => {
+test("feature-flag persistence admits exact ENFORCED bindings and rollback to SHADOW", async () => {
   const fixture = featureFlagFixture();
   const store = createPostgresEntity360Store({ pool: fixture.pool, ...STORE_OPTIONS });
   const base = { tenant_id: TENANT, flag_id: "entity360", actor_id: "core-operator", config: {} };
@@ -298,11 +299,21 @@ test("feature-flag persistence admits only OFF or policy-bound SHADOW", async ()
   assert.equal(shadow.enabled, true);
   assert.equal(shadow.enforcement_authority_digest, null);
   await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "ENFORCED", enabled: true,
+    policy_digest: "a".repeat(64),
+    expected_revision: 2, idempotency_key: "feature-enforced-missing-authority" }),
+  (error) => error.code === "entity360_feature_flag_state_invalid" && error.status === 403);
+  const enforced = await store.writeFeatureFlag({ ...base, mode: "ENFORCED", enabled: true,
     policy_digest: "a".repeat(64), enforcement_authority_digest: "b".repeat(64),
-    expected_revision: 2, idempotency_key: "feature-enforced" }),
-  (error) => error.code === "entity360_feature_mode_invalid" && error.status === 422);
+    expected_revision: 2, idempotency_key: "feature-enforced" });
+  assert.equal(enforced.mode, "ENFORCED");
+  assert.equal(enforced.enforcement_authority_digest, "b".repeat(64));
+  const rollback = await store.writeFeatureFlag({ ...base, mode: "SHADOW", enabled: true,
+    policy_digest: "a".repeat(64), expected_revision: 3,
+    idempotency_key: "feature-rollback-shadow" });
+  assert.equal(rollback.mode, "SHADOW");
+  assert.equal(rollback.enforcement_authority_digest, null);
   await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "OFF", enabled: true,
-    expected_revision: 2, idempotency_key: "feature-invalid-off" }),
+    expected_revision: 4, idempotency_key: "feature-invalid-off" }),
   (error) => error.code === "entity360_feature_flag_state_invalid" && error.status === 403);
   assert.equal(fixture.state.flag.mode, "SHADOW");
   assert.equal(fixture.state.flag.enabled, true);
