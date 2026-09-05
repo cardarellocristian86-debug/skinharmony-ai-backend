@@ -317,10 +317,10 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|align_native_plan_status|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
   }
-  if (!["preview_native_plan_merge", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
+  if (!["preview_native_plan_merge", "align_native_plan_status", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
       !/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) {
     fail("nyra_continue_ref_invalid", 409);
   }
@@ -468,6 +468,7 @@ export function createNyraGovernedContinueHandler({
   readPrecommitTicketGateClaimRecovery = null,
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
   previewNativePlanMerge = null,
+  authorizeNativePlanStatusAlignment = null, alignNativePlanStatus = null,
   authorizePersistedPrecommitReconciliation = null,
   reconcilePersistedPrecommit = null, finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
@@ -493,6 +494,31 @@ export function createNyraGovernedContinueHandler({
       return {
         structuredContent: Object.freeze({ ok: true, result }),
         content: [{ type: "text", text: "Nyra ha ispezionato il grafo dei piani e preparato una preview server-derived. Nessun piano o Work è stato modificato." }],
+      };
+    }
+    if (args.operation === "align_native_plan_status") {
+      const allowedFields = new Set([
+        "operation", "work_id", "idempotency_key", "owner_confirmed",
+        "confirmation_reference", "agent_id", "client_type", "session_id",
+      ]);
+      if (typeof alignNativePlanStatus !== "function") fail("nyra_continue_native_plan_status_alignment_unavailable", 503);
+      if (typeof authorizeNativePlanStatusAlignment !== "function") fail("nyra_continue_native_plan_status_alignment_core_gate_unavailable", 503);
+      if (Object.keys(args).some((field) => !allowedFields.has(field)) ||
+          !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_OPERATE) ||
+          args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !String(args.confirmation_reference || "").trim() ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(args.work_id || ""))) {
+        fail("nyra_continue_native_plan_status_alignment_binding_mismatch", 409);
+      }
+      const request = {
+        work_id: String(args.work_id).toLowerCase(),
+        idempotency_key: String(args.idempotency_key).trim(),
+      };
+      await authorizeNativePlanStatusAlignment(request, identity);
+      const result = await alignNativePlanStatus(request, identity);
+      return {
+        structuredContent: Object.freeze({ ok: true, result }),
+        content: [{ type: "text", text: "Nyra ha riallineato gli status del grafo dei piani dalla testa strutturale server-derived. Nessuna evidenza o autorità è stata ereditata." }],
       };
     }
     if (args.operation === "reconcile_persisted_precommit") {

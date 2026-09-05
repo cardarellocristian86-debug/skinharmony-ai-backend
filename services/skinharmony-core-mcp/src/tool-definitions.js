@@ -1564,7 +1564,7 @@ const nyraControlRoomOutputSchema = object({
 }, ["ok", "tenant_id", "control_room"]);
 
 const nyraContinueProperties = Object.freeze({
-  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "reconcile_persisted_precommit", "finalize_verified_work"] },
+  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "align_native_plan_status", "reconcile_persisted_precommit", "finalize_verified_work"] },
   continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
   work_id: { type: "string", format: "uuid" },
   work_bootstrap: nyraWorkBootstrapSpec,
@@ -1597,6 +1597,15 @@ const nyraContinueInputSchema = Object.freeze({
         operation: { const: "preview_native_plan_merge" },
       }),
       required: Object.freeze(["work_id"]),
+      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
+    }),
+    Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        operation: { const: "align_native_plan_status" },
+        owner_confirmed: { const: true },
+      }),
+      required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),
       not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
     }),
     Object.freeze({
@@ -1730,7 +1739,7 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_continue", "Nyra: continue one governed request", "Continue one server-bound Nyra request, preview a server-derived native-plan merge, reconcile a historical precommit gate, or finalize one server-verified Work.", nyraContinueInputSchema, ["core:govern"], false, true, {
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue a governed Nyra Work.", nyraContinueInputSchema, ["core:govern"], false, true, {
     ownerConfirmationRequired: false,
     meta: {
       "skinharmony/dedicatedCoreGate": true,

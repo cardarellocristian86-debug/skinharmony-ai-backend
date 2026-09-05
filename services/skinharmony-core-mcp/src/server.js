@@ -1824,6 +1824,22 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
       createNativePlan: createNativeContinuityPlan,
       previewNativePlanMerge: (request, identity) =>
         workContinuityV2Store.previewNativePlanMerge(withTenantWorkAcl(identity), request),
+      authorizeNativePlanStatusAlignment: (request, identity) => {
+        const requestDigest = crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical({
+            schema_version: "native_plan_status_alignment_request_v1",
+            work_id: request.work_id,
+          })))
+          .digest("hex");
+        return requireBoundedTenantCoordination(
+          identity,
+          "work.continuity.native_plan.status.align",
+          `native_plan_status_align:${request.work_id}:${requestDigest}`,
+          request.idempotency_key,
+        );
+      },
+      alignNativePlanStatus: (request, identity) =>
+        workContinuityV2Store.alignNativePlanStatus(withTenantWorkAcl(identity), request),
       bindNativeChild: bindNativeContinuityChild,
       readActionTicket: (args, identity) => coreHandlers.host_native_action_read(args, identity),
       coordinatePullRequest: (request, identity) =>

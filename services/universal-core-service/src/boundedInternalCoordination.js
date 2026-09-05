@@ -10,6 +10,7 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "work.bootstrap.review",
   "work.continuity.resume_or_bind",
   "work.continuity.precommit.reconcile.persisted",
+  "work.continuity.native_plan.status.align",
   "work.participant.join",
   "work.participant.heartbeat",
   "work.branch.open",
@@ -67,6 +68,9 @@ function targetMatchesAction(actionType, value) {
   }
   if (actionType === "work.continuity.precommit.reconcile.persisted") {
     return /^precommit_reconcile_persisted:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{64}$/i.test(target);
+  }
+  if (actionType === "work.continuity.native_plan.status.align") {
+    return /^native_plan_status_align:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{64}$/i.test(target);
   }
   if (actionType === "work.participant.join") return workIdTarget || target === "tenant_work_gallery_join";
   if (actionType === "work.participant.heartbeat") return workIdTarget || target === "tenant_work_gallery_heartbeat";
