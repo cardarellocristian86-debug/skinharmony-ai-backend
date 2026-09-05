@@ -78,10 +78,11 @@ services:
       # governed release after shadow evidence is reviewed.
       - key: CORE_ENTITY360_BITEMPORAL_MODE
         value: SHADOW
-      # Keep the semantic guard explicit and observational during rollout.
-      # Universal Core remains the final authority in every mode.
+      # Enforce semantic scope for governed effects. A missing, stale or
+      # contradictory scope produces a Core HOLD/BLOCK; Universal Core remains
+      # the final authority.
       - key: CORE_SEMANTIC_SCOPE_MODE
-        value: SHADOW
+        value: ENFORCE
       - key: NYRA_PRECORE_DECISION_MODE
         value: "OFF"
       - key: CORE_MCP_TENANT_GATEWAY_KEY
