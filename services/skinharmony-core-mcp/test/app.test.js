@@ -2724,7 +2724,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(nyraContinue.inputSchema.properties.operation.enum.includes("finalize_verified_work"));
   assert.equal(nyraContinue.inputSchema.required.includes("continuation_ref"), false);
   assert(nyraContinue.inputSchema.anyOf.some((branch) =>
-    branch.properties?.operation?.const === "finalize_verified_work"
+    branch.properties?.operation?.enum?.includes("finalize_verified_work")
     && branch.required?.includes("work_id")
     && branch.required?.includes("confirmation_reference")));
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));

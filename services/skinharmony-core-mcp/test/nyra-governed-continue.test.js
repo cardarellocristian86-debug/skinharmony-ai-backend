@@ -348,6 +348,29 @@ test("aligns native-plan status only after owner and exact Core authorization", 
   }, identity()), /nyra_continue_native_plan_status_alignment_binding_mismatch/);
 });
 
+test("reevaluates closure only for the server-derived aligned canonical plan", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused, normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused, authorizeAction: unused, reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    previewNativePlanMerge: async () => ({ outcome: "ALREADY_ALIGNED",
+      canonical_head_plan_id: "22222222-2222-4222-8222-222222222222",
+      structural_head_count: 1, stored_current_plan_count: 1 }),
+    authorizeNativeClosureReevaluation: async (args) => calls.push(["core", args]),
+    reevaluateNativeClosure: async (args) => { calls.push(["evaluate", args]);
+      return { schema_version: "native_closure_evaluation_v1", commit_ticket_ready: true }; },
+  });
+  const result = await handler({ operation: "reevaluate_native_closure", work_id: WORK_ID,
+    idempotency_key: "native-closure-reevaluate", owner_confirmed: true,
+    confirmation_reference: "owner-confirmed" }, identity());
+  assert.equal(result.structuredContent.result.commit_ticket_ready, true);
+  assert.deepEqual(calls.map((item) => item[0]), ["core", "evaluate"]);
+  assert.equal(calls[0][1].plan_id, "22222222-2222-4222-8222-222222222222");
+});
+
 test("historical precommit reconciliation performs no write when Core denies", async () => {
   const calls = [];
   const unused = async () => ({ structuredContent: {} });
@@ -856,20 +879,17 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.deepEqual(store.calls[0], ["open", "tenant-a", "nyra_dir_1234567890abcdef12345678"]);
 
   const definition = TOOLS.find((tool) => tool.name === "nyra_continue");
-  const reconciliationBranch = definition.inputSchema.anyOf.find((branch) =>
-    branch.properties?.operation?.const === "reconcile_persisted_precommit");
-  assert.deepEqual(reconciliationBranch.required,
+  const ownerOperationBranch = definition.inputSchema.anyOf.find((branch) =>
+    branch.properties?.operation?.enum?.includes("reconcile_persisted_precommit"));
+  assert.deepEqual(ownerOperationBranch.required,
     ["work_id", "owner_confirmed", "confirmation_reference"]);
-  assert.deepEqual(reconciliationBranch.not.required, ["continuation_ref"]);
+  assert.deepEqual(ownerOperationBranch.not.required, ["continuation_ref"]);
   const mergePreviewBranch = definition.inputSchema.anyOf.find((branch) =>
     branch.properties?.operation?.const === "preview_native_plan_merge");
   assert.deepEqual(mergePreviewBranch.required, ["work_id"]);
   assert.deepEqual(mergePreviewBranch.not.required, ["continuation_ref"]);
-  const statusAlignmentBranch = definition.inputSchema.anyOf.find((branch) =>
-    branch.properties?.operation?.const === "align_native_plan_status");
-  assert.deepEqual(statusAlignmentBranch.required,
-    ["work_id", "owner_confirmed", "confirmation_reference"]);
-  assert.deepEqual(statusAlignmentBranch.not.required, ["continuation_ref"]);
+  assert(ownerOperationBranch.properties.operation.enum.includes("align_native_plan_status"));
+  assert(ownerOperationBranch.properties.operation.enum.includes("reevaluate_native_closure"));
 });
 
 test("the durable continuation store fails closed until PostgreSQL schema readiness is verified", async () => {

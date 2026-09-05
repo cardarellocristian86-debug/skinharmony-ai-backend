@@ -317,10 +317,10 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|align_native_plan_status|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|align_native_plan_status|reevaluate_native_closure|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
   }
-  if (!["preview_native_plan_merge", "align_native_plan_status", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
+  if (!["preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
       !/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) {
     fail("nyra_continue_ref_invalid", 409);
   }
@@ -469,6 +469,7 @@ export function createNyraGovernedContinueHandler({
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
   previewNativePlanMerge = null,
   authorizeNativePlanStatusAlignment = null, alignNativePlanStatus = null,
+  authorizeNativeClosureReevaluation = null, reevaluateNativeClosure = null,
   authorizePersistedPrecommitReconciliation = null,
   reconcilePersistedPrecommit = null, finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
@@ -520,6 +521,40 @@ export function createNyraGovernedContinueHandler({
         structuredContent: Object.freeze({ ok: true, result }),
         content: [{ type: "text", text: "Nyra ha riallineato gli status del grafo dei piani dalla testa strutturale server-derived. Nessuna evidenza o autorità è stata ereditata." }],
       };
+    }
+    if (args.operation === "reevaluate_native_closure") {
+      const allowedFields = new Set([
+        "operation", "work_id", "idempotency_key", "owner_confirmed",
+        "confirmation_reference", "agent_id", "client_type", "session_id",
+      ]);
+      if (typeof previewNativePlanMerge !== "function" ||
+          typeof authorizeNativeClosureReevaluation !== "function" ||
+          typeof reevaluateNativeClosure !== "function") {
+        fail("nyra_continue_native_closure_reevaluation_unavailable", 503);
+      }
+      if (Object.keys(args).some((field) => !allowedFields.has(field)) ||
+          !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_OPERATE) ||
+          args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !String(args.confirmation_reference || "").trim() ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(args.work_id || ""))) {
+        fail("nyra_continue_native_closure_reevaluation_binding_mismatch", 409);
+      }
+      const workId = String(args.work_id).toLowerCase();
+      const preview = await previewNativePlanMerge({ work_id: workId }, identity);
+      if (preview.outcome !== "ALREADY_ALIGNED" || !preview.canonical_head_plan_id ||
+          preview.structural_head_count !== 1 || preview.stored_current_plan_count !== 1) {
+        return { structuredContent: Object.freeze({ ok: true, result: Object.freeze({
+          schema_version: "native_closure_reevaluation_v1", work_id: workId,
+          outcome: "BLOCKED", reason_codes: Object.freeze(["canonical_native_plan_not_aligned"]),
+          execution_authorized: false, provider_execution: false,
+        }) }), content: [{ type: "text", text: "Nyra non ha rivalutato la closure: il piano canonico non è univoco e allineato." }] };
+      }
+      const request = { work_id: workId, plan_id: preview.canonical_head_plan_id,
+        idempotency_key: String(args.idempotency_key).trim() };
+      await authorizeNativeClosureReevaluation(request, identity);
+      const result = await reevaluateNativeClosure(request, identity);
+      return { structuredContent: Object.freeze({ ok: true, result }),
+        content: [{ type: "text", text: "Nyra ha rivalutato la closure della testa canonica usando soltanto task, receipt ed evidenze persistiti e verificati server-side." }] };
     }
     if (args.operation === "reconcile_persisted_precommit") {
       if (typeof reconcilePersistedPrecommit !== "function") {
