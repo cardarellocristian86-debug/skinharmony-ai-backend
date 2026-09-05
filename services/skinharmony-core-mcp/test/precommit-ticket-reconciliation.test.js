@@ -213,6 +213,12 @@ class PrecommitPool {
         .sort((a, b) => a.plan_version - b.plan_version || a.plan_id.localeCompare(b.plan_id));
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
+    if (q.startsWith("UPDATE core_continuity_native_plans SET status='superseded'")) {
+      const rows = this.plans.filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.plan_id !== parameters[2] && row.status !== "superseded");
+      for (const row of rows) row.status = "superseded";
+      return { rows: rows.map((row) => ({ plan_id: row.plan_id })), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT evaluation_id,evaluation,evaluation_digest FROM core_continuity_closure_evaluations")) {
       const rows = this.evaluations.filter((row) => row.tenant_id === parameters[0] &&
         row.work_id === parameters[1] && row.plan_id === parameters[2])
@@ -525,6 +531,27 @@ test("native plan merge preview is tenant-bound, read-only and derives the struc
   assert.deepEqual(pool.snapshot(), before);
   await assert.rejects(store.previewNativePlanMerge(identity("tenant-b"), { work_id: WORK_ID }),
     /tenant_work_not_found/);
+});
+
+test("native plan status alignment atomically keeps only the server-derived structural head current", async () => {
+  const { pool, store } = fixture();
+  const secondPlan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({
+    tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    plan: secondPlan, plan_digest: digest(secondPlan), status: "planned",
+    plan_version: 2, supersedes_plan_id: PLAN_ID,
+  });
+  const result = await store.alignNativePlanStatus(identity(), { work_id: WORK_ID });
+  assert.equal(result.outcome, "ALIGNED");
+  assert.equal(result.canonical_head_plan_id, SUPERSEDING_PLAN_ID);
+  assert.equal(result.aligned_plan_count, 1);
+  assert.equal(pool.plans.find((row) => row.plan_id === PLAN_ID).status, "superseded");
+  assert.equal(pool.plans.find((row) => row.plan_id === SUPERSEDING_PLAN_ID).status, "planned");
+  assert.equal(pool.events.at(-1).event_type, "native_plan_status_aligned");
+  const replay = await store.alignNativePlanStatus(identity(), { work_id: WORK_ID });
+  assert.equal(replay.outcome, "ALREADY_ALIGNED");
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.events.filter((event) => event.event_type === "native_plan_status_aligned").length, 1);
 });
 async function claimGate(store, projection, overrides = {}) {
   return store.claimPrecommitTicketGate(identity(), {

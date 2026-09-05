@@ -2305,6 +2305,83 @@ export function createWorkContinuityV2Store({
       LIMIT 10001`, [actor.tenant_id, workId]);
     return buildNativePlanMergePreview(plans.rows, workId);
   }
+  async function alignNativePlanStatus(identity, { work_id }) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(work_id);
+    return transaction(async (client) => {
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("native_plan_status_alignment_work_missing");
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      const plans = await client.query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
+        FROM core_continuity_native_plans
+        WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY plan_version,plan_id
+        LIMIT 10001 FOR UPDATE`, [actor.tenant_id, workId]);
+      const preview = buildNativePlanMergePreview(plans.rows, workId);
+      if (preview.outcome === "ALREADY_ALIGNED") {
+        return Object.freeze({
+          schema_version: "native_plan_status_alignment_v1",
+          work_id: workId,
+          outcome: "ALREADY_ALIGNED",
+          canonical_head_plan_id: preview.canonical_head_plan_id,
+          aligned_plan_count: 0,
+          idempotent_replay: true,
+          evidence_inherited: false,
+          authority_inherited: false,
+          execution_authorized: false,
+          provider_execution: false,
+        });
+      }
+      if (preview.outcome !== "STATUS_ALIGNMENT_REQUIRED" ||
+          !preview.canonical_head_plan_id || preview.stale_current_plan_count < 1) {
+        return Object.freeze({
+          schema_version: "native_plan_status_alignment_v1",
+          work_id: workId,
+          outcome: "BLOCKED",
+          reason_codes: Object.freeze(preview.reason_codes?.length
+            ? [...preview.reason_codes]
+            : ["native_plan_status_alignment_not_safe"]),
+          execution_authorized: false,
+          provider_execution: false,
+        });
+      }
+      const updated = await client.query(`UPDATE core_continuity_native_plans
+        SET status='superseded'
+        WHERE tenant_id=$1 AND work_id=$2 AND plan_id<>$3 AND status<>'superseded'
+        RETURNING plan_id`, [actor.tenant_id, workId, preview.canonical_head_plan_id]);
+      if (updated.rows.length !== preview.stale_current_plan_count) {
+        fail("native_plan_status_alignment_count_mismatch");
+      }
+      const alignmentMaterial = {
+        schema_version: "native_plan_status_alignment_receipt_v1",
+        work_id: workId,
+        canonical_head_plan_id: preview.canonical_head_plan_id,
+        aligned_plan_count: updated.rows.length,
+        prior_graph_node_count: preview.node_count,
+      };
+      const alignmentDigest = objectDigest(alignmentMaterial);
+      await appendV2Event(client, actor, workId, "native_plan_status_aligned", {
+        canonical_head_plan_id: preview.canonical_head_plan_id,
+        aligned_plan_count: updated.rows.length,
+        prior_graph_node_count: preview.node_count,
+        alignment_digest: alignmentDigest,
+      });
+      return Object.freeze({
+        ...alignmentMaterial,
+        outcome: "ALIGNED",
+        alignment_digest: alignmentDigest,
+        idempotent_replay: false,
+        evidence_inherited: false,
+        authority_inherited: false,
+        fresh_core_rebind_required: true,
+        execution_authorized: false,
+        provider_execution: false,
+      });
+    });
+  }
   async function verifyWorkClosure(identity, { work_id }) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -6564,7 +6641,7 @@ export function createWorkContinuityV2Store({
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
     ensureLegacyBridge,
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
-    readWork, previewNativePlanMerge, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
+    readWork, previewNativePlanMerge, alignNativePlanStatus, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
     archiveHistoricalBridgedWork, reopenWork,
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     reconcilePersistedPrecommitTicketGate,

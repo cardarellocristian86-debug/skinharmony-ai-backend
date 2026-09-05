@@ -309,6 +309,45 @@ test("previews a native-plan merge from the Work id without continuation or writ
   }, identity()), /nyra_continue_native_plan_merge_preview_binding_mismatch/);
 });
 
+test("aligns native-plan status only after owner and exact Core authorization", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    authorizeNativePlanStatusAlignment: async (args) => calls.push(["core", args]),
+    alignNativePlanStatus: async (args) => {
+      calls.push(["store", args]);
+      return { schema_version: "native_plan_status_alignment_v1", outcome: "ALIGNED",
+        work_id: args.work_id, execution_authorized: false };
+    },
+  });
+  const result = await handler({
+    operation: "align_native_plan_status",
+    work_id: WORK_ID,
+    idempotency_key: "native-plan-status-align",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-native-plan-status-align",
+  }, identity());
+  assert.equal(result.structuredContent.result.outcome, "ALIGNED");
+  assert.deepEqual(calls, [
+    ["core", { work_id: WORK_ID, idempotency_key: "native-plan-status-align" }],
+    ["store", { work_id: WORK_ID, idempotency_key: "native-plan-status-align" }],
+  ]);
+  await assert.rejects(handler({
+    operation: "align_native_plan_status",
+    work_id: WORK_ID,
+    idempotency_key: "native-plan-status-align-no-owner",
+    owner_confirmed: false,
+    confirmation_reference: "missing",
+  }, identity()), /nyra_continue_native_plan_status_alignment_binding_mismatch/);
+});
+
 test("historical precommit reconciliation performs no write when Core denies", async () => {
   const calls = [];
   const unused = async () => ({ structuredContent: {} });
@@ -826,6 +865,11 @@ test("the public continuation contract is opaque and the schema contains no bear
     branch.properties?.operation?.const === "preview_native_plan_merge");
   assert.deepEqual(mergePreviewBranch.required, ["work_id"]);
   assert.deepEqual(mergePreviewBranch.not.required, ["continuation_ref"]);
+  const statusAlignmentBranch = definition.inputSchema.anyOf.find((branch) =>
+    branch.properties?.operation?.const === "align_native_plan_status");
+  assert.deepEqual(statusAlignmentBranch.required,
+    ["work_id", "owner_confirmed", "confirmation_reference"]);
+  assert.deepEqual(statusAlignmentBranch.not.required, ["continuation_ref"]);
 });
 
 test("the durable continuation store fails closed until PostgreSQL schema readiness is verified", async () => {

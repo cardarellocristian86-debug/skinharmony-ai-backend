@@ -101,6 +101,8 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
     "work.continuity.precommit.reconcile.persisted":
       `precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:${"a".repeat(64)}`,
+    "work.continuity.native_plan.status.align":
+      `native_plan_status_align:11111111-1111-4111-8111-111111111111:${"a".repeat(64)}`,
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
     "work.branch.open": "tenant_work_branch_open",
@@ -121,7 +123,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 27);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 28);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -136,6 +138,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     ![
       "work.continuity.resume_or_bind",
       "work.continuity.precommit.reconcile.persisted",
+      "work.continuity.native_plan.status.align",
       "work.bootstrap.review",
       "work.gallery.queue.create",
     ].includes(value))) {
@@ -168,6 +171,13 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     idempotency_key: "persisted-precommit-reconciliation-0001",
   });
   assert.equal(persistedPrecommitReconciliation.allowed, true);
+  const nativePlanStatusAlignment = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.continuity.native_plan.status.align",
+    target: `native_plan_status_align:11111111-1111-4111-8111-111111111111:${"c".repeat(64)}`,
+    idempotency_key: "native-plan-status-alignment-0001",
+  });
+  assert.equal(nativePlanStatusAlignment.allowed, true);
   for (const invalidTarget of [
     `precommit_reconcile_persisted:not-a-work:${"b".repeat(64)}`,
     "precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:not-a-digest",
