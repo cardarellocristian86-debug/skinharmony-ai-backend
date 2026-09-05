@@ -546,7 +546,7 @@ export function classifyNyraIntent({
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.99;
-    reason = "explicit_read_only_boundary";
+    reason = explicitReadOnlyFence ? "explicit_read_only_fence" : "explicit_read_only_boundary";
   } else if (!workBootstrap && workCreateRequested && actionClauses.length > 0) {
     intent = "ambiguous_consequential";
     route = "CORE_HOLD_THEN_NYRA";
