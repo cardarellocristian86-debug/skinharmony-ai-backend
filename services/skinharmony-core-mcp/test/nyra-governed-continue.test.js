@@ -214,6 +214,126 @@ test("replays a terminal verified Work when its read lease correctly rejects a n
   assert.deepEqual(sequence, ["binding", "finalize"]);
 });
 
+test("reconciles a historical precommit gate only from server-derived bindings", async () => {
+  const sequence = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: {
+      claim: async () => { throw new Error("continuation store must not be used"); },
+      complete: unused,
+      readCompletedOperation: unused,
+    },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async ({ work_id }) => {
+      sequence.push(["binding", work_id]);
+    },
+    authorizePersistedPrecommitReconciliation: async (args) => {
+      sequence.push(["core_gate", args]);
+    },
+    reconcilePersistedPrecommit: async (args) => {
+      sequence.push(["reconcile", args]);
+      return {
+        schema_version: "persisted_precommit_reconciliation_v1",
+        work_id: WORK_ID,
+        outcome: "RECONCILED",
+        gate_schema_version: "precommit_ticket_gate_v2",
+        gate_source: "native_closure_evaluation",
+        gate_projection_digest: "7".repeat(64),
+        fresh: true,
+        fulfilled: false,
+        scoped_task_count: 2,
+        idempotent_replay: false,
+      };
+    },
+  });
+
+  const result = await handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "server-derived-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+    agent_id: "server-injected-agent",
+    client_type: "chatgpt",
+    session_id: "server-injected-session",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.outcome, "RECONCILED");
+  assert.equal(result.structuredContent.result.fresh, true);
+  assert.equal(result.structuredContent.result.execution_authorized, false);
+  assert.deepEqual(sequence, [
+    ["binding", WORK_ID],
+    ["core_gate", { work_id: WORK_ID, idempotency_key: "server-derived-reconciliation" }],
+    ["reconcile", { work_id: WORK_ID, idempotency_key: "server-derived-reconciliation" }],
+  ]);
+});
+
+test("historical precommit reconciliation performs no write when Core denies", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => calls.push("binding"),
+    authorizePersistedPrecommitReconciliation: async () => {
+      calls.push("core_gate");
+      throw new Error("core_action_blocked");
+    },
+    reconcilePersistedPrecommit: async () => calls.push("store_write"),
+  });
+
+  await assert.rejects(handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "core-denied-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity()), /core_action_blocked/);
+  assert.deepEqual(calls, ["binding", "core_gate"]);
+});
+
+test("historical precommit reconciliation rejects every caller-selected binding", async () => {
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: unused,
+    authorizePersistedPrecommitReconciliation: unused,
+    reconcilePersistedPrecommit: unused,
+  });
+  for (const injected of [
+    { task_id: "22222222-2222-4222-8222-222222222222" },
+    { plan_id: "33333333-3333-4333-8333-333333333333" },
+    { evaluation_id: "44444444-4444-4444-8444-444444444444" },
+    { mappings: [] },
+    { continuation_ref: CONTINUATION_REF },
+  ]) {
+    await assert.rejects(handler({
+      operation: "reconcile_persisted_precommit",
+      work_id: WORK_ID,
+      idempotency_key: "reject-client-binding",
+      owner_confirmed: true,
+      confirmation_reference: "owner-confirmed-reconciliation",
+      ...injected,
+    }, identity()), /nyra_continue_precommit_reconciliation_binding_mismatch/);
+  }
+});
+
 function identity(overrides = {}) {
   return {
     kind: "oauth",
@@ -628,6 +748,13 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.equal(opened.continuation_ref, CONTINUATION_REF);
   assert.equal(Object.hasOwn(opened, "candidate_attestation"), false);
   assert.deepEqual(store.calls[0], ["open", "tenant-a", "nyra_dir_1234567890abcdef12345678"]);
+
+  const definition = TOOLS.find((tool) => tool.name === "nyra_continue");
+  const reconciliationBranch = definition.inputSchema.anyOf.find((branch) =>
+    branch.properties?.operation?.const === "reconcile_persisted_precommit");
+  assert.deepEqual(reconciliationBranch.required,
+    ["work_id", "owner_confirmed", "confirmation_reference"]);
+  assert.deepEqual(reconciliationBranch.not.required, ["continuation_ref"]);
 });
 
 test("the durable continuation store fails closed until PostgreSQL schema readiness is verified", async () => {

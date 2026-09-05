@@ -1894,6 +1894,24 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         identity,
         continuity: { work_id: request.work_id },
       }),
+      authorizePersistedPrecommitReconciliation: (request, identity) => {
+        const requestDigest = crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical({
+            schema_version: "persisted_precommit_reconciliation_request_v1",
+            work_id: request.work_id,
+          })))
+          .digest("hex");
+        return requireBoundedTenantCoordination(
+          identity,
+          "work.continuity.precommit.reconcile.persisted",
+          `precommit_reconcile_persisted:${request.work_id}:${requestDigest}`,
+          request.idempotency_key,
+        );
+      },
+      reconcilePersistedPrecommit: (request, identity) =>
+        workContinuityV2Store.reconcilePersistedPrecommitTicketGate(
+          withTenantWorkAcl(identity), request,
+        ),
       finalizeVerifiedWork: (request, identity) =>
         handlers.nyra_verified_work_finalize(request, identity),
       authorizeNativeCoordination: (request, identity) => {

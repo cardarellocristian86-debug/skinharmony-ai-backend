@@ -5144,6 +5144,96 @@ export function createWorkContinuityV2Store({
     }
     return Object.freeze({ ...projection, idempotent_replay: false });
   }
+  async function reconcilePersistedPrecommitTicketGate(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    // The public front door intentionally accepts no plan, evaluation, task,
+    // scope or evidence identifiers.  They are selected and locked here from
+    // the authoritative ledgers, then revalidated by the existing native gate
+    // materializer in the same PostgreSQL transaction.
+    return transaction(async (client) => {
+      // Preserve the repository-wide cross-fabric lock order: Core first,
+      // then its linked V2 projection.  The materializer repeats these reads
+      // only as invariant checks while the same transaction retains both
+      // locks.
+      const coreWork = await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (!coreWork.rows[0]) fail("persisted_precommit_reconciliation_work_missing");
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id !== workId) {
+        fail("persisted_precommit_reconciliation_bridge_required");
+      }
+      const plans = await client.query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
+        FROM core_continuity_native_plans
+        WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY plan_version,plan_id FOR UPDATE`, [actor.tenant_id, workId]);
+      const currentPlans = plans.rows.filter((row) => row.status !== "superseded");
+      const plan = currentPlans.length === 1 ? currentPlans[0] : null;
+      if (!plan || plan.status !== "planned" || objectDigest(plan.plan) !== plan.plan_digest) {
+        return Object.freeze({
+          schema_version: "persisted_precommit_reconciliation_v1",
+          work_id: workId,
+          outcome: "BLOCKED",
+          reason_codes: Object.freeze([currentPlans.length > 1
+            ? "current_native_plan_ambiguous"
+            : "current_native_plan_missing"]),
+          execution_authorized: false,
+          provider_execution: false,
+        });
+      }
+      const evaluations = await client.query(`SELECT evaluation_id,evaluation,evaluation_digest
+        FROM core_continuity_closure_evaluations
+        WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        ORDER BY created_at DESC,evaluation_id DESC LIMIT 1 FOR UPDATE`,
+      [actor.tenant_id, workId, plan.plan_id]);
+      const evaluation = evaluations.rows[0] || null;
+      const scope = evaluation?.evaluation?.native_v2_precommit_scope;
+      if (!evaluation || objectDigest(evaluation.evaluation) !== evaluation.evaluation_digest ||
+          evaluation.evaluation?.schema_version !== "native_closure_evaluation_v1" ||
+          evaluation.evaluation?.closed !== false ||
+          evaluation.evaluation?.commit_ticket_ready !== true ||
+          evaluation.evaluation?.precommit_verification?.ready !== true ||
+          !HASH.test(String(evaluation.evaluation?.precommit_verification?.workspace_digest || "")) ||
+          !plainRecord(scope) || scope.schema_version !== "native_v2_precommit_scope_v1") {
+        return Object.freeze({
+          schema_version: "persisted_precommit_reconciliation_v1",
+          work_id: workId,
+          outcome: "BLOCKED",
+          reason_codes: Object.freeze(["current_native_closure_evaluation_not_ready"]),
+          execution_authorized: false,
+          provider_execution: false,
+        });
+      }
+      const projection = await materializeNativePrecommitTicketGateWithClient(client, {
+        server_owned: true,
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        plan_id: plan.plan_id,
+        evaluation_id: evaluation.evaluation_id,
+        evaluation_digest: evaluation.evaluation_digest,
+        workspace_digest: evaluation.evaluation.precommit_verification.workspace_digest,
+        v2_task_scope: scope,
+      });
+      return Object.freeze({
+        schema_version: "persisted_precommit_reconciliation_v1",
+        work_id: workId,
+        outcome: "RECONCILED",
+        gate_schema_version: projection.schema_version,
+        gate_source: projection.gate_source,
+        gate_projection_digest: projection.projection_digest,
+        fresh: projection.fresh === true,
+        fulfilled: projection.fulfilled === true,
+        scoped_task_count: Array.isArray(projection.v2_scope_tasks)
+          ? projection.v2_scope_tasks.length
+          : 0,
+        idempotent_replay: projection.idempotent_replay === true,
+        execution_authorized: false,
+        provider_execution: false,
+      });
+    });
+  }
   async function reconcilePrecommitTicketGate(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -6461,6 +6551,7 @@ export function createWorkContinuityV2Store({
     readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
     archiveHistoricalBridgedWork, reopenWork,
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
+    reconcilePersistedPrecommitTicketGate,
     claimPrecommitTicketGate, reconcilePrecommitTicketGateClaim, readPrecommitTicketGateClaimRecovery,
     abandonInactivePrecommitTicketGateClaim,
     materializeNativePrecommitTicketGateWithClient,
