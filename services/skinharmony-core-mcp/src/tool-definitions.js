@@ -1564,7 +1564,7 @@ const nyraControlRoomOutputSchema = object({
 }, ["ok", "tenant_id", "control_room"]);
 
 const nyraContinueProperties = Object.freeze({
-  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "align_native_plan_status", "reconcile_persisted_precommit", "finalize_verified_work"] },
+  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
   continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
   work_id: { type: "string", format: "uuid" },
   work_bootstrap: nyraWorkBootstrapSpec,
@@ -1602,25 +1602,7 @@ const nyraContinueInputSchema = Object.freeze({
     Object.freeze({
       type: "object",
       properties: Object.freeze({
-        operation: { const: "align_native_plan_status" },
-        owner_confirmed: { const: true },
-      }),
-      required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),
-      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
-    }),
-    Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        operation: { const: "reconcile_persisted_precommit" },
-        owner_confirmed: { const: true },
-      }),
-      required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),
-      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
-    }),
-    Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        operation: { const: "finalize_verified_work" },
+        operation: { type: "string", enum: ["align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
         owner_confirmed: { const: true },
       }),
       required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),

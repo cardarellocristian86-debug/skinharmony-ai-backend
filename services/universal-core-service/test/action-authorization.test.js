@@ -103,6 +103,8 @@ test("preserves the closed legacy and continuity coordination action set", () =>
       `precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:${"a".repeat(64)}`,
     "work.continuity.native_plan.status.align":
       `native_plan_status_align:11111111-1111-4111-8111-111111111111:${"a".repeat(64)}`,
+    "work.continuity.native_closure.reevaluate":
+      `native_closure_reevaluate:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222:${"a".repeat(64)}`,
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
     "work.branch.open": "tenant_work_branch_open",
@@ -123,7 +125,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 28);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 29);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -139,6 +141,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
       "work.continuity.resume_or_bind",
       "work.continuity.precommit.reconcile.persisted",
       "work.continuity.native_plan.status.align",
+      "work.continuity.native_closure.reevaluate",
       "work.bootstrap.review",
       "work.gallery.queue.create",
     ].includes(value))) {
