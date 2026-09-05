@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
-const MAX_PLANS = 100;
+const MAX_SCANNED_PLANS = 10_000;
+const MAX_PROJECTED_NODES = 100;
 const MAX_CONFLICTS = 50;
 const MERGEABLE_FIELDS = Object.freeze([
   "repository", "base_branch", "host_type", "required_checks", "tasks",
@@ -33,6 +34,36 @@ function ancestry(startId, byId) {
     current = byId.get(current)?.supersedes_plan_id || null;
   }
   return { distances: result, cycle: false };
+}
+
+function graphIntegrity(rows, byId) {
+  const issues = [];
+  const states = new Map();
+  for (const row of rows) {
+    if (row.supersedes_plan_id && !byId.has(row.supersedes_plan_id)) issues.push("missing_parent_plan");
+  }
+  for (const row of rows) {
+    if (states.get(row.plan_id) === 2) continue;
+    const path = [];
+    const positions = new Map();
+    let current = row.plan_id;
+    while (current && byId.has(current) && states.get(current) !== 2) {
+      if (positions.has(current)) {
+        issues.push("native_plan_cycle");
+        break;
+      }
+      positions.set(current, path.length);
+      path.push(current);
+      current = byId.get(current)?.supersedes_plan_id || null;
+    }
+    for (const id of path) states.set(id, 2);
+  }
+  return issues;
+}
+
+function boundedIds(rows) {
+  const ids = rows.map((row) => row.plan_id).sort();
+  return { ids: ids.slice(0, MAX_PROJECTED_NODES), truncated: ids.length > MAX_PROJECTED_NODES };
 }
 
 function mergeValue(path, base, left, right, conflicts) {
@@ -78,7 +109,7 @@ export function buildNativePlanMergePreview(rows = [], workId) {
     return { schema_version: "native_plan_merge_preview_v1", work_id: workId,
       outcome: "BLOCKED", reason_codes: ["native_plan_graph_empty"], execution_authorized: false };
   }
-  if (rows.length > MAX_PLANS) {
+  if (rows.length > MAX_SCANNED_PLANS) {
     return { schema_version: "native_plan_merge_preview_v1", work_id: workId,
       outcome: "BLOCKED", reason_codes: ["native_plan_graph_too_large"], execution_authorized: false };
   }
@@ -89,14 +120,11 @@ export function buildNativePlanMergePreview(rows = [], workId) {
     byId.set(row.plan_id, row);
     if (digest(row.plan) !== row.plan_digest) integrity.push("plan_digest_invalid");
   }
-  for (const row of rows) {
-    if (row.supersedes_plan_id && !byId.has(row.supersedes_plan_id)) integrity.push("missing_parent_plan");
-    if (ancestry(row.plan_id, byId).cycle) integrity.push("native_plan_cycle");
-  }
+  integrity.push(...graphIntegrity(rows, byId));
   const referencedParents = new Set(rows.map((row) => row.supersedes_plan_id).filter(Boolean));
   const structuralHeads = rows.filter((row) => !referencedParents.has(row.plan_id));
   const storedCurrent = rows.filter((row) => row.status !== "superseded");
-  const nodes = rows.map((row) => ({
+  const allNodes = rows.map((row) => ({
     plan_id: row.plan_id,
     plan_version: Number(row.plan_version || 0),
     status: row.status,
@@ -106,13 +134,21 @@ export function buildNativePlanMergePreview(rows = [], workId) {
     task_ids: (Array.isArray(row.plan?.tasks) ? row.plan.tasks : [])
       .map((task) => String(task?.task_id || "")).filter(Boolean).slice(0, 20),
   })).sort((a, b) => a.plan_version - b.plan_version || a.plan_id.localeCompare(b.plan_id));
+  const nodes = allNodes.slice(0, MAX_PROJECTED_NODES);
+  const currentProjection = boundedIds(storedCurrent);
+  const headProjection = boundedIds(structuralHeads);
   const base = {
     schema_version: "native_plan_merge_preview_v1",
     work_id: workId,
-    node_count: nodes.length,
+    node_count: allNodes.length,
     nodes,
-    stored_current_plan_ids: storedCurrent.map((row) => row.plan_id).sort(),
-    structural_head_plan_ids: structuralHeads.map((row) => row.plan_id).sort(),
+    nodes_truncated: allNodes.length > MAX_PROJECTED_NODES,
+    stored_current_plan_count: storedCurrent.length,
+    stored_current_plan_ids: currentProjection.ids,
+    stored_current_plan_ids_truncated: currentProjection.truncated,
+    structural_head_count: structuralHeads.length,
+    structural_head_plan_ids: headProjection.ids,
+    structural_head_plan_ids_truncated: headProjection.truncated,
     evidence_inherited: false,
     authority_inherited: false,
     fresh_core_rebind_required: true,
@@ -123,9 +159,12 @@ export function buildNativePlanMergePreview(rows = [], workId) {
   if (integrity.length) return { ...base, outcome: "BLOCKED", reason_codes: [...new Set(integrity)].sort() };
   if (structuralHeads.length === 1) {
     const head = structuralHeads[0];
-    const staleCurrent = storedCurrent.filter((row) => row.plan_id !== head.plan_id).map((row) => row.plan_id).sort();
+    const staleRows = storedCurrent.filter((row) => row.plan_id !== head.plan_id);
+    const staleProjection = boundedIds(staleRows);
+    const staleCurrent = staleProjection.ids;
     return { ...base, outcome: staleCurrent.length ? "STATUS_ALIGNMENT_REQUIRED" : "ALREADY_ALIGNED",
-      canonical_head_plan_id: head.plan_id, stale_current_plan_ids: staleCurrent,
+      canonical_head_plan_id: head.plan_id, stale_current_plan_count: staleRows.length,
+      stale_current_plan_ids: staleCurrent, stale_current_plan_ids_truncated: staleProjection.truncated,
       reason_codes: staleCurrent.length ? ["structural_head_unique_status_drift"] : [] };
   }
   if (structuralHeads.length !== 2) {
