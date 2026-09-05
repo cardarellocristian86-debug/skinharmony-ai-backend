@@ -1367,13 +1367,13 @@ function orchestrationDirective({
   if (!readOnly && work.selection_required) {
     appendNeed("work_selection_required", "CONTEXT", "MISSING", "OWNER",
       "Selezionare esplicitamente il Work Identity canonico persistente");
-  } else if (workBootstrapCandidate && prerequisiteCodes.includes("work_bootstrap_spec_required")) {
+  } else if (!readOnly && workBootstrapCandidate && prerequisiteCodes.includes("work_bootstrap_spec_required")) {
     appendNeed("work_bootstrap_spec_required", "CONTEXT", "MISSING", "NYRA",
       "Specificare Intent, architecture, acceptance criteria e task graph del nuovo Work");
-  } else if (workBootstrapCandidate) {
+  } else if (!readOnly && workBootstrapCandidate) {
     appendNeed("work_bootstrap_core_review_required", "AUTHORITY", "REQUIRED", "UNIVERSAL_CORE",
       "Review anti-duplicato e gate owner per il Work canonico V2", workBootstrapRequestDigest);
-  } else if (!workBound && !standaloneRead) {
+  } else if (!readOnly && !workBound && !standaloneRead) {
     appendNeed("work_binding_required", "CONTEXT", "MISSING", "WORK_CONTINUITY",
       "Associare un Work Identity canonico tenant-scoped senza creare duplicati");
   }
@@ -1504,7 +1504,7 @@ function orchestrationDirective({
     appendAction("OWNER", "CONTEXT", "select_canonical_work",
       "Selezionare esplicitamente il Work canonico senza crearne uno nuovo",
       "READ_ONLY", "WAITING_ON_NEED", needs.map((item) => item.code));
-  } else if (workBootstrapCandidate) {
+  } else if (!readOnly && workBootstrapCandidate) {
     appendAction("HOST", "CONTEXT",
       prerequisiteCodes.includes("work_bootstrap_spec_required")
         ? "provide_work_bootstrap_spec"
@@ -1515,11 +1515,11 @@ function orchestrationDirective({
       "CORE_GOVERNED",
       ticketState === "WORK_BOOTSTRAP_READY" ? "READY" : "WAITING_ON_NEED",
       prerequisiteCodes, false);
-  } else if (!workBound && !standaloneRead) {
+  } else if (!readOnly && !workBound && !standaloneRead) {
     appendAction("OWNER", "CONTEXT", "bind_canonical_work",
       "Associare un Work canonico esistente senza crearne un duplicato",
       "READ_ONLY", "WAITING_ON_NEED", needs.map((item) => item.code));
-  } else if (!standaloneRead && recommendedAction && disposition !== "COMPLETE") {
+  } else if (!readOnly && !standaloneRead && recommendedAction && disposition !== "COMPLETE") {
     appendAction("HOST", workContext.next_required_task ? "CONTEXT" : "REASONING",
       workContext.next_required_task ? "complete_next_work_task" : "prepare_bounded_work",
       recommendedAction, ticketRequired ? "BOUNDED_WORKSPACE" : "READ_ONLY", "READY",
@@ -2315,7 +2315,7 @@ async function advisoryConversationResult({
   const action = actionPolicy("", { request_kind: null, capability_hint: null }, false, false);
   const baseDirective = orchestrationDirective({ tenantId, message, work, dialogue,
     workContext: unavailableWorkDirectiveContext(work, dialogue), interpretation, action,
-    connectorHint: { request_kind: null, capability_hint: null } });
+    connectorHint: { request_kind: null, capability_hint: null }, readOnly: true });
   const directive = Object.freeze({ ...baseDirective, ticket_request: Object.freeze({
     ...baseDirective.ticket_request, continuation: Object.freeze({
       schema_version: "nyra_continuation_ref_v1", available: false, continuation_ref: null,
