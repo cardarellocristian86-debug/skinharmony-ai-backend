@@ -790,7 +790,12 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
   const fields = native
     ? [...legacyFields, "gate_source", "v2_scope_snapshot_digest", "v2_scope_tasks"]
     : legacyFields;
-  const nativeScopeTasksValid = !native || (
+  const nativeScopeUnavailable = native &&
+    value.v2_scope_snapshot_digest === null &&
+    Array.isArray(value.v2_scope_tasks) && value.v2_scope_tasks.length === 0 &&
+    value.fresh === false && Array.isArray(value.drift_codes) &&
+    value.drift_codes.includes("precommit_gate_v2_scope_drift");
+  const nativeScopeTasksValid = !native || nativeScopeUnavailable || (
     /^[a-f0-9]{64}$/.test(String(value.v2_scope_snapshot_digest || "")) &&
     Array.isArray(value.v2_scope_tasks) && value.v2_scope_tasks.length <= 128 &&
     value.v2_scope_tasks.every((task) => task && typeof task === "object" && !Array.isArray(task) &&
