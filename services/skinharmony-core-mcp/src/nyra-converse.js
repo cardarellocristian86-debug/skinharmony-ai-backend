@@ -1128,6 +1128,7 @@ function orchestrationDirective({
   canonicalIntentBinding = null,
   coreOrchestrationVerdict = null,
   semanticEscalation = null,
+  readOnly = false,
 }) {
   workContext = releaseReadyDirectiveContext(work, workContext, interpretation);
   const workBound = Boolean(work.work_id);
@@ -1147,7 +1148,7 @@ function orchestrationDirective({
   // A request to create a Work never creates a duplicate over an already
   // bound identity. In that case Nyra resumes the canonical Work and does not
   // issue a bootstrap candidate.
-  const ticketRequired = workBootstrapRequested
+  const ticketRequired = readOnly ? false : workBootstrapRequested
     ? workBootstrapCandidate
     : action.consequential_request_detected || interpretation.owner_confirmation_required;
   const mergeManual = action.action_class === "GIT_MERGE" ||
@@ -1324,15 +1325,15 @@ function orchestrationDirective({
   let coreVerdict = "NOT_APPLICABLE";
   if (coreBlocked) coreVerdict = "BLOCK";
   else if (coreMissingContext) coreVerdict = "INSUFFICIENT_CONTEXT";
-  else if (interpretation.governance_diagnostics.state === "CONFIRMATION_REQUIRED" ||
-           interpretation.owner_confirmation_required) coreVerdict = "HOLD";
+  else if (!readOnly && (interpretation.governance_diagnostics.state === "CONFIRMATION_REQUIRED" ||
+           interpretation.owner_confirmation_required)) coreVerdict = "HOLD";
   else if (ticketRequired) coreVerdict = "NOT_REQUESTED";
   // A HOLD is an explicit Core confirmation gate.  It must be preserved on
   // every consequential ticket candidate even if an older Core response did
   // not set its legacy boolean field.
-  const ownerConfirmationRequired = interpretation.owner_confirmation_required ||
+  const ownerConfirmationRequired = !readOnly && (interpretation.owner_confirmation_required ||
     workBootstrapCandidate ||
-    (ticketRequired && coreVerdict === "HOLD");
+    (ticketRequired && coreVerdict === "HOLD"));
 
   const needs = [];
   function appendNeed(code, kind, state, authority, detail, sourceDigest = null) {
@@ -2854,7 +2855,7 @@ export function createNyraConverseHandler({
       });
       workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
     }
-    const advisoryOnly = intentRoute.reason === "explicit_read_only_boundary";
+    const advisoryOnly = intentRoute.reason === "explicit_read_only_fence";
     const action = actionPolicy(
       advisoryOnly ? Object.freeze({ requested_now: [] }) : intentRoute.canonical_intent,
       connectorHint,
@@ -2890,6 +2891,7 @@ export function createNyraConverseHandler({
         boundedPreflight.coreOrchestrationVerdict || null,
       semanticEscalation: interpretation.semantic_escalation ||
         boundedPreflight.semanticEscalation || null,
+      readOnly: intentRoute.reason === "explicit_read_only_fence",
     });
     let continuation = Object.freeze({
       schema_version: "nyra_continuation_ref_v1",

@@ -858,6 +858,20 @@ test("keeps an explicitly fenced Work read read-only when its last verb names an
   assert.equal(response.structuredContent.work.work_id, WORK_ID);
 });
 
+test("never turns a read-only Work query into an owner ticket when Core marks its generic plan confirmable", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.requires_owner_confirmation = true;
+  interpretation.structuredContent.result.automation_plan.owner_confirmation_required = true;
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Leggi stato e checkpoint del Work. Sola lettura: non creare o modificare nulla.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.owner_confirmation_required, false);
+  assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+});
+
 test("returns explicit Work-not-found instead of an unbound success", async () => {
   const missing = preflightFixture();
   missing.structuredContent.work_preflight.continuity.work_id = null;
