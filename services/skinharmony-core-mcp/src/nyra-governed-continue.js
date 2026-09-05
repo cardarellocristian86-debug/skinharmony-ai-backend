@@ -317,10 +317,10 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|finalize_verified_work)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
   }
-  if (args.operation !== "finalize_verified_work" &&
+  if (!["reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
       !/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) {
     fail("nyra_continue_ref_invalid", 409);
   }
@@ -430,6 +430,35 @@ function nyraResult(payload, outcome, operation, replay = false) {
   return { structuredContent: response, content: [{ type: "text", text: response.host_response_contract.reply_seed }] };
 }
 
+function persistedPrecommitReconciliationResult(result) {
+  const reconciled = result?.outcome === "RECONCILED";
+  const response = Object.freeze({
+    ok: true,
+    result: Object.freeze({
+      schema_version: "persisted_precommit_reconciliation_v1",
+      work_id: result?.work_id || null,
+      outcome: reconciled ? "RECONCILED" : "BLOCKED",
+      reason_codes: Object.freeze(Array.isArray(result?.reason_codes)
+        ? result.reason_codes.slice(0, 8)
+        : []),
+      gate_schema_version: result?.gate_schema_version || null,
+      gate_source: result?.gate_source || null,
+      gate_projection_digest: result?.gate_projection_digest || null,
+      fresh: result?.fresh === true,
+      fulfilled: result?.fulfilled === true,
+      scoped_task_count: Number(result?.scoped_task_count || 0),
+      idempotent_replay: result?.idempotent_replay === true,
+      execution_authorized: false,
+      external_action_authorized: false,
+      provider_execution: false,
+    }),
+  });
+  const text = reconciled
+    ? "Nyra ha riconciliato il gate precommit dai record server-side. Nessuna azione esterna è stata eseguita."
+    : "Nyra ha ispezionato i record server-side, ma il gate precommit resta bloccato. Nessuna azione esterna è stata eseguita.";
+  return { structuredContent: response, content: [{ type: "text", text }] };
+}
+
 export function createNyraGovernedContinueHandler({
   store, readDirectiveContext, normalizeDirectiveContext, issueDelegation,
   authorizeAction, reviewWorkBootstrap, createWorkBootstrap, readActionTicket,
@@ -438,7 +467,8 @@ export function createNyraGovernedContinueHandler({
   abandonInactivePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
-  finalizeVerifiedWork = null, now = () => Date.now(),
+  authorizePersistedPrecommitReconciliation = null,
+  reconcilePersistedPrecommit = null, finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
   if (!store || typeof store.claim !== "function" || typeof store.complete !== "function" ||
       typeof store.readCompletedOperation !== "function" || typeof readDirectiveContext !== "function" ||
@@ -448,6 +478,44 @@ export function createNyraGovernedContinueHandler({
   return async function nyraContinue(args = {}, identity = {}) {
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
+    if (args.operation === "reconcile_persisted_precommit") {
+      if (typeof reconcilePersistedPrecommit !== "function") {
+        fail("nyra_continue_precommit_reconciliation_unavailable", 503);
+      }
+      const allowedFields = new Set([
+        "operation", "work_id", "idempotency_key", "owner_confirmed",
+        "confirmation_reference", "agent_id", "client_type", "session_id",
+      ]);
+      if (Object.keys(args).some((field) => !allowedFields.has(field)) ||
+          !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_OPERATE) ||
+          args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !String(args.confirmation_reference || "").trim() ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(args.work_id || "")) ||
+          args.continuation_ref !== undefined || args.work_bootstrap !== undefined ||
+          args.delegation_request !== undefined || args.action_request !== undefined ||
+          args.pull_request_materialization !== undefined || args.review_decision !== undefined ||
+          args.review_id !== undefined || args.review_digest !== undefined) {
+        fail("nyra_continue_precommit_reconciliation_binding_mismatch", 409);
+      }
+      if (typeof ensureFinalizeWorkBinding !== "function") {
+        fail("nyra_continue_precommit_reconciliation_lease_binding_unavailable", 503);
+      }
+      if (typeof authorizePersistedPrecommitReconciliation !== "function") {
+        fail("nyra_continue_precommit_reconciliation_core_gate_unavailable", 503);
+      }
+      await ensureFinalizeWorkBinding({
+        work_id: String(args.work_id).toLowerCase(),
+      }, identity);
+      await authorizePersistedPrecommitReconciliation({
+        work_id: String(args.work_id).toLowerCase(),
+        idempotency_key: String(args.idempotency_key).trim(),
+      }, identity);
+      const result = await reconcilePersistedPrecommit({
+        work_id: String(args.work_id).toLowerCase(),
+        idempotency_key: String(args.idempotency_key).trim(),
+      }, identity);
+      return persistedPrecommitReconciliationResult(result);
+    }
     if (args.operation === "finalize_verified_work") {
       if (typeof finalizeVerifiedWork !== "function") fail("nyra_continue_verified_finalize_unavailable", 503);
       if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_READ) ||

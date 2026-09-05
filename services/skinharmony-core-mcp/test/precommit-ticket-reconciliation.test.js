@@ -535,6 +535,44 @@ test("reconciles exact receipt-bound evidence idempotently without mutating clos
   assert.equal(pool.mappings.size, 1);
 });
 
+test("server-derived reconciliation rejects ambiguous current plans without writes", async () => {
+  const { pool, store } = fixture();
+  const secondPlan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    plan_id: SUPERSEDING_PLAN_ID,
+    plan: secondPlan,
+    plan_digest: digest(secondPlan),
+    status: "planned",
+    plan_version: 2,
+    supersedes_plan_id: PLAN_ID,
+  });
+
+  const result = await store.reconcilePersistedPrecommitTicketGate(identity(), {
+    work_id: WORK_ID,
+    idempotency_key: "ambiguous-current-plan",
+  });
+  assert.equal(result.outcome, "BLOCKED");
+  assert.deepEqual(result.reason_codes, ["current_native_plan_ambiguous"]);
+  assert.equal(pool.gates.size, 0);
+  assert.equal(pool.supersedingGates.length, 0);
+  assert.equal(pool.events.length, 0);
+});
+
+test("server-derived reconciliation blocks when no current plan exists", async () => {
+  const { pool, store } = fixture();
+  pool.plans[0].status = "superseded";
+  const result = await store.reconcilePersistedPrecommitTicketGate(identity(), {
+    work_id: WORK_ID,
+    idempotency_key: "missing-current-plan",
+  });
+  assert.equal(result.outcome, "BLOCKED");
+  assert.deepEqual(result.reason_codes, ["current_native_plan_missing"]);
+  assert.equal(pool.gates.size, 0);
+  assert.equal(pool.events.length, 0);
+});
+
 test("reconciliation fails closed across tenants and on receipt, evaluation or replacement substitution", async () => {
   {
     const { store, input } = fixture();
@@ -942,6 +980,18 @@ test("materializes one server-owned native closure gate for a canonical promoted
   assert.equal(pool.supersedingGates.length, 1);
   assert.equal(pool.tasks.size, 1, "native supersession reuses the immutable ticket-acquisition task");
   await client.query("COMMIT");
+
+  const serverDerivedReplay = await store.reconcilePersistedPrecommitTicketGate(identity(), {
+    work_id: WORK_ID,
+    idempotency_key: "server-derived-native-gate-replay",
+  });
+  assert.equal(serverDerivedReplay.outcome, "RECONCILED");
+  assert.equal(serverDerivedReplay.gate_schema_version, "precommit_ticket_gate_v2");
+  assert.equal(serverDerivedReplay.gate_source, "native_closure_evaluation");
+  assert.equal(serverDerivedReplay.fresh, true);
+  assert.equal(serverDerivedReplay.idempotent_replay, true);
+  assert.equal(serverDerivedReplay.execution_authorized, false);
+  assert.equal(serverDerivedReplay.provider_execution, false);
 
   const storedCreatedEvent = pool.events[0];
   storedCreatedEvent.payload.legacy_intent_digest = "f".repeat(64);
