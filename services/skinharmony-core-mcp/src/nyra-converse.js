@@ -863,7 +863,7 @@ function fulfilledPrecommitPredecessorContextDigest(compact, gate) {
   });
 }
 
-function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
+function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { readOnly = false } = {}) {
   if (!value) return unavailableWorkDirectiveContext(workBinding, dialogue);
   const tenantId = requireAuthenticatedIdentity(identity);
   const work = value.work && typeof value.work === "object" && !Array.isArray(value.work)
@@ -874,25 +874,28 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     !work ||
     work.tenant_id !== tenantId ||
     boundedWorkId(work.work_id) !== workBinding.work_id ||
-    (workBinding.project_id && work.project_id !== workBinding.project_id)
+    (!readOnly && workBinding.project_id && work.project_id !== workBinding.project_id)
   ) throw fail("nyra_converse_directive_context_binding_invalid", 409);
   const suppliedRevision = Number(value.work_revision);
   const dialogueRevision = Number(dialogue.work_revision);
   if (
     Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0 &&
     Number.isSafeInteger(dialogueRevision) && dialogueRevision > 0 &&
-    suppliedRevision !== dialogueRevision
+    suppliedRevision !== dialogueRevision && !readOnly
   ) throw fail("nyra_converse_directive_context_revision_mismatch", 409);
-  const workRevision = Number.isSafeInteger(dialogueRevision) && dialogueRevision > 0
+  const workRevision = readOnly && Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0
+    ? suppliedRevision
+    : Number.isSafeInteger(dialogueRevision) && dialogueRevision > 0
     ? dialogueRevision
     : Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0 ? suppliedRevision : null;
   const workIntentDigest = /^[a-f0-9]{64}$/.test(String(work.intent_digest || ""))
     ? String(work.intent_digest)
     : null;
-  if (dialogue.intent_digest && workIntentDigest && dialogue.intent_digest !== workIntentDigest) {
+  if (!readOnly && dialogue.intent_digest && workIntentDigest && dialogue.intent_digest !== workIntentDigest) {
     throw fail("nyra_converse_directive_context_intent_mismatch", 409);
   }
-  const intentDigest = dialogue.intent_digest || workIntentDigest;
+  const intentDigest = readOnly ? (workIntentDigest || dialogue.intent_digest) :
+    (dialogue.intent_digest || workIntentDigest);
   const status = String(work.status || "").trim().toUpperCase();
   if (!new Set([
     "PLANNED", "ACTIVE", "PAUSED", "BLOCKED", "HANDOFF", "COMPLETED",
@@ -1020,7 +1023,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     schema_version: "nyra_work_directive_context_v1",
     tenant_id: tenantId,
     work_id: workBinding.work_id,
-    project_id: workBinding.project_id,
+    project_id: readOnly ? (boundedProjectId(work.project_id) || workBinding.project_id) : workBinding.project_id,
     work_revision: workRevision,
     intent_digest: intentDigest,
     status,
@@ -1037,7 +1040,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   const normalized = {
     available: true,
     work_id: workBinding.work_id,
-    project_id: workBinding.project_id,
+    project_id: readOnly ? (boundedProjectId(work.project_id) || workBinding.project_id) : workBinding.project_id,
     work_revision: workRevision,
     intent_digest: intentDigest,
     context_digest: deterministicDigest(compact),
@@ -2824,7 +2827,8 @@ export function createNyraConverseHandler({
         intent_digest: boundedPreflight.dialogue.intent_digest,
         // A state/checkpoint question must never validate a write-only
         // precommit ticket.  Consequential routes still receive the full gate.
-        read_only: intentRoute.canonical_intent.consequential_intent !== true,
+        read_only: intentRoute.canonical_intent.consequential_intent !== true &&
+          intentRoute.intent !== "work_resume" && args.work_bootstrap === undefined,
       });
       if (!rawDirectiveContext && args.work_id) {
         throw fail("nyra_converse_work_not_found", 404);
@@ -2834,6 +2838,8 @@ export function createNyraConverseHandler({
         identity,
         boundedPreflight.work,
         boundedPreflight.dialogue,
+        { readOnly: intentRoute.canonical_intent.consequential_intent !== true &&
+          intentRoute.intent !== "work_resume" && args.work_bootstrap === undefined },
       );
     }
     let workBootstrapRequestDigest = null;
