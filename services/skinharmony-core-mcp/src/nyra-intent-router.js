@@ -45,6 +45,7 @@ const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|co
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
 const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:manca|serve))/iu;
 const NEGATION = /\b(?:non|no|senza|never|do\s+not|don't)\b/iu;
+const EXPLICIT_READ_ONLY_FENCE = /\b(?:(?:in\s+)?sol[oa]\s+lettura|solo\s+(?:in\s+)?lettura|read[\s-]?only)\b/iu;
 const CONDITION = /\b(?:se|if|unless|quando|when|solo\s+se|only\s+if)\b/iu;
 const HYPOTHETICAL = /\b(?:dicessi|direi|sarebbe|would|hypothetical|ipotetic\w*|esempio|example)\b/iu;
 // A prose question about Work must never be promoted to a Work-create turn.
@@ -260,6 +261,7 @@ function materializeCanonicalIntent({
   semanticIntake,
   semanticAssessment,
   workBootstrap,
+  forceReadOnly = false,
 }) {
   const sourceClauses = splitIntentClauses(text).clauses;
   const requestedNow = [];
@@ -289,7 +291,7 @@ function materializeCanonicalIntent({
       clause.polarity === "positive" && clause.modality === "asserted";
     const consequentialNeed = /\b(?:serve|servono|necessit\w*|need(?:ed)?|required?)\b/iu.test(source) &&
       actions.length > 0;
-    if ((clause.imperative || currentConsequentialStatement || consequentialNeed) &&
+    if (!forceReadOnly && (clause.imperative || currentConsequentialStatement || consequentialNeed) &&
         (clause.polarity === "positive" || clause.affirmative_action_candidates.length > 0) &&
         clause.modality === "asserted" && !clause.quote_scope && !future) {
       requestedNow.push(...(clause.affirmative_action_candidates.length > 0
@@ -437,14 +439,19 @@ export function classifyNyraIntent({
     clause.modality === "hypothetical"
   ));
   const workCreateRequested = clauses.some((clause) => clause.work_create_affirmative);
+  // The explicit fence governs vocabulary that follows it: a clause splitter
+  // must not detach "inviare" from "sola lettura: non ..." and mint a ticket.
+  // A later contrast remains consequential ("sola lettura, ma fai deploy").
+  const explicitReadOnlyFence = EXPLICIT_READ_ONLY_FENCE.test(text) &&
+    !new RegExp(`\\b(?:ma|però|but|however|poi|then)\\b.{0,180}${ACTION_VERB.source}`, "iu").test(text);
   const pureFutureEffect = !workBootstrap && !workCreateRequested && actionClauses.length > 0 &&
     distinctActions.size === 0 && actionClauses.every((clause) =>
       FUTURE_SCOPE.test(sourceClauses[clause.index] || ""));
-  const explicitReadOnlyBoundary = clauses.some((clause) =>
+  const explicitReadOnlyBoundary = explicitReadOnlyFence || (clauses.some((clause) =>
     clause.action_candidates.length > 0 && clause.polarity === "negative") &&
     clauses.every((clause) => clause.affirmative_action_candidates.length === 0) &&
     clauses.every((clause) => clause.action_candidates.length === 0 ||
-      (clause.polarity === "negative" && !clause.imperative && !clause.condition && !clause.quote_scope));
+      (clause.polarity === "negative" && !clause.imperative && !clause.condition && !clause.quote_scope)));
   const advisoryReadQuestion = !safeId(workId) && clauses.some((clause) => clause.interrogative) &&
     actionClauses.length === 0 && clauses.every((clause) => clause.action_candidates.length === 0) &&
     !workBootstrap && !workCreateRequested &&
@@ -482,8 +489,8 @@ export function classifyNyraIntent({
   const globalControlReadQuestion = GLOBAL_CONTROL_READ.test(text) ||
     GLOBAL_CONTROL_STATUS_QUESTION.test(text);
   const safeGlobalControlRead = globalControlReadQuestion &&
-    actionClauses.length === 0 && !workCreateRequested &&
-    !WORK_RESUME.test(normalized) && !explicitWorkScope && !actionVerbPresent &&
+    (actionClauses.length === 0 || explicitReadOnlyFence) && !workCreateRequested &&
+    !WORK_RESUME.test(normalized) && (!explicitWorkScope || explicitReadOnlyFence) && (!actionVerbPresent || explicitReadOnlyFence) &&
     semanticAssessment.disposition === "allow";
   const hostHintGlobalControlRead = semanticIntake.state === "CANDIDATE" &&
     semanticIntake.route_candidate === "GLOBAL_CONTROL_READ" &&
@@ -506,7 +513,7 @@ export function classifyNyraIntent({
     route = "CORE_CATALOG_READ";
     confidence = 1;
     reason = "exact_command_id_proposal";
-  } else if (actionVerbPresent && RUNTIME_CONTROL_MUTATION.test(text) &&
+  } else if (!explicitReadOnlyFence && actionVerbPresent && RUNTIME_CONTROL_MUTATION.test(text) &&
       clauses.some((clause) => clause.action_candidates.includes("runtime_control"))) {
     intent = "ticket_or_action";
     route = "CORE_CONTEXT_THEN_NYRA";
@@ -530,6 +537,11 @@ export function classifyNyraIntent({
     route = "ADVISORY_READ";
     confidence = 0.96;
     reason = "bounded_informational_question";
+  } else if (safeGlobalControlRead || hostHintGlobalControlRead) {
+    intent = "global_control_read";
+    route = "CONTROL_ROOM_READ";
+    confidence = safeGlobalControlRead ? 0.99 : 0.86;
+    reason = safeGlobalControlRead ? "deterministic_global_control_read" : "host_semantic_hint_global_control_read";
   } else if (explicitReadOnlyBoundary) {
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
@@ -580,11 +592,6 @@ export function classifyNyraIntent({
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.91;
     reason = "consequential_action_language";
-  } else if (safeGlobalControlRead || hostHintGlobalControlRead) {
-    intent = "global_control_read";
-    route = "CONTROL_ROOM_READ";
-    confidence = safeGlobalControlRead ? 0.99 : 0.86;
-    reason = safeGlobalControlRead ? "deterministic_global_control_read" : "host_semantic_hint_global_control_read";
   } else if (horizontalGlobalRead) {
     intent = "advisory_read";
     route = "ADVISORY_READ";
@@ -614,7 +621,7 @@ export function classifyNyraIntent({
 
   const canonicalIntent = materializeCanonicalIntent({
     text, intent, route, confidence, reason, clauses, semanticIntake,
-    semanticAssessment, workBootstrap,
+    semanticAssessment, workBootstrap, forceReadOnly: explicitReadOnlyFence && !workBootstrap,
   });
   return Object.freeze({
     schema_version: "nyra_intent_route_v2",

@@ -836,6 +836,28 @@ test("keeps a Work status read free of write-only precommit validation", async (
     null);
 });
 
+test("keeps an explicitly fenced Work read read-only when its last verb names an external action", async () => {
+  const context = directiveContextFixture();
+  const { handler, calls } = harness({
+    directiveContext: (_identity, args) => ({
+      ...context,
+      ...(args.read_only === true ? { precommit_ticket_gate: null } : {
+        precommit_ticket_gate: { malformed: true },
+      }),
+    }),
+  });
+  const response = await handler({
+    message: "Leggi stato, progresso, blocker e checkpoint del Work. Sola lettura: non creare, modificare o inviare nulla.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  assert.equal(calls.readDirectiveContext[0].args.read_only, true);
+  assert.equal(response.structuredContent.intent_routing.route.canonical_intent.operation_class, "READ_ONLY");
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
+  assert.equal(response.structuredContent.work.work_id, WORK_ID);
+});
+
 test("returns explicit Work-not-found instead of an unbound success", async () => {
   const missing = preflightFixture();
   missing.structuredContent.work_preflight.continuity.work_id = null;
