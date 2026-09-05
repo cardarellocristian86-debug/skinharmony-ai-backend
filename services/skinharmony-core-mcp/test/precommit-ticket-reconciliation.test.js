@@ -508,6 +508,24 @@ function actionTicket(projectionDigest, overrides = {}) {
     signature: `hnt_${"b".repeat(64)}`, ...overrides,
   } };
 }
+
+test("native plan merge preview is tenant-bound, read-only and derives the structural head", async () => {
+  const { pool, store } = fixture();
+  const secondPlan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({
+    tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    plan: secondPlan, plan_digest: digest(secondPlan), status: "planned",
+    plan_version: 2, supersedes_plan_id: PLAN_ID,
+  });
+  const before = pool.snapshot();
+  const result = await store.previewNativePlanMerge(identity(), { work_id: WORK_ID });
+  assert.equal(result.outcome, "STATUS_ALIGNMENT_REQUIRED");
+  assert.equal(result.canonical_head_plan_id, SUPERSEDING_PLAN_ID);
+  assert.deepEqual(result.stale_current_plan_ids, [PLAN_ID]);
+  assert.deepEqual(pool.snapshot(), before);
+  await assert.rejects(store.previewNativePlanMerge(identity("tenant-b"), { work_id: WORK_ID }),
+    /tenant_work_not_found/);
+});
 async function claimGate(store, projection, overrides = {}) {
   return store.claimPrecommitTicketGate(identity(), {
     work_id: WORK_ID, gate_projection_digest: projection.projection_digest,

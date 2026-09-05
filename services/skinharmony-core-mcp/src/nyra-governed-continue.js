@@ -317,10 +317,10 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
   }
-  if (!["reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
+  if (!["preview_native_plan_merge", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
       !/^nyc1_[A-Za-z0-9_-]{32,80}$/.test(String(args.continuation_ref || ""))) {
     fail("nyra_continue_ref_invalid", 409);
   }
@@ -467,6 +467,7 @@ export function createNyraGovernedContinueHandler({
   abandonInactivePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
+  previewNativePlanMerge = null,
   authorizePersistedPrecommitReconciliation = null,
   reconcilePersistedPrecommit = null, finalizeVerifiedWork = null, now = () => Date.now(),
 } = {}) {
@@ -478,6 +479,22 @@ export function createNyraGovernedContinueHandler({
   return async function nyraContinue(args = {}, identity = {}) {
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
+    if (args.operation === "preview_native_plan_merge") {
+      const allowedFields = new Set([
+        "operation", "work_id", "idempotency_key", "agent_id", "client_type", "session_id",
+      ]);
+      if (typeof previewNativePlanMerge !== "function") fail("nyra_continue_native_plan_merge_preview_unavailable", 503);
+      if (Object.keys(args).some((field) => !allowedFields.has(field)) ||
+          !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_READ) ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(String(args.work_id || ""))) {
+        fail("nyra_continue_native_plan_merge_preview_binding_mismatch", 409);
+      }
+      const result = await previewNativePlanMerge({ work_id: String(args.work_id).toLowerCase() }, identity);
+      return {
+        structuredContent: Object.freeze({ ok: true, result }),
+        content: [{ type: "text", text: "Nyra ha ispezionato il grafo dei piani e preparato una preview server-derived. Nessun piano o Work è stato modificato." }],
+      };
+    }
     if (args.operation === "reconcile_persisted_precommit") {
       if (typeof reconcilePersistedPrecommit !== "function") {
         fail("nyra_continue_precommit_reconciliation_unavailable", 503);

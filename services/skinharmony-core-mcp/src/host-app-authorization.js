@@ -359,6 +359,7 @@ export function requireHostAppToolCapability({
         bind_native_child: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         issue_delegation: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         authorize_action: HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+        preview_native_plan_merge: HOST_APP_CAPABILITIES.WORK_READ,
         reconcile_persisted_precommit: HOST_APP_CAPABILITIES.WORK_OPERATE,
         finalize_verified_work: HOST_APP_CAPABILITIES.WORK_READ,
       }[String(args?.operation || "")]

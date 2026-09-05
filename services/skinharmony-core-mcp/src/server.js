@@ -160,6 +160,7 @@ const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
   "work_continuity_native_acceptance_contract_read",
+  "work_continuity_native_plan_merge_preview",
   "work_continuity_native_launch_request_read",
   "work_continuity_native_report",
   "work_continuity_precommit_reconcile",
@@ -1821,6 +1822,8 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
       createWorkBootstrap: createCanonicalWorkGoverned,
       resumeExistingWork: resumeExistingContinuityWork,
       createNativePlan: createNativeContinuityPlan,
+      previewNativePlanMerge: (request, identity) =>
+        workContinuityV2Store.previewNativePlanMerge(withTenantWorkAcl(identity), request),
       bindNativeChild: bindNativeContinuityChild,
       readActionTicket: (args, identity) => coreHandlers.host_native_action_read(args, identity),
       coordinatePullRequest: (request, identity) =>
@@ -2573,6 +2576,11 @@ const baseHandlers = {
     work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_acceptance_contract_read:
       continuityMethod("readNativeAgentAcceptanceContract"),
+    work_continuity_native_plan_merge_preview: async (args, identity) =>
+      continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.previewNativePlanMerge(
+          withTenantWorkAcl(identity), args,
+        ) }),
     work_continuity_native_launch_request_read: async (args, identity) => {
       await requireCanonicalWorkRead(identity, args.work_id);
       return continuityTextResult({ ok: true,

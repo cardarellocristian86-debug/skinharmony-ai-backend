@@ -274,6 +274,41 @@ test("reconciles a historical precommit gate only from server-derived bindings",
   ]);
 });
 
+test("previews a native-plan merge from the Work id without continuation or write authority", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    previewNativePlanMerge: async (args) => {
+      calls.push(args);
+      return { schema_version: "native_plan_merge_preview_v1", work_id: args.work_id,
+        outcome: "STATUS_ALIGNMENT_REQUIRED", execution_authorized: false };
+    },
+  });
+  const result = await handler({
+    operation: "preview_native_plan_merge",
+    work_id: WORK_ID,
+    idempotency_key: "native-plan-merge-preview",
+    agent_id: "server-injected-agent",
+    client_type: "chatgpt",
+    session_id: "server-injected-session",
+  }, identity());
+  assert.equal(result.structuredContent.result.outcome, "STATUS_ALIGNMENT_REQUIRED");
+  assert.deepEqual(calls, [{ work_id: WORK_ID }]);
+  await assert.rejects(handler({
+    operation: "preview_native_plan_merge",
+    work_id: WORK_ID,
+    idempotency_key: "native-plan-merge-preview-extra",
+    owner_confirmed: true,
+  }, identity()), /nyra_continue_native_plan_merge_preview_binding_mismatch/);
+});
+
 test("historical precommit reconciliation performs no write when Core denies", async () => {
   const calls = [];
   const unused = async () => ({ structuredContent: {} });
@@ -787,6 +822,10 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.deepEqual(reconciliationBranch.required,
     ["work_id", "owner_confirmed", "confirmation_reference"]);
   assert.deepEqual(reconciliationBranch.not.required, ["continuation_ref"]);
+  const mergePreviewBranch = definition.inputSchema.anyOf.find((branch) =>
+    branch.properties?.operation?.const === "preview_native_plan_merge");
+  assert.deepEqual(mergePreviewBranch.required, ["work_id"]);
+  assert.deepEqual(mergePreviewBranch.not.required, ["continuation_ref"]);
 });
 
 test("the durable continuation store fails closed until PostgreSQL schema readiness is verified", async () => {
