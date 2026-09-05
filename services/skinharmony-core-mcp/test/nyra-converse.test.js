@@ -2319,6 +2319,33 @@ test("applies an exact native closure precommit gate without legacy evidence req
   ), []);
 });
 
+test("keeps a historical native gate with unavailable V2 scope observable but non-applicable", async () => {
+  const context = directiveContextFixture();
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    v2_scope_snapshot_digest: null,
+    v2_scope_tasks: [],
+    fresh: false,
+    drift_codes: ["precommit_gate_v2_scope_drift"],
+  });
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, verifica il blocco storico prima della chiusura",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  const gate = payload.orchestration_directive.work_context.precommit_ticket_gate;
+  assert.equal(gate.schema_version, "precommit_ticket_gate_v2");
+  assert.equal(gate.v2_scope_snapshot_digest, null);
+  assert.equal(gate.fresh, false);
+  assert.deepEqual(gate.drift_codes, ["precommit_gate_v2_scope_drift"]);
+  assert.equal(payload.orchestration_directive.work_context.precommit_ticket_gate_applicable, false);
+  assert.equal(payload.orchestration_directive.ticket_request.binding.precommit_ticket_gate, null);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    payload,
+  ), []);
+});
+
 test("uses receipt-bound native closure evidence instead of superseded legacy evidence", async () => {
   const context = directiveContextFixture();
   context.evidence = [{
