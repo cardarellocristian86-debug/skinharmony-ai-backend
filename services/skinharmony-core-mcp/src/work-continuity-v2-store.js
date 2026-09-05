@@ -2302,7 +2302,7 @@ export function createWorkContinuityV2Store({
       FROM core_continuity_native_plans
       WHERE tenant_id=$1 AND work_id=$2
       ORDER BY plan_version,plan_id
-      LIMIT 101`, [actor.tenant_id, workId]);
+      LIMIT 10001`, [actor.tenant_id, workId]);
     return buildNativePlanMergePreview(plans.rows, workId);
   }
   async function verifyWorkClosure(identity, { work_id }) {

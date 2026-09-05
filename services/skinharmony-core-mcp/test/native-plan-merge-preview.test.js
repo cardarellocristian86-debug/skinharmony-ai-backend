@@ -99,7 +99,24 @@ test("fails closed for missing ancestry, invalid digests, cycles and excessive g
   assert.deepEqual(buildNativePlanMergePreview([cycleA, cycleB], WORK_ID).reason_codes,
     ["native_plan_cycle"]);
 
-  assert.deepEqual(buildNativePlanMergePreview(Array.from({ length: 101 }, (_, index) => ({
+  assert.deepEqual(buildNativePlanMergePreview(Array.from({ length: 10001 }, (_, index) => ({
     plan_id: `${index}`, plan: {}, plan_digest: digest({}), status: "planned",
   })), WORK_ID).reason_codes, ["native_plan_graph_too_large"]);
+});
+
+test("scans long generic Work histories while bounding the returned projection", () => {
+  const rows = [];
+  let parent = null;
+  for (let index = 0; index < 250; index += 1) {
+    const id = `plan-${String(index).padStart(4, "0")}`;
+    rows.push(plan(id, index + 1, parent, [build], index === 249 ? "planned" : "superseded"));
+    parent = id;
+  }
+  const result = buildNativePlanMergePreview(rows, WORK_ID);
+  assert.equal(result.outcome, "ALREADY_ALIGNED");
+  assert.equal(result.node_count, 250);
+  assert.equal(result.nodes.length, 100);
+  assert.equal(result.nodes_truncated, true);
+  assert.equal(result.structural_head_count, 1);
+  assert.equal(result.canonical_head_plan_id, "plan-0249");
 });
