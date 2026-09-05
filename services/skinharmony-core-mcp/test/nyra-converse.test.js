@@ -806,6 +806,11 @@ test("reads Nyra's persistent self-model without opening or binding a Work", asy
     state: "AVAILABLE", materialized: true,
   });
   assert.match(payload.host_response_contract.reply_seed, /nyra_converse/);
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(payload.orchestration_directive.ticket_request.required, false);
+  assert.deepEqual(payload.orchestration_directive.needs, []);
+  assert.deepEqual(payload.orchestration_directive.next_actions, []);
+  assert.deepEqual(payload.orchestration_directive.permitted_progress, ["READ_ONLY"]);
   assert.deepEqual(validateToolArguments(
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
