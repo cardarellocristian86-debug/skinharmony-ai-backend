@@ -16,6 +16,7 @@ import {
   verifiedNativePrecommitWorkspaceDigest,
 } from "./work-continuity-runtime.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
+import { buildNativePlanMergePreview } from "./native-plan-merge-preview.js";
 
 // This is a diagnostic-presence lease only.  It is created by Nyra before an
 // exact Work read and deliberately grants no execution authority.  Historical
@@ -2288,6 +2289,21 @@ export function createWorkContinuityV2Store({
     ]);
     return { schema_version: "work_continuity_v2", work, tasks: tasks.rows, evidence: evidence.rows,
       closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null };
+  }
+  async function previewNativePlanMerge(identity, { work_id }) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(work_id);
+    const workResult = await query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const work = workResult.rows[0] && normalizeWork(workResult.rows[0]);
+    if (!work) fail("tenant_work_not_found");
+    assertPermission(canRead, work, actor);
+    const plans = await query(`SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY plan_version,plan_id
+      LIMIT 101`, [actor.tenant_id, workId]);
+    return buildNativePlanMergePreview(plans.rows, workId);
   }
   async function verifyWorkClosure(identity, { work_id }) {
     await initialize();
@@ -6548,7 +6564,7 @@ export function createWorkContinuityV2Store({
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
     ensureLegacyBridge,
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
-    readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
+    readWork, previewNativePlanMerge, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
     archiveHistoricalBridgedWork, reopenWork,
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     reconcilePersistedPrecommitTicketGate,
