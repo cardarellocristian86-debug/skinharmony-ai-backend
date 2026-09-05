@@ -99,6 +99,8 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "continuity.update": "work_continuity_checkpoint",
     "work.bootstrap.review": bootstrapReviewTarget,
     "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
+    "work.continuity.precommit.reconcile.persisted":
+      `precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:${"a".repeat(64)}`,
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
     "work.branch.open": "tenant_work_branch_open",
@@ -119,7 +121,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 26);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 27);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -131,7 +133,12 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     assert.equal(authorization.confirmation_required, false, actionType);
   }
   for (const actionType of Object.keys(targets).filter((value) => value.startsWith("work.") &&
-    !["work.continuity.resume_or_bind", "work.bootstrap.review", "work.gallery.queue.create"].includes(value))) {
+    ![
+      "work.continuity.resume_or_bind",
+      "work.continuity.precommit.reconcile.persisted",
+      "work.bootstrap.review",
+      "work.gallery.queue.create",
+    ].includes(value))) {
     const innerAuthorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
       action_type: actionType,
@@ -154,6 +161,25 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     idempotency_key: "bootstrap-review-0001",
   });
   assert.equal(bootstrapReview.allowed, true);
+  const persistedPrecommitReconciliation = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.continuity.precommit.reconcile.persisted",
+    target: `precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:${"b".repeat(64)}`,
+    idempotency_key: "persisted-precommit-reconciliation-0001",
+  });
+  assert.equal(persistedPrecommitReconciliation.allowed, true);
+  for (const invalidTarget of [
+    `precommit_reconcile_persisted:not-a-work:${"b".repeat(64)}`,
+    "precommit_reconcile_persisted:11111111-1111-4111-8111-111111111111:not-a-digest",
+    `precommit_reconcile:11111111-1111-4111-8111-111111111111:${"b".repeat(64)}`,
+  ]) {
+    assert.equal(buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: "work.continuity.precommit.reconcile.persisted",
+      target: invalidTarget,
+      idempotency_key: "persisted-precommit-reconciliation-invalid",
+    }).allowed, false, invalidTarget);
+  }
   const galleryV7 = buildActionAuthorization(contract(), {
     ...boundedCoordinationWrite,
     action_type: "work.gallery.archive",

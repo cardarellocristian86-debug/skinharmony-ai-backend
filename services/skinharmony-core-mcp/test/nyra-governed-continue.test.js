@@ -22,6 +22,7 @@ import {
   nyraCanonicalIntentMessageDigest,
 } from "../../shared/nyra-canonical-intent.mjs";
 import { coreOrchestrationVerdictDigest } from "../../shared/nyra-core-orchestration-verdict.mjs";
+import { isBoundedInternalCoordinationWrite } from "../../universal-core-service/src/boundedInternalCoordination.js";
 
 const SECRET_DIGEST = "a".repeat(64);
 const CONTEXT_DIGEST = "b".repeat(64);
@@ -300,6 +301,37 @@ test("historical precommit reconciliation performs no write when Core denies", a
     confirmation_reference: "owner-confirmed-reconciliation",
   }, identity()), /core_action_blocked/);
   assert.deepEqual(calls, ["binding", "core_gate"]);
+});
+
+test("persisted precommit reconciliation matches the live Universal Core bounded-write contract", () => {
+  const requestDigest = deterministicDigest({
+    schema_version: "persisted_precommit_reconciliation_request_v1",
+    work_id: WORK_ID,
+  });
+  assert.equal(isBoundedInternalCoordinationWrite({
+    action_type: "work.continuity.precommit.reconcile.persisted",
+    operation_class: "bounded_internal_coordination_write",
+    target: `precommit_reconcile_persisted:${WORK_ID}:${requestDigest}`,
+    idempotency_key: "server-derived-reconciliation",
+    tenant_id: "tenant-a",
+    authenticated_tenant_id: "tenant-a",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }), true);
 });
 
 test("historical precommit reconciliation rejects every caller-selected binding", async () => {

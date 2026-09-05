@@ -9,6 +9,7 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   // create a Work, execute an action, or widen tenant authority.
   "work.bootstrap.review",
   "work.continuity.resume_or_bind",
+  "work.continuity.precommit.reconcile.persisted",
   "work.participant.join",
   "work.participant.heartbeat",
   "work.branch.open",
@@ -63,6 +64,9 @@ function targetMatchesAction(actionType, value) {
   }
   if (actionType === "work.continuity.resume_or_bind") {
     return /^[a-z0-9][a-z0-9._:/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
+  }
+  if (actionType === "work.continuity.precommit.reconcile.persisted") {
+    return /^precommit_reconcile_persisted:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{64}$/i.test(target);
   }
   if (actionType === "work.participant.join") return workIdTarget || target === "tenant_work_gallery_join";
   if (actionType === "work.participant.heartbeat") return workIdTarget || target === "tenant_work_gallery_heartbeat";
