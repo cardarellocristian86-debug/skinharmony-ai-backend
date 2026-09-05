@@ -95,6 +95,17 @@ test("Nyra diagnoses incomplete local state without asking an AI to rediscover t
   }
 });
 
+test("a terminal Work remains readable when the operational Gallery is empty", () => {
+  const diagnosis = diagnoseNyraOperationalState({
+    continuity: { ...continuity, state: "completed" },
+    operational: {
+      intent_digest: "a".repeat(64),
+      gallery: { state: "available", work_count: 0 },
+    },
+  });
+  assert.notEqual(diagnosis.state, "gallery_projection_stale");
+});
+
 test("the reviewed manual declares every canonical runtime section", () => {
   const markdown = fs.readFileSync(new URL("../../../docs/architecture/nyra-persistent-operating-dialogue-v1.md", import.meta.url), "utf8");
   assert.match(markdown, new RegExp(NYRA_OPERATING_MANUAL_VERSION));

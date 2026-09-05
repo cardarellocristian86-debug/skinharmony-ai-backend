@@ -63,7 +63,7 @@ const RESERVED_AUTHORITY_KEYS = new Set([
 // for an explicit plural/option list or an explicit choice *among* Works;
 // callers can always use work_selection_mode: "list" for an unambiguous read.
 const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b)/iu;
-const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
+const DIAGNOSTIC_REQUEST_PATTERN = /(?:\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve)|remediat\w*|rimed\w*|soluzion\w*|solution\w*)\b|\b(?:come|how)\b.{0,100}\b(?:risolv\w*|rimedia\w*|fix\w*|resolve\w*|complet\w*)\b)/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
 // intentionally preserved and will still be governed.
@@ -211,7 +211,7 @@ function directiveCode(value, fallback = "unspecified") {
 function boundedWorkId(value) {
   const id = typeof value === "string" ? value.trim() : "";
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-    ? id
+    ? id.toLowerCase()
     : null;
 }
 
@@ -736,6 +736,15 @@ function pureResumeRequest(message) {
   return /^(?:nyra\s+)?(?:riprendi|continua|resume|continue)(?:\s+(?:(?:il|lo|la|questo|questa|the|this|current|existing|corrente|attuale)\s+)?(?:work|lavoro))?(?:\s+(?:esistente|corrente|attuale|current|existing))?$/u.test(normalized);
 }
 
+function pureWorkObservationRequest(message) {
+  const text = String(message || "");
+  if (DIAGNOSTIC_REQUEST_PATTERN.test(text)) return false;
+  const readVerb = /\b(?:leggi|mostra(?:mi)?|elenca(?:mi)?|dimmi|read|show|list|tell\s+me)\b/iu.test(text);
+  const observedField = /\b(?:work|lavoro|stato|status|progresso|progress|blocker|checkpoint|task|evidenz\w*|evidence|closure|chiusura)\b/iu.test(text);
+  const stateQuestion = /\b(?:qual(?:e|i)?|che|what|which)\b.{0,80}\b(?:stato|status|progresso|progress|blocker|checkpoint|task|evidenz\w*|evidence|closure|chiusura)\b/iu.test(text);
+  return (readVerb && observedField) || stateQuestion;
+}
+
 function sentence(value) {
   const text = boundedPublicText(value, MAX_SIGNAL_LENGTH);
   if (!text) return null;
@@ -869,13 +878,18 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   const work = value.work && typeof value.work === "object" && !Array.isArray(value.work)
     ? value.work
     : null;
+  const bindingWorkId = boundedWorkId(workBinding.work_id)?.toLowerCase() || null;
+  const canonicalWorkId = boundedWorkId(work?.work_id)?.toLowerCase() || null;
+  const canonicalReadProjectId = readOnly ? boundedProjectId(work?.project_id) : null;
   if (
     value.schema_version !== "work_continuity_v2" ||
     !work ||
     work.tenant_id !== tenantId ||
-    boundedWorkId(work.work_id) !== workBinding.work_id ||
+    !bindingWorkId || canonicalWorkId !== bindingWorkId ||
+    (readOnly && !canonicalReadProjectId) ||
     (!readOnly && workBinding.project_id && work.project_id !== workBinding.project_id)
   ) throw fail("nyra_converse_directive_context_binding_invalid", 409);
+  const projectId = readOnly ? canonicalReadProjectId : workBinding.project_id;
   const suppliedRevision = Number(value.work_revision);
   const dialogueRevision = Number(dialogue.work_revision);
   if (
@@ -959,7 +973,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   const precommitTicketGate = normalizePrecommitTicketGate(
     value.precommit_ticket_gate,
     tenantId,
-    workBinding.work_id,
+    bindingWorkId,
   );
   const pendingTaskIds = new Set(pendingRequiredTasks.map((item) => item.task_id));
   const unverifiedEvidenceIds = new Set(unverifiedEvidence.map((item) => item.evidence_id));
@@ -1005,7 +1019,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     closureProjectionExact && closureProjection.verified === true &&
     closureProjection.schema_version === "tenant_work_closure_verification_v1" &&
     closureProjection.tenant_id === tenantId &&
-    boundedWorkId(closureProjection.work_id) === workBinding.work_id &&
+    boundedWorkId(closureProjection.work_id)?.toLowerCase() === bindingWorkId &&
     closureProjection.status === status &&
     [
       closureProjection.receipt_digest,
@@ -1022,8 +1036,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   const compact = {
     schema_version: "nyra_work_directive_context_v1",
     tenant_id: tenantId,
-    work_id: workBinding.work_id,
-    project_id: readOnly ? (boundedProjectId(work.project_id) || workBinding.project_id) : workBinding.project_id,
+    work_id: bindingWorkId,
+    project_id: projectId,
     work_revision: workRevision,
     intent_digest: intentDigest,
     status,
@@ -1039,8 +1053,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   };
   const normalized = {
     available: true,
-    work_id: workBinding.work_id,
-    project_id: readOnly ? (boundedProjectId(work.project_id) || workBinding.project_id) : workBinding.project_id,
+    work_id: bindingWorkId,
+    project_id: projectId,
     work_revision: workRevision,
     intent_digest: intentDigest,
     context_digest: deterministicDigest(compact),
@@ -1081,7 +1095,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   return Object.freeze(normalized);
 }
 
-export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
+export function normalizeNyraDirectiveContext(value, identity, binding = {}, { readOnly = false } = {}) {
   return requireWorkDirectiveContext(
     value,
     identity,
@@ -1093,6 +1107,7 @@ export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
       work_revision: binding.work_revision,
       intent_digest: binding.intent_digest,
     },
+    { readOnly },
   );
 }
 
@@ -1236,7 +1251,9 @@ function orchestrationDirective({
 
   let disposition = interpretation.source === "persisted_work_context" ? "RESUME" : "PROCEED_READ_ONLY";
   let problem = null;
-  if (standaloneRead) {
+  if ((standaloneRead || readOnly) && work.state === "completed" && workContext.closure_verified) {
+    disposition = "COMPLETE";
+  } else if (standaloneRead || readOnly) {
     disposition = "PROCEED_READ_ONLY";
   } else if (work.selection_required) {
     disposition = "INSUFFICIENT_CONTEXT";
@@ -1323,8 +1340,8 @@ function orchestrationDirective({
   }
 
   let coreVerdict = "NOT_APPLICABLE";
-  if (coreBlocked) coreVerdict = "BLOCK";
-  else if (coreMissingContext) coreVerdict = "INSUFFICIENT_CONTEXT";
+  if (!readOnly && coreBlocked) coreVerdict = "BLOCK";
+  else if (!readOnly && coreMissingContext) coreVerdict = "INSUFFICIENT_CONTEXT";
   else if (!readOnly && (interpretation.governance_diagnostics.state === "CONFIRMATION_REQUIRED" ||
            interpretation.owner_confirmation_required)) coreVerdict = "HOLD";
   else if (ticketRequired) coreVerdict = "NOT_REQUESTED";
@@ -1347,7 +1364,7 @@ function orchestrationDirective({
       source_digest: /^[a-f0-9]{64}$/.test(String(sourceDigest || "")) ? sourceDigest : null,
     }));
   }
-  if (work.selection_required) {
+  if (!readOnly && work.selection_required) {
     appendNeed("work_selection_required", "CONTEXT", "MISSING", "OWNER",
       "Selezionare esplicitamente il Work Identity canonico persistente");
   } else if (workBootstrapCandidate && prerequisiteCodes.includes("work_bootstrap_spec_required")) {
@@ -1360,7 +1377,7 @@ function orchestrationDirective({
     appendNeed("work_binding_required", "CONTEXT", "MISSING", "WORK_CONTINUITY",
       "Associare un Work Identity canonico tenant-scoped senza creare duplicati");
   }
-  if (workContext.next_required_task) {
+  if (!readOnly && workContext.next_required_task) {
     appendNeed(
       `task_${workContext.next_required_task.task_id}`,
       "CONTEXT",
@@ -1370,16 +1387,16 @@ function orchestrationDirective({
       workContext.context_digest,
     );
   }
-  if (prerequisiteCodes.includes("acceptance_criteria_required")) {
+  if (!readOnly && prerequisiteCodes.includes("acceptance_criteria_required")) {
     appendNeed("acceptance_criteria_required", "CONTEXT", "MISSING", "WORK_CONTINUITY",
       "Acceptance criteria canonici e versionati", workContext.context_digest);
   }
-  if (prerequisiteCodes.includes("required_evidence_missing") ||
-      prerequisiteCodes.includes("required_evidence_unverified")) {
+  if (!readOnly && (prerequisiteCodes.includes("required_evidence_missing") ||
+      prerequisiteCodes.includes("required_evidence_unverified"))) {
     appendNeed("verified_evidence_required", "EVIDENCE", "MISSING", "WORK_CONTINUITY",
       "Evidenze richieste con verifica indipendente", workContext.context_digest);
   }
-  if (action.ticket_reserve_requested) {
+  if (!readOnly && action.ticket_reserve_requested) {
     appendNeed("existing_core_ticket_required", "AUTHORITY", "MISSING", "UNIVERSAL_CORE",
       "Ticket Universal Core esistente e verificato prima di qualsiasi reserve");
   }
@@ -1403,21 +1420,21 @@ function orchestrationDirective({
       .filter((cause) => cause.state === "BLOCKED")
       .map((cause) => [cause.code, cause.remediation]),
   );
-  for (const item of interpretation.blocked_reasons) {
+  for (const item of readOnly ? [] : interpretation.blocked_reasons) {
     appendNeed(`core_block_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
       "AUTHORITY", "BLOCKED", "UNIVERSAL_CORE",
       remediationByCoreCode.get(item) || `Risoluzione Core: ${item}`);
   }
-  for (const cause of interpretation.governance_diagnostics.causes) {
+  for (const cause of readOnly ? [] : interpretation.governance_diagnostics.causes) {
     if (cause.state !== "BLOCKED") continue;
     appendNeed(`core_block_${cause.code}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
       "AUTHORITY", "BLOCKED", cause.component, cause.remediation);
   }
-  for (const item of interpretation.unmet_conditions) {
+  for (const item of readOnly ? [] : interpretation.unmet_conditions) {
     appendNeed(`core_condition_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
       "CONTEXT", "MISSING", "UNIVERSAL_CORE", `Condizione richiesta: ${item}`);
   }
-  for (const item of interpretation.evidence_requirements) {
+  for (const item of readOnly ? [] : interpretation.evidence_requirements) {
     appendNeed(`core_evidence_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
       "EVIDENCE", "MISSING", "UNIVERSAL_CORE", `Evidenza richiesta: ${item}`);
   }
@@ -1455,7 +1472,7 @@ function orchestrationDirective({
     coreBlocked || coreMissingContext || ticketRequired ||
     interpretation.allowed_alternatives.length > 0
   ) ? interpretedAction : null;
-  let recommendedAction = standaloneRead
+  let recommendedAction = standaloneRead || readOnly
     ? null
     : workContext.next_required_task
       ? `Completare il task canonico: ${workContext.next_required_task.title}`
@@ -1463,7 +1480,7 @@ function orchestrationDirective({
         ? releaseReadyInterpretedAction ||
           "Preparare il prossimo gate dal Core Join persistito senza ripetere task o evidenze già verificate"
         : interpretedAction || work.next_action;
-  if (!recommendedAction && disposition !== "COMPLETE") {
+  if (!readOnly && !recommendedAction && disposition !== "COMPLETE") {
     recommendedAction = "Diagnosticare lo stato corrente e preparare una proposta verificabile";
   }
 
@@ -1483,7 +1500,7 @@ function orchestrationDirective({
       external_side_effect: externalSideEffect,
     }));
   }
-  if (work.selection_required) {
+  if (!readOnly && work.selection_required) {
     appendAction("OWNER", "CONTEXT", "select_canonical_work",
       "Selezionare esplicitamente il Work canonico senza crearne uno nuovo",
       "READ_ONLY", "WAITING_ON_NEED", needs.map((item) => item.code));
@@ -1511,8 +1528,8 @@ function orchestrationDirective({
   const effectiveUnverifiedEvidenceCount = commitPreflightGate
     ? workContext.precommit_unverified_required_evidence_count
     : workContext.unverified_required_evidence_count;
-  if (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
-      prerequisiteCodes.includes("required_evidence_missing")) {
+  if (!readOnly && (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
+      prerequisiteCodes.includes("required_evidence_missing"))) {
     appendAction("HOST", "EVIDENCE", "collect_missing_evidence",
       "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
       "BOUNDED_WORKSPACE", "READY",
@@ -1541,7 +1558,7 @@ function orchestrationDirective({
       "CORE_GOVERNED", "HELD", ["exact_core_ticket_required"], true);
   }
 
-  const permittedProgress = standaloneRead
+  const permittedProgress = standaloneRead || readOnly
     ? ["READ_ONLY"]
     : work.selection_required || (!workBound && !workBootstrapCandidate)
       ? ["DISAMBIGUATION"]
@@ -1550,12 +1567,12 @@ function orchestrationDirective({
         : disposition === "COMPLETE"
           ? []
           : ["READ_ONLY", "ANALYSIS", "EVIDENCE", "BOUNDED_WORKSPACE", "PROPOSAL"];
-  const reasonCodes = [
+  const reasonCodes = (readOnly ? [] : [
     ...(problem ? [problem.code] : []),
     ...interpretation.blocked_reasons,
     ...interpretation.governance_diagnostics.causes.map((cause) => cause.code),
     ...prerequisiteCodes,
-  ].map((item) => directiveCode(item))
+  ]).map((item) => directiveCode(item))
     .filter((value, index, values) => values.indexOf(value) === index)
     .slice(0, 16);
   const source = connectorHint.request_kind
@@ -1659,6 +1676,17 @@ function directiveStateSummary({ directive, workBound, focus, english }) {
   if (disposition === "COMPLETE") return english
     ? "The Work has a verified closure."
     : "Il Work ha una chiusura verificata.";
+  if (disposition === "PROCEED_READ_ONLY" && directive.work_context?.status === "BLOCKED") {
+    return english
+      ? "The Work is blocked; this status read remains available and does not request an action or ticket."
+      : "Il Work è bloccato; questa lettura dello stato resta disponibile e non richiede azioni o ticket.";
+  }
+  if (disposition === "PROCEED_READ_ONLY" && directive.work_context?.status === "COMPLETED" &&
+      directive.work_context?.closure_verified !== true) {
+    return english
+      ? "The Work reports completion, but its closure is not verified; this read does not request an action or ticket."
+      : "Il Work risulta completato, ma la closure non è verificata; questa lettura non richiede azioni o ticket.";
+  }
   if (directive.work_context?.status === "RELEASE_READY") return english
     ? "The Work is release-ready: tasks, evidence, and independent verification are already satisfied."
     : "Il Work è release-ready: task, evidenze e verifica indipendente sono già acquisiti.";
@@ -2569,8 +2597,9 @@ export function createNyraConversePreflight({
     // acquisition.  This distinguishes a genuine tenant-local absence (404)
     // from an ACL denial (403), and prevents an unknown UUID from becoming an
     // opaque continuity error or an unbound successful conversation.
+    let verifiedRequestedWork = null;
     if (boundedWorkId(resumeArgs.work_id) && typeof verifyRequestedWork === "function") {
-      await verifyRequestedWork(identity, resumeArgs.work_id);
+      verifiedRequestedWork = await verifyRequestedWork(identity, resumeArgs.work_id);
     }
     const preflightArgs = {
       request: resumeArgs.message,
@@ -2587,24 +2616,49 @@ export function createNyraConversePreflight({
       available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
       canonical_intent: resumeArgs.canonical_intent,
     };
-    const continuityBinding = await resolveContinuityProjectBinding(
-      identity,
-      preflightArgs,
-      workContinuityRuntime,
-      { preferPersistedWorkProject: true },
-    );
+    // An exact state-pure read has already passed the canonical V2 ACL above.
+    // Its immutable project binding comes from that same row; requiring a
+    // legacy Intent anchor here would make V2-native and terminal Work
+    // unreadable even though no continuity lease or mutation is requested.
+    const verifiedProjectId = resumeArgs.read_only === true && verifiedRequestedWork
+      ? boundedProjectId(verifiedRequestedWork.work?.project_id)
+      : null;
+    if (resumeArgs.read_only === true && verifiedRequestedWork && !verifiedProjectId) {
+      throw fail("continuity_project_binding_invalid", 409);
+    }
+    const continuityBinding = verifiedProjectId
+      ? {
+          projectId: verifiedProjectId,
+          continuityArgs: {
+            ...preflightArgs,
+            work_id: verifiedRequestedWork.work.work_id,
+            project_id: verifiedProjectId,
+          },
+        }
+      : await resolveContinuityProjectBinding(
+          identity,
+          preflightArgs,
+          workContinuityRuntime,
+          { preferPersistedWorkProject: true },
+        );
     const result = await workPreflight({
       ...preflightArgs,
       project_id: continuityBinding.projectId,
     }, identity);
-    if ((resumeArgs.work_bootstrap === undefined &&
-         resumeArgs.canonical_intent?.work_requirement !== "NEW") || resumeArgs.work_id) {
+    if (((resumeArgs.work_bootstrap === undefined &&
+          resumeArgs.canonical_intent?.work_requirement !== "NEW") || resumeArgs.work_id) &&
+        // With no exact canonical Work there is nothing state-pure to attach.
+        // Preserve the normal unbound/selection result instead of manufacturing
+        // a false WORK_NOT_FOUND or creating a diagnostic continuity lease.
+        !(resumeArgs.read_only === true && !verifiedRequestedWork)) {
       await ensureContinuity(
         identity,
         continuityBinding.continuityArgs,
         "nyra_converse",
         result,
-        { resumeExisting: true },
+        resumeArgs.read_only === true
+          ? { resumeExisting: true, readOnly: true, verifiedWork: verifiedRequestedWork }
+          : { resumeExisting: true },
       );
     }
     return result;
@@ -2706,6 +2760,8 @@ export function createNyraConverseHandler({
         project_id: args.project_id,
       }), identity, args);
     }
+    const statePureRead = intentRoute.canonical_intent.consequential_intent !== true &&
+      intentRoute.intent !== "work_resume" && args.work_bootstrap === undefined;
     let boundedPreflight = persisted;
     let interpretation;
     if (persisted) {
@@ -2761,6 +2817,7 @@ export function createNyraConverseHandler({
       const preflightResult = await preflight({
         message,
         canonical_intent: intentRoute.canonical_intent,
+        ...(statePureRead ? { read_only: true } : {}),
         ...(args.work_id ? { work_id: args.work_id } : {}),
         ...(args.project_id ? { project_id: args.project_id } : {}),
         ...(args.work_bootstrap !== undefined ? { work_bootstrap: args.work_bootstrap } : {}),
@@ -2828,8 +2885,7 @@ export function createNyraConverseHandler({
         intent_digest: boundedPreflight.dialogue.intent_digest,
         // A state/checkpoint question must never validate a write-only
         // precommit ticket.  Consequential routes still receive the full gate.
-        read_only: intentRoute.canonical_intent.consequential_intent !== true &&
-          intentRoute.intent !== "work_resume" && args.work_bootstrap === undefined,
+        read_only: statePureRead,
       });
       if (!rawDirectiveContext && args.work_id) {
         throw fail("nyra_converse_work_not_found", 404);
@@ -2839,8 +2895,7 @@ export function createNyraConverseHandler({
         identity,
         boundedPreflight.work,
         boundedPreflight.dialogue,
-        { readOnly: intentRoute.canonical_intent.consequential_intent !== true &&
-          intentRoute.intent !== "work_resume" && args.work_bootstrap === undefined },
+        { readOnly: statePureRead },
       );
     }
     let workBootstrapRequestDigest = null;
@@ -2855,7 +2910,14 @@ export function createNyraConverseHandler({
       });
       workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
     }
-    const advisoryOnly = intentRoute.reason === "explicit_read_only_fence";
+    // Every canonical read uses state-pure continuity, but only an explicit
+    // read fence or a factual Work observation suppresses diagnostic and
+    // preparation advice. A request such as "diagnose the blocker" remains
+    // advisory work while still creating no lease or persisted read context.
+    const advisoryOnly = statePureRead && (
+      intentRoute.reason === "explicit_read_only_fence" ||
+      pureWorkObservationRequest(message)
+    );
     const action = actionPolicy(
       advisoryOnly ? Object.freeze({ requested_now: [] }) : intentRoute.canonical_intent,
       connectorHint,
@@ -2871,9 +2933,33 @@ export function createNyraConverseHandler({
     const directiveAction = intentRoute.route === "CORE_HOLD_THEN_NYRA"
       ? actionPolicy(Object.freeze({ requested_now: [] }), connectorHint, false, false)
       : action;
-    const directiveInterpretation = intentRoute.route === "CORE_HOLD_THEN_NYRA"
-      ? Object.freeze({ ...interpretation, owner_confirmation_required: false })
+    const readOnlyInterpretation = advisoryOnly
+      ? Object.freeze({
+          ...interpretation,
+          selected_action_id: null,
+          selected_action: null,
+          selected_action_available: false,
+          core_state: "observe",
+          core_control: "observe",
+          risk_band: "low",
+          blocked_reasons: Object.freeze([]),
+          governance_diagnostics: Object.freeze({
+            state: "READY",
+            guard_mode: "normal",
+            causes: Object.freeze([]),
+          }),
+          unmet_conditions: Object.freeze([]),
+          evidence_requirements: Object.freeze([]),
+          allowed_alternatives: Object.freeze([]),
+          next_step: null,
+          runbook_candidate: null,
+          owner_confirmation_required: false,
+        })
       : interpretation;
+    const directiveInterpretation = intentRoute.route === "CORE_HOLD_THEN_NYRA"
+      ? Object.freeze({ ...readOnlyInterpretation, owner_confirmation_required: false })
+      : readOnlyInterpretation;
+    const publicInterpretation = readOnlyInterpretation;
     const baseDirective = orchestrationDirective({
       tenantId,
       message,
@@ -2891,7 +2977,7 @@ export function createNyraConverseHandler({
         boundedPreflight.coreOrchestrationVerdict || null,
       semanticEscalation: interpretation.semantic_escalation ||
         boundedPreflight.semanticEscalation || null,
-      readOnly: intentRoute.reason === "explicit_read_only_fence",
+      readOnly: advisoryOnly,
     });
     let continuation = Object.freeze({
       schema_version: "nyra_continuation_ref_v1",
@@ -2997,23 +3083,23 @@ export function createNyraConverseHandler({
         raw_memory_returned: false,
       }),
       interpretation: Object.freeze({
-        core: interpretation.core,
-        selected_action_id: interpretation.selected_action_id,
-        selected_action: interpretation.selected_action,
-        selected_action_available: interpretation.selected_action_available,
-        core_state: interpretation.core_state,
-        core_control: interpretation.core_control,
-        risk_band: interpretation.risk_band,
-        blocked_reasons: interpretation.blocked_reasons,
-        governance_diagnostics: interpretation.governance_diagnostics,
-        unmet_conditions: interpretation.unmet_conditions,
-        evidence_requirements: interpretation.evidence_requirements,
-        allowed_alternatives: interpretation.allowed_alternatives,
-        next_step: interpretation.next_step,
-        runbook_candidate: interpretation.runbook_candidate,
-        owner_confirmation_required: interpretation.owner_confirmation_required,
-        dialogue_accepted: interpretation.dialogue_accepted,
-        opened_branch_count: interpretation.opened_branch_count,
+        core: publicInterpretation.core,
+        selected_action_id: publicInterpretation.selected_action_id,
+        selected_action: publicInterpretation.selected_action,
+        selected_action_available: publicInterpretation.selected_action_available,
+        core_state: publicInterpretation.core_state,
+        core_control: publicInterpretation.core_control,
+        risk_band: publicInterpretation.risk_band,
+        blocked_reasons: publicInterpretation.blocked_reasons,
+        governance_diagnostics: publicInterpretation.governance_diagnostics,
+        unmet_conditions: publicInterpretation.unmet_conditions,
+        evidence_requirements: publicInterpretation.evidence_requirements,
+        allowed_alternatives: publicInterpretation.allowed_alternatives,
+        next_step: publicInterpretation.next_step,
+        runbook_candidate: publicInterpretation.runbook_candidate,
+        owner_confirmation_required: publicInterpretation.owner_confirmation_required,
+        dialogue_accepted: publicInterpretation.dialogue_accepted,
+        opened_branch_count: publicInterpretation.opened_branch_count,
       }),
       nyra_dialogue: boundedPreflight.dialogue,
       action_policy: action,

@@ -67,6 +67,30 @@ test("Control Room handler derives Work status from the server V2 reader without
   assert.equal(result.structuredContent.control_room.work_progress.next_action.title, "Independent verification");
 });
 
+test("Control Room scopes coordination to the canonical Work project, not a stale caller hint", async () => {
+  const coordinationReads = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify(health()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    readControlRoomWorkContext: async () => workContext(),
+    readControlRoomCoordinationOverview: async (_identity, args) => {
+      coordinationReads.push(args);
+      return { available: true, active_session_count: 0, active_logical_agent_count: 0, sessions: [] };
+    },
+  });
+
+  await handlers.nyra_control_room_status({
+    work_id: WORK_ID,
+    project_id: "stale-caller-project",
+  }, { tenantId: "tenant-a" });
+  assert.deepEqual(coordinationReads, [{ project_id: "nyra_conversational_runtime" }]);
+});
+
 test("Control Room preserves the tenant-bound V2 reader denial", async () => {
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
@@ -87,6 +111,24 @@ test("Control Room preserves the tenant-bound V2 reader denial", async () => {
   await assert.rejects(
     () => handlers.nyra_control_room_status({ work_id: WORK_ID }, { tenantId: "tenant-a" }),
     /continuity_work_acl_denied/,
+  );
+});
+
+test("Control Room reports an explicit missing Work instead of an empty successful projection", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify(health()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    readControlRoomWorkContext: async () => null,
+  });
+
+  await assert.rejects(
+    () => handlers.nyra_control_room_status({ work_id: WORK_ID }, { tenantId: "tenant-a" }),
+    (error) => error?.code === "nyra_converse_work_not_found" && error?.status === 404,
   );
 });
 

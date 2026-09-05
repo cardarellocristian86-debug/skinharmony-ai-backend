@@ -2624,9 +2624,20 @@ export function createCoreHandlers(config, options = {}) {
             ...(args.project_id ? { project_id: args.project_id } : {}),
           })
         : null;
+      if (args.work_id && typeof readControlRoomWorkContext === "function" && !work) {
+        const error = new Error("nyra_converse_work_not_found");
+        error.code = "nyra_converse_work_not_found";
+        error.status = 404;
+        throw error;
+      }
       const coordination = typeof readControlRoomCoordinationOverview === "function"
         ? await boundedControlRoomCoordinationRead(identity, {
-            ...(args.project_id ? { project_id: args.project_id } : {}),
+            // Once an exact Work was resolved, its tenant-scoped V2 project is
+            // authoritative. Never combine that Work's progress with a stale
+            // caller project when reading the coordination projection.
+            ...(work?.project_id
+              ? { project_id: work.project_id }
+              : args.project_id ? { project_id: args.project_id } : {}),
           })
         : null;
       return textResult({
