@@ -24,8 +24,10 @@ const VERIFICATION_ALGORITHM = "sha256_canonical_json+ed25519";
 const NYRA_HEALTH_FIELDS = Object.freeze([
   "ok", "service", "version", "runtime_kind", "domain_pack_resolution",
   "auth_required", "auth_configured", "storage_persistent", "suite_bridge_configured",
-  "deep_branch_v2_federation", "policy_registry_attestation", "work_automation",
+  "deep_branch_v2_federation", "deep_branch_v2_runtime", "policy_registry_attestation",
+  "work_automation", "build", "health_contract_version", "health_contract_digest", "render_ready",
 ]);
+const NYRA_BUILD_FIELDS = Object.freeze(["build_id", "commit_sha", "commit_verifiable"]);
 const WORK_AUTOMATION_HEALTH_FIELDS = Object.freeze([
   "schema_version", "role", "core_final_authority", "maximum_advisory_capabilities",
   "maximum_parallel_builders", "system_verifier_required", "smart_desk_automation_enabled",
@@ -339,6 +341,7 @@ export function createNyraPolicyRegistryClient({
   function validateHealth(body) {
     const policy = body?.policy_registry_attestation;
     const workAutomation = body?.work_automation;
+    const build = body?.build;
     if (!exactRecord(body, NYRA_HEALTH_FIELDS) || body.ok !== true ||
       body.service !== config.expected.service ||
       typeof body.version !== "string" || body.version.length < 1 || body.version.length > 120 ||
@@ -348,6 +351,13 @@ export function createNyraPolicyRegistryClient({
       typeof body.auth_required !== "boolean" || typeof body.auth_configured !== "boolean" ||
       typeof body.storage_persistent !== "boolean" ||
       typeof body.suite_bridge_configured !== "boolean" ||
+      body.render_ready !== true ||
+      !exactRecord(build, NYRA_BUILD_FIELDS) ||
+      build.commit_verifiable !== true || build.build_id !== config.expected.signer_target_commit ||
+      build.commit_sha !== config.expected.signer_target_commit ||
+      typeof body.health_contract_version !== "string" || !body.health_contract_version ||
+      body.health_contract_version !== body.health_contract_version.trim() ||
+      !SHA256.test(String(body.health_contract_digest || "")) ||
       !body.deep_branch_v2_federation ||
       typeof body.deep_branch_v2_federation !== "object" ||
       Array.isArray(body.deep_branch_v2_federation) ||

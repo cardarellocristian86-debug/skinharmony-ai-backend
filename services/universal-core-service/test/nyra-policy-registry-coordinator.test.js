@@ -74,6 +74,14 @@ function healthBody(overrides = {}) {
     auth_configured: true,
     storage_persistent: true,
     suite_bridge_configured: true,
+    render_ready: true,
+    build: {
+      build_id: "c".repeat(40),
+      commit_sha: "c".repeat(40),
+      commit_verifiable: true,
+    },
+    health_contract_version: "nyra_health_contract_v1",
+    health_contract_digest: "d".repeat(64),
     deep_branch_v2_federation: {
       enabled: false,
       configured: false,
@@ -84,6 +92,9 @@ function healthBody(overrides = {}) {
       replay_store_ready: true,
       replay_store_durable: true,
       operational_evaluation_enabled: false,
+    },
+    deep_branch_v2_runtime: {
+      state: "ready",
     },
     policy_registry_attestation: {
       enabled: true,
