@@ -25,6 +25,8 @@ function snapshot(overrides = {}) {
     context_status: "READY",
     policy_version: "entity360-policy-v1",
     policy_digest: POLICY_DIGEST,
+    ontology_version: "entity360-ontology-v1",
+    ontology_digest: "d".repeat(64),
     adapter_registry_version: "entity_360_adapter_registry_v1",
     bitemporal: {
       as_of_valid_time: AT,
@@ -51,6 +53,8 @@ function contextReceipt(current = snapshot(), overrides = {}, request = {}) {
     enforcement_policy_version: "entity360-enforcement-v2",
     enforcement_policy_digest: "c".repeat(64),
     enforcement_authority_digest: "e".repeat(64),
+    ontology_version: current.ontology_version,
+    ontology_digest: current.ontology_digest,
     adapter_registry_version: current.adapter_registry_version,
     as_of_valid_time: current.bitemporal.as_of_valid_time,
     as_of_knowledge_time: current.bitemporal.as_of_knowledge_time,
@@ -109,6 +113,12 @@ test("resolver reads and independently verifies one Entity360 Work snapshot", as
   assert.equal(context.stale, false);
   assert.equal(context.ambiguous, false);
   assert.equal(context.execution_authorized, false);
+  assert.equal(context.context_receipt_digest,
+    entity360.calls[0] ? contextReceipt(snapshot(), {}, {
+      action: { kind: "git.commit" }, phase: "ISSUE",
+    }).receipt_digest : null);
+  assert.equal(context.evidence_refs.includes(
+    `entity360_context_receipt:${context.context_receipt_digest}`), true);
   assert.deepEqual(entity360.calls.map((call) => call.capability), [
     "entity_360_enforcement_context",
   ]);
@@ -181,6 +191,20 @@ test("ENFORCE marks old snapshots stale and rejects future or tampered receipts"
   });
   await tampered.initialize();
   await assert.rejects(tampered.resolve({ tenant_id: TENANT, work_id: WORK,
+    action: { kind: "git.commit" }, phase: "ISSUE" }),
+  /semantic_scope_context_unavailable/u);
+
+  const ontologyTamperedRuntime = runtime();
+  ontologyTamperedRuntime.resolveEnforcementContext = async (_identity, input) => ({
+    snapshot: snapshot(),
+    verification: { valid: true, snapshot_digest: DIGEST },
+    receipt: contextReceipt(snapshot(), { ontology_digest: "0".repeat(64) }, input),
+  });
+  const ontologyTampered = createEntity360SemanticScopeContextResolver({
+    mode: "ENFORCE", getEntity360Runtime: () => ontologyTamperedRuntime,
+  });
+  await ontologyTampered.initialize();
+  await assert.rejects(ontologyTampered.resolve({ tenant_id: TENANT, work_id: WORK,
     action: { kind: "git.commit" }, phase: "ISSUE" }),
   /semantic_scope_context_unavailable/u);
 });

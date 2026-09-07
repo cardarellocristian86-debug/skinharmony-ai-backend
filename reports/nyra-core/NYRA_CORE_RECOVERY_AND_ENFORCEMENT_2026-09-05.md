@@ -2,9 +2,9 @@
 
 Data: 2026-09-05
 
-Tenant operativo: `codexai`
+Tenant operativo: `[REDACTED — binding conservato nel registro evidenze governato]`
 
-Work governato: `7fe2ac3a-e0de-46c1-a163-e57768e7b543`
+Work governato: `[REDACTED — riferimento canonico conservato nel registro evidenze governato]`
 
 Branch di rilascio: `fix/nyra-enforcement-readiness-20260905`
 
@@ -87,7 +87,7 @@ Ridurre i passaggi inutili e i blocchi del percorso conversazionale, preservando
 1. Commit, push, PR e merge con ticket Universal Core e verifica CI.
 2. Distribuzione dello stesso commit su Core MCP, Nyra e Universal Core, rispettando i pin dei signer.
 3. Canary PostgreSQL della migrazione Entity360 v2.
-4. Attivazione governata Entity360 `ENFORCED` per `codexai` tramite feature flag tenant con revisione attesa.
+4. Attivazione governata Entity360 `ENFORCED` per il tenant operativo autorizzato tramite feature flag tenant con revisione attesa.
 5. Attivazione governata di uno snapshot Policy Registry v3 firmato e provenance-bound.
 6. Attivazione del lifecycle Policy Registry MCP dopo il readback dello snapshot.
 7. Test live completi: Dialogue, read-only, Gallery, paginazione, Work valido/inesistente/finalizzato, checkpoint, concorrenza, Entity360, Semantic Scope, Policy Registry, Research Airlock, Software Cognition e piano a cascata.

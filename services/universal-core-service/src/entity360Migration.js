@@ -26,7 +26,7 @@ export const ENTITY360_MIGRATIONS = Object.freeze([
   }),
 ]);
 
-export const ENTITY360_TABLES = Object.freeze([
+const ENTITY360_BASE_TABLES = Object.freeze([
   "core_entity360_registry",
   "core_entity360_feature_flags",
   "core_entity360_entity_heads",
@@ -37,7 +37,7 @@ export const ENTITY360_TABLES = Object.freeze([
   "core_entity360_backfill_events",
 ]);
 
-export const ENTITY360_APPEND_ONLY_TABLES = Object.freeze([
+const ENTITY360_BASE_APPEND_ONLY_TABLES = Object.freeze([
   "core_entity360_registry",
   "core_entity360_snapshots",
   "core_entity360_shadow_receipts",
@@ -45,7 +45,34 @@ export const ENTITY360_APPEND_ONLY_TABLES = Object.freeze([
   "core_entity360_backfill_events",
 ]);
 
-async function entity360CatalogManifest(client, schemaName) {
+const ENTITY360_ENFORCEMENT_CONTEXT_TABLE =
+  "core_entity360_enforcement_context_receipts";
+
+export const ENTITY360_TABLES = Object.freeze([
+  ...ENTITY360_BASE_TABLES,
+  ENTITY360_ENFORCEMENT_CONTEXT_TABLE,
+]);
+
+export const ENTITY360_APPEND_ONLY_TABLES = Object.freeze([
+  ...ENTITY360_BASE_APPEND_ONLY_TABLES,
+  ENTITY360_ENFORCEMENT_CONTEXT_TABLE,
+]);
+
+function migrationIncludesEnforcement(migrations) {
+  return migrations.some((item) => item?.migration_id === ENTITY360_ENFORCEMENT_MIGRATION_ID);
+}
+
+function tablesForMigrationChain(migrations) {
+  return migrationIncludesEnforcement(migrations)
+    ? ENTITY360_TABLES : ENTITY360_BASE_TABLES;
+}
+
+function appendOnlyTablesForMigrationChain(migrations) {
+  return migrationIncludesEnforcement(migrations)
+    ? ENTITY360_APPEND_ONLY_TABLES : ENTITY360_BASE_APPEND_ONLY_TABLES;
+}
+
+async function entity360CatalogManifest(client, schemaName, tables) {
   const columns = await client.query(`
     SELECT c.relname AS table_name,c.relkind,c.relpersistence,c.relrowsecurity,
            c.relforcerowsecurity,a.attnum AS ordinal,a.attname AS column_name,
@@ -60,7 +87,7 @@ async function entity360CatalogManifest(client, schemaName) {
       LEFT JOIN pg_collation coll ON coll.oid=a.attcollation
      WHERE n.nspname=$1 AND c.relname=ANY($2::text[]) AND c.relkind IN ('r','p')
      ORDER BY c.relname,a.attnum
-  `, [schemaName, ENTITY360_TABLES]);
+  `, [schemaName, tables]);
   const constraints = await client.query(`
     SELECT rel.relname AS table_name,con.conname,con.contype,con.condeferrable,
            con.condeferred,con.convalidated,con.connoinherit,
@@ -85,7 +112,7 @@ async function entity360CatalogManifest(client, schemaName) {
       LEFT JOIN pg_namespace refns ON refns.oid=ref.relnamespace
      WHERE n.nspname=$1 AND rel.relname=ANY($2::text[])
      ORDER BY rel.relname,con.conname
-  `, [schemaName, ENTITY360_TABLES]);
+  `, [schemaName, tables]);
   const indexes = await client.query(`
     SELECT rel.relname AS table_name,idx.relname AS index_name,ind.indisunique,
            ind.indisprimary,ind.indisexclusion,ind.indimmediate,ind.indisclustered,
@@ -102,7 +129,7 @@ async function entity360CatalogManifest(client, schemaName) {
       JOIN pg_namespace n ON n.oid=rel.relnamespace
      WHERE n.nspname=$1 AND rel.relname=ANY($2::text[])
      ORDER BY rel.relname,idx.relname
-  `, [schemaName, ENTITY360_TABLES]);
+  `, [schemaName, tables]);
   const triggers = await client.query(`
     SELECT rel.relname AS table_name,t.tgname,t.tgtype,t.tgenabled,t.tgdeferrable,
            t.tginitdeferred,encode(t.tgargs,'hex') AS trigger_args,
@@ -121,10 +148,10 @@ async function entity360CatalogManifest(client, schemaName) {
       JOIN pg_language lang ON lang.oid=proc.prolang
      WHERE n.nspname=$1 AND rel.relname=ANY($2::text[]) AND NOT t.tgisinternal
      ORDER BY rel.relname,t.tgname
-  `, [schemaName, ENTITY360_TABLES]);
+  `, [schemaName, tables]);
   return {
     schema_version: "entity360_postgres_catalog_manifest_v1",
-    tables: ENTITY360_TABLES,
+    tables,
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,
@@ -132,7 +159,7 @@ async function entity360CatalogManifest(client, schemaName) {
   };
 }
 
-async function expectedEntity360CatalogManifest(client, sql) {
+async function expectedEntity360CatalogManifest(client, sql, tables) {
   const referenceSchema = `entity360_readback_${process.pid}_${Date.now()}_${Math.random()
     .toString(16).slice(2, 14)}`;
   if (!/^[a-z0-9_]{1,63}$/u.test(referenceSchema)) fail("entity360_reference_schema_invalid");
@@ -141,7 +168,7 @@ async function expectedEntity360CatalogManifest(client, sql) {
     await client.query(`CREATE SCHEMA "${referenceSchema}"`);
     await client.query(`SET LOCAL search_path TO "${referenceSchema}"`);
     await client.query(sql);
-    const manifest = await entity360CatalogManifest(client, referenceSchema);
+    const manifest = await entity360CatalogManifest(client, referenceSchema, tables);
     await client.query("ROLLBACK");
     return manifest;
   } catch (error) {
@@ -174,8 +201,10 @@ function migrationById(readback, migrationId) {
 function verifySchemaReadback(readback, expected) {
   const expectedMigrations = expectedMigrationChain(expected);
   const observedMigrations = observedMigrationChain(readback);
-  const missingTables = ENTITY360_TABLES.filter((name) => !readback.tables.includes(name));
-  const missingGuards = ENTITY360_APPEND_ONLY_TABLES.filter((name) =>
+  const requiredTables = tablesForMigrationChain(expectedMigrations);
+  const requiredAppendOnlyTables = appendOnlyTablesForMigrationChain(expectedMigrations);
+  const missingTables = requiredTables.filter((name) => !readback.tables.includes(name));
+  const missingGuards = requiredAppendOnlyTables.filter((name) =>
     !readback.append_only_tables.includes(name));
   for (const expectedMigration of expectedMigrations) {
     const observedMigration = observedMigrations.find((item) =>
@@ -208,6 +237,12 @@ function verifySchemaReadback(readback, expected) {
   }
   const enforcementMigrationExpected = expectedMigrations.some((item) =>
     item.migration_id === ENTITY360_ENFORCEMENT_MIGRATION_ID);
+  if (enforcementMigrationExpected && (!readback.enforcement_context_receipt_tenant_fk
+    || !readback.enforcement_context_receipt_binding_guard)) {
+    fail("entity360_migration_integrity_readback_failed", {
+      missing_guard: "core_entity360_enforcement_context_receipt_binding_check",
+    });
+  }
   if (!enforcementMigrationExpected
     && expectedMigrations.some((item) => item.migration_id === ENTITY360_SHADOW_MODE_MIGRATION_ID)
     && !readback.feature_shadow_only_guard) {
@@ -276,7 +311,8 @@ export function createEntity360Migrator({ pool } = {}) {
     const key = plan.map((migration) => `${migration.migration_id}:${migration.sql_digest}`).join("|");
     if (!expectedManifestDigestPromises.has(key)) {
       const sql = plan.map((migration) => migration.sql).join("\n\n");
-      const pending = expectedEntity360CatalogManifest(session, sql)
+      const pending = expectedEntity360CatalogManifest(session, sql,
+        tablesForMigrationChain(plan))
         .then((manifest) => entity360Digest(manifest))
         .catch((error) => {
           expectedManifestDigestPromises.delete(key);
@@ -292,17 +328,19 @@ export function createEntity360Migrator({ pool } = {}) {
     const session = ownsClient ? await pool.connect() : client;
     try {
     const plan = await loadMigrationPlan(migrations);
+    const scopedTables = tablesForMigrationChain(plan);
+    const scopedAppendOnlyTables = appendOnlyTablesForMigrationChain(plan);
     const targetSchemaResult = await session.query("SELECT current_schema() AS schema_name");
     const targetSchema = String(targetSchemaResult.rows[0]?.schema_name || "");
     if (!targetSchema) fail("entity360_target_schema_unavailable");
-    const observedManifest = await entity360CatalogManifest(session, targetSchema);
+    const observedManifest = await entity360CatalogManifest(session, targetSchema, scopedTables);
     const schemaManifestDigest = entity360Digest(observedManifest);
     const expectedSchemaManifestDigest = await expectedManifestDigest(session, plan);
     const tables = await session.query(
       `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
           AND c.relname=ANY($1::text[]) ORDER BY c.relname`,
-      [ENTITY360_TABLES],
+      [scopedTables],
     );
     const triggers = await session.query(`
       SELECT c.relname
@@ -318,7 +356,7 @@ export function createEntity360Migrator({ pool } = {}) {
       HAVING count(*) FILTER (WHERE t.tgname=c.relname || '_append_only' AND t.tgtype=27)=1
          AND count(*) FILTER (WHERE t.tgname=c.relname || '_truncate_guard' AND t.tgtype=34)=1
        ORDER BY c.relname
-    `, [ENTITY360_APPEND_ONLY_TABLES]);
+    `, [scopedAppendOnlyTables]);
     const migrationsReadback = await session.query(
       `SELECT migration_id,sql_digest,application_state,checkpoint,started_at,completed_at,verifier_evidence
          FROM core_schema_migrations
@@ -342,6 +380,18 @@ export function createEntity360Migrator({ pool } = {}) {
                 WHERE conrelid=to_regclass('core_entity360_backfill_events') AND contype='f'
                   AND pg_get_constraintdef(oid) ILIKE 'FOREIGN KEY (tenant_id, job_id)%'
              ) AS backfill_tenant_fk,
+             EXISTS (
+               SELECT 1 FROM pg_constraint
+                WHERE conrelid=to_regclass('core_entity360_enforcement_context_receipts')
+                  AND contype='f'
+                  AND pg_get_constraintdef(oid)
+                    ILIKE 'FOREIGN KEY (tenant_id, entity_id, snapshot_version)%'
+             ) AS enforcement_context_receipt_tenant_fk,
+             EXISTS (
+               SELECT 1 FROM pg_constraint
+                WHERE conrelid=to_regclass('core_entity360_enforcement_context_receipts')
+                  AND conname='core_entity360_enforcement_context_receipt_binding_check'
+             ) AS enforcement_context_receipt_binding_guard,
              EXISTS (
                SELECT 1 FROM pg_constraint
                 WHERE conrelid=to_regclass('core_entity360_feature_flags')
@@ -396,6 +446,10 @@ export function createEntity360Migrator({ pool } = {}) {
       snapshot_tenant_fk: integrity.rows[0]?.snapshot_tenant_fk === true,
       snapshot_chain_guard: integrity.rows[0]?.snapshot_chain_guard === true,
       backfill_tenant_fk: integrity.rows[0]?.backfill_tenant_fk === true,
+      enforcement_context_receipt_tenant_fk:
+        integrity.rows[0]?.enforcement_context_receipt_tenant_fk === true,
+      enforcement_context_receipt_binding_guard:
+        integrity.rows[0]?.enforcement_context_receipt_binding_guard === true,
       feature_enforcement_guard: integrity.rows[0]?.feature_enforcement_guard === true,
       feature_shadow_only_guard: integrity.rows[0]?.feature_shadow_only_guard === true,
       feature_v2_mode_guard: integrity.rows[0]?.feature_v2_mode_guard === true,

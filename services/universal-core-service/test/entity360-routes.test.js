@@ -25,7 +25,7 @@ function harness({ resolveAgentContext, invoke } = {}) {
 
 test("routes expose only the bounded Entity 360 surface", () => {
   const { routes, auth, registered } = harness();
-  assert.equal(routes.length, 9);
+  assert.equal(routes.length, 10);
   assert.deepEqual(registered.routes, ENTITY_360_ROUTES.map(([method, path, capability, access]) => ({
     method: method.toUpperCase(), path, capability, access,
   })));
@@ -107,3 +107,56 @@ test("routes fail closed without DTT identity and redact internal errors", async
   assert.equal(invalid.body.error.code, "entity360_dtt_agent_context_invalid");
   assert.equal(invalid.body.error.message.includes("secret"), false);
 });
+
+test("enforcement receipt route returns only the bound Work receipt and identical 404s otherwise",
+  async () => {
+    const workId = "91e82640-9edc-5424-a3e8-eb7853b0d8dd";
+    const receiptDigest = "a".repeat(64);
+    const receipt = { schema_version: "entity_360_core_context_receipt_v2",
+      tenant_id: "tenant-a", work_id: workId, receipt_digest: receiptDigest,
+      execution_authorized: false };
+    const calls = [];
+    const { routes } = harness({
+      resolveAgentContext: async () => ({ tenant_id: "tenant-a", work_id: workId,
+        agent_id: "receipt-agent", session_fingerprint: "session-proof",
+        actor_provenance: "verified-receipt", client_type: "codex" }),
+      invoke: async (capability, identity, input) => {
+        calls.push({ capability, identity, input });
+        if (input.receipt_digest === receiptDigest) return receipt;
+        const error = new Error("entity360_enforcement_context_receipt_not_found");
+        error.code = "entity360_enforcement_context_receipt_not_found";
+        error.status = 404;
+        throw error;
+      },
+    });
+    const handler = routes.find((route) =>
+      route.path === "/v1/entity-360/enforcement-context/receipt").handlers.at(-1);
+    const request = (digest) => ({ tenantId: "tenant-a",
+      headers: { "x-sh-dtt-agent-context": "signed-dtt" },
+      body: { work_id: workId, receipt_digest: digest } });
+
+    const found = responseHarness();
+    await handler(request(receiptDigest), found);
+    assert.equal(found.statusCode, 200);
+    assert.deepEqual(found.body, { ok: true, result: receipt });
+    assert.equal(calls[0].capability,
+      "entity_360_enforcement_context_receipt_read");
+    assert.equal(calls[0].identity.work_id, workId);
+    assert.equal(calls[0].input.work_id, workId);
+
+    const failures = [];
+    for (const digest of ["b".repeat(64), "c".repeat(64)]) {
+      const response = responseHarness();
+      await handler(request(digest), response);
+      failures.push(response);
+    }
+    for (const response of failures) {
+      assert.equal(response.statusCode, 404);
+      assert.deepEqual(response.body, { ok: false, error: {
+        code: "entity360_enforcement_context_receipt_not_found",
+        message: "The tenant-scoped Entity 360 request was rejected.",
+      } });
+    }
+    assert.deepEqual(failures[0].body, failures[1].body,
+      "unknown and cross-Work digests must remain indistinguishable");
+  });

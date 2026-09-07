@@ -340,6 +340,11 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
   }
   const configuredMode = normalizeEntity360Mode(mode);
   const configuredBitemporalMode = normalizeEntity360BitemporalMode(bitemporalMode);
+  if (configuredMode === "ENFORCE"
+    && (typeof store.writeEnforcementContextReceipt !== "function"
+      || typeof store.readEnforcementContextReceipt !== "function")) {
+    fail("entity360_enforcement_context_receipt_store_required", 503);
+  }
   const compiledPolicy = policy?.policy_digest ? policy : compileEntity360Policy(policy);
   const compiledOntology = compileEntity360Ontology(ontology);
   if (compiledPolicy.mode !== "SHADOW") fail("entity360_shadow_policy_required", 503);
@@ -1036,6 +1041,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     if (snapshot.schema_version !== enforcementContract.snapshot_schema_version
       || snapshot.context_status !== "READY"
       || snapshot.policy_digest !== compiledPolicy.policy_digest
+      || snapshot.ontology_version !== enforcementContract.ontology_version
+      || snapshot.ontology_digest !== enforcementContract.ontology_digest
       || snapshot.adapter_registry_version !==
         enforcementContract.adapter_registry_schema_version
       || !snapshot.bitemporal || snapshot.bitemporal.knowledge_time_quality !== "VERIFIED"
@@ -1057,6 +1064,18 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       snapshot_digest: snapshot.deterministic_immutable_digest,
       tenant_scope: identity.tenant_id,
       independently_recomputed_by: "universal_core_entity360_enforcement_verifier" });
+    // Re-read the tenant gate after every asynchronous resolution/verification
+    // step. The Store takes the same flag lock as writeFeatureFlag while it
+    // persists the receipt, closing the remaining downgrade race.
+    await requireEnforcementReadiness();
+    const currentFeature = await tenantMode(identity.tenant_id);
+    if (currentFeature.mode !== "ENFORCED" || currentFeature.enabled !== true
+      || currentFeature.mode !== feature.mode || currentFeature.enabled !== feature.enabled
+      || Number(currentFeature.revision) !== Number(feature.revision)
+      || currentFeature.policy_digest !== feature.policy_digest
+      || currentFeature.enforcement_authority_digest !== feature.enforcement_authority_digest) {
+      fail("entity360_enforcement_feature_drift", 409);
+    }
     const receiptUnsigned = {
       schema_version: "entity_360_core_context_receipt_v2",
       tenant_id: identity.tenant_id,
@@ -1069,10 +1088,12 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       enforcement_policy_version: compiledEnforcementPolicy.policy_version,
       enforcement_policy_digest: compiledEnforcementPolicy.policy_digest,
       enforcement_authority_digest: enforcementContract.enforcement_authority_digest,
+      ontology_version: snapshot.ontology_version,
+      ontology_digest: snapshot.ontology_digest,
       adapter_registry_version: snapshot.adapter_registry_version,
       as_of_valid_time: snapshot.bitemporal.as_of_valid_time,
       as_of_knowledge_time: snapshot.bitemporal.as_of_knowledge_time,
-      tenant_feature_revision: Number(feature.revision),
+      tenant_feature_revision: Number(currentFeature.revision),
       action_digest: entity360Digest(action),
       phase,
       authority_owner: "UNIVERSAL_CORE",
@@ -1084,11 +1105,38 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     };
     const receipt = Object.freeze({ ...receiptUnsigned,
       receipt_digest: entity360Digest(receiptUnsigned) });
-    return Object.freeze({ snapshot, verification, receipt,
-      feature_flag: Object.freeze({ mode: feature.mode, enabled: feature.enabled,
-        revision: Number(feature.revision), source: feature.source }),
+    const persisted = await store.writeEnforcementContextReceipt({
+      tenant_id: identity.tenant_id,
+      entity_id: snapshot.entity_id,
+      snapshot_version: snapshot.snapshot_version,
+      expected_feature_revision: Number(currentFeature.revision),
+      receipt,
+      actor_id: identity.actor_id,
+      idempotency_key: `entity360-enforcement-context-${receipt.receipt_digest}`,
+    });
+    if (persisted?.receipt?.receipt_digest !== receipt.receipt_digest) {
+      fail("entity360_enforcement_context_receipt_readback_invalid", 503);
+    }
+    return Object.freeze({ snapshot, verification, receipt: Object.freeze(persisted.receipt),
+      feature_flag: Object.freeze({ mode: currentFeature.mode, enabled: currentFeature.enabled,
+        revision: Number(currentFeature.revision), source: currentFeature.source }),
       production_decision_changed: false,
       execution_authorized: false });
+  }
+
+  async function readEnforcementContextReceipt(rawIdentity, input = {}) {
+    const identity = requireIdentity(rawIdentity);
+    requireInputTenant(identity, input);
+    const workId = requireWorkBinding(identity, input);
+    await requireOperationalStore();
+    const receipt = await store.readEnforcementContextReceipt({
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      receipt_digest: text(input.receipt_digest,
+        "entity360_enforcement_context_receipt_digest_required", 64),
+    });
+    if (!receipt) fail("entity360_enforcement_context_receipt_not_found", 404);
+    return receipt;
   }
 
   async function configureFeatureFlag(rawIdentity, input = {}) {
@@ -1158,6 +1206,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     requireInputTenant(identity, input);
     await requireOperationalStore();
     if (capability === "entity_360_resolve") return resolve(identity, input);
+    if (capability === "entity_360_enforcement_context_receipt_read") {
+      return readEnforcementContextReceipt(identity, input);
+    }
     if (capability === "entity_360_snapshot_assemble") return assemble(identity, input);
     if (capability === "entity_360_snapshot_latest") {
       const workId = requireWorkBinding(identity, input);
@@ -1236,6 +1287,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     preflightObservationGate,
     observeCurrentPath,
     resolveEnforcementContext,
+    readEnforcementContextReceipt,
     policy: compiledPolicy,
     ontology: compiledOntology,
     enforcement_policy: compiledEnforcementPolicy,

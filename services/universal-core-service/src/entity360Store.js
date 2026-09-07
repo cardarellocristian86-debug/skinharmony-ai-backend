@@ -148,6 +148,67 @@ function normalizeSnapshot(snapshot, verificationContext) {
   };
 }
 
+const ENFORCEMENT_CONTEXT_RECEIPT_KEYS = Object.freeze([
+  "schema_version", "tenant_id", "work_id", "entity_id", "snapshot_version",
+  "snapshot_digest", "policy_version", "policy_digest", "enforcement_policy_version",
+  "enforcement_policy_digest", "enforcement_authority_digest", "ontology_version",
+  "ontology_digest", "adapter_registry_version",
+  "as_of_valid_time", "as_of_knowledge_time", "tenant_feature_revision", "action_digest",
+  "phase", "authority_owner", "decision_authority", "decision_receipt_schema_version",
+  "entity360_self_approval", "provider_mutation", "execution_authorized", "receipt_digest",
+]);
+
+function normalizeEnforcementContextReceipt(value, expected = {}) {
+  const receipt = plain(value, "entity360_enforcement_context_receipt_required");
+  exactKeys(receipt, ENFORCEMENT_CONTEXT_RECEIPT_KEYS,
+    "entity360_enforcement_context_receipt_schema_invalid");
+  const { receipt_digest: suppliedDigest, ...unsigned } = receipt;
+  const receiptDigest = digest(suppliedDigest,
+    "entity360_enforcement_context_receipt_digest_invalid");
+  if (entity360Digest(unsigned) !== receiptDigest) {
+    fail("entity360_enforcement_context_receipt_digest_mismatch", 409);
+  }
+  const tenantId = text(receipt.tenant_id, "entity360_tenant_required", 120);
+  const workId = text(receipt.work_id, "entity360_work_required", 240);
+  const entityId = text(receipt.entity_id, "entity360_entity_id_required", 160);
+  const snapshotVersion = integer(receipt.snapshot_version,
+    "entity360_snapshot_version_invalid", 1);
+  const snapshotDigest = digest(receipt.snapshot_digest,
+    "entity360_snapshot_digest_invalid");
+  const actionDigest = digest(receipt.action_digest,
+    "entity360_enforcement_action_digest_invalid");
+  const policyDigest = digest(receipt.policy_digest, "entity360_policy_digest_invalid");
+  const enforcementAuthorityDigest = digest(receipt.enforcement_authority_digest,
+    "entity360_enforcement_authority_digest_invalid");
+  text(receipt.ontology_version, "entity360_ontology_version_invalid", 160);
+  digest(receipt.ontology_digest, "entity360_ontology_digest_invalid");
+  digest(receipt.enforcement_policy_digest,
+    "entity360_enforcement_policy_digest_invalid");
+  const phase = text(receipt.phase, "entity360_enforcement_phase_required", 20).toUpperCase();
+  if (receipt.schema_version !== "entity_360_core_context_receipt_v2"
+    || !["ISSUE", "RESERVATION"].includes(phase)
+    || receipt.authority_owner !== "UNIVERSAL_CORE"
+    || receipt.decision_authority !== "UNIVERSAL_CORE"
+    || receipt.decision_receipt_schema_version !== "host_native_action_ticket_v1"
+    || receipt.entity360_self_approval !== false
+    || receipt.provider_mutation !== false
+    || receipt.execution_authorized !== false) {
+    fail("entity360_enforcement_context_receipt_invalid", 403);
+  }
+  const tenantFeatureRevision = integer(receipt.tenant_feature_revision,
+    "entity360_feature_revision_invalid", 1);
+  if ((expected.tenantId && tenantId !== expected.tenantId)
+    || (expected.entityId && entityId !== expected.entityId)
+    || (expected.snapshotVersion && snapshotVersion !== expected.snapshotVersion)
+    || (expected.workId && workId !== expected.workId)
+    || (expected.receiptDigest && receiptDigest !== expected.receiptDigest)) {
+    fail("entity360_enforcement_context_receipt_binding_mismatch", 409);
+  }
+  return { receipt, receiptDigest, tenantId, workId, entityId, snapshotVersion,
+    snapshotDigest, actionDigest, phase, tenantFeatureRevision, policyDigest,
+    enforcementAuthorityDigest };
+}
+
 export function createPostgresEntity360Store({ pool, policy, ontology, qualificationVerifier } = {}) {
   if (!pool) fail("entity360_postgres_required", 503);
   const db = pool;
@@ -644,6 +705,134 @@ export function createPostgresEntity360Store({ pool, policy, ontology, qualifica
     });
   }
 
+  async function writeEnforcementContextReceipt(raw) {
+    const expectedTenantId = text(raw?.tenant_id, "entity360_tenant_required", 120);
+    const expectedEntityId = text(raw?.entity_id, "entity360_entity_id_required", 160);
+    const expectedSnapshotVersion = integer(raw?.snapshot_version,
+      "entity360_snapshot_version_invalid", 1);
+    const normalized = normalizeEnforcementContextReceipt(raw?.receipt, {
+      tenantId: expectedTenantId,
+      entityId: expectedEntityId,
+      snapshotVersion: expectedSnapshotVersion,
+    });
+    const expectedFeatureRevision = integer(raw?.expected_feature_revision,
+      "entity360_feature_revision_invalid", 1);
+    if (normalized.tenantFeatureRevision !== expectedFeatureRevision) {
+      fail("entity360_enforcement_context_feature_revision_mismatch", 409);
+    }
+    const actorId = text(raw?.actor_id, "entity360_actor_required", 240, null);
+    const idempotencyKey = text(raw?.idempotency_key || normalized.receiptDigest,
+      "entity360_idempotency_key_invalid", 240, null);
+    const operation = "WRITE_ENFORCEMENT_CONTEXT_RECEIPT";
+    const payloadDigest = entity360Digest({ receipt: normalized.receipt,
+      expected_feature_revision: expectedFeatureRevision });
+    return transaction(async (client) => {
+      await lockScopes(client, normalized.tenantId, [
+        "flag:entity360",
+        normalized.entityId,
+        `enforcement-context:${normalized.receiptDigest}`,
+      ]);
+      const flag = await client.query(
+        `SELECT mode,enabled,policy_digest,enforcement_authority_digest,revision
+           FROM core_entity360_feature_flags
+          WHERE tenant_id=$1 AND flag_id='entity360' FOR SHARE`,
+        [normalized.tenantId],
+      );
+      const currentFlag = flag.rows[0];
+      if (!currentFlag || currentFlag.mode !== "ENFORCED" || currentFlag.enabled !== true
+        || Number(currentFlag.revision) !== expectedFeatureRevision
+        || currentFlag.policy_digest !== normalized.policyDigest
+        || currentFlag.enforcement_authority_digest !== normalized.enforcementAuthorityDigest) {
+        fail("entity360_enforcement_feature_drift", 409);
+      }
+      const prior = await replay(client, { tenantId: normalized.tenantId, operation,
+        idempotencyKey, payloadDigest });
+      if (prior) return { ...prior, replayed: true };
+      const snapshot = await client.query(
+        `SELECT snapshot_digest,snapshot
+           FROM core_entity360_snapshots
+          WHERE tenant_id=$1 AND entity_id=$2 AND snapshot_version=$3 FOR SHARE`,
+        [normalized.tenantId, normalized.entityId, normalized.snapshotVersion],
+      );
+      const snapshotRow = snapshot.rows[0];
+      const persistedSnapshot = snapshotRow ? decode(snapshotRow.snapshot) : null;
+      const workBindings = [persistedSnapshot?.project_work_linkage?.work_id,
+        persistedSnapshot?.project_work_linkage?.legacy_work_id]
+        .filter((entry) => entry !== null && entry !== undefined)
+        .map((entry) => String(entry).trim().toLowerCase());
+      if (!snapshotRow) fail("entity360_snapshot_not_found", 404);
+      const head = await client.query(
+        `SELECT current_snapshot_version,current_snapshot_digest
+           FROM core_entity360_entity_heads
+          WHERE tenant_id=$1 AND entity_id=$2 FOR SHARE`,
+        [normalized.tenantId, normalized.entityId],
+      );
+      const currentHead = head.rows[0];
+      if (!currentHead
+        || Number(currentHead.current_snapshot_version) !== normalized.snapshotVersion
+        || currentHead.current_snapshot_digest !== normalized.snapshotDigest) {
+        fail("entity360_enforcement_snapshot_head_drift", 409);
+      }
+      if (snapshotRow.snapshot_digest !== normalized.snapshotDigest
+        || !workBindings.includes(normalized.workId.toLowerCase())
+        || persistedSnapshot?.policy_version !== normalized.receipt.policy_version
+        || persistedSnapshot?.policy_digest !== normalized.receipt.policy_digest
+        || persistedSnapshot?.ontology_version !== normalized.receipt.ontology_version
+        || persistedSnapshot?.ontology_digest !== normalized.receipt.ontology_digest
+        || persistedSnapshot?.adapter_registry_version !==
+          normalized.receipt.adapter_registry_version
+        || persistedSnapshot?.bitemporal?.as_of_valid_time !==
+          normalized.receipt.as_of_valid_time
+        || persistedSnapshot?.bitemporal?.as_of_knowledge_time !==
+          normalized.receipt.as_of_knowledge_time) {
+        fail("entity360_enforcement_context_snapshot_binding_mismatch", 409);
+      }
+      await client.query(
+        `INSERT INTO core_entity360_enforcement_context_receipts
+          (tenant_id,receipt_digest,work_id,entity_id,snapshot_version,snapshot_digest,
+           action_digest,phase,receipt,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
+        [normalized.tenantId, normalized.receiptDigest, normalized.workId,
+          normalized.entityId, normalized.snapshotVersion, normalized.snapshotDigest,
+          normalized.actionDigest, normalized.phase, JSON.stringify(normalized.receipt), actorId],
+      );
+      const readback = await client.query(
+        `SELECT receipt FROM core_entity360_enforcement_context_receipts
+          WHERE tenant_id=$1 AND receipt_digest=$2`,
+        [normalized.tenantId, normalized.receiptDigest],
+      );
+      const persisted = normalizeEnforcementContextReceipt(decode(readback.rows[0]?.receipt), {
+        tenantId: normalized.tenantId,
+        entityId: normalized.entityId,
+        snapshotVersion: normalized.snapshotVersion,
+        workId: normalized.workId,
+        receiptDigest: normalized.receiptDigest,
+      });
+      const result = { tenant_id: normalized.tenantId, receipt_digest: persisted.receiptDigest,
+        entity_id: normalized.entityId, snapshot_version: normalized.snapshotVersion,
+        receipt: persisted.receipt, persisted: true, replayed: false };
+      await remember(client, { tenantId: normalized.tenantId, operation, idempotencyKey,
+        payloadDigest, result });
+      return result;
+    });
+  }
+
+  async function readEnforcementContextReceipt({ tenant_id, work_id, receipt_digest } = {}) {
+    const tenantId = text(tenant_id, "entity360_tenant_required", 120);
+    const workId = text(work_id, "entity360_work_required", 240);
+    const receiptDigest = digest(receipt_digest,
+      "entity360_enforcement_context_receipt_digest_invalid");
+    const result = await db.query(
+      `SELECT receipt FROM core_entity360_enforcement_context_receipts
+        WHERE tenant_id=$1 AND work_id=$2 AND receipt_digest=$3`,
+      [tenantId, workId, receiptDigest],
+    );
+    if (!result.rows[0]) return null;
+    return normalizeEnforcementContextReceipt(decode(result.rows[0].receipt), {
+      tenantId, workId, receiptDigest,
+    }).receipt;
+  }
+
   async function readMetrics({ tenant_id } = {}) {
     const tenantId = text(tenant_id, "entity360_tenant_required", 120);
     const [snapshots, shadow] = await Promise.all([
@@ -1079,6 +1268,8 @@ export function createPostgresEntity360Store({ pool, policy, ontology, qualifica
     readSnapshot,
     readHead,
     writeShadowReceipt,
+    writeEnforcementContextReceipt,
+    readEnforcementContextReceipt,
     readMetrics,
     createBackfill,
     checkpointBackfill,

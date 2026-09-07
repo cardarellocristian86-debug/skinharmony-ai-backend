@@ -2326,6 +2326,39 @@ test("applies an exact native closure precommit gate without legacy evidence req
   ), []);
 });
 
+test("covers the bound V2 task as well as the synthetic native ticket task", async () => {
+  const scopedTaskId = "e4c8e893-1a86-4ed3-bd85-5150d451af76";
+  const context = directiveContextFixture();
+  context.evidence = context.evidence.map((item) => ({
+    ...item,
+    independently_verified: true,
+  }));
+  context.tasks.push({
+    tenant_id: "tenant-a",
+    task_id: scopedTaskId,
+    work_id: WORK_ID,
+    title: "Complete the Work-bound precommit transition",
+    status: "planned",
+    required: true,
+    acceptance_verified: false,
+  });
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    v2_scope_tasks: [{ task_id: scopedTaskId, v2_task_digest: "9".repeat(64), revision: 1 }],
+  });
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+});
+
 test("keeps a historical native gate with unavailable V2 scope observable but non-applicable", async () => {
   const context = directiveContextFixture();
   context.precommit_ticket_gate = nativePrecommitTicketGateFixture({

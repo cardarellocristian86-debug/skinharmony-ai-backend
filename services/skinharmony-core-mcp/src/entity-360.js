@@ -137,6 +137,13 @@ const definitions = [
     true,
   ],
   [
+    "entity_360_enforcement_context_receipt_read",
+    "Read Entity 360 enforcement context receipt",
+    "Resolve one append-only, tenant-and-Work-bound Entity 360 context receipt by its verified digest. The receipt is evidence only and never grants execution authority.",
+    object({ work_id: workId, receipt_digest: digest }, ["work_id", "receipt_digest"]),
+    true,
+  ],
+  [
     "entity_360_shadow_compare",
     "Compare Entity 360 shadow path",
     "Persist a tenant-bound shadow comparison against the legacy path without changing the production decision.",
@@ -208,6 +215,8 @@ const paths = Object.freeze({
   entity_360_snapshot_latest: "/v1/entity-360/snapshots/latest",
   entity_360_snapshot_read: "/v1/entity-360/snapshots/read",
   entity_360_snapshot_verify: "/v1/entity-360/snapshots/verify",
+  entity_360_enforcement_context_receipt_read:
+    "/v1/entity-360/enforcement-context/receipt",
   entity_360_shadow_compare: "/v1/entity-360/shadow/compare",
   entity_360_policy_read: "/v1/entity-360/policy",
   entity_360_metrics_read: "/v1/entity-360/metrics",

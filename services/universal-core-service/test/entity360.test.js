@@ -1361,6 +1361,7 @@ function memoryRuntimeDependencies() {
   const heads = new Map();
   const idempotency = new Map();
   const shadow = new Map();
+  const enforcementContextReceipts = new Map();
   const registry = new Map();
   let featureFlag = { tenant_id: TENANT, flag_id: "entity360", mode: "SHADOW", enabled: true,
     revision: 1, policy_digest: POLICY.policy_digest, enforcement_authority_digest: null,
@@ -1442,6 +1443,32 @@ function memoryRuntimeDependencies() {
       if (shadow.has(key)) return { receipt: shadow.get(key), replayed: true };
       shadow.set(key, receipt); return { receipt, replayed: false };
     },
+    async writeEnforcementContextReceipt({ tenant_id, entity_id, snapshot_version,
+      expected_feature_revision, receipt }) {
+      if (featureFlag?.mode !== "ENFORCED" || featureFlag?.enabled !== true
+        || Number(featureFlag?.revision) !== Number(expected_feature_revision)
+        || featureFlag?.policy_digest !== receipt.policy_digest
+        || featureFlag?.enforcement_authority_digest !== receipt.enforcement_authority_digest) {
+        const error = new Error("entity360_enforcement_feature_drift");
+        error.code = "entity360_enforcement_feature_drift"; error.status = 409; throw error;
+      }
+      const current = snapshots.get(`${tenant_id}:${entity_id}:${snapshot_version}`);
+      if (!current || current.deterministic_immutable_digest !== receipt.snapshot_digest) {
+        const error = new Error("entity360_enforcement_context_snapshot_binding_mismatch");
+        error.code = "entity360_enforcement_context_snapshot_binding_mismatch";
+        error.status = 409; throw error;
+      }
+      const key = `${tenant_id}:${receipt.receipt_digest}`;
+      if (enforcementContextReceipts.has(key)) {
+        return { receipt: enforcementContextReceipts.get(key), persisted: true, replayed: true };
+      }
+      enforcementContextReceipts.set(key, structuredClone(receipt));
+      return { receipt: structuredClone(receipt), persisted: true, replayed: false };
+    },
+    async readEnforcementContextReceipt({ tenant_id, work_id, receipt_digest }) {
+      const receipt = enforcementContextReceipts.get(`${tenant_id}:${receipt_digest}`);
+      return receipt?.work_id === work_id ? structuredClone(receipt) : null;
+    },
     async readMetrics() { return { schema_version: "entity_360_persisted_metrics_v1",
       metrics_scope: "persisted_snapshots_and_shadow_receipts",
       snapshot_count: snapshots.size, shadow_receipt_count: shadow.size,
@@ -1467,7 +1494,7 @@ function memoryRuntimeDependencies() {
         consistent_cut: "postgres_repeatable_read", execution_authorized: false };
     },
   };
-  return { store, adapterRegistry, entityId,
+  return { store, adapterRegistry, entityId, enforcementContextReceipts,
     setFeatureFlag(value) { featureFlag = value; } };
 }
 
@@ -1912,7 +1939,8 @@ test("feature flags accept only the exact Core operator and server-owned OFF or 
 });
 
 test("Entity360 v2 enforcement is Core-only, deterministic, restart-safe and rollback-safe", async () => {
-  const { store, adapterRegistry, setFeatureFlag } = memoryRuntimeDependencies();
+  const { store, adapterRegistry, setFeatureFlag,
+    enforcementContextReceipts } = memoryRuntimeDependencies();
   store.kind = "entity360_postgres_append_only_v1";
   store.health = async () => ({
     ok: true,
@@ -1973,6 +2001,14 @@ test("Entity360 v2 enforcement is Core-only, deterministic, restart-safe and rol
   assert.equal(first.receipt.entity360_self_approval, false);
   assert.equal(first.receipt.provider_mutation, false);
   assert.equal(first.execution_authorized, false);
+  assert.equal(enforcementContextReceipts.size, 1);
+  const durableReceipt = await runtime.invoke(
+    "entity_360_enforcement_context_receipt_read",
+    CORE_ENFORCEMENT_IDENTITY,
+    { tenant_id: TENANT, work_id: WORK_ID,
+      receipt_digest: first.receipt.receipt_digest },
+  );
+  assert.deepEqual(durableReceipt, first.receipt);
 
   const restarted = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
     ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
@@ -1985,6 +2021,42 @@ test("Entity360 v2 enforcement is Core-only, deterministic, restart-safe and rol
     CORE_ENFORCEMENT_IDENTITY, request,
   );
   assert.equal(restartedContext.receipt.receipt_digest, first.receipt.receipt_digest);
+  assert.equal(enforcementContextReceipts.size, 1,
+    "restart/replay must resolve the same append-only receipt");
+
+  const stableReadLatestSnapshot = store.readLatestSnapshot;
+  store.readLatestSnapshot = async (...args) => ({
+    ...await stableReadLatestSnapshot(...args),
+    ontology_version: "entity_360_ontology_v1_historical",
+    ontology_digest: "9".repeat(64),
+  });
+  await assert.rejects(() => runtime.resolveEnforcementContext(
+    CORE_ENFORCEMENT_IDENTITY, request,
+  ), (error) => error.code === "entity360_enforcement_snapshot_ineligible"
+      && error.status === 409);
+  store.readLatestSnapshot = stableReadLatestSnapshot;
+
+  const stableReadFeatureFlag = store.readFeatureFlag;
+  let featureReads = 0;
+  store.readFeatureFlag = async (...args) => {
+    featureReads += 1;
+    const current = await stableReadFeatureFlag(...args);
+    if (featureReads === 2) {
+      const downgraded = { ...current, mode: "SHADOW", enabled: true,
+        enforcement_authority_digest: null, revision: Number(current.revision) + 1 };
+      setFeatureFlag(downgraded);
+      return downgraded;
+    }
+    return current;
+  };
+  await assert.rejects(() => runtime.resolveEnforcementContext(
+    CORE_ENFORCEMENT_IDENTITY, request,
+  ), (error) => error.code === "entity360_enforcement_feature_drift"
+      && error.status === 409);
+  assert.equal(enforcementContextReceipts.size, 1,
+    "a concurrent ENFORCED to SHADOW downgrade cannot mint a receipt");
+  store.readFeatureFlag = stableReadFeatureFlag;
+  setFeatureFlag(feature);
 
   await assert.rejects(() => runtime.resolveEnforcementContext({
     ...CORE_ENFORCEMENT_IDENTITY, tenant_id: OTHER_TENANT,

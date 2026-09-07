@@ -16,6 +16,7 @@ import {
   normalizeStandingReleaseMandate,
   standingReleaseBindingActive,
 } from "../src/standingReleasePolicy.js";
+import { createSemanticScopeGuard } from "../src/semanticScopeGuard.js";
 
 const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);
@@ -163,6 +164,9 @@ function harness({
   protectionOverrides = {},
   suppliedStore = null,
   releaseJoinVerdictResolver = null,
+  semanticScopeGuard,
+  semanticScopeMode,
+  semanticScopeContextResolver,
 } = {}) {
   let clock = Date.parse("2026-08-14T10:00:00.000Z");
   const store = suppliedStore || createInMemoryHostNativeGovernanceStore();
@@ -200,11 +204,17 @@ function harness({
     standingReleaseEmergencyStop: emergencyStop,
     standingReleaseBaseProtectionResolver,
     releaseJoinVerdictResolver,
+    ...(semanticScopeGuard === undefined ? {} : { semanticScopeGuard }),
+    ...(semanticScopeMode === undefined ? {} : { semanticScopeMode }),
+    ...(semanticScopeContextResolver === undefined
+      ? {}
+      : { semanticScopeContextResolver }),
     now: () => clock,
   });
   return {
     governance,
     store,
+    now() { return clock; },
     advance(milliseconds) { clock += milliseconds; },
   };
 }
@@ -967,6 +977,8 @@ test("standing PR budget is enforced atomically at reservation", async () => {
 
 test("standing merges consume merge budget without consuming push budget, while legacy merges still consume pushes", async () => {
   let freshReadbacks = 0;
+  let delayFreshness = false;
+  let standingSubject;
   const freshResolver = async (request) => {
     freshReadbacks += 1;
     const sourceUnsigned = {
@@ -1000,7 +1012,7 @@ test("standing merges consume merge budget without consuming push budget, while 
         reviewed_commit: request.action.head_commit,
       }],
       active_rules_digest: H("8"),
-      verified_at: "2026-08-14T10:00:00.000Z",
+      verified_at: new Date(standingSubject.now()).toISOString(),
       provider_execution: false,
     };
     const preMergeReadback = {
@@ -1027,9 +1039,23 @@ test("standing merges consume merge budget without consuming push budget, while 
     trusted: { value: true },
     standing_pre_merge_readback: { value: true },
   });
-  const { governance, store } = harness({
+  standingSubject = harness({
     releaseJoinVerdictResolver: freshResolver,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async ({ action, phase }) => {
+      if (delayFreshness && action.kind === "github.merge" && phase === "RESERVATION") {
+        standingSubject.advance(30_001);
+      }
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-08-14T10:00:00.000Z",
+        as_of_knowledge_time: "2026-08-14T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
   });
+  const { governance, store } = standingSubject;
   const mandate = await install(governance, {
     limits: { ...mandateInput().limits, max_pushes: 1 },
   });
@@ -1276,12 +1302,19 @@ test("standing merges consume merge budget without consuming push budget, while 
     intent: H("e"),
     session: "legacy-session",
   });
-  await governance.reserveActionTicket({
+  const standingReservationInput = {
     tenant_id: "tenant-a",
     ticket_id: "hnt-standing-merge-accounting",
     host_session_fingerprint: H("9"),
     idempotency_key: "reserve-standing-merge-accounting",
-  });
+  };
+  delayFreshness = true;
+  await assert.rejects(
+    governance.reserveActionTicket(standingReservationInput),
+    /standing_release_pre_merge_readback_invalid/,
+  );
+  delayFreshness = false;
+  await governance.reserveActionTicket(standingReservationInput);
   await governance.reserveActionTicket({
     tenant_id: "tenant-a",
     ticket_id: "hnt-legacy-merge-accounting",
@@ -1299,7 +1332,7 @@ test("standing merges consume merge budget without consuming push budget, while 
   assert.equal(standingAfter.usage.pushes, 1);
   assert.equal(standingAfter.standing_release_usage.merges, 1);
   assert.equal(legacyAfter.usage.pushes, 1);
-  assert.equal(freshReadbacks, 1);
+  assert.equal(freshReadbacks, 2);
   const reservedStanding = await governance.readActionTicket({
     tenant_id: "tenant-a",
     ticket_id: "hnt-standing-merge-accounting",

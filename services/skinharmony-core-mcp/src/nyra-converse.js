@@ -1000,17 +1000,29 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   const requiredVerifiedEvidenceIds = new Set(requiredEvidence
     .filter((item) => item.independently_verified)
     .map((item) => item.evidence_id));
+  // A native precommit gate creates a narrow, server-owned ticket task as
+  // well as recording the V2 task scope that it will fulfill atomically after
+  // the ticket is issued. Both are legitimate prerequisites for the same
+  // transition. Treating only the synthetic ticket task as covered leaves the
+  // original V2 task "incomplete", so Nyra can never request the ticket that
+  // is expressly required to complete it.
+  const precommitCoveredTaskIds = new Set(precommitTicketGate
+    ? [precommitTicketGate.task_id, ...(precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
+      ? precommitTicketGate.v2_scope_tasks.map((item) => item.task_id)
+      : [])]
+    : []);
+  const nativePrecommitTasksPending = [...precommitCoveredTaskIds]
+    .every((taskId) => pendingTaskIds.has(taskId));
   const precommitTicketGateApplicable = Boolean(
     precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
-    pendingTaskIds.has(precommitTicketGate.task_id) &&
     (precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-      ? tasks.some((item) => item.task_id === precommitTicketGate.task_id &&
-          item.required === true && item.status === "planned" && item.acceptance_verified === false)
-      : precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
+      ? nativePrecommitTasksPending
+      : pendingTaskIds.has(precommitTicketGate.task_id) &&
+        precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
         precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id)))
   );
   const precommitPendingRequiredTasks = precommitTicketGateApplicable
-    ? pendingRequiredTasks.filter((item) => item.task_id !== precommitTicketGate.task_id)
+    ? pendingRequiredTasks.filter((item) => !precommitCoveredTaskIds.has(item.task_id))
     : pendingRequiredTasks;
   const mappedLegacyEvidenceIds = precommitTicketGateApplicable
     ? new Set(precommitTicketGate.legacy_evidence_ids)

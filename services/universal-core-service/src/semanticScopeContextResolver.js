@@ -106,11 +106,14 @@ function resolvedContext(snapshot, verification, tenantId, workId, {
       || receipt.policy_version !== snapshot.policy_version
       || receipt.policy_digest !== snapshot.policy_digest
       || !SHA256.test(String(receipt.policy_digest || ""))
+      || receipt.ontology_version !== snapshot.ontology_version
+      || receipt.ontology_digest !== snapshot.ontology_digest
+      || !SHA256.test(String(receipt.ontology_digest || ""))
       || receipt.adapter_registry_version !== snapshot.adapter_registry_version
       || receipt.as_of_valid_time !== asOfValidTime
       || receipt.as_of_knowledge_time !== asOfKnowledgeTime
       || !Number.isSafeInteger(receipt.tenant_feature_revision)
-      || receipt.tenant_feature_revision < 0
+      || receipt.tenant_feature_revision < 1
       || !SHA256.test(String(receipt.enforcement_policy_digest || ""))
       || !SHA256.test(String(receipt.enforcement_authority_digest || ""))
       || expectedActionDigest === null || receipt.action_digest !== expectedActionDigest

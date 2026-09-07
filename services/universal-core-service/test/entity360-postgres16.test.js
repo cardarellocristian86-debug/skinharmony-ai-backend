@@ -6,10 +6,15 @@ import test from "node:test";
 import {
   assembleEntity360Snapshot,
   deterministicEntity360Id,
+  entity360Digest,
 } from "../src/entity360.js";
 import { createPostgresEntity360AdapterRegistry } from "../src/entity360Adapters.js";
 import { loadEntity360Configuration } from "../src/entity360Runtime.js";
-import { createEntity360Migrator } from "../src/entity360Migration.js";
+import {
+  createEntity360Migrator,
+  ENTITY360_MIGRATIONS,
+} from "../src/entity360Migration.js";
+import { ensureCoreSchemaMigrationRegistry } from "../src/coreSchemaMigrationRegistry.js";
 import {
   createPostgresEntity360Store,
   ENTITY360_BACKFILL_CURSOR_VERSION,
@@ -119,7 +124,7 @@ test("PostgreSQL Entity 360 raw retrieval pre-gate quarantines an oversized TOAS
   });
 
 function snapshot({ tenantId, workId, version, state, asOf, createdAt,
-  previousSnapshotDigest = null }) {
+  previousSnapshotDigest = null, bitemporalMode = "OFF" }) {
   const identity = { work_id: workId };
   const entityId = deterministicEntity360Id({ tenant_id: tenantId, entity_type: "work", identity });
   const contribution = (sourceId, adapterVersion, digest, facts, evidenceClass = "authoritative_record") => ({
@@ -155,11 +160,45 @@ function snapshot({ tenantId, workId, version, state, asOf, createdAt,
   sourceDiscovery.push({ source_id: "entity360_context_assembler", state: "complete",
     consistent_cut: "postgres_repeatable_read" });
   return assembleEntity360Snapshot({ tenant_id: tenantId, entity_type: "work", identity,
+    project_work_linkage: { work_id: workId },
     as_of: asOf, snapshot_version: version, previous_snapshot_digest: previousSnapshotDigest,
     source_contributions: sourceContributions, source_discovery: sourceDiscovery },
   { policy: POLICY, ontology: ONTOLOGY, created_at: createdAt,
+    bitemporal_mode: bitemporalMode,
     adapter_registry_version: "entity_360_adapter_registry_postgres_test_v1",
     qualification_signer: DOMAIN_SIGNER });
+}
+
+function enforcementReceipt(value, authorityDigest, overrides = {}) {
+  const unsigned = {
+    schema_version: "entity_360_core_context_receipt_v2",
+    tenant_id: value.tenant_scope,
+    work_id: value.project_work_linkage.work_id,
+    entity_id: value.entity_id,
+    snapshot_version: value.snapshot_version,
+    snapshot_digest: value.deterministic_immutable_digest,
+    policy_version: value.policy_version,
+    policy_digest: value.policy_digest,
+    enforcement_policy_version: "entity360-enforcement-v2-postgres-test",
+    enforcement_policy_digest: "c".repeat(64),
+    enforcement_authority_digest: authorityDigest,
+    ontology_version: value.ontology_version,
+    ontology_digest: value.ontology_digest,
+    adapter_registry_version: value.adapter_registry_version,
+    as_of_valid_time: value.bitemporal.as_of_valid_time,
+    as_of_knowledge_time: value.bitemporal.as_of_knowledge_time,
+    tenant_feature_revision: 1,
+    action_digest: "e".repeat(64),
+    phase: "ISSUE",
+    authority_owner: "UNIVERSAL_CORE",
+    decision_authority: "UNIVERSAL_CORE",
+    decision_receipt_schema_version: "host_native_action_ticket_v1",
+    entity360_self_approval: false,
+    provider_mutation: false,
+    execution_authorized: false,
+    ...overrides,
+  };
+  return { ...unsigned, receipt_digest: entity360Digest(unsigned) };
 }
 
 test("PostgreSQL Entity 360 exact catalog manifest rejects isolated schema drift",
@@ -268,6 +307,69 @@ test("PostgreSQL Entity 360 exact catalog manifest rejects isolated schema drift
     }
   });
 
+test("PostgreSQL upgrades a completed Entity360 001+002 chain to 003 without rewriting history",
+  { skip: !DATABASE_URL }, async () => {
+    const pg = await import("pg");
+    const adminPool = new pg.default.Pool({ connectionString: DATABASE_URL, max: 2 });
+    try {
+      await withIsolatedSchema(pg, adminPool, "enforcement_upgrade", async ({ pool }) => {
+        const priorPlan = ENTITY360_MIGRATIONS.slice(0, 2);
+        const priorDigests = [];
+        const client = await pool.connect();
+        try {
+          await ensureCoreSchemaMigrationRegistry(client);
+          for (const migration of priorPlan) {
+            const sql = await readFile(migration.url, "utf8");
+            const sqlDigest = entity360Digest({ migration_id: migration.migration_id, sql });
+            priorDigests.push([migration.migration_id, sqlDigest]);
+            await client.query("BEGIN");
+            try {
+              await client.query(sql);
+              await client.query(
+                `INSERT INTO core_schema_migrations
+                  (migration_id,sql_digest,application_state,checkpoint,completed_at)
+                 VALUES($1,$2,'COMPLETED','READBACK_VERIFIED',clock_timestamp())`,
+                [migration.migration_id, sqlDigest],
+              );
+              await client.query("COMMIT");
+            } catch (error) {
+              await client.query("ROLLBACK");
+              throw error;
+            }
+          }
+          const before = await client.query(
+            "SELECT to_regclass('core_entity360_enforcement_context_receipts') AS receipt_table",
+          );
+          assert.equal(before.rows[0].receipt_table, null);
+        } finally {
+          client.release();
+        }
+
+        const upgraded = await createEntity360Migrator({ pool }).apply();
+        assert.equal(upgraded.applied, true);
+        assert.equal(upgraded.readback.schema_manifest_matches, true);
+        assert(upgraded.readback.tables.includes(
+          "core_entity360_enforcement_context_receipts",
+        ));
+        assert(upgraded.readback.append_only_tables.includes(
+          "core_entity360_enforcement_context_receipts",
+        ));
+        assert.equal(upgraded.readback.enforcement_context_receipt_tenant_fk, true);
+        assert.equal(upgraded.readback.enforcement_context_receipt_binding_guard, true);
+        assert.deepEqual(
+          upgraded.readback.migrations.slice(0, 2)
+            .map((entry) => [entry.migration_id, entry.sql_digest]),
+          priorDigests,
+        );
+        assert(upgraded.readback.migrations.every((entry) =>
+          entry.application_state === "COMPLETED"
+            && entry.checkpoint === "READBACK_VERIFIED"));
+      });
+    } finally {
+      await adminPool.end();
+    }
+  });
+
 test("PostgreSQL Entity360 feature persistence enforces exact OFF, SHADOW, and ENFORCED bindings",
   { skip: !DATABASE_URL }, async () => {
     const pg = await import("pg");
@@ -303,6 +405,172 @@ test("PostgreSQL Entity360 feature persistence enforces exact OFF, SHADOW, and E
           VALUES ($1,'invalid-shadow','SHADOW',false,$3,NULL,$2::jsonb,$4,0,$5)`,
         [common[0], common[1], "e".repeat(64), common[2], common[3]]),
         /core_entity360_feature_v2_mode_check/);
+      });
+    } finally {
+      await adminPool.end();
+    }
+  });
+
+test("PostgreSQL persists exact enforcement receipts with atomic feature binding and append-only readback",
+  { skip: !DATABASE_URL }, async () => {
+    const pg = await import("pg");
+    const adminPool = new pg.default.Pool({ connectionString: DATABASE_URL, max: 2 });
+    try {
+      await withIsolatedSchema(pg, adminPool, "enforcement_receipt", async ({ pool }) => {
+        const store = createPostgresEntity360Store({ pool, policy: POLICY, ontology: ONTOLOGY,
+          qualificationVerifier: DOMAIN_VERIFIER });
+        await store.initialize();
+        const tenantId = `entity360-receipt-${crypto.randomUUID()}`.slice(0, 120);
+        const workId = crypto.randomUUID();
+        const databaseClock = await pool.query("SELECT clock_timestamp() AS database_now");
+        const createdAt = new Date(databaseClock.rows[0].database_now).toISOString();
+        const asOf = new Date(Date.parse(createdAt) - 1_000).toISOString();
+        const value = snapshot({ tenantId, workId, version: 1, state: "ready",
+          asOf, createdAt, bitemporalMode: "ENFORCE" });
+        await store.writeSnapshot({ snapshot: value, expected_head_version: 0,
+          idempotency_key: "receipt-snapshot", actor_id: "postgres-test" });
+        const authorityDigest = "f".repeat(64);
+        await store.writeFeatureFlag({ tenant_id: tenantId, flag_id: "entity360",
+          mode: "ENFORCED", enabled: true, policy_digest: value.policy_digest,
+          enforcement_authority_digest: authorityDigest, config: {}, expected_revision: 0,
+          actor_id: "core-operator", idempotency_key: "receipt-feature" });
+        const receipt = enforcementReceipt(value, authorityDigest);
+        const input = { tenant_id: tenantId, entity_id: value.entity_id,
+          snapshot_version: value.snapshot_version, expected_feature_revision: 1,
+          receipt, actor_id: "core-context-resolver",
+          idempotency_key: `receipt-${receipt.receipt_digest}` };
+        const first = await store.writeEnforcementContextReceipt(input);
+        const replay = await store.writeEnforcementContextReceipt(input);
+        assert.equal(first.persisted, true);
+        assert.equal(replay.replayed, true);
+        assert.deepEqual(await store.readEnforcementContextReceipt({ tenant_id: tenantId,
+          work_id: workId, receipt_digest: receipt.receipt_digest }), receipt);
+        assert.equal(await store.readEnforcementContextReceipt({ tenant_id: tenantId,
+          work_id: crypto.randomUUID(), receipt_digest: receipt.receipt_digest }), null);
+
+        const nextValue = snapshot({ tenantId, workId, version: 2, state: "active",
+          asOf, createdAt, previousSnapshotDigest: value.deterministic_immutable_digest,
+          bitemporalMode: "ENFORCE" });
+        const staleCandidate = enforcementReceipt(value, authorityDigest, {
+          action_digest: "8".repeat(64),
+        });
+        const staleCandidateInput = { ...input, receipt: staleCandidate,
+          idempotency_key: `receipt-head-race-${staleCandidate.receipt_digest}` };
+        const [staleReceiptOutcome, snapshotOutcome] = await Promise.allSettled([
+          store.writeEnforcementContextReceipt(staleCandidateInput),
+          store.writeSnapshot({ snapshot: nextValue, expected_head_version: 1,
+            idempotency_key: "receipt-head-race-snapshot-v2", actor_id: "postgres-test" }),
+        ]);
+        assert.equal(snapshotOutcome.status, "fulfilled");
+        if (staleReceiptOutcome.status === "rejected") {
+          assert.equal(staleReceiptOutcome.reason.code,
+            "entity360_enforcement_snapshot_head_drift");
+          assert.equal(staleReceiptOutcome.reason.status, 409);
+        }
+        const staleRaceReadback = await pool.query(
+          `SELECT receipt,created_at FROM core_entity360_enforcement_context_receipts
+            WHERE tenant_id=$1 AND receipt_digest=$2`,
+          [tenantId, staleCandidate.receipt_digest],
+        );
+        assert.equal(staleRaceReadback.rowCount,
+          staleReceiptOutcome.status === "fulfilled" ? 1 : 0);
+        const headAfterRace = await pool.query(
+          `SELECT current_snapshot_version,current_snapshot_digest,updated_at
+             FROM core_entity360_entity_heads
+            WHERE tenant_id=$1 AND entity_id=$2`,
+          [tenantId, value.entity_id],
+        );
+        assert.equal(Number(headAfterRace.rows[0].current_snapshot_version), 2);
+        assert.equal(headAfterRace.rows[0].current_snapshot_digest,
+          nextValue.deterministic_immutable_digest);
+        if (staleReceiptOutcome.status === "fulfilled") {
+          assert.equal(
+            Date.parse(staleRaceReadback.rows[0].created_at)
+              <= Date.parse(headAfterRace.rows[0].updated_at),
+            true,
+            "a successful old-head receipt must serialize before the new head commit",
+          );
+        }
+
+        await assert.rejects(() => pool.query(
+          `UPDATE core_entity360_enforcement_context_receipts SET phase='RESERVATION'
+            WHERE tenant_id=$1 AND receipt_digest=$2`,
+          [tenantId, receipt.receipt_digest]), /core_entity360_append_only/u);
+        await assert.rejects(() => pool.query(
+          `DELETE FROM core_entity360_enforcement_context_receipts
+            WHERE tenant_id=$1 AND receipt_digest=$2`,
+          [tenantId, receipt.receipt_digest]), /core_entity360_append_only/u);
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await assert.rejects(() => client.query(
+            "TRUNCATE core_entity360_enforcement_context_receipts"),
+          /core_entity360_append_only/u);
+        } finally {
+          await client.query("ROLLBACK");
+          client.release();
+        }
+
+        await store.writeFeatureFlag({ tenant_id: tenantId, flag_id: "entity360",
+          mode: "SHADOW", enabled: true, policy_digest: value.policy_digest,
+          enforcement_authority_digest: null, config: {}, expected_revision: 1,
+          actor_id: "core-operator", idempotency_key: "receipt-rollback" });
+        await assert.rejects(() => store.writeEnforcementContextReceipt({ ...input,
+          idempotency_key: "receipt-after-rollback" }),
+        (error) => error.code === "entity360_enforcement_feature_drift"
+            && error.status === 409);
+
+        const reenforced = await store.writeFeatureFlag({ tenant_id: tenantId,
+          flag_id: "entity360", mode: "ENFORCED", enabled: true,
+          policy_digest: value.policy_digest,
+          enforcement_authority_digest: authorityDigest, config: {}, expected_revision: 2,
+          actor_id: "core-operator", idempotency_key: "receipt-race-reenforce" });
+        assert.equal(reenforced.revision, 3);
+        const racingReceipt = enforcementReceipt(nextValue, authorityDigest, {
+          tenant_feature_revision: 3,
+          action_digest: "9".repeat(64),
+        });
+        const racingInput = { ...input, snapshot_version: nextValue.snapshot_version,
+          expected_feature_revision: 3,
+          receipt: racingReceipt,
+          idempotency_key: `receipt-race-${racingReceipt.receipt_digest}` };
+        const [receiptOutcome, rollbackOutcome] = await Promise.allSettled([
+          store.writeEnforcementContextReceipt(racingInput),
+          store.writeFeatureFlag({ tenant_id: tenantId, flag_id: "entity360",
+            mode: "SHADOW", enabled: true, policy_digest: value.policy_digest,
+            enforcement_authority_digest: null, config: {}, expected_revision: 3,
+            actor_id: "core-operator", idempotency_key: "receipt-race-rollback" }),
+        ]);
+        assert.equal(rollbackOutcome.status, "fulfilled");
+        assert.equal(rollbackOutcome.value.revision, 4);
+        if (receiptOutcome.status === "rejected") {
+          assert.equal(receiptOutcome.reason.code, "entity360_enforcement_feature_drift");
+          assert.equal(receiptOutcome.reason.status, 409);
+        } else {
+          assert.equal(receiptOutcome.value.receipt.receipt_digest,
+            racingReceipt.receipt_digest);
+        }
+        const raceReadback = await pool.query(
+          `SELECT receipt,created_at FROM core_entity360_enforcement_context_receipts
+            WHERE tenant_id=$1 AND receipt_digest=$2`,
+          [tenantId, racingReceipt.receipt_digest],
+        );
+        assert.equal(raceReadback.rowCount, receiptOutcome.status === "fulfilled" ? 1 : 0);
+        const finalFlag = await pool.query(
+          `SELECT mode,revision,updated_at FROM core_entity360_feature_flags
+            WHERE tenant_id=$1 AND flag_id='entity360'`,
+          [tenantId],
+        );
+        assert.equal(finalFlag.rows[0].mode, "SHADOW");
+        assert.equal(Number(finalFlag.rows[0].revision), 4);
+        if (receiptOutcome.status === "fulfilled") {
+          assert.equal(
+            Date.parse(raceReadback.rows[0].created_at)
+              <= Date.parse(finalFlag.rows[0].updated_at),
+            true,
+            "a successful receipt must serialize before the rollback commit",
+          );
+        }
       });
     } finally {
       await adminPool.end();
