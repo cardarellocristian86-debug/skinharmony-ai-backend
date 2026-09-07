@@ -1472,13 +1472,28 @@ test("action evaluator applies the registry only as a deny-only Core constraint"
     assert.equal(allowed.json.authorization.allowed, true);
     assert.equal(allowed.json.policy_registry.deny_only, true);
     assert.equal(allowed.json.policy_registry.evaluation, "active");
-    assert.equal(allowed.json.policy_registry.enforcement, "advisory_until_snapshot");
+    assert.equal(allowed.json.policy_registry.enforcement, "not_applicable_bounded_internal_coordination");
+    assert.equal(allowed.json.policy_registry.scope, "not_applicable_bounded_internal_coordination");
 
     snapshotPresent = true;
     registryVerdict = "DENY";
     const narrowed = await request("/v1/action-evaluator", bounded, key);
-    assert.equal(narrowed.json.authorization.allowed, false);
-    assert.equal(narrowed.json.authorization.policy_registry_denied, true);
+    assert.equal(narrowed.json.authorization.allowed, true);
+    assert.equal(narrowed.json.authorization.policy_registry_denied, undefined);
+    assert.equal(narrowed.json.policy_registry.enforcement, "not_applicable_bounded_internal_coordination");
+
+    const policyScopedDenied = await request("/v1/action-evaluator", {
+      ...bounded,
+      action_type: "publish",
+      operation_class: "unknown_untrusted_operation",
+      target: "policy_scoped_publish",
+      external_side_effect: true,
+      idempotency_key: "policy-registry-publish-denied-0001",
+    }, key);
+    assert.equal(policyScopedDenied.json.authorization.allowed, false);
+    assert.equal(policyScopedDenied.json.authorization.policy_registry_denied, true);
+    assert.equal(policyScopedDenied.json.policy_registry.enforcement, "enforced");
+    assert.equal(policyScopedDenied.json.policy_registry.scope, "policy_scoped_action");
 
     registryVerdict = "ALLOW";
     const coreDenied = await request("/v1/action-evaluator", {

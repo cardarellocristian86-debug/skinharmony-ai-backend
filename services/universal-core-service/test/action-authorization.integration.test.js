@@ -193,6 +193,14 @@ test("allows only bounded low-impact coordination writes without confirmation", 
   const authorization = evaluate(base).authorization;
   assert.equal(authorization.allowed, true);
   assert.equal(authorization.confirmation_required, false);
+  const heartbeat = evaluate({
+    ...base,
+    action_type: "agent.heartbeat",
+    target: "agent:codex_presence_bootstrap",
+    idempotency_key: "agent-heartbeat-idempotency-0001",
+  }).authorization;
+  assert.equal(heartbeat.allowed, true);
+  assert.equal(heartbeat.confirmation_required, false);
   for (const unsafe of [
     { cross_tenant: true },
     { contains_secret: true },
