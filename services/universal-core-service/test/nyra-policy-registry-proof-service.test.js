@@ -658,3 +658,20 @@ test("accepts only public Nyra material and an external signer adapter", async (
   });
   assert.equal((await privateWrapper.status()).ready, false);
 });
+
+test("accepts the exact canonical Ed25519 public JWK published by the remote Nyra signer", async () => {
+  const fixture = setup();
+  const jwk = fixture.nyra.publicKey.export({ format: "jwk" });
+  fixture.env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY = JSON.stringify({
+    alg: "EdDSA", crv: "Ed25519", kid: fixture.env.CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID,
+    kty: "OKP", use: "sig", x: jwk.x,
+  });
+  const service = createNyraPolicyRegistryProofService({
+    pool: fixture.pool,
+    env: fixture.env,
+    signer: fixture.signer,
+    compilerProvenanceVerifier: fixture.compilerProvenanceVerifier,
+    now: fixture.now,
+  });
+  assert.equal((await service.status()).ready, true);
+});
