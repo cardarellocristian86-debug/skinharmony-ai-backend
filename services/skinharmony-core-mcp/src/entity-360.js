@@ -137,6 +137,13 @@ const definitions = [
     true,
   ],
   [
+    "entity_360_enforcement_context_receipt_read",
+    "Read Entity 360 enforcement context receipt",
+    "Resolve one append-only, tenant-and-Work-bound Entity 360 context receipt by its verified digest. The receipt is evidence only and never grants execution authority.",
+    object({ work_id: workId, receipt_digest: digest }, ["work_id", "receipt_digest"]),
+    true,
+  ],
+  [
     "entity_360_shadow_compare",
     "Compare Entity 360 shadow path",
     "Persist a tenant-bound shadow comparison against the legacy path without changing the production decision.",
@@ -177,6 +184,17 @@ const definitions = [
     { ownerConfirmationRequired: true, dedicatedCoreGate: true },
   ],
   [
+    "entity_360_enforce_enable",
+    "Enable Entity 360 tenant enforcement",
+    "Owner-gated Entity 360 ENFORCED context mode through Universal Core. It grants no provider execution or self-approval.",
+    object({
+      expected_revision: { type: "integer", minimum: 0 },
+      idempotency_key: idempotencyKey,
+    }, ["expected_revision", "idempotency_key"]),
+    false,
+    { ownerConfirmationRequired: true, dedicatedCoreGate: true },
+  ],
+  [
     "entity_360_shadow_disable",
     "Disable Entity 360 tenant shadow",
     "Owner-gated Entity 360 disable. Preserves history and never enables execution.",
@@ -197,6 +215,8 @@ const paths = Object.freeze({
   entity_360_snapshot_latest: "/v1/entity-360/snapshots/latest",
   entity_360_snapshot_read: "/v1/entity-360/snapshots/read",
   entity_360_snapshot_verify: "/v1/entity-360/snapshots/verify",
+  entity_360_enforcement_context_receipt_read:
+    "/v1/entity-360/enforcement-context/receipt",
   entity_360_shadow_compare: "/v1/entity-360/shadow/compare",
   entity_360_policy_read: "/v1/entity-360/policy",
   entity_360_metrics_read: "/v1/entity-360/metrics",
@@ -327,6 +347,7 @@ function adaptEntity360NyraContext(capabilityId, value, tenantId, workId) {
 export function createEntity360Handlers({
   coreRequest,
   shadowEnableCoreRequest,
+  enforceEnableCoreRequest,
   shadowDisableCoreRequest,
   issueAgentContext,
 } = {}) {
@@ -337,9 +358,14 @@ export function createEntity360Handlers({
     capabilityId,
     async (args = {}, identityContext = {}) => {
       const shadowTransition = capabilityId === "entity_360_shadow_enable"
-        ? { coreRequest: shadowEnableCoreRequest, route: "entity_360_shadow_enable" }
+        ? { coreRequest: shadowEnableCoreRequest, route: "entity_360_shadow_enable",
+          mode: "SHADOW", enabled: true }
+        : capabilityId === "entity_360_enforce_enable"
+          ? { coreRequest: enforceEnableCoreRequest, route: "entity_360_enforce_enable",
+            mode: "ENFORCED", enabled: true }
         : capabilityId === "entity_360_shadow_disable"
-          ? { coreRequest: shadowDisableCoreRequest, route: "entity_360_shadow_disable" }
+          ? { coreRequest: shadowDisableCoreRequest, route: "entity_360_shadow_disable",
+            mode: "OFF", enabled: false }
           : null;
       if (shadowTransition) {
         if (typeof shadowTransition.coreRequest !== "function") {
@@ -365,6 +391,20 @@ export function createEntity360Handlers({
           throw new Error("entity360_dedicated_core_gate_unverified");
         }
         const { dedicated_core_gate: _gate, ...contextOnlyResponse } = response;
+        const readback = contextOnlyResponse?.result || contextOnlyResponse;
+        if (readback?.mode !== shadowTransition.mode ||
+          readback?.enabled !== shadowTransition.enabled ||
+          readback?.execution_authorized !== false ||
+          readback?.production_decision_changed !== false ||
+          (shadowTransition.mode === "ENFORCED" && (
+            readback?.authority_owner !== "UNIVERSAL_CORE" ||
+            readback?.entity360_self_approval !== false ||
+            readback?.provider_mutation !== false ||
+            !/^[a-f0-9]{64}$/u.test(String(readback?.policy_digest || "")) ||
+            !/^[a-f0-9]{64}$/u.test(String(readback?.enforcement_authority_digest || ""))
+          ))) {
+          throw new Error("entity360_feature_flag_readback_invalid");
+        }
         const value = assertContextOnlyResponse(contextOnlyResponse);
         return textResult({ ...value, dedicated_core_gate: dedicatedCoreGate });
       }

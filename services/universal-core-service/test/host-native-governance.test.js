@@ -393,6 +393,7 @@ function harness({
   };
   return {
     governance,
+    store,
     delegationInput,
     advance(ms) { clock += ms; },
     now() { return clock; },
@@ -802,7 +803,7 @@ test("semantic scope guard is correlated at ticket issue and AEC reservation in 
     allowedActions: ["git.commit"],
     semanticScopeGuard: guard,
     semanticScopeMode: "SHADOW",
-    semanticScopeContextResolver: () => ({
+    semanticScopeContextResolver: async () => ({
       entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
       as_of_valid_time: "2026-07-29T10:00:00.000Z",
       as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
@@ -833,22 +834,218 @@ test("semantic scope guard is correlated at ticket issue and AEC reservation in 
 });
 
 test("unavailable semantic scope context remains observable in shadow and fails closed in enforce", async () => {
-  const unavailableGuard = { check() { throw new Error("semantic_scope_dependency_unavailable"); } };
-  const shadow = harness({ allowedActions: ["git.commit"], semanticScopeGuard: unavailableGuard,
-    semanticScopeMode: "SHADOW" });
+  const unavailableResolver = async () => {
+    throw new Error("semantic_scope_dependency_unavailable");
+  };
+  const shadow = harness({ allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "SHADOW" }),
+    semanticScopeMode: "SHADOW", semanticScopeContextResolver: unavailableResolver });
   const shadowDelegation = await shadow.governance.issueDelegation(shadow.delegationInput);
   const shadowTicket = await issueCommitTicket(shadow.governance, shadowDelegation.delegation_id);
   assert.equal(shadowTicket.ticket.semantic_scope_at_issue.action, "HOLD");
   assert.match(shadowTicket.ticket.semantic_scope_at_issue.reason_codes.join(","),
     /SEMANTIC_SCOPE_CONTEXT_UNAVAILABLE/);
 
-  const enforce = harness({ allowedActions: ["git.commit"], semanticScopeGuard: unavailableGuard,
-    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: () => ({
-      entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
-    }) });
+  const enforce = harness({ allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: unavailableResolver });
   const enforceDelegation = await enforce.governance.issueDelegation(enforce.delegationInput);
   await assert.rejects(() => issueCommitTicket(enforce.governance, enforceDelegation.delegation_id),
     /semantic_scope_hold/);
+});
+
+test("an async resolved context cannot turn a guard denial into an action ticket", async () => {
+  const denyGuard = {
+    check() {
+      return Object.freeze({ action: "BLOCK", execution_authorized: false });
+    },
+  };
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: denyGuard,
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => ({
+      entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+      as_of_valid_time: "2026-07-29T10:00:00.000Z",
+      as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+    }),
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(() => issueCommitTicket(subject.governance, delegation.delegation_id),
+    /semantic_scope_block/u);
+});
+
+test("ENFORCE treats an unapplied REDACT outcome as non-final and issues no ticket", async () => {
+  const redactGuard = {
+    check() {
+      return Object.freeze({ action: "REDACT", execution_authorized: false });
+    },
+  };
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: redactGuard,
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => ({
+      entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+      as_of_valid_time: "2026-07-29T10:00:00.000Z",
+      as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+    }),
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(() => issueCommitTicket(subject.governance, delegation.delegation_id),
+    /semantic_scope_redact/u);
+});
+
+test("ENFORCE re-resolves context and denies reservation when the resolver degrades", async () => {
+  let calls = 0;
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("semantic_scope_dependency_unavailable");
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const issued = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  await assert.rejects(() => subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /semantic_scope_hold/u);
+  assert.equal(calls, 2);
+});
+
+test("ticket issue rechecks delegation expiry after asynchronous semantic resolution", async () => {
+  let subject;
+  subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      subject.advance(60 * 60_000 + 1);
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(() => issueCommitTicket(subject.governance,
+    delegation.delegation_id), /delegation_not_active/u);
+  assert.equal(Object.keys(subject.store.readState().tickets || {}).length, 0);
+});
+
+test("ticket reservation rechecks expiry after asynchronous semantic resolution", async () => {
+  let calls = 0;
+  let subject;
+  subject = harness({
+    allowedActions: ["git.commit"],
+    ticketTtlMs: 2 * 60_000,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      calls += 1;
+      if (calls === 2) subject.advance(2 * 60_000 + 1);
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const issued = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  await assert.rejects(() => subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /action_ticket_expired/u);
+  const readback = await subject.governance.readActionTicket({ tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id });
+  assert.equal(readback.state, "issued");
+  assert.equal(readback.uses, 0);
+});
+
+test("ticket issue and reservation timestamps use the post-await clock", async () => {
+  let calls = 0;
+  let subject;
+  subject = harness({
+    allowedActions: ["git.commit"],
+    ticketTtlMs: 2 * 60_000,
+    reservationLeaseMs: 30_000,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      calls += 1;
+      subject.advance(1_000);
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const issued = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  assert.equal(issued.ticket.issued_at, new Date(subject.now()).toISOString());
+  assert.equal(
+    Date.parse(issued.ticket.expires_at) - Date.parse(issued.ticket.issued_at),
+    2 * 60_000,
+  );
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  });
+  assert.equal(calls, 2);
+  assert.equal(reserved.reserved_at, new Date(subject.now()).toISOString());
+  assert.equal(
+    Date.parse(reserved.reservation_expires_at) - Date.parse(reserved.reserved_at),
+    30_000,
+  );
+});
+
+test("ENFORCE denies REVALIDATE when the Entity360 snapshot changes before reservation", async () => {
+  let calls = 0;
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      calls += 1;
+      return {
+        entity360_snapshot_ref: `e360_${(calls === 1 ? "a" : "b").repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const issued = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  assert.equal(issued.ticket.semantic_scope_at_issue.action, "ALLOW");
+  await assert.rejects(() => subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /semantic_scope_revalidate/u);
+  assert.equal(calls, 2);
+  const persisted = await subject.governance.readActionTicket({ tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id });
+  assert.equal(persisted.state, "issued");
+  assert.equal(persisted.uses, 0);
 });
 
 test("enforce mode cannot start without a semantic context resolver", () => {
@@ -994,6 +1191,7 @@ test("bootstrap receipt requires a live, scope-bound server-resolved deadlock ve
     bootstrapDeadlockVerdictResolver({ classification: "NORMAL_RELEASE" }),
     bootstrapDeadlockVerdictResolver({ active: false }),
     bootstrapDeadlockVerdictResolver({ expiresAt: "2026-07-29T09:00:00.000Z" }),
+    bootstrapDeadlockVerdictResolver({ expiresAt: "invalid" }),
     bootstrapDeadlockVerdictResolver({ digestOverride: H("e") }),
     bootstrapDeadlockVerdictResolver({ exceptionIdOverride: "bootstrap-exception-other" }),
     bootstrapDeadlockVerdictResolver({ error: "bootstrap_deadlock_verdict_denied" }),
@@ -1007,6 +1205,45 @@ test("bootstrap receipt requires a live, scope-bound server-resolved deadlock ve
     })),
     /bootstrap_release_exception_denied/,
   );
+  await assert.rejects(
+    request(harness({
+      bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore({ expiresAt: "invalid" }),
+      bootstrapDeadlockVerdictResolver: bootstrapDeadlockVerdictResolver(),
+    })),
+    /bootstrap_release_exception_denied/,
+  );
+});
+
+test("bootstrap receipt is rejected when its authority expires during semantic resolution", async () => {
+  const expiresAt = "2026-07-29T10:00:00.500Z";
+  let subject;
+  subject = harness({
+    bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore({ expiresAt }),
+    bootstrapDeadlockVerdictResolver: bootstrapDeadlockVerdictResolver({ expiresAt }),
+    releaseJoinVerdictResolver: null,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      subject.advance(501);
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(
+    issueMergeTicket(subject.governance, delegation.delegation_id, {
+      bootstrap_release_exception_receipt: {
+        exception_id: "bootstrap-exception-1",
+        core_policy_verdict_digest: H("c"),
+      },
+    }),
+    /bootstrap_release_exception_expired/u,
+  );
+  assert.equal(Object.keys(subject.store.readState().tickets || {}).length, 0);
 });
 
 test("host-native work plan has zero provider execution and requires host materialization", () => {
@@ -3724,10 +3961,12 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     );
   });
 
-  async function expiredParentForFreshObservation() {
+  async function expiredParentForFreshObservation(options = {}) {
     let verifiedAt = Date.parse("2026-07-29T10:00:00.000Z");
     const subject = linkedHarness({
-      externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      ...options,
+      externalReadbackVerifier: options.externalReadbackVerifier ||
+        (async ({ ticket, target_commit, verification_scope }) => {
         const readback = trustedExternalReadback(
           ticket,
           target_commit,
@@ -3736,7 +3975,7 @@ test("protected push, Render deploy/rollback, and linked observation each requir
         );
         readback.github.required_checks_policy_digest = observationPolicyDigest;
         return redigestTrustedReadback(readback);
-      },
+      }),
     });
     const parent = await finalizeExact(
       subject,
@@ -3845,6 +4084,44 @@ test("protected push, Render deploy/rollback, and linked observation each requir
       deploys: 0,
       total_actions: 1,
     });
+  });
+
+  await t.test("signed observation continuation uses the post-await ticket timestamp", async () => {
+    let subjectRef;
+    const contextResolver = async ({ action, phase }) => {
+      if (action.kind === "render.observe" && phase === "ISSUE") subjectRef.advance(1);
+      return {
+        entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    };
+    const prepared = await expiredParentForFreshObservation({
+      semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+      semanticScopeMode: "ENFORCE",
+      semanticScopeContextResolver: contextResolver,
+    });
+    subjectRef = prepared.subject;
+    const successor = await observationOnlyDelegation(prepared.subject, {
+      nonce: "owner-consent-observe-continuation-post-await-0001",
+    });
+    const issued = await prepared.subject.governance.issueActionTicket(
+      observationRequest(prepared.parent, {
+        input: { delegation_id: successor.delegation_id },
+      }),
+    );
+    assert.equal(
+      issued.ticket.predecessor.delegation_continuation.issued_at,
+      issued.ticket.issued_at,
+    );
+    assert.equal(prepared.subject.governance.verifyActionTicket(issued.ticket), true);
+    const reserved = await prepared.subject.governance.reserveActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+    assert.equal(reserved.state, "reserved");
   });
 
   await t.test("fresh observation continuation rejects an active parent delegation", async () => {
@@ -4687,9 +4964,32 @@ test("Render deploy predecessor requires a current trusted merge finalization bo
 });
 
 test("Render deploy predecessor rejects stale, tampered, and target-mismatched finalize receipts", async (t) => {
-  async function prepared({ tamper, advance = 0, targetCommit = G("4") } = {}) {
+  async function prepared({
+    tamper,
+    advance = 0,
+    advanceDuringSemantic = 0,
+    targetCommit = G("4"),
+  } = {}) {
     const store = createInMemoryHostNativeGovernanceStore();
-    const subject = harness({ store });
+    let subject;
+    subject = harness({
+      store,
+      ...(advanceDuringSemantic ? {
+        semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+        semanticScopeMode: "ENFORCE",
+        semanticScopeContextResolver: async ({ action, phase }) => {
+          if (action.kind === "render.deploy" && phase === "ISSUE") {
+            subject.advance(advanceDuringSemantic);
+          }
+          return {
+            entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+            as_of_valid_time: "2026-07-29T10:00:00.000Z",
+            as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+            policy_revision: "entity360-policy-v1",
+          };
+        },
+      } : {}),
+    });
     const merge = await prepareFinalizableMerge(subject);
     await subject.governance.authorizeFinalize({
       tenant_id: "codexai",
@@ -4759,6 +5059,14 @@ test("Render deploy predecessor rejects stale, tampered, and target-mismatched f
       item.subject.governance.issueActionTicket(item.request),
       /predecessor_finalize_authorization_invalid/,
     );
+  });
+  await t.test("receipt expiring during semantic resolution", async () => {
+    const item = await prepared({ advanceDuringSemantic: 5 * 60_000 + 1 });
+    await assert.rejects(
+      item.subject.governance.issueActionTicket(item.request),
+      /predecessor_finalize_authorization_invalid/,
+    );
+    assert.equal(Object.keys(item.subject.store.readState().tickets || {}).length, 1);
   });
   await t.test("tampered receipt digest", async () => {
     const item = await prepared({

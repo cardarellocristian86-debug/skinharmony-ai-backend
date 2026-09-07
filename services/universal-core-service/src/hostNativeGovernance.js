@@ -2510,19 +2510,27 @@ export function createHostNativeGovernance({
     };
     return Object.freeze({ ...unsigned, decision_digest: hostNativeDigest(unsigned) });
   };
+  const resolveSemanticScopeContext = async ({ delegation, action, tenantId, phase } = {}) => {
+    if (configuredSemanticScopeMode === "OFF") return null;
+    try {
+      const resolved = await semanticScopeContextResolver?.({ tenant_id: tenantId,
+        work_id: delegation.grant.work_id, action: clone(action), phase });
+      return resolved || Object.freeze({ unavailable: true });
+    } catch {
+      return Object.freeze({ unavailable: true });
+    }
+  };
   const semanticScopeDecision = ({ delegation, action, tenantId, hostKind, hostSessionFingerprint,
-    phase, previousScopeState = null, authorityReservationRef = null } = {}) => {
+    phase, entity360 = null, previousScopeState = null,
+    authorityReservationRef = null } = {}) => {
     if (configuredSemanticScopeMode === "OFF") return null;
     const branch = actionBranch(action) || action.service_id || action.target_commit || "root";
     const effect = actionEffect(action.kind);
-    let entity360 = null;
-    try {
-      entity360 = semanticScopeContextResolver?.({ tenant_id: tenantId,
-        work_id: delegation.grant.work_id, action: clone(action), phase }) || null;
-    } catch {
-      entity360 = null;
-    }
     const riskTier = actionRisk(action.kind);
+    if (entity360?.unavailable === true) {
+      return semanticScopeUnavailableDecision({ delegation, tenantId, hostKind,
+        hostSessionFingerprint, riskTier, authorityReservationRef });
+    }
     try {
       return semanticScopeGuard.check({
         tenant_id: tenantId,
@@ -2555,15 +2563,19 @@ export function createHostNativeGovernance({
         risk_tier: riskTier, previous_scope_state: previousScopeState,
         evidence_refs: entity360?.evidence_refs || [], data_egress: false,
         entity360_snapshot_stale: entity360?.stale === true,
-        semantic_ambiguous: !entity360?.entity360_snapshot_ref,
+        semantic_ambiguous: entity360?.ambiguous === true
+          || !entity360?.entity360_snapshot_ref,
       });
     } catch {
       return semanticScopeUnavailableDecision({ delegation, tenantId, hostKind,
         hostSessionFingerprint, riskTier, authorityReservationRef });
     }
   };
+  // ENFORCE may persist authority only after an exact ALLOW. REVALIDATE and
+  // REDACT are non-final outcomes; treating either as authorization would let
+  // snapshot drift or an unapplied redaction cross the effect boundary.
   const semanticScopeEnforcedDenial = (decision) => configuredSemanticScopeMode === "ENFORCE"
-    && ["BLOCK", "HOLD"].includes(decision?.action);
+    && decision?.action !== "ALLOW";
   const assertSoftwareConsumerFresh = (trusted = {}) => {
     if (trusted.software_closure_fresh_until === undefined) return;
     const freshUntil = Date.parse(trusted.software_closure_fresh_until || "");
@@ -2915,6 +2927,7 @@ export function createHostNativeGovernance({
       ticket_digest: pending.ticket_digest,
       core_join_claim_digest: pending.core_join_claim_digest,
       pre_merge_readback_digest: fresh.pre_merge_readback_digest,
+      verified_at: readback.verified_at,
     };
   }
 
@@ -3300,6 +3313,8 @@ export function createHostNativeGovernance({
     nyra_work_automation_provider_execution: false,
     semantic_scope_guard_mode: configuredSemanticScopeMode,
     semantic_scope_guard_configured: configuredSemanticScopeMode !== "OFF",
+    semantic_scope_context_resolver_configured:
+      typeof semanticScopeContextResolver === "function",
     semanticScopeMetrics() {
       return semanticScopeGuard && typeof semanticScopeGuard.metrics === "function"
         ? semanticScopeGuard.metrics()
@@ -4827,6 +4842,7 @@ export function createHostNativeGovernance({
       let release_join_resolution = null;
       let coreJoin = null;
       let bootstrapReleaseExceptionCandidate = null;
+      let bootstrapDeadlockVerdict = null;
       let predecessor = null;
       let manualMergeReadback = null;
       let expiredDelegationContinuation = null;
@@ -5075,9 +5091,8 @@ export function createHostNativeGovernance({
           const corePolicyVerdictDigest = digest(
             input.bootstrap_release_exception_receipt?.core_policy_verdict_digest,
           );
-          let bootstrapDeadlockVerdict;
           try {
-            bootstrapDeadlockVerdict = await bootstrapDeadlockVerdictResolver({
+            bootstrapDeadlockVerdict = clone(await bootstrapDeadlockVerdictResolver({
               tenant_id: tenantId,
               work_id: delegation.grant.work_id,
               repository: delegation.grant.repository,
@@ -5086,7 +5101,7 @@ export function createHostNativeGovernance({
               action: "github.merge",
               exception_id: bootstrapExceptionId,
               core_policy_verdict_digest: corePolicyVerdictDigest,
-            });
+            }));
           } catch (error) {
             fail(String(error?.message || "bootstrap_deadlock_verdict_denied"));
           }
@@ -5096,6 +5111,7 @@ export function createHostNativeGovernance({
               bootstrapDeadlockVerdict.active !== true ||
               bootstrapDeadlockVerdict.exception_id !== bootstrapExceptionId ||
               bootstrapDeadlockVerdict.core_policy_verdict_digest !== corePolicyVerdictDigest ||
+              !Number.isFinite(Date.parse(bootstrapDeadlockVerdict.expires_at || "")) ||
               Date.parse(bootstrapDeadlockVerdict.expires_at || "") <= nowValue) {
             fail("bootstrap_deadlock_verdict_denied");
           }
@@ -5125,7 +5141,9 @@ export function createHostNativeGovernance({
               candidate.repository !== delegation.grant.repository || candidate.pr_number !== action.pull_request ||
               candidate.exception_id !== bootstrapExceptionId ||
               candidate.head_sha !== action.head_commit || candidate.allowed_action !== "github.merge" ||
-              !candidate.receipt_digest || Date.parse(candidate.expires_at || "") <= nowValue) {
+              !candidate.receipt_digest ||
+              !Number.isFinite(Date.parse(candidate.expires_at || "")) ||
+              Date.parse(candidate.expires_at || "") <= nowValue) {
             fail("bootstrap_release_exception_denied");
           }
           bootstrapReleaseExceptionCandidate = clone(candidate);
@@ -5576,20 +5594,108 @@ export function createHostNativeGovernance({
           }
         }
       }
+      const semanticScopeContextAtIssue = await resolveSemanticScopeContext({
+        delegation,
+        action,
+        tenantId,
+        phase: "ISSUE",
+      });
+      // Async policy, provider-origin and semantic reads may consume the whole
+      // validity window. Every authoritative check and timestamp inside the
+      // mutation must use time sampled after the final await.
+      const issueNowValue = nowMillis(now);
+      if (predecessor?.finalize_authorization_digest) {
+        const currentParent = initial.tickets[String(predecessor.ticket_id || "")];
+        const currentFinalizeAuthorization = verifiedFinalizeAuthorization(currentParent, {
+          signing,
+          nowValue: issueNowValue,
+          tenantId,
+          workId: delegation.grant.work_id,
+          repository: delegation.grant.repository,
+          targetCommit: commit(action.target_commit),
+        });
+        if (currentFinalizeAuthorization.authorization_digest !==
+          predecessor.finalize_authorization_digest) {
+          fail("predecessor_finalize_authorization_invalid");
+        }
+      }
+      if (predecessor?.delegation_continuation) {
+        const parent = initial.tickets[String(predecessor.ticket_id || "")];
+        const parentTicket = parent?.ticket;
+        const parentDelegation = initial.delegations[parentTicket?.delegation_id];
+        predecessor = {
+          ...predecessor,
+          delegation_continuation: signDelegationContinuation({
+            parentDelegation,
+            successorDelegation: delegation,
+            parentTicket,
+            parentTicketDigest: predecessor.ticket_digest,
+            parentFinalizeAuthorizationDigest:
+              predecessor.finalize_authorization_digest,
+            sourceActionDigest: predecessor.source_action_digest,
+            sourceRequiredChecksPolicyDigest:
+              predecessor.source_required_checks_policy_digest,
+            hostKind: host_kind,
+            hostSessionFingerprint: host_session_fingerprint,
+            issuedAt: iso(issueNowValue),
+          }, signing),
+        };
+      }
+      if (bootstrapReleaseExceptionCandidate) {
+        if (!bootstrapDeadlockVerdict
+          || bootstrapDeadlockVerdict.classification !== "BOOTSTRAP_DEADLOCK_VERIFIED"
+          || bootstrapDeadlockVerdict.active !== true
+          || bootstrapDeadlockVerdict.exception_id !==
+            bootstrapReleaseExceptionCandidate.exception_id
+          || bootstrapDeadlockVerdict.core_policy_verdict_digest !==
+            input.bootstrap_release_exception_receipt?.core_policy_verdict_digest
+          || !Number.isFinite(Date.parse(bootstrapDeadlockVerdict.expires_at || ""))
+          || !Number.isFinite(Date.parse(
+            bootstrapReleaseExceptionCandidate.expires_at || "",
+          ))
+          || Date.parse(bootstrapDeadlockVerdict.expires_at || "") <= issueNowValue
+          || Date.parse(bootstrapReleaseExceptionCandidate.expires_at || "") <= issueNowValue) {
+          fail("bootstrap_release_exception_expired");
+        }
+      }
       assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
         const currentClaimReplay = descriptor?.result
-          ? claimGatedCommitReplay(state, descriptor.result, input, trusted, nowValue, action)
+          ? claimGatedCommitReplay(state, descriptor.result, input, trusted, issueNowValue, action)
           : null;
         if (descriptor?.result) {
-          if (!currentClaimReplay) return validateStandingReplay(state, descriptor.result, nowValue);
+          if (!currentClaimReplay) return validateStandingReplay(state, descriptor.result, issueNowValue);
           if (!currentClaimReplay.expired) return clone(currentClaimReplay.ticket);
         }
         const expiredClaimTicket = currentClaimReplay?.expired ? currentClaimReplay.ticket : null;
         const currentDelegation = state.delegations[String(input.delegation_id || "")];
-        if (!currentDelegation || !delegationActive(currentDelegation, nowValue)) fail("delegation_not_active");
-        ensureStandingReleaseDelegationActive(state, currentDelegation, nowValue);
+        if (!currentDelegation || !delegationActive(currentDelegation, issueNowValue)) fail("delegation_not_active");
+        ensureStandingReleaseDelegationActive(state, currentDelegation, issueNowValue);
+        if (predecessor?.finalize_authorization_digest) {
+          const currentParent = state.tickets[String(predecessor.ticket_id || "")];
+          const currentFinalizeAuthorization = verifiedFinalizeAuthorization(currentParent, {
+            signing,
+            nowValue: issueNowValue,
+            tenantId,
+            workId: currentDelegation.grant.work_id,
+            repository: currentDelegation.grant.repository,
+            targetCommit: commit(action.target_commit),
+          });
+          if (currentFinalizeAuthorization.authorization_digest !==
+            predecessor.finalize_authorization_digest) {
+            fail("predecessor_finalize_authorization_invalid");
+          }
+        }
+        if (bootstrapReleaseExceptionCandidate && (
+          !bootstrapDeadlockVerdict
+          || !Number.isFinite(Date.parse(bootstrapDeadlockVerdict.expires_at || ""))
+          || !Number.isFinite(Date.parse(
+            bootstrapReleaseExceptionCandidate.expires_at || "",
+          ))
+          || Date.parse(bootstrapDeadlockVerdict.expires_at || "") <= issueNowValue
+          || Date.parse(bootstrapReleaseExceptionCandidate.expires_at || "") <= issueNowValue
+        )) fail("bootstrap_release_exception_expired");
         let releaseJoin = null;
         let supersededTicket = expiredClaimTicket;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
@@ -5598,20 +5704,20 @@ export function createHostNativeGovernance({
             validateStoredCoreJoinAuthority({
               state,
               record: releaseJoin,
-              nowValue,
+              nowValue: issueNowValue,
               signing,
             });
           }
           if (!releaseJoin || releaseJoin.state !== "active") fail("core_join_verdict_consumed");
           const joinExpiresAt = Date.parse(releaseJoin.verdict?.expires_at || "");
-          if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue) {
+          if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= issueNowValue) {
             fail("core_join_verdict_expired");
           }
           const priorTicket = state.tickets[String(releaseJoin.authorized_ticket_id || "")];
           if (
             priorTicket?.state === "issued" &&
             priorTicket.uses === 0 &&
-            Date.parse(priorTicket.ticket?.expires_at || "") > nowValue
+            Date.parse(priorTicket.ticket?.expires_at || "") > issueNowValue
           ) {
             fail("core_join_ticket_active");
           }
@@ -5619,7 +5725,7 @@ export function createHostNativeGovernance({
             if (
               priorTicket.state !== "issued" ||
               priorTicket.uses !== 0 ||
-              Date.parse(priorTicket.ticket?.expires_at || "") > nowValue ||
+              Date.parse(priorTicket.ticket?.expires_at || "") > issueNowValue ||
               priorTicket.ticket.host_session_fingerprint !== host_session_fingerprint ||
               priorTicket.ticket.evidence_digest !== evidence_digest ||
               priorTicket.ticket.release_manifest_digest !== release_manifest.manifest_digest ||
@@ -5638,13 +5744,14 @@ export function createHostNativeGovernance({
           hostKind: host_kind,
           hostSessionFingerprint: host_session_fingerprint,
           phase: "ISSUE",
+          entity360: semanticScopeContextAtIssue,
         });
         if (semanticScopeEnforcedDenial(semanticScopeAtIssue)) {
           fail(`semantic_scope_${semanticScopeAtIssue.action.toLowerCase()}`);
         }
         const usage = actionUsage(action.kind, action, currentDelegation);
         ensureBudget(currentDelegation, usage);
-        const ticketId = makeId("hnt", { input, issued_at: iso(nowValue) });
+        const ticketId = makeId("hnt", { input, issued_at: iso(issueNowValue) });
         if (manualMergeReadback) {
           const currentReceipt = state.owner_manual_merge_readbacks?.[
             manualMergeReadback.receipt_id
@@ -5662,11 +5769,11 @@ export function createHostNativeGovernance({
             manualJoin.manual_merge_readback_receipt_digest !== currentReceipt.receipt_digest
           ) fail("owner_manual_merge_readback_predecessor_changed");
           manualJoin.authorized_ticket_id = ticketId;
-          manualJoin.authorized_at = iso(nowValue);
+          manualJoin.authorized_at = iso(issueNowValue);
         }
         if (releaseJoin) {
           releaseJoin.authorized_ticket_id = ticketId;
-          releaseJoin.authorized_at = iso(nowValue);
+          releaseJoin.authorized_at = iso(issueNowValue);
         }
         let replayRootId = null;
         let idempotencyRecord = null;
@@ -5686,14 +5793,15 @@ export function createHostNativeGovernance({
           fail("action_ticket_lifecycle_invalid");
         }
         if (supersededTicket) {
-          supersededAt = iso(nowValue);
+          supersededAt = iso(issueNowValue);
           supersededTicket.state = "superseded";
           supersededTicket.lifecycle_schema_version = "host_native_action_lifecycle_v2";
           supersededTicket.superseded_by_ticket_id = ticketId;
           supersededTicket.superseded_at = supersededAt;
           signActionTicketLifecycleRecord(supersededTicket);
         }
-        const expiresAt = Math.min(Date.parse(currentDelegation.grant.expires_at), nowValue + ticketTtl);
+        const expiresAt = Math.min(Date.parse(currentDelegation.grant.expires_at),
+          issueNowValue + ticketTtl);
         const ticketUnsigned = {
           schema_version: "host_native_action_ticket_v1",
           ticket_id: ticketId,
@@ -5706,7 +5814,7 @@ export function createHostNativeGovernance({
           host_session_fingerprint,
           action,
           evidence_digest,
-          issued_at: iso(nowValue),
+          issued_at: iso(issueNowValue),
           expires_at: iso(expiresAt),
           max_uses: 1,
           host_policy_override: false,
@@ -5744,12 +5852,12 @@ export function createHostNativeGovernance({
             manual_merge_readback_digest: manualMergeReadback.receipt_digest,
             ticket_id: ticket.ticket_id,
             ticket_digest: hostNativeDigest(ticket),
-            created_at: iso(nowValue),
+            created_at: iso(issueNowValue),
           };
         }
         if (action.kind === "render.observe") {
           validateStoredObserveDelegationContinuation(record, state, {
-            nowValue,
+            nowValue: issueNowValue,
             signing,
             successorUsage: 0,
           });
@@ -5997,13 +6105,54 @@ export function createHostNativeGovernance({
       const freshStandingMerge = bootstrapTicket
         ? await requireFreshStandingMergeReadback(initial, bootstrapTicket, nowValue)
         : null;
+      const reservationDelegation = bootstrapTicket
+        ? initial.delegations[bootstrapTicket.ticket.delegation_id]
+        : null;
+      let reservationId = null;
+      let semanticScopeAtReservation = null;
+      if (bootstrapTicket
+        && bootstrapTicket.ticket.tenant_id === tenantId
+        && bootstrapTicket.state === "issued"
+        && Date.parse(bootstrapTicket.ticket.expires_at) > nowValue
+        && bootstrapTicket.ticket.host_session_fingerprint === String(
+          input.host_session_fingerprint || "",
+        ).trim()
+        && delegationActive(reservationDelegation, nowValue)) {
+        reservationId = makeId("hnr", {
+          ticket_id: bootstrapTicket.ticket.ticket_id,
+          nowValue,
+        });
+        const semanticScopeContextAtReservation = await resolveSemanticScopeContext({
+          delegation: reservationDelegation,
+          action: bootstrapTicket.ticket.action,
+          tenantId,
+          phase: "RESERVATION",
+        });
+        semanticScopeAtReservation = semanticScopeDecision({
+          delegation: reservationDelegation,
+          action: bootstrapTicket.ticket.action,
+          tenantId,
+          hostKind: bootstrapTicket.ticket.host_kind,
+          hostSessionFingerprint: bootstrapTicket.ticket.host_session_fingerprint,
+          phase: "RESERVATION",
+          entity360: semanticScopeContextAtReservation,
+          previousScopeState: bootstrapTicket.ticket.semantic_scope_at_issue?.binding || null,
+          authorityReservationRef: reservationId,
+        });
+        if (semanticScopeEnforcedDenial(semanticScopeAtReservation)) {
+          fail(`semantic_scope_${semanticScopeAtReservation.action.toLowerCase()}`);
+        }
+      }
       if (bootstrapTicket?.ticket?.bootstrap_release_exception_candidate) {
         if (!bootstrapReleaseExceptionStore || typeof bootstrapReleaseExceptionStore.consume !== "function") {
           fail("bootstrap_release_exception_store_unavailable");
         }
         if (bootstrapTicket.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
         if (bootstrapTicket.state !== "issued") fail("replayed");
-        if (Date.parse(bootstrapTicket.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
+        const preConsumeNowValue = nowMillis(now);
+        if (Date.parse(bootstrapTicket.ticket.expires_at) <= preConsumeNowValue) {
+          fail("action_ticket_expired");
+        }
         if (bootstrapTicket.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) {
           fail("host_session_mismatch");
         }
@@ -6025,21 +6174,32 @@ export function createHostNativeGovernance({
           fail(String(error?.message || "bootstrap_release_exception_consumption_denied"));
         }
       }
+      // Re-sample after semantic resolution and optional bootstrap consumption.
+      // The Store mutation revalidates every expiring authority against this
+      // authoritative post-await instant.
+      const reservationNowValue = nowMillis(now);
       assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", idempotencyInput);
-        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result,
+          reservationNowValue);
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record) fail("action_ticket_not_found");
         if (record.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
         if (record.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
         if (record.state !== "issued") fail("replayed");
-        if (Date.parse(record.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
+        if (Date.parse(record.ticket.expires_at) <= reservationNowValue) fail("action_ticket_expired");
         const delegation = state.delegations[record.ticket.delegation_id];
-        if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
-        ensureStandingReleaseDelegationActive(state, delegation, nowValue);
-        ensureStandingReleaseRunReservation(state, record, input, nowValue);
+        if (!delegationActive(delegation, reservationNowValue)) fail("delegation_not_active");
+        ensureStandingReleaseDelegationActive(state, delegation, reservationNowValue);
+        ensureStandingReleaseRunReservation(state, record, input, reservationNowValue);
         if (freshStandingMerge) {
+          const verifiedAt = Date.parse(freshStandingMerge.verified_at || "");
+          if (!Number.isFinite(verifiedAt)
+            || verifiedAt > reservationNowValue + 30_000
+            || verifiedAt < reservationNowValue - 30_000) {
+            fail("standing_release_pre_merge_readback_invalid");
+          }
           const join = state.core_join_verdicts?.[record.ticket.core_join_verdict_id];
           if (
             hostNativeDigest(record.ticket) !== freshStandingMerge.ticket_digest ||
@@ -6050,25 +6210,12 @@ export function createHostNativeGovernance({
         }
         if (record.ticket.action.kind === "render.observe") {
           validateStoredObserveDelegationContinuation(record, state, {
-            nowValue,
+            nowValue: reservationNowValue,
             signing,
             successorUsage: 0,
           });
         }
-        const reservationId = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });
-        const semanticScopeAtReservation = semanticScopeDecision({
-          delegation,
-          action: record.ticket.action,
-          tenantId,
-          hostKind: record.ticket.host_kind,
-          hostSessionFingerprint: record.ticket.host_session_fingerprint,
-          phase: "RESERVATION",
-          previousScopeState: record.ticket.semantic_scope_at_issue?.binding || null,
-          authorityReservationRef: reservationId,
-        });
-        if (semanticScopeEnforcedDenial(semanticScopeAtReservation)) {
-          fail(`semantic_scope_${semanticScopeAtReservation.action.toLowerCase()}`);
-        }
+        if (!reservationId) fail("semantic_scope_reservation_context_invalid");
         const usage = actionUsage(
           record.ticket.action.kind,
           record.ticket.action,
@@ -6087,7 +6234,7 @@ export function createHostNativeGovernance({
             fail("core_join_ticket_superseded");
           }
           const joinExpiresAt = Date.parse(join.verdict?.expires_at || "");
-          if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue) {
+          if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= reservationNowValue) {
             fail("core_join_verdict_expired");
           }
           if (
@@ -6126,8 +6273,8 @@ export function createHostNativeGovernance({
             freshStandingMerge.pre_merge_readback_digest;
         }
         record.reservation_id = reservationId;
-        record.reserved_at = iso(nowValue);
-        record.reservation_expires_at = iso(nowValue + leaseMs);
+        record.reserved_at = iso(reservationNowValue);
+        record.reservation_expires_at = iso(reservationNowValue + leaseMs);
         if (semanticScopeAtReservation) {
           record.semantic_scope_at_reservation = semanticScopeAtReservation;
         }

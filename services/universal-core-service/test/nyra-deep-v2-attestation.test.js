@@ -533,6 +533,27 @@ test("ledger and attestation reject tenant confusion and tampering", () => {
   const tamperedRecord = { ...records.records[0], authority: "unverified" };
   assert.equal(ledger.verifyRecord(tamperedRecord), false);
   assert.equal(ledger.resolve({ tenantId: "other-tenant", requestId: REQUEST }).records.length, 0);
+  const recordRef = records.records[0].record_ref;
+  assert.equal(ledger.resolve({
+    tenantId: TENANT,
+    requestId: REQUEST,
+    recordRefs: [recordRef],
+  }).records.length, 1);
+  assert.equal(ledger.resolve({
+    tenantId: TENANT,
+    requestId: "other-request",
+    recordRefs: [recordRef],
+  }).records.length, 0);
+  assert.equal(ledger.resolve({
+    tenantId: "other-tenant",
+    requestId: REQUEST,
+    recordRefs: [recordRef],
+  }).records.length, 0);
+  assert.equal(ledger.resolve({
+    tenantId: TENANT,
+    requestId: REQUEST,
+    recordRefs: ["f".repeat(64)],
+  }).records.length, 0);
 
   const prepared = attester.prepare({ ...coreInput(), evidenceRefs: ingestion });
   assert.equal(prepared.ok, true);

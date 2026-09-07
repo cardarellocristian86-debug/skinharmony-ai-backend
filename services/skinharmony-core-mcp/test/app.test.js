@@ -558,6 +558,7 @@ test("binds an OAuth owner logical session only for DTT-backed dynamic reads", (
   for (const capabilityId of [
     "entity_360_resolve",
     "entity_360_snapshot_verify",
+    "entity_360_enforcement_context_receipt_read",
     "entity_360_policy_read",
     "entity_360_metrics_read",
     "software_cognition_obligation_expand",
@@ -3252,6 +3253,7 @@ test("requires exact Work preflight for DTT-backed dynamic reads only", () => {
     "entity_360_snapshot_latest",
     "entity_360_snapshot_read",
     "entity_360_snapshot_verify",
+    "entity_360_enforcement_context_receipt_read",
     "entity_360_policy_read",
     "entity_360_metrics_read",
     "software_cognition_obligation_expand",

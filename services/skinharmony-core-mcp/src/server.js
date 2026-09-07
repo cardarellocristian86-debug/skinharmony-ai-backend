@@ -654,6 +654,7 @@ const softwareCognitionHandlers = createSoftwareCognitionHandlers({
 const entity360Handlers = createEntity360Handlers({
   coreRequest: coreHandlers.dttCoreRequest,
   shadowEnableCoreRequest: coreHandlers.entity360ShadowEnableCoreRequest,
+  enforceEnableCoreRequest: coreHandlers.entity360EnforceEnableCoreRequest,
   shadowDisableCoreRequest: coreHandlers.entity360ShadowDisableCoreRequest,
   issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,

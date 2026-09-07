@@ -2628,6 +2628,84 @@ test("unbridged V2 closure never reads or releases an identically named Core Wor
     event.event_type === "terminal_coordination_reconciled").length, 0);
 });
 
+test("generic closure canonicalizes PostgreSQL Date timestamps before JSONB digest and readback", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "54545454-5454-4454-8454-545454545454";
+  const taskId = "56565656-5656-4656-8656-565656565656";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualClosureAuthority({ workId, intentDigest });
+  const createdAt = new Date("2026-08-08T10:00:00.000Z");
+  const startedAt = new Date("2026-08-08T10:01:00.000Z");
+  pool.works.set(key("tenant-a", workId), candidateWork(114, {
+    work_id: workId,
+    work_type: "research",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    acceptance_criteria: ["persisted report verifies after JSONB round-trip"],
+    intent_digest: intentDigest,
+    objective: "Canonicalize database timestamps before hashing closure artifacts",
+    team_id: null,
+    created_at: createdAt,
+    started_at: startedAt,
+  }));
+  pool.tasks.set(key("tenant-a", taskId), {
+    tenant_id: "tenant-a", task_id: taskId, work_id: workId,
+    title: "Verify JSON-safe closure", weight: 1, required: true,
+    status: "completed", acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "date-round-trip-evidence"), {
+    tenant_id: "tenant-a", evidence_id: "date-round-trip-evidence", work_id: workId,
+    kind: "independent_verification", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "verifier-agent",
+    verified_by_session_fingerprint: "4".repeat(64), weight: 1,
+    metadata: {}, created_at: "2026-08-08T10:02:00.000Z",
+  });
+  const joinUnsigned = {
+    schema_version: "generic_work_core_join_v1", verdict_id: "date-round-trip-verdict",
+    authority: "universal_core", decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+    tenant_id: "tenant-a", work_id: workId, adapter: "research",
+    acceptance_criteria_digest: "a".repeat(64), task_state_digest: "b".repeat(64),
+    evidence_digest: "c".repeat(64), independent_verifier_receipt_digest: "d".repeat(64),
+    idempotency_digest: "e".repeat(64), execution_authorized: false,
+    host_action_authorized: false, issued_at: "2026-08-08T10:02:00.000Z",
+    key_id: authority.signer.key_id, signature_algorithm: "ed25519",
+  };
+  const joinDigest = stableDigest(joinUnsigned);
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: joinDigest,
+    core_join_context: {
+      ...joinUnsigned,
+      verdict_digest: joinDigest,
+      signature: await authority.signer.signDigest(joinDigest),
+    },
+  });
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:03:00.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+
+  await store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "research",
+  });
+
+  const reportRow = pool.finalReports.get(key("tenant-a", workId));
+  const closureEvent = [...pool.events.values()].find((event) =>
+    event.work_id === workId && event.event_type === "generic_closure_finalized");
+  assert.equal(reportRow.report.created_at, createdAt.toISOString());
+  assert.equal(reportRow.report.started_at, startedAt.toISOString());
+  assert.equal(reportRow.report_digest, stableDigest(reportRow.report));
+  assert.equal(closureEvent.payload.report_digest, reportRow.report_digest);
+  const persistedVerification = await store.verifyWorkClosure(identity(), {
+    work_id: workId,
+  });
+  assert.equal(persistedVerification.verified, true);
+  assert.deepEqual(persistedVerification.failure_codes, []);
+});
+
 test("linked generic closure shares readiness gates and atomically releases Work coordination", async () => {
   const pool = new AtomicWorkPool();
   const workId = "99999999-9999-4999-8999-999999999999";

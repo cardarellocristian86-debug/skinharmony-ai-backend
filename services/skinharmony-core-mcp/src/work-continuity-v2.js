@@ -556,6 +556,15 @@ function verifiedClosureContext(input = {}) {
   return context;
 }
 
+function jsonSafeClosureTimestamp(value) {
+  if (value == null) return null;
+  const timestamp = new Date(value);
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new Error("work_closure_timestamp_invalid");
+  }
+  return timestamp.toISOString();
+}
+
 export function buildGenericClosureArtifacts(work, input = {}) {
   const context = verifiedClosureContext(input);
   if (!CLOSURE_ADAPTERS.includes(input.adapter)) throw new Error("work_closure_adapter_invalid");
@@ -569,7 +578,10 @@ export function buildGenericClosureArtifacts(work, input = {}) {
   const final_report = {
     schema_version: "tenant_work_final_report_v1", work_id: work.work_id, work_code: work.work_code, work_name: work.work_name, work_type: work.work_type,
     tenant_id: work.tenant_id, project_id: work.project_id, owner_user_id: work.owner_user_id, team_id: work.team_id,
-    intent_digest: work.intent_digest, created_at: work.created_at, started_at: work.started_at, closed_at,
+    intent_digest: work.intent_digest,
+    created_at: jsonSafeClosureTimestamp(work.created_at),
+    started_at: jsonSafeClosureTimestamp(work.started_at),
+    closed_at,
     final_status: "COMPLETED", progress_bp: work.progress_bp, priority: work.priority, objective: work.objective,
     acceptance_criteria: work.acceptance_criteria || [], evidence_summary: context.evidence_summary || [], core_join_digest: context.core_join.digest,
     closure_receipt: { ...receipt, receipt_digest }, final_evidence_digest: context.final_evidence_digest,

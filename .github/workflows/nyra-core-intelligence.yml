@@ -343,19 +343,19 @@ jobs:
 
           core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
           nyra_env = Array(nyra["envVars"]).to_h { |entry| [entry["key"], entry] }
-          abort("SOFTWARE_COGNITION_MODE must remain ADVISORY") unless
-            core_env.dig("SOFTWARE_COGNITION_MODE", "value") == "ADVISORY"
-          abort("CORE_ENTITY360_MODE must be declared exactly once as SHADOW") unless
+          abort("SOFTWARE_COGNITION_MODE must remain ENFORCED") unless
+            core_env.dig("SOFTWARE_COGNITION_MODE", "value") == "ENFORCED"
+          abort("CORE_ENTITY360_MODE must be declared exactly once as ENFORCE") unless
             Array(core["envVars"]).count { |entry| entry["key"] == "CORE_ENTITY360_MODE" } == 1 &&
             core_env["CORE_ENTITY360_MODE"] == {
-              "key" => "CORE_ENTITY360_MODE", "value" => "SHADOW",
+              "key" => "CORE_ENTITY360_MODE", "value" => "ENFORCE",
             }
           abort("NYRA_PRECORE_DECISION_MODE must remain OFF until signer bindings are provisioned") unless
             core_env.dig("NYRA_PRECORE_DECISION_MODE", "value") == "OFF"
           policy_registry_nyra_values = {
-            "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED" => "false",
-            "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED" => "false",
-            "NYRA_POLICY_REGISTRY_SIGNER_MODE" => "disabled",
+            "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED" => "true",
+            "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED" => "true",
+            "NYRA_POLICY_REGISTRY_SIGNER_MODE" => "remote",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH" => "/v1/policy-registry/nyra/sign",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE" => "nyra-policy-registry-signer",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PURPOSE" => "nyra.policy_registry.attestation",
@@ -405,10 +405,10 @@ jobs:
             nyra_env.key?("NYRA_POLICY_REGISTRY_REPLAY_STORE_PATH")
           policy_registry_mcp_contract = {
             "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED" => {
-              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED", "value" => "false",
+              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED", "value" => "true",
             },
             "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED" => {
-              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED", "value" => "false",
+              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED", "value" => "true",
             },
           }
           policy_registry_mcp_contract.each do |key, expected|
@@ -445,14 +445,14 @@ jobs:
               mcp_env[key] == { "key" => key, "sync" => false }
           end
           policy_registry_core_values = {
-            "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "advisory_evaluate",
-            "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED" => "false",
-            "CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED" => "false",
-            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED" => "false",
-            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED" => "false",
-            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE" => "disabled",
+            "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "enforced",
+            "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED" => "true",
+            "CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED" => "true",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED" => "true",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED" => "true",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE" => "core_deterministic_recompile",
             "CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET" => "256",
-            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE" => "disabled",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE" => "remote",
             "CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST" => "codexai",
             "CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID" => "universal-core-policy-registry-v1",
             "CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID" => "nyra-policy-registry-v1",

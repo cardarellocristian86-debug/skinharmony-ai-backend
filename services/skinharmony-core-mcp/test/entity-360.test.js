@@ -16,15 +16,18 @@ const EXPECTED = Object.freeze([
   "entity_360_snapshot_latest",
   "entity_360_snapshot_read",
   "entity_360_snapshot_verify",
+  "entity_360_enforcement_context_receipt_read",
   "entity_360_shadow_compare",
   "entity_360_policy_read",
   "entity_360_metrics_read",
   "entity_360_shadow_enable",
+  "entity_360_enforce_enable",
   "entity_360_shadow_disable",
 ]);
 
 const DTT_EXPECTED = Object.freeze(EXPECTED.filter((name) =>
-  !["entity_360_shadow_enable", "entity_360_shadow_disable"].includes(name)));
+  !["entity_360_shadow_enable", "entity_360_enforce_enable",
+    "entity_360_shadow_disable"].includes(name)));
 
 const PATHS = Object.freeze([
   "/v1/entity-360/resolve",
@@ -32,6 +35,7 @@ const PATHS = Object.freeze([
   "/v1/entity-360/snapshots/latest",
   "/v1/entity-360/snapshots/read",
   "/v1/entity-360/snapshots/verify",
+  "/v1/entity-360/enforcement-context/receipt",
   "/v1/entity-360/shadow/compare",
   "/v1/entity-360/policy",
   "/v1/entity-360/metrics",
@@ -77,7 +81,8 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
 
   assert.equal(toolNamed("entity_360_snapshot_assemble").annotations.readOnlyHint, false);
   assert.equal(toolNamed("entity_360_shadow_compare").annotations.readOnlyHint, false);
-  for (const name of ["entity_360_shadow_enable", "entity_360_shadow_disable"]) {
+  for (const name of ["entity_360_shadow_enable", "entity_360_enforce_enable",
+    "entity_360_shadow_disable"]) {
     assert.equal(toolNamed(name).annotations.readOnlyHint, false, name);
     assert.equal(toolNamed(name)
       ._meta["skinharmony/ownerConfirmationRequired"], true, name);
@@ -88,6 +93,7 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
     "entity_360_snapshot_assemble",
     "entity_360_shadow_compare",
     "entity_360_shadow_enable",
+    "entity_360_enforce_enable",
     "entity_360_shadow_disable",
   ].includes(item))) {
     assert.equal(toolNamed(name).annotations.readOnlyHint, true, name);
@@ -149,6 +155,23 @@ test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fiel
   assert(validateToolArguments(verifySchema, { snapshot_digest: DIGEST })
     .some((item) => item.code === "required"));
 
+  const receiptSchema = toolNamed(
+    "entity_360_enforcement_context_receipt_read",
+  ).inputSchema;
+  assert.deepEqual(validateToolArguments(receiptSchema, {
+    work_id: WORK_ID,
+    receipt_digest: DIGEST,
+  }), []);
+  assert(validateToolArguments(receiptSchema, {
+    work_id: WORK_ID,
+    receipt_digest: "not-a-digest",
+  }).some((item) => item.code === "pattern"));
+  assert(validateToolArguments(receiptSchema, {
+    work_id: WORK_ID,
+    receipt_digest: DIGEST,
+    tenant_id: "spoofed",
+  }).some((item) => item.code === "additional_property"));
+
   const bitemporalReadSchema = toolNamed("entity_360_snapshot_read").inputSchema;
   assert.deepEqual(validateToolArguments(bitemporalReadSchema, {
     work_id: WORK_ID,
@@ -187,6 +210,23 @@ test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fiel
     assert(validateToolArguments(disableSchema, {
       expected_revision: 3,
       idempotency_key: "entity-360-shadow-disable-a",
+      ...forged,
+    }).some((item) => item.code === "additional_property"));
+  }
+
+  const enforceSchema = toolNamed("entity_360_enforce_enable").inputSchema;
+  assert.deepEqual(validateToolArguments(enforceSchema, {
+    expected_revision: 3,
+    idempotency_key: "entity-360-enforce-enable-a",
+  }), []);
+  for (const forged of [
+    { mode: "ENFORCED" },
+    { enabled: true },
+    { tenant_id: "spoofed" },
+  ]) {
+    assert(validateToolArguments(enforceSchema, {
+      expected_revision: 3,
+      idempotency_key: "entity-360-enforce-enable-a",
       ...forged,
     }).some((item) => item.code === "additional_property"));
   }
@@ -353,6 +393,65 @@ test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", as
   }, identity), /owner_confirmation_required/u);
 });
 
+test("Entity 360 ENFORCED enable is owner-bound, Core-gated and exact-readback only", async () => {
+  const calls = [];
+  let responseMode = "ENFORCED";
+  let authorityDigest = "d".repeat(64);
+  const handlers = createEntity360Handlers({
+    coreRequest: async () => { throw new Error("dtt_transport_must_not_be_used"); },
+    issueAgentContext: () => { throw new Error("dtt_context_must_not_be_issued"); },
+    enforceEnableCoreRequest: async (args, identity) => {
+      calls.push({ args, identity });
+      return { ok: true, mode: responseMode, enabled: true,
+        policy_digest: "c".repeat(64), enforcement_authority_digest: authorityDigest,
+        authority_owner: "UNIVERSAL_CORE", entity360_self_approval: false,
+        provider_mutation: false, production_decision_changed: false,
+        execution_authorized: false,
+        dedicated_core_gate: { authorized: true, authority: "universal_core",
+          route: "entity_360_enforce_enable", provider_execution: false,
+          host_policy_override: false } };
+    },
+  });
+  const identity = { tenantId: "tenant-authenticated", ownerConfirmed: true };
+  const result = await handlers.entity_360_enforce_enable({
+    expected_revision: 2,
+    idempotency_key: "entity-360-enforce-enable-a",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmation-a",
+    mode: "OFF",
+    enabled: false,
+  }, identity);
+  assert.equal(result.structuredContent.mode, "ENFORCED");
+  assert.equal(result.structuredContent.execution_authorized, false);
+  assert.deepEqual(calls[0], {
+    args: {
+      expected_revision: 2,
+      idempotency_key: "entity-360-enforce-enable-a",
+      owner_confirmed: true,
+      confirmation_reference: "owner-confirmation-a",
+    },
+    identity,
+  });
+  await assert.rejects(() => handlers.entity_360_enforce_enable({
+    expected_revision: 2,
+    idempotency_key: "entity-360-enforce-enable-b",
+    owner_confirmed: false,
+  }, identity), /owner_confirmation_required/u);
+  responseMode = "SHADOW";
+  await assert.rejects(() => handlers.entity_360_enforce_enable({
+    expected_revision: 2,
+    idempotency_key: "entity-360-enforce-enable-c",
+    owner_confirmed: true,
+  }, identity), /entity360_feature_flag_readback_invalid/u);
+  responseMode = "ENFORCED";
+  authorityDigest = "not-a-digest";
+  await assert.rejects(() => handlers.entity_360_enforce_enable({
+    expected_revision: 2,
+    idempotency_key: "entity-360-enforce-enable-d",
+    owner_confirmed: true,
+  }, identity), /entity360_feature_flag_readback_invalid/u);
+});
+
 test("Entity 360 SHADOW disable is a separate owner-confirmed Core transport", async () => {
   const calls = [];
   const handlers = createEntity360Handlers({
@@ -500,6 +599,89 @@ test("real Entity 360 MCP bridge preserves a bounded machine-readable Core rejec
       && error.status === 409
       && error.message === "core_request_failed:409:entity360_entity_resolution_ambiguous");
 });
+
+test("real Entity 360 receipt bridge preserves bound readback and indistinguishable 404s",
+  async () => {
+    const receiptDigest = "a".repeat(64);
+    const observed = [];
+    const coreHandlers = createCoreHandlers({
+      universalCoreUrl: "https://core.test",
+      universalCoreKeys: {},
+      tenantGatewayKey: "entity360-tenant-gateway-key-0000000001",
+      tenantContextSigningSecret: "entity360-tenant-context-secret-000000001",
+      dttAgentIdentitySigningSecret: "entity360-dtt-context-secret-000000000001",
+    }, {
+      resolveDttWorkBinding: async (identity, requestedWorkId) => ({
+        schema_version: "dtt_work_lease_binding_v1",
+        tenant_id: identity.tenantId,
+        work_id: requestedWorkId,
+        lease_id: "22222222-2222-4222-8222-222222222222",
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+        participant_expires_at: new Date(Date.now() + 300_000).toISOString(),
+        session_id: identity.agentPresence.session_id,
+        agent_id: identity.agentPresence.agent_id,
+        client_type: identity.agentPresence.client_type,
+        session_fingerprint: identity.agentPresence.session_fingerprint,
+        host_transport_session_fingerprint:
+          identity.agentPresence.host_transport_session_fingerprint,
+        presence_signature: identity.agentPresence.signature,
+        opaque_agent_id: identity.agentPresence.opaque_agent_id,
+        actor_provenance: identity.agentPresence.actor_provenance,
+        execution_authorized: false,
+      }),
+      fetchImpl: async (url, request) => {
+        const body = JSON.parse(request.body);
+        observed.push({ url: String(url), body });
+        if (body.receipt_digest !== receiptDigest) {
+          return new Response(JSON.stringify({ ok: false, error: {
+            code: "entity360_enforcement_context_receipt_not_found",
+            message: "The tenant-scoped Entity 360 request was rejected.",
+          } }), { status: 404, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, result: {
+          schema_version: "entity_360_core_context_receipt_v2",
+          tenant_id: "tenant-a",
+          work_id: WORK_ID,
+          receipt_digest: receiptDigest,
+          execution_authorized: false,
+        } }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const handlers = createEntity360Handlers({
+      coreRequest: coreHandlers.dttCoreRequest,
+      issueAgentContext: () => "signed-entity360-agent-context",
+    });
+    const identity = { tenantId: "tenant-a", agentPresence: boundAgentPresence };
+    const found = await handlers.entity_360_enforcement_context_receipt_read({
+      work_id: WORK_ID,
+      receipt_digest: receiptDigest,
+    }, identity);
+    assert.equal(found.structuredContent.result.work_id, WORK_ID);
+    assert.equal(found.structuredContent.result.receipt_digest, receiptDigest);
+    assert.equal(found.structuredContent.result.execution_authorized, false);
+
+    const failures = [];
+    for (const digest of ["b".repeat(64), "c".repeat(64)]) {
+      try {
+        await handlers.entity_360_enforcement_context_receipt_read({
+          work_id: WORK_ID,
+          receipt_digest: digest,
+        }, identity);
+        assert.fail("receipt read must fail closed");
+      } catch (error) {
+        failures.push({ code: error.code, status: error.status, message: error.message });
+      }
+    }
+    assert.deepEqual(failures[0], failures[1]);
+    assert.deepEqual(failures[0], {
+      code: "entity360_enforcement_context_receipt_not_found",
+      status: 404,
+      message: "core_request_failed:404:entity360_enforcement_context_receipt_not_found",
+    });
+    assert(observed.every((entry) =>
+      new URL(entry.url).pathname === "/v1/entity-360/enforcement-context/receipt"));
+    assert(observed.every((entry) => entry.body.work_id === WORK_ID));
+  });
 
 test("Entity 360 bridge fails closed without tenant-bound agent presence or DTT identity", async () => {
   let requests = 0;

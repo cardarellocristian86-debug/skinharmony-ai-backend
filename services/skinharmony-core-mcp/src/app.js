@@ -958,6 +958,7 @@ const DTT_BACKED_DYNAMIC_READ_CAPABILITIES = new Set([
   "entity_360_snapshot_latest",
   "entity_360_snapshot_read",
   "entity_360_snapshot_verify",
+  "entity_360_enforcement_context_receipt_read",
   "entity_360_policy_read",
   "entity_360_metrics_read",
   "software_cognition_obligation_expand",

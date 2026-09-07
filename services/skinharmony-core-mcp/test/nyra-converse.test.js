@@ -331,6 +331,7 @@ function directiveContextFixture({
       work_id: WORK_ID,
       project_id: projectId,
       status,
+      progress_bp: 3_750,
       intent_digest: INTENT_DIGEST,
       objective: "Prepare the canonical Entity 360 architecture and governed delivery",
       next_action: "E360-02 — ADR boundaries",
@@ -839,6 +840,12 @@ test("keeps a Work status read free of write-only precommit validation", async (
   assert.equal(response.structuredContent.work.work_bound, true);
   assert.equal(response.structuredContent.orchestration_directive.work_context.precommit_ticket_gate,
     null);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.progress_bp, 3_750);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.checkpoint_available,
+    false);
+  assert.equal(response.structuredContent.interpretation.opened_branch_count, 0);
+  assert.match(response.structuredContent.host_response_contract.reply_seed,
+    /progresso 37\.5%; blocker required_tasks_incomplete, required_evidence_unverified; checkpoint non disponibile; closure verificata no/i);
 });
 
 test("keeps blocker diagnostics visible in a mixed status-read question", async () => {
@@ -2317,6 +2324,39 @@ test("applies an exact native closure precommit gate without legacy evidence req
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
     payload,
   ), []);
+});
+
+test("covers the bound V2 task as well as the synthetic native ticket task", async () => {
+  const scopedTaskId = "e4c8e893-1a86-4ed3-bd85-5150d451af76";
+  const context = directiveContextFixture();
+  context.evidence = context.evidence.map((item) => ({
+    ...item,
+    independently_verified: true,
+  }));
+  context.tasks.push({
+    tenant_id: "tenant-a",
+    task_id: scopedTaskId,
+    work_id: WORK_ID,
+    title: "Complete the Work-bound precommit transition",
+    status: "planned",
+    required: true,
+    acceptance_verified: false,
+  });
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    v2_scope_tasks: [{ task_id: scopedTaskId, v2_task_digest: "9".repeat(64), revision: 1 }],
+  });
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
 });
 
 test("keeps a historical native gate with unavailable V2 scope observable but non-applicable", async () => {

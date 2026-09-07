@@ -561,6 +561,42 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
   assert.equal(fake.releaseCount(), 2);
 });
 
+test("adapter registry readiness verifies a live repeatable-read read-only transaction", async () => {
+  const readyPool = createFakePool((sql) => {
+    if (/current_setting\('transaction_read_only'\)/u.test(sql)) {
+      return result([{ read_only: "on" }]);
+    }
+    throw new Error(`unexpected_query:${sql}`);
+  });
+  const readyRegistry = createPostgresEntity360AdapterRegistry({
+    pool: readyPool.pool,
+    policy: POLICY,
+  });
+  const ready = await readyRegistry.health();
+  assert.equal(ready.ready, true);
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.read_only, true);
+  assert.equal(ready.provider_mutation, false);
+  assert.equal(ready.execution_authorized, false);
+  assert.match(readyPool.queries[0].sql,
+    /^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY$/u);
+  assert.equal(readyPool.releaseCount(), 1);
+
+  const writablePool = createFakePool((sql) => {
+    if (/current_setting\('transaction_read_only'\)/u.test(sql)) {
+      return result([{ read_only: "off" }]);
+    }
+    throw new Error(`unexpected_query:${sql}`);
+  });
+  const writable = await createPostgresEntity360AdapterRegistry({
+    pool: writablePool.pool,
+    policy: POLICY,
+  }).health();
+  assert.equal(writable.ready, false);
+  assert.equal(writable.state, "write_transaction_detected");
+  assert.equal(writable.provider_mutation, false);
+});
+
 test("causal event observation claims are deterministic under read replay", async () => {
   const first = await assembleWork();
   const second = await assembleWork();

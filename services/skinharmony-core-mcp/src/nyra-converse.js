@@ -615,7 +615,12 @@ function requireTenantBoundInterpretation(result, identity, canonicalIntent, mes
     owner_confirmation_required: ownerConfirmationRequired,
     governance_diagnostics: governanceDiagnostics,
     dialogue_accepted: deep.dialogue?.validator?.accepted === true,
-    opened_branch_count: boundedCount(deep.cognition?.opened_branch_count),
+    // A factual read can ask Core which branches would be relevant, but it
+    // never materializes them. Expose zero here so hosts do not mistake a
+    // planning fan-out for persisted/running agents (or budget consumption).
+    opened_branch_count: canonicalIntent.operation_class === "READ_ONLY"
+      ? 0
+      : boundedCount(deep.cognition?.opened_branch_count),
     canonical_intent_binding: Object.freeze({ ...interpretedCanonicalBinding }),
     core_orchestration_verdict: Object.freeze({ ...interpretedVerdict }),
     semantic_escalation: interpretedPreflight?.semantic_escalation || null,
@@ -760,6 +765,8 @@ function unavailableWorkDirectiveContext(work, dialogue) {
     intent_digest: dialogue.intent_digest,
     context_digest: null,
     status: null,
+    progress_bp: null,
+    checkpoint_available: dialogue?.checkpoint_available === true,
     acceptance_criteria_count: 0,
     required_task_count: 0,
     pending_required_task_count: 0,
@@ -920,6 +927,14 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     "PLANNED", "ACTIVE", "PAUSED", "BLOCKED", "HANDOFF", "COMPLETED",
     "CANCELLED", "SUPERSEDED", "ARCHIVED",
   ]).has(status)) throw fail("nyra_converse_directive_context_status_invalid", 409);
+  const progressBp = work.progress_bp === undefined || work.progress_bp === null
+    ? null
+    : Number(work.progress_bp);
+  if (progressBp !== null && (!Number.isSafeInteger(progressBp)
+    || progressBp < 0 || progressBp > 10_000)) {
+    throw fail("nyra_converse_directive_context_progress_invalid", 409);
+  }
+  const checkpointAvailable = dialogue?.checkpoint_available === true;
   if (!Array.isArray(work.acceptance_criteria) || work.acceptance_criteria.length > 250) {
     throw fail("nyra_converse_directive_context_acceptance_invalid", 409);
   }
@@ -985,17 +1000,29 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   const requiredVerifiedEvidenceIds = new Set(requiredEvidence
     .filter((item) => item.independently_verified)
     .map((item) => item.evidence_id));
+  // A native precommit gate creates a narrow, server-owned ticket task as
+  // well as recording the V2 task scope that it will fulfill atomically after
+  // the ticket is issued. Both are legitimate prerequisites for the same
+  // transition. Treating only the synthetic ticket task as covered leaves the
+  // original V2 task "incomplete", so Nyra can never request the ticket that
+  // is expressly required to complete it.
+  const precommitCoveredTaskIds = new Set(precommitTicketGate
+    ? [precommitTicketGate.task_id, ...(precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
+      ? precommitTicketGate.v2_scope_tasks.map((item) => item.task_id)
+      : [])]
+    : []);
+  const nativePrecommitTasksPending = [...precommitCoveredTaskIds]
+    .every((taskId) => pendingTaskIds.has(taskId));
   const precommitTicketGateApplicable = Boolean(
     precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
-    pendingTaskIds.has(precommitTicketGate.task_id) &&
     (precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-      ? tasks.some((item) => item.task_id === precommitTicketGate.task_id &&
-          item.required === true && item.status === "planned" && item.acceptance_verified === false)
-      : precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
+      ? nativePrecommitTasksPending
+      : pendingTaskIds.has(precommitTicketGate.task_id) &&
+        precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
         precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id)))
   );
   const precommitPendingRequiredTasks = precommitTicketGateApplicable
-    ? pendingRequiredTasks.filter((item) => item.task_id !== precommitTicketGate.task_id)
+    ? pendingRequiredTasks.filter((item) => !precommitCoveredTaskIds.has(item.task_id))
     : pendingRequiredTasks;
   const mappedLegacyEvidenceIds = precommitTicketGateApplicable
     ? new Set(precommitTicketGate.legacy_evidence_ids)
@@ -1046,6 +1073,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     work_revision: workRevision,
     intent_digest: intentDigest,
     status,
+    progress_bp: progressBp,
+    checkpoint_available: checkpointAvailable,
     objective: boundedPublicText(work.objective, 500),
     work_next_action: boundedPublicText(work.next_action, 500),
     acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),
@@ -1064,6 +1093,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     intent_digest: intentDigest,
     context_digest: deterministicDigest(compact),
     status,
+    progress_bp: progressBp,
+    checkpoint_available: checkpointAvailable,
     acceptance_criteria_count: acceptanceCriteria.length,
     required_task_count: requiredTasks.length,
     pending_required_task_count: pendingRequiredTasks.length,
@@ -1669,6 +1700,35 @@ function directiveProgressSummary(workContext, english) {
   return english ? `Remaining: ${details.join(" and ")}.` : `Restano ${details.join(" e ")}.`;
 }
 
+function directiveObservationSummary(workContext, english) {
+  if (workContext?.available !== true) return null;
+  const progressBp = workContext.progress_bp === null || workContext.progress_bp === undefined
+    ? null
+    : Number(workContext.progress_bp);
+  const progress = Number.isSafeInteger(progressBp) && progressBp >= 0 && progressBp <= 10_000
+    ? `${Number((progressBp / 100).toFixed(2))}%`
+    : (english ? "unavailable" : "non disponibile");
+  const blockers = [];
+  if (workContext.status === "BLOCKED") blockers.push("work_blocked");
+  if (boundedCount(workContext.pending_required_task_count) > 0) {
+    blockers.push("required_tasks_incomplete");
+  }
+  if (boundedCount(workContext.unverified_required_evidence_count) > 0) {
+    blockers.push("required_evidence_unverified");
+  }
+  if (workContext.status === "COMPLETED" && workContext.closure_verified !== true) {
+    blockers.push("closure_not_verified");
+  }
+  const blockerText = blockers.length ? blockers.join(", ") : (english ? "none" : "nessuno");
+  const checkpoint = workContext.checkpoint_available === true
+    ? (english ? "available" : "disponibile")
+    : (english ? "not available" : "non disponibile");
+  const closure = workContext.closure_verified === true ? (english ? "yes" : "sì") : "no";
+  return english
+    ? `Readback: progress ${progress}; blockers ${blockerText}; checkpoint ${checkpoint}; verified closure ${closure}.`
+    : `Readback: progresso ${progress}; blocker ${blockerText}; checkpoint ${checkpoint}; closure verificata ${closure}.`;
+}
+
 function directiveStateSummary({ directive, workBound, focus, english }) {
   const disposition = directive.decision.disposition;
   const ticket = directive.ticket_request || {};
@@ -1743,6 +1803,10 @@ function directiveReplySeed(locale, directive, workBound, { message = "", style 
   const focus = directiveConversationFocus(message);
   const responseStyle = ["concise", "balanced", "detailed"].includes(style) ? style : "balanced";
   const parts = [directiveStateSummary({ directive, workBound, focus, english })];
+  if (pureWorkObservationRequest(message)) {
+    const observation = directiveObservationSummary(directive.work_context, english);
+    if (observation) parts.push(observation);
+  }
   const first = directive.next_actions?.[0];
   if (first?.summary) {
     const actor = directiveActor(first.actor, english);

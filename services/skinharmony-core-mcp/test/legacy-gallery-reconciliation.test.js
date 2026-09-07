@@ -391,6 +391,8 @@ test("legacy reconciliation tool is owner-confirmed, exact and preserves termina
   assert.equal(tool._meta["skinharmony/serverOwnedGovernance"], true);
   assert.deepEqual(tool.inputSchema.properties.action.enum,
     ["CANCEL", "SUPERSEDE", "REPAIR_COMPLETED_PROJECTION"]);
+  assert.deepEqual(tool.inputSchema.properties.expected_classification.enum,
+    ["STALE", "ABANDONED", "BLOCKED_VALID", "COMPLETED_BUT_UNCLOSED"]);
   assert(catalog.inputSchema.properties.status.enum.includes("cancelled"));
   assert(catalog.inputSchema.properties.status.enum.includes("superseded"));
 });
@@ -694,7 +696,7 @@ test("stale dry-run fails closed when the authoritative legacy Work is missing",
 
 test("stale dry-run classifies from authoritative V1 time, not a stale V2 projection", async () => {
   const recentPool = new ReconciliationPool();
-  const authoritativeUpdatedAt = new Date(Date.now() - 60_000).toISOString();
+  const authoritativeUpdatedAt = new Date(NOW.getTime() - 60_000).toISOString();
   recentPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = authoritativeUpdatedAt;
   const recent = await store(recentPool).reconcileStaleDryRun(identity());
   const recentClassification = recent.classifications.find((item) => item.work_id === SOURCE);
@@ -788,6 +790,75 @@ test("release-ready supersession requires exact same-project server closure evid
   assert.equal(result.status, "SUPERSEDED");
   assert.equal(result.completed, false);
   assert.equal(result.server_evidence.source, "tenant_work_closure_receipt");
+  assert.equal(pool.works.get(`tenant-a:${SOURCE}`).superseded_by_work_id, SUCCESSOR);
+  assert.equal(pool.legacy.get(`tenant-a:${SOURCE}`).status, "superseded");
+});
+
+test("blocked-valid legacy Work can only be superseded by a closed same-project successor", async () => {
+  const blockedPool = (options = {}) => {
+    const pool = new ReconciliationPool({
+      sourceStatus: "blocked", sourceV2Status: "BLOCKED", ...options,
+    });
+    pool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+    pool.works.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+    return pool;
+  };
+  const dryRunPool = blockedPool();
+  const dryRun = await store(dryRunPool).reconcileStaleDryRun(identity());
+  const classification = dryRun.classifications.find((item) => item.work_id === SOURCE);
+  assert.equal(classification.classification, "BLOCKED_VALID");
+  assert.deepEqual(classification.allowed_actions, ["SUPERSEDE"]);
+  assert.equal(classification.owner_confirmation_required, true);
+  assert.equal(classification.successor_required_for_supersede, true);
+  assert.equal(classification.server_closure_evidence_required, true);
+
+  const args = {
+    work_id: SOURCE,
+    action: "SUPERSEDE",
+    expected_status: "blocked",
+    expected_classification: "BLOCKED_VALID",
+    reason: "A verified successor contains the completed replacement outcome.",
+    successor_work_id: SUCCESSOR,
+    idempotency_key: "supersede-blocked-valid-0001",
+  };
+  await assert.rejects(store(blockedPool({ successor: true }))
+    .reconcileLegacyClosed(identity(), args),
+  /legacy_blocked_successor_server_evidence_required/);
+
+  const legacyEventOnly = blockedPool({ successor: true });
+  legacyEventOnly.legacyEvents.push({
+    tenant_id: "tenant-a", work_id: SUCCESSOR, sequence_number: 7,
+    event_type: "closure_finalized", event_hash: "9".repeat(64),
+    created_at: "2026-08-10T18:00:00.000Z", payload: {},
+  });
+  await assert.rejects(store(legacyEventOnly)
+    .reconcileLegacyClosed(identity(), args),
+  /legacy_blocked_successor_server_evidence_required/);
+
+  const crossLedgerProjectDrift = blockedPool({
+    successor: true, successorEvidence: true,
+  });
+  crossLedgerProjectDrift.works.get(`tenant-a:${SUCCESSOR}`).project_id =
+    "different-v2-project";
+  await assert.rejects(store(crossLedgerProjectDrift)
+    .reconcileLegacyClosed(identity(), args),
+  /legacy_reconciliation_successor_project_mismatch/);
+
+  await assert.rejects(store(blockedPool()).reconcileLegacyClosed(identity(), {
+    ...args,
+    action: "CANCEL",
+    successor_work_id: undefined,
+    idempotency_key: "cancel-blocked-valid-denied-0001",
+  }), /legacy_blocked_reconciliation_successor_required/);
+
+  const pool = blockedPool({ successor: true, successorEvidence: true });
+  const result = await store(pool).reconcileLegacyClosed(identity(), args);
+  assert.equal(result.status, "SUPERSEDED");
+  assert.equal(result.legacy_status, "superseded");
+  assert.equal(result.completed, false);
+  assert.equal(result.closure_receipt_created, false);
+  assert.equal(result.server_evidence.source, "tenant_work_closure_receipt");
+  assert.equal(result.successor_work_id, SUCCESSOR);
   assert.equal(pool.works.get(`tenant-a:${SOURCE}`).superseded_by_work_id, SUCCESSOR);
   assert.equal(pool.legacy.get(`tenant-a:${SOURCE}`).status, "superseded");
 });

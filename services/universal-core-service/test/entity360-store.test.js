@@ -41,7 +41,8 @@ function contribution(sourceId, adapterVersion, digest, facts, evidenceClass = "
     evidence_digests: [digest], evidence_refs: [`${sourceId}:1`], confidence: 1, facts };
 }
 
-function fixtureSnapshot({ value = "ready", snapshotVersion = 1, previousSnapshotDigest = null } = {}) {
+function fixtureSnapshot({ value = "ready", snapshotVersion = 1, previousSnapshotDigest = null,
+  bitemporalMode = "OFF" } = {}) {
   const contributions = [
     contribution("work_continuity", "work_continuity_entity360_adapter_v1", "a".repeat(64), [
       { fact_id: "work.identity", value: { work_id: WORK_ID }, criticality: "high_impact" },
@@ -74,12 +75,46 @@ function fixtureSnapshot({ value = "ready", snapshotVersion = 1, previousSnapsho
     previous_snapshot_digest: previousSnapshotDigest, source_contributions: contributions,
     source_discovery: sourceDiscovery },
   { policy: POLICY, ontology: ONTOLOGY, created_at: "2026-08-25T10:00:01.000Z",
+    bitemporal_mode: bitemporalMode,
     adapter_registry_version: "entity_360_adapter_registry_test_v1",
     qualification_signer: DOMAIN_SIGNER });
 }
 
+function enforcementReceipt(snapshot, overrides = {}) {
+  const unsigned = {
+    schema_version: "entity_360_core_context_receipt_v2",
+    tenant_id: snapshot.tenant_scope,
+    work_id: snapshot.project_work_linkage.work_id,
+    entity_id: snapshot.entity_id,
+    snapshot_version: snapshot.snapshot_version,
+    snapshot_digest: snapshot.deterministic_immutable_digest,
+    policy_version: snapshot.policy_version,
+    policy_digest: snapshot.policy_digest,
+    enforcement_policy_version: "entity360-enforcement-v2",
+    enforcement_policy_digest: "c".repeat(64),
+    enforcement_authority_digest: "f".repeat(64),
+    ontology_version: snapshot.ontology_version,
+    ontology_digest: snapshot.ontology_digest,
+    adapter_registry_version: snapshot.adapter_registry_version,
+    as_of_valid_time: snapshot.bitemporal.as_of_valid_time,
+    as_of_knowledge_time: snapshot.bitemporal.as_of_knowledge_time,
+    tenant_feature_revision: 4,
+    action_digest: "e".repeat(64),
+    phase: "ISSUE",
+    authority_owner: "UNIVERSAL_CORE",
+    decision_authority: "UNIVERSAL_CORE",
+    decision_receipt_schema_version: "host_native_action_ticket_v1",
+    entity360_self_approval: false,
+    provider_mutation: false,
+    execution_authorized: false,
+    ...overrides,
+  };
+  return { ...unsigned, receipt_digest: entity360Digest(unsigned) };
+}
+
 function fakePool() {
-  const state = { head: null, snapshots: [], idempotency: new Map(), calls: [] };
+  const state = { head: null, snapshots: [], idempotency: new Map(), calls: [],
+    flag: null, enforcementContextReceipts: new Map() };
   const client = {
     async query(sql, params = []) {
       const query = String(sql).replace(/\s+/g, " ").trim();
@@ -107,10 +142,35 @@ function fakePool() {
       if (query.includes("FROM core_entity360_entity_heads") && query.includes("FOR UPDATE")) {
         return { rows: state.head ? [state.head] : [], rowCount: state.head ? 1 : 0 };
       }
+      if (query.includes("FROM core_entity360_entity_heads") && query.includes("FOR SHARE")) {
+        return { rows: state.head ? [state.head] : [], rowCount: state.head ? 1 : 0 };
+      }
       if (query.startsWith("INSERT INTO core_entity360_snapshots")) {
         state.snapshots.push({ tenant_id: params[0], entity_id: params[1], snapshot_version: params[3],
           snapshot_digest: params[4], snapshot: JSON.parse(params[14]) });
         return { rows: [{ persisted_at: "2026-08-25T10:00:02.000Z" }], rowCount: 1 };
+      }
+      if (query.includes("FROM core_entity360_feature_flags") && query.includes("FOR SHARE")) {
+        return { rows: state.flag ? [state.flag] : [], rowCount: state.flag ? 1 : 0 };
+      }
+      if (query.startsWith("SELECT snapshot_digest,snapshot FROM core_entity360_snapshots")) {
+        const row = state.snapshots.find((item) => item.tenant_id === params[0]
+          && item.entity_id === params[1] && Number(item.snapshot_version) === Number(params[2]));
+        return { rows: row ? [{ snapshot_digest: row.snapshot_digest,
+          snapshot: row.snapshot }] : [], rowCount: row ? 1 : 0 };
+      }
+      if (query.startsWith("INSERT INTO core_entity360_enforcement_context_receipts")) {
+        state.enforcementContextReceipts.set(`${params[0]}:${params[1]}`, JSON.parse(params[8]));
+        return { rows: [], rowCount: 1 };
+      }
+      if (query.startsWith("SELECT receipt FROM core_entity360_enforcement_context_receipts")) {
+        const receipt = state.enforcementContextReceipts.get(
+          `${params[0]}:${params.length === 3 ? params[2] : params[1]}`,
+        );
+        if (receipt && params.length === 3 && receipt.work_id !== params[1]) {
+          return { rows: [], rowCount: 0 };
+        }
+        return { rows: receipt ? [{ receipt }] : [], rowCount: receipt ? 1 : 0 };
       }
       if (query.startsWith("UPDATE core_entity360_entity_heads")) {
         if (!state.head || Number(state.head.current_snapshot_version) !== Number(params[4])) {
@@ -214,6 +274,8 @@ test("public migration verification requires the terminal governed registry chec
     snapshot_tenant_fk: true,
     snapshot_chain_guard: true,
     backfill_tenant_fk: true,
+    enforcement_context_receipt_tenant_fk: true,
+    enforcement_context_receipt_binding_guard: true,
     feature_enforcement_guard: true,
     backfill_non_destructive_guard: true,
     backfill_cursor_binding_guard: true,
@@ -248,7 +310,7 @@ test("public migration verification requires the terminal governed registry chec
   "exact manifest drift remains the authoritative error when a trigger is disabled");
 });
 
-test("full migration chain fails closed without the durable SHADOW-only guard", () => {
+test("full migration chain requires the durable v2 mode guard", () => {
   const migrationDigests = ENTITY360_MIGRATIONS.map((item, index) => ({
     migration_id: item.migration_id,
     sql_digest: String(index + 1).repeat(64),
@@ -264,8 +326,11 @@ test("full migration chain fails closed without the durable SHADOW-only guard", 
     snapshot_tenant_fk: true,
     snapshot_chain_guard: true,
     backfill_tenant_fk: true,
+    enforcement_context_receipt_tenant_fk: true,
+    enforcement_context_receipt_binding_guard: true,
     feature_enforcement_guard: true,
-    feature_shadow_only_guard: true,
+    feature_shadow_only_guard: false,
+    feature_v2_mode_guard: true,
     backfill_non_destructive_guard: true,
     backfill_cursor_binding_guard: true,
     backfill_state_guard: true,
@@ -277,12 +342,12 @@ test("full migration chain fails closed without the durable SHADOW-only guard", 
   };
   assert.equal(verifyEntity360CompletedMigrationReadback(readback, migrationDigests), readback);
   assert.throws(() => verifyEntity360CompletedMigrationReadback({ ...readback,
-    feature_shadow_only_guard: false,
+    feature_v2_mode_guard: false,
   }, migrationDigests), (error) => error.code === "entity360_migration_integrity_readback_failed"
-    && error.details?.missing_guard === "core_entity360_feature_shadow_only_check");
+    && error.details?.missing_guard === "core_entity360_feature_v2_mode_check");
 });
 
-test("feature-flag persistence admits only OFF or policy-bound SHADOW", async () => {
+test("feature-flag persistence admits exact ENFORCED bindings and rollback to SHADOW", async () => {
   const fixture = featureFlagFixture();
   const store = createPostgresEntity360Store({ pool: fixture.pool, ...STORE_OPTIONS });
   const base = { tenant_id: TENANT, flag_id: "entity360", actor_id: "core-operator", config: {} };
@@ -298,11 +363,21 @@ test("feature-flag persistence admits only OFF or policy-bound SHADOW", async ()
   assert.equal(shadow.enabled, true);
   assert.equal(shadow.enforcement_authority_digest, null);
   await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "ENFORCED", enabled: true,
+    policy_digest: "a".repeat(64),
+    expected_revision: 2, idempotency_key: "feature-enforced-missing-authority" }),
+  (error) => error.code === "entity360_feature_flag_state_invalid" && error.status === 403);
+  const enforced = await store.writeFeatureFlag({ ...base, mode: "ENFORCED", enabled: true,
     policy_digest: "a".repeat(64), enforcement_authority_digest: "b".repeat(64),
-    expected_revision: 2, idempotency_key: "feature-enforced" }),
-  (error) => error.code === "entity360_feature_mode_invalid" && error.status === 422);
+    expected_revision: 2, idempotency_key: "feature-enforced" });
+  assert.equal(enforced.mode, "ENFORCED");
+  assert.equal(enforced.enforcement_authority_digest, "b".repeat(64));
+  const rollback = await store.writeFeatureFlag({ ...base, mode: "SHADOW", enabled: true,
+    policy_digest: "a".repeat(64), expected_revision: 3,
+    idempotency_key: "feature-rollback-shadow" });
+  assert.equal(rollback.mode, "SHADOW");
+  assert.equal(rollback.enforcement_authority_digest, null);
   await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "OFF", enabled: true,
-    expected_revision: 2, idempotency_key: "feature-invalid-off" }),
+    expected_revision: 4, idempotency_key: "feature-invalid-off" }),
   (error) => error.code === "entity360_feature_flag_state_invalid" && error.status === 403);
   assert.equal(fixture.state.flag.mode, "SHADOW");
   assert.equal(fixture.state.flag.enabled, true);
@@ -329,6 +404,57 @@ test("snapshot write is tenant-scoped, CAS-bound and exactly idempotent", async 
   await assert.rejects(() => store.writeSnapshot({ ...input, request_digest: "c".repeat(64),
     snapshot: fixtureSnapshot({ value: "changed" }) }),
     (error) => error.code === "entity360_idempotency_payload_mismatch" && error.status === 409);
+});
+
+test("enforcement context receipts are append-only, tenant-bound and restart-readable", async () => {
+  const fixture = fakePool();
+  const store = createPostgresEntity360Store({ pool: fixture.pool, ...STORE_OPTIONS });
+  const snapshot = fixtureSnapshot({ bitemporalMode: "ENFORCE" });
+  await store.writeSnapshot({ snapshot, expected_head_version: 0,
+    idempotency_key: "enforcement-snapshot", actor_id: "test-writer" });
+  const receipt = enforcementReceipt(snapshot);
+  fixture.state.flag = { mode: "ENFORCED", enabled: true, revision: 4,
+    policy_digest: receipt.policy_digest,
+    enforcement_authority_digest: receipt.enforcement_authority_digest };
+  const input = { tenant_id: TENANT, entity_id: snapshot.entity_id,
+    snapshot_version: snapshot.snapshot_version, expected_feature_revision: 4,
+    receipt, actor_id: "core-context-resolver",
+    idempotency_key: `receipt-${receipt.receipt_digest}` };
+  const first = await store.writeEnforcementContextReceipt(input);
+  const replay = await store.writeEnforcementContextReceipt(input);
+  assert.equal(first.persisted, true);
+  assert.equal(first.replayed, false);
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.receipt, receipt);
+  assert.equal(fixture.state.enforcementContextReceipts.size, 1);
+
+  const restarted = createPostgresEntity360Store({ pool: fixture.pool, ...STORE_OPTIONS });
+  assert.deepEqual(await restarted.readEnforcementContextReceipt({
+    tenant_id: TENANT, work_id: WORK_ID, receipt_digest: receipt.receipt_digest,
+  }), receipt);
+  assert.equal(await restarted.readEnforcementContextReceipt({
+    tenant_id: "tenant-b", work_id: WORK_ID, receipt_digest: receipt.receipt_digest,
+  }), null);
+
+  await assert.rejects(() => store.writeEnforcementContextReceipt({ ...input,
+    receipt: { ...receipt, action_digest: "0".repeat(64) },
+    idempotency_key: "tampered-receipt" }),
+  (error) => error.code === "entity360_enforcement_context_receipt_digest_mismatch"
+      && error.status === 409);
+  fixture.state.head.current_snapshot_version = 2;
+  fixture.state.head.current_snapshot_digest = "0".repeat(64);
+  const staleHeadReceipt = enforcementReceipt(snapshot, { action_digest: "d".repeat(64) });
+  await assert.rejects(() => store.writeEnforcementContextReceipt({ ...input,
+    receipt: staleHeadReceipt,
+    idempotency_key: "stale-head-receipt" }),
+  (error) => error.code === "entity360_enforcement_snapshot_head_drift"
+      && error.status === 409);
+  fixture.state.flag = { ...fixture.state.flag, mode: "SHADOW",
+    enforcement_authority_digest: null, revision: 5 };
+  await assert.rejects(() => store.writeEnforcementContextReceipt({ ...input,
+    idempotency_key: "downgraded-receipt" }),
+  (error) => error.code === "entity360_enforcement_feature_drift" && error.status === 409);
+  assert.equal(fixture.state.enforcementContextReceipts.size, 1);
 });
 
 test("snapshot CAS and identity binding fail closed", async () => {

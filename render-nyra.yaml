@@ -114,14 +114,15 @@ services:
         sync: false
       - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_ATTESTATION_MAX_AGE_MS
         value: "60000"
-      # Policy Registry proof remains code-dark until both services have pinned
-      # public material, an external signer and a distributed replay backend.
+      # Policy Registry attestations are required and remain verify-only in
+      # this process. Signing stays in the separately pinned MCP custody
+      # boundary; PostgreSQL supplies the distributed replay ledger.
       - key: NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED
-        value: "false"
+        value: "true"
       - key: NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED
-        value: "false"
+        value: "true"
       - key: NYRA_POLICY_REGISTRY_SIGNER_MODE
-        value: disabled
+        value: remote
       - key: NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
         value: codexai
       - key: NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY

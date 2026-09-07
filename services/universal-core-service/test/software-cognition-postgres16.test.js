@@ -103,6 +103,11 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
     const nsctAsOfAfterSuperseder = new Date((await pool.query("SELECT clock_timestamp() AS now"))
       .rows[0].now).toISOString();
     const nsctReadLimits = { max_bytes: 262_144, max_records: 16 };
+    const exactParentCut = await precore.readVerifiedAsOfForWork({ tenant_id: tenant,
+      work_id: work, as_of: precoreRecord.chain.created_at }, { limits: nsctReadLimits });
+    assert.equal(exactParentCut.heads.length, 1);
+    assert.equal(exactParentCut.heads[0].decision_ref,
+      `nyra_precore_decision:${precoreRecord.decision_id}`);
     const beforeSuperseder = await precore.readVerifiedAsOfForWork({ tenant_id: tenant,
       work_id: work, as_of: nsctAsOfBeforeSuperseder }, { limits: nsctReadLimits });
     assert.equal(beforeSuperseder.heads.length, 1);

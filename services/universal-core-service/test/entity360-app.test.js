@@ -116,6 +116,75 @@ test("Universal Core exposes Entity 360 SHADOW health without making it a produc
   }
 });
 
+test("Universal Core makes Entity360 v2 and its Semantic resolver a fail-closed readiness gate", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-app-v2-"));
+  let runtimeHealthy = true;
+  const entity360Runtime = {
+    async initialize() {},
+    async health() {
+      return {
+        schema_version: "entity_360_health_v2",
+        ok: runtimeHealthy,
+        ready: runtimeHealthy,
+        state: runtimeHealthy ? "ready" : "store_verification_failed",
+        mode: "ENFORCE",
+        enforcement_ready: runtimeHealthy,
+        authority_owner: "UNIVERSAL_CORE",
+        core_decision_only: true,
+        entity360_self_approval: false,
+        provider_mutation: false,
+        execution_authorized: false,
+      };
+    },
+    async invoke() { return { execution_authorized: false }; },
+    async resolveEnforcementContext() { throw new Error("not_used_by_health"); },
+  };
+  const hostNativeGovernance = {
+    storage: { kind: "file_atomic", restart_durable: true, distributed: false },
+    trusted_readback_configured: true,
+    release_join_verdict_resolver_configured: true,
+    required_checks_policy_resolver_configured: true,
+    closure_attestation_verifier_configured: true,
+    semantic_scope_guard_mode: "ENFORCE",
+    semantic_scope_guard_configured: true,
+    semantic_scope_context_resolver_configured: true,
+    semanticScopeMetrics() { return { check_total: 0 }; },
+  };
+  const { app } = createUniversalCoreService({ storageRoot,
+    entity360Mode: "ENFORCE", entity360Runtime, semanticScopeMode: "ENFORCE",
+    hostNativeGovernance });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const { response, body } = await waitForEntity360(base);
+    assert.equal(response.status, 200);
+    assert.equal(body.entity_360.mode, "ENFORCE");
+    assert.equal(body.entity_360.production_required, true);
+    assert.equal(body.entity_360.global_readiness_gate, true);
+    assert.equal(body.entity_360.global_readiness_ready, true);
+    assert.equal(body.entity_360.production_context_gate_enforced, true);
+    assert.equal(body.entity_360.current_path_authoritative, true);
+    assert.equal(body.entity_360.production_decision_mutation, false);
+    assert.equal(body.entity_360.provider_mutation, false);
+    assert.equal(body.host_native_governance.semantic_scope_guard_readiness_ready, true);
+    assert.equal(body.host_native_governance.semantic_scope_context_resolver
+      .entity360_authority_mode, "CORE_ENFORCED_DATA_ONLY");
+
+    runtimeHealthy = false;
+    const health = await fetch(`${base}/healthz`);
+    const failed = await health.json();
+    const ready = await fetch(`${base}/readyz`);
+    assert.equal(health.status, 503);
+    assert.equal(ready.status, 503);
+    assert.equal(failed.entity_360.global_readiness_ready, false);
+    assert.equal(failed.entity_360.production_context_gate_enforced, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("Entity 360 initialization recovers from one transient PostgreSQL lock timeout", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-retry-"));
   let initialized = 0;

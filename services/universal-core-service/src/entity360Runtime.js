@@ -20,14 +20,22 @@ import {
   buildEntity360BitemporalSnapshot,
   queryEntity360BitemporalSnapshot,
 } from "./entity360Bitemporal.js";
+import {
+  buildEntity360EnforcementContract,
+  compileEntity360EnforcementPolicy,
+} from "./entity360Enforcement.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ENTITY_360_POLICY_PATH = path.resolve(__dirname, "../config/entity360-policy.v1.json");
 export const DEFAULT_ENTITY_360_ONTOLOGY_PATH = path.resolve(__dirname, "../config/entity360-ontology.v1.json");
+export const DEFAULT_ENTITY_360_ENFORCEMENT_POLICY_PATH = path.resolve(
+  __dirname, "../config/entity360-enforcement-policy.v2.json",
+);
 const ENTITY_360_POLICY_REGISTRY_ID = "entity360-context-policy";
 const ENTITY_360_ONTOLOGY_REGISTRY_ID = "entity360-context-ontology";
 export const ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE = "entity360:feature-flag:write";
 export const ENTITY_360_SHADOW_OBSERVER_SCOPE = "entity360:shadow-observe";
+export const ENTITY_360_CORE_ENFORCEMENT_SCOPE = "entity360:core-enforcement-context";
 
 function fail(code, status = 422, details = undefined) {
   const error = new Error(code);
@@ -63,17 +71,40 @@ function readJson(filePath, code) {
 }
 
 export function loadEntity360Configuration({ policyPath = DEFAULT_ENTITY_360_POLICY_PATH,
-  ontologyPath = DEFAULT_ENTITY_360_ONTOLOGY_PATH } = {}) {
+  ontologyPath = DEFAULT_ENTITY_360_ONTOLOGY_PATH,
+  enforcementPolicyPath = DEFAULT_ENTITY_360_ENFORCEMENT_POLICY_PATH } = {}) {
   const policy = compileEntity360Policy(readJson(policyPath, "entity360_policy_load_failed"));
   const ontology = compileEntity360Ontology(readJson(ontologyPath, "entity360_ontology_load_failed"));
-  return Object.freeze({ policy, ontology, policy_path: policyPath, ontology_path: ontologyPath });
+  const enforcementPolicy = compileEntity360EnforcementPolicy(readJson(
+    enforcementPolicyPath, "entity360_enforcement_policy_load_failed",
+  ));
+  return Object.freeze({ policy, ontology, enforcement_policy: enforcementPolicy,
+    policy_path: policyPath, ontology_path: ontologyPath,
+    enforcement_policy_path: enforcementPolicyPath });
 }
 
 export function normalizeEntity360Mode(value = "OFF") {
-  const mode = String(value || "OFF").trim().toUpperCase();
-  // Enforcement is deliberately unavailable in v1. Promotion requires a new
-  // governed release after shadow evidence has been independently reviewed.
-  if (!["OFF", "SHADOW"].includes(mode)) fail("entity360_mode_invalid");
+  const requested = String(value || "OFF").trim().toUpperCase();
+  const mode = requested === "ENFORCED" ? "ENFORCE" : requested;
+  if (!["OFF", "SHADOW", "ENFORCE"].includes(mode)) fail("entity360_mode_invalid");
+  return mode;
+}
+
+function normalizeEntity360BitemporalMode(value = "OFF") {
+  const requested = String(value || "OFF").trim().toUpperCase();
+  const mode = requested === "ENFORCED" ? "ENFORCE" : requested;
+  if (!["OFF", "SHADOW", "ENFORCE"].includes(mode)) {
+    fail("entity360_bitemporal_mode_invalid", 503);
+  }
+  return mode;
+}
+
+function normalizeTenantFeatureMode(value = "OFF") {
+  const requested = String(value || "OFF").trim().toUpperCase();
+  const mode = requested === "ENFORCE" ? "ENFORCED" : requested;
+  if (!["OFF", "SHADOW", "ENFORCED"].includes(mode)) {
+    fail("entity360_feature_mode_invalid");
+  }
   return mode;
 }
 
@@ -100,6 +131,16 @@ function requireShadowObserverAuthority(identity) {
     || identity?.provenance?.actor_provenance !== "universal_core_server_internal"
     || scopes.length !== 1 || scopes[0] !== ENTITY_360_SHADOW_OBSERVER_SCOPE) {
     fail("entity360_shadow_observer_authority_required", 403);
+  }
+}
+
+function requireCoreEnforcementAuthority(identity) {
+  const scopes = Array.isArray(identity?.authority_scope) ? identity.authority_scope : [];
+  if (identity?.actor_id !== "universal_core:semantic_scope_context_resolver"
+    || identity?.actor_role !== "universal_core_context_resolver"
+    || identity?.provenance?.actor_provenance !== "universal_core_server_internal"
+    || scopes.length !== 1 || scopes[0] !== ENTITY_360_CORE_ENFORCEMENT_SCOPE) {
+    fail("entity360_core_enforcement_authority_required", 403);
   }
 }
 
@@ -277,7 +318,8 @@ function publicMetrics(counter, storeMetrics, mode, policy, ontology) {
 }
 
 export function createEntity360Runtime({ store, adapterRegistry, policy, ontology, mode = "OFF",
-  qualificationSigner, qualificationVerifier, bitemporalMode = "OFF", now = () => Date.now() } = {}) {
+  enforcementPolicy, qualificationSigner, qualificationVerifier,
+  bitemporalMode = "OFF", now = () => Date.now() } = {}) {
   if (!store || typeof store.writeSnapshot !== "function"
     || typeof store.readSnapshotWriteReplay !== "function"
     || typeof store.registerDefinition !== "function" || typeof store.readRegistry !== "function"
@@ -297,13 +339,29 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     fail("entity360_qualification_verifier_required", 503);
   }
   const configuredMode = normalizeEntity360Mode(mode);
-  const configuredBitemporalMode = String(bitemporalMode || "OFF").toUpperCase();
-  if (!["OFF", "SHADOW"].includes(configuredBitemporalMode)) {
-    fail("entity360_bitemporal_mode_invalid", 503);
+  const configuredBitemporalMode = normalizeEntity360BitemporalMode(bitemporalMode);
+  if (configuredMode === "ENFORCE"
+    && (typeof store.writeEnforcementContextReceipt !== "function"
+      || typeof store.readEnforcementContextReceipt !== "function")) {
+    fail("entity360_enforcement_context_receipt_store_required", 503);
   }
   const compiledPolicy = policy?.policy_digest ? policy : compileEntity360Policy(policy);
   const compiledOntology = compileEntity360Ontology(ontology);
   if (compiledPolicy.mode !== "SHADOW") fail("entity360_shadow_policy_required", 503);
+  const compiledEnforcementPolicy = configuredMode === "ENFORCE"
+    ? enforcementPolicy?.policy_digest ? enforcementPolicy
+      : compileEntity360EnforcementPolicy(enforcementPolicy)
+    : null;
+  if (configuredMode === "ENFORCE" && configuredBitemporalMode !== "ENFORCE") {
+    fail("entity360_enforcement_bitemporal_required", 503);
+  }
+  if (configuredMode === "ENFORCE" && typeof adapterRegistry.health !== "function") {
+    fail("entity360_enforcement_adapter_readiness_required", 503);
+  }
+  const enforcementContract = compiledEnforcementPolicy
+    ? buildEntity360EnforcementContract({ policy: compiledEnforcementPolicy,
+      contextPolicy: compiledPolicy, ontology: compiledOntology, adapterRegistry })
+    : null;
   const ontologySourceClasses = new Set(compiledOntology.source_classes);
   const ontologyTrustBoundaries = new Set(compiledOntology.trust_boundaries);
   for (const source of Object.values(compiledPolicy.source_registry)) {
@@ -319,7 +377,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
   let initializationError = null;
   let operationalError = null;
   let lastStoreHealth = null;
+  let lastAdapterHealth = null;
   let storeHealthCheckInFlight = null;
+  let adapterHealthCheckInFlight = null;
 
   function storeHealthFailureReason(value) {
     if (!value || value.ok !== true) return String(value?.error || "store_health_not_ok").slice(0, 160);
@@ -329,6 +389,33 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     }
     if (value.migration?.checkpoint !== "READBACK_VERIFIED") {
       return "entity360_store_migration_readback_unverified";
+    }
+    if (configuredMode === "ENFORCE") {
+      const enforcementMigration = Array.isArray(value.migrations)
+        ? value.migrations.find((item) => item?.migration_id === enforcementContract.migration_id)
+        : null;
+      if (value.kind !== enforcementContract.store_backend
+        && value.backend !== enforcementContract.store_backend) {
+        return "entity360_enforcement_store_backend_invalid";
+      }
+      if (enforcementMigration?.application_state !== "COMPLETED"
+        || enforcementMigration?.checkpoint !== "READBACK_VERIFIED"
+        || value.feature_v2_mode_guard !== true) {
+        return "entity360_enforcement_migration_unverified";
+      }
+    }
+    return null;
+  }
+
+  function adapterHealthFailureReason(value) {
+    if (configuredMode !== "ENFORCE") return null;
+    if (!value || value.ready !== true || value.state !== "ready"
+      || value.registry_schema_version !== enforcementContract.adapter_registry_schema_version
+      || value.read_only !== true || value.provider_mutation !== false
+      || !Array.isArray(value.adapter_versions)
+      || entity360Digest([...new Set(value.adapter_versions.map(String))].sort()) !==
+        entity360Digest(enforcementContract.adapter_versions)) {
+      return "entity360_enforcement_adapter_registry_unverified";
     }
     return null;
   }
@@ -343,6 +430,20 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       return result;
     } finally {
       if (storeHealthCheckInFlight === check) storeHealthCheckInFlight = null;
+    }
+  }
+
+  async function readOperationalAdapterHealth() {
+    if (configuredMode !== "ENFORCE") return null;
+    if (adapterHealthCheckInFlight) return adapterHealthCheckInFlight;
+    const check = Promise.resolve().then(() => adapterRegistry.health());
+    adapterHealthCheckInFlight = check;
+    try {
+      const result = await check;
+      lastAdapterHealth = result;
+      return result;
+    } finally {
+      if (adapterHealthCheckInFlight === check) adapterHealthCheckInFlight = null;
     }
   }
 
@@ -370,11 +471,51 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     return storeHealth;
   }
 
-  function healthPayload(storeHealth) {
-    const ready = configuredMode === "SHADOW" && state === "ready"
-      && storeHealthFailureReason(storeHealth) === null && operationalError === null;
+  async function requireOperationalAdapterRegistry() {
+    if (configuredMode !== "ENFORCE") return null;
+    if (operationalError) {
+      fail("entity360_adapter_registry_verification_failed", 503, { reason: operationalError });
+    }
+    let adapterHealth;
+    try {
+      adapterHealth = await readOperationalAdapterHealth();
+    } catch (error) {
+      latchOperationalFailure(error?.code || error?.message ||
+        "entity360_enforcement_adapter_registry_unavailable");
+      fail("entity360_adapter_registry_verification_failed", 503, { reason: operationalError });
+    }
+    const reason = adapterHealthFailureReason(adapterHealth);
+    if (reason) {
+      latchOperationalFailure(reason);
+      fail("entity360_adapter_registry_verification_failed", 503, { reason });
+    }
+    return adapterHealth;
+  }
+
+  async function requireEnforcementReadiness() {
+    if (configuredMode !== "ENFORCE" || state !== "ready") {
+      fail("entity360_enforcement_runtime_not_ready", 503);
+    }
+    const [storeHealth, adapterHealth] = await Promise.all([
+      requireOperationalStore(), requireOperationalAdapterRegistry(),
+    ]);
+    return { storeHealth, adapterHealth };
+  }
+
+  function healthPayload(storeHealth, adapterHealth = lastAdapterHealth) {
+    const storeReady = storeHealthFailureReason(storeHealth) === null;
+    const adapterReady = adapterHealthFailureReason(adapterHealth) === null;
+    const enforcementReady = configuredMode !== "ENFORCE" || (
+      storeReady && adapterReady && configuredBitemporalMode === "ENFORCE"
+      && enforcementContract?.authority_owner === "UNIVERSAL_CORE"
+      && enforcementContract?.provider_mutation === false
+      && enforcementContract?.entity360_self_approval === false
+    );
+    const ready = ["SHADOW", "ENFORCE"].includes(configuredMode) && state === "ready"
+      && storeReady && adapterReady && enforcementReady && operationalError === null;
     return Object.freeze({
-      schema_version: "entity_360_health_v1",
+      schema_version: configuredMode === "ENFORCE"
+        ? "entity_360_health_v2" : "entity_360_health_v1",
       ok: ready,
       ready,
       state,
@@ -383,19 +524,34 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       policy_digest: compiledPolicy.policy_digest,
       ontology_version: compiledOntology.ontology_version,
       canonicalization_version: "entity_360_canonical_json_v1",
-      snapshot_schema_version: configuredBitemporalMode === "SHADOW"
+      snapshot_schema_version: ["SHADOW", "ENFORCE"].includes(configuredBitemporalMode)
         ? "entity_360_snapshot_v2" : "entity_360_snapshot_v1",
       bitemporal_mode: configuredBitemporalMode,
       adapter_registry_version: adapterRegistry.schema_version || "entity_360_adapter_registry_v1",
       adapter_versions: adapterRegistry.adapter_versions || [],
+      adapter_registry_ready: configuredMode !== "ENFORCE" || adapterReady,
+      adapter_registry_state: configuredMode === "ENFORCE"
+        ? adapterHealth?.state || "unavailable" : "not_required",
       backend: storeHealth?.backend || store.kind || "postgresql",
       migration: storeHealth?.migration || null,
       initialization_error: initializationError,
       operational_error: operationalError,
       schema_verified: storeHealth?.schema_verified === true,
-      shadow_non_mutating: true,
+      shadow_non_mutating: configuredMode === "SHADOW",
+      context_non_authoritative: true,
       qualification_attestation_required: true,
       core_independent_verification_required: true,
+      enforcement_ready: configuredMode === "ENFORCE" && enforcementReady,
+      enforcement_policy_version: compiledEnforcementPolicy?.policy_version || null,
+      enforcement_policy_digest: compiledEnforcementPolicy?.policy_digest || null,
+      enforcement_authority_digest: enforcementContract?.enforcement_authority_digest || null,
+      enforcement_migration_id: enforcementContract?.migration_id || null,
+      authority_owner: "UNIVERSAL_CORE",
+      decision_receipt_schema_version:
+        enforcementContract?.decision_receipt_schema_version || null,
+      core_decision_only: true,
+      entity360_self_approval: false,
+      provider_mutation: false,
       execution_authorized: false,
     });
   }
@@ -409,10 +565,12 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     try {
       if (typeof store.initialize !== "function") fail("entity360_store_initialize_required", 503);
       await store.initialize();
-      const storeHealth = await requireOperationalStore();
+      const [storeHealth, adapterHealth] = await Promise.all([
+        requireOperationalStore(), requireOperationalAdapterRegistry(),
+      ]);
       state = "ready";
       initializationError = null;
-      return healthPayload(storeHealth);
+      return healthPayload(storeHealth, adapterHealth);
     } catch (error) {
       state = "initialization_failed";
       initializationError = String(error?.code || error?.message || "entity360_initialization_failed").slice(0, 160);
@@ -423,24 +581,27 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
   async function health() {
     if (operationalError) return healthPayload(lastStoreHealth || {
       ok: false, schema_verified: false, error: operationalError,
-    });
-    let storeHealth;
+    }, lastAdapterHealth);
+    let storeHealth; let adapterHealth = lastAdapterHealth;
     try {
-      storeHealth = await readOperationalStoreHealth();
+      [storeHealth, adapterHealth] = await Promise.all([
+        readOperationalStoreHealth(), readOperationalAdapterHealth(),
+      ]);
     } catch (error) {
       storeHealth = { ok: false, schema_verified: false,
         error: String(error?.code || error?.message || "store_health_failed").slice(0, 160) };
       lastStoreHealth = storeHealth;
     }
-    const reason = storeHealthFailureReason(storeHealth);
+    const reason = storeHealthFailureReason(storeHealth)
+      || adapterHealthFailureReason(adapterHealth);
     if (state === "ready" && reason) latchOperationalFailure(reason);
-    return healthPayload(storeHealth);
+    return healthPayload(storeHealth, adapterHealth);
   }
 
   async function resolve(identity, input) {
     const workId = requireWorkBinding(identity, input);
     requireCanonicalWorkBinding(workId, input.identity);
-    await requireTenantShadowMode(identity.tenant_id);
+    await requireTenantActiveMode(identity.tenant_id);
     const discovered = await adapterRegistry.resolveCandidates({
       tenant_id: identity.tenant_id,
       entity_type: input.entity_type,
@@ -473,17 +634,53 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const modeValue = String(flag.mode || "OFF").toUpperCase();
     if (flag.enabled !== true || modeValue === "OFF") return { ...flag, mode: "OFF", enabled: false,
       source: "tenant_feature_flag" };
-    if (modeValue !== "SHADOW") fail("entity360_tenant_feature_mode_unsupported", 403);
+    if (!["SHADOW", "ENFORCED"].includes(modeValue)) {
+      fail("entity360_tenant_feature_mode_unsupported", 403);
+    }
     if (flag.policy_digest !== compiledPolicy.policy_digest) {
       fail("entity360_tenant_policy_binding_mismatch", 409);
     }
-    return { ...flag, mode: "SHADOW", enabled: true, source: "tenant_feature_flag" };
+    if (modeValue === "ENFORCED") {
+      if (configuredMode !== "ENFORCE" || !enforcementContract
+        || flag.enforcement_authority_digest !==
+          enforcementContract.enforcement_authority_digest) {
+        fail("entity360_tenant_enforcement_authority_mismatch", 409);
+      }
+    } else if (flag.enforcement_authority_digest !== null
+      && flag.enforcement_authority_digest !== undefined) {
+      fail("entity360_tenant_shadow_authority_invalid", 409);
+    }
+    return { ...flag, mode: modeValue, enabled: true, source: "tenant_feature_flag" };
+  }
+
+  async function requireTenantActiveMode(tenantId) {
+    const feature = await tenantMode(tenantId);
+    const eligible = configuredMode === "SHADOW"
+      ? feature.mode === "SHADOW"
+      : configuredMode === "ENFORCE"
+        ? ["SHADOW", "ENFORCED"].includes(feature.mode)
+        : false;
+    if (!eligible || feature.enabled !== true) {
+      fail(configuredMode === "SHADOW"
+        ? "entity360_shadow_mode_required" : "entity360_active_mode_required", 503);
+    }
+    return feature;
   }
 
   async function requireTenantShadowMode(tenantId) {
     const feature = await tenantMode(tenantId);
-    if (configuredMode !== "SHADOW" || feature.mode !== "SHADOW" || feature.enabled !== true) {
+    if (!["SHADOW", "ENFORCE"].includes(configuredMode)
+      || feature.mode !== "SHADOW" || feature.enabled !== true) {
       fail("entity360_shadow_mode_required", 503);
+    }
+    return feature;
+  }
+
+  async function requireTenantEnforcedMode(tenantId) {
+    await requireEnforcementReadiness();
+    const feature = await tenantMode(tenantId);
+    if (feature.mode !== "ENFORCED" || feature.enabled !== true) {
+      fail("entity360_tenant_enforcement_required", 503);
     }
     return feature;
   }
@@ -576,7 +773,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
     requireCanonicalWorkBinding(workId, input.identity);
-    const feature = await requireTenantShadowMode(identity.tenant_id);
+    const feature = await requireTenantActiveMode(identity.tenant_id);
     const contextMaterialFields = ["source_contributions", "resolution_candidates", "relationships",
       "dependencies", "architecture_state", "runtime_state", "concurrent_active_work",
       "agent_provider_state", "genesis_intent_icf_policy_bindings", "source_discovery",
@@ -611,7 +808,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
           replayed: true, backend: prior.backend || store.kind || "postgresql" },
         feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
           source: feature.source },
-        shadow_mode: true, production_decision_changed: false, execution_authorized: false });
+        shadow_mode: feature.mode === "SHADOW",
+        enforcement_mode: feature.mode === "ENFORCED",
+        production_decision_changed: false, execution_authorized: false });
     }
     await ensureVerificationDefinitions(identity);
     const discovery = await adapterRegistry.assembleContext({ tenant_id: identity.tenant_id,
@@ -718,7 +917,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
         source: feature.source },
       observability: { context_assembly_latency_ms: assemblyLatencyMs },
-      shadow_mode: true, production_decision_changed: false, execution_authorized: false });
+      shadow_mode: feature.mode === "SHADOW",
+      enforcement_mode: feature.mode === "ENFORCED",
+      production_decision_changed: false, execution_authorized: false });
   }
 
   async function readStored(identity, input) {
@@ -814,6 +1015,130 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     });
   }
 
+  async function resolveEnforcementContext(rawIdentity, input = {}) {
+    if (state !== "ready") fail("entity360_enforcement_runtime_not_ready", 503);
+    const identity = requireIdentity(rawIdentity);
+    requireCoreEnforcementAuthority(identity);
+    requireInputTenant(identity, input);
+    const workId = requireWorkBinding(identity, input);
+    const phase = text(input.phase, "entity360_enforcement_phase_required", 40).toUpperCase();
+    if (!["ISSUE", "RESERVATION"].includes(phase)) {
+      fail("entity360_enforcement_phase_invalid");
+    }
+    const action = input.action && typeof input.action === "object" && !Array.isArray(input.action)
+      ? input.action : fail("entity360_enforcement_action_required");
+    const feature = await requireTenantEnforcedMode(identity.tenant_id);
+    const resolution = await resolve(identity, {
+      work_id: workId,
+      entity_type: "work",
+      identity: { work_id: workId },
+    });
+    if (resolution.status !== "RESOLVED") fail("entity360_enforcement_context_unresolved", 409);
+    const snapshot = await store.readLatestSnapshot({ tenant_id: identity.tenant_id,
+      entity_id: resolution.entity_id });
+    if (!snapshot) fail("entity360_snapshot_not_found", 404);
+    requireSnapshotWorkBinding(snapshot, workId);
+    if (snapshot.schema_version !== enforcementContract.snapshot_schema_version
+      || snapshot.context_status !== "READY"
+      || snapshot.policy_digest !== compiledPolicy.policy_digest
+      || snapshot.ontology_version !== enforcementContract.ontology_version
+      || snapshot.ontology_digest !== enforcementContract.ontology_digest
+      || snapshot.adapter_registry_version !==
+        enforcementContract.adapter_registry_schema_version
+      || !snapshot.bitemporal || snapshot.bitemporal.knowledge_time_quality !== "VERIFIED"
+      || snapshot.execution_authorized !== false
+      || snapshot.production_decision_mutation !== false) {
+      fail("entity360_enforcement_snapshot_ineligible", 409);
+    }
+    const verificationContext = await historicalVerificationContext(identity.tenant_id, snapshot);
+    const verified = verifyEntity360Snapshot(snapshot, {
+      ...verificationContext,
+      verification_time: new Date(now()).toISOString(),
+      persisted_at: snapshot.__entity360_persisted_at || null,
+      qualification_verifier: qualificationVerifier,
+    });
+    if (!verified.valid) {
+      fail("entity360_enforcement_snapshot_verification_failed", 409);
+    }
+    const verification = Object.freeze({ ...verified,
+      snapshot_digest: snapshot.deterministic_immutable_digest,
+      tenant_scope: identity.tenant_id,
+      independently_recomputed_by: "universal_core_entity360_enforcement_verifier" });
+    // Re-read the tenant gate after every asynchronous resolution/verification
+    // step. The Store takes the same flag lock as writeFeatureFlag while it
+    // persists the receipt, closing the remaining downgrade race.
+    await requireEnforcementReadiness();
+    const currentFeature = await tenantMode(identity.tenant_id);
+    if (currentFeature.mode !== "ENFORCED" || currentFeature.enabled !== true
+      || currentFeature.mode !== feature.mode || currentFeature.enabled !== feature.enabled
+      || Number(currentFeature.revision) !== Number(feature.revision)
+      || currentFeature.policy_digest !== feature.policy_digest
+      || currentFeature.enforcement_authority_digest !== feature.enforcement_authority_digest) {
+      fail("entity360_enforcement_feature_drift", 409);
+    }
+    const receiptUnsigned = {
+      schema_version: "entity_360_core_context_receipt_v2",
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      entity_id: snapshot.entity_id,
+      snapshot_version: snapshot.snapshot_version,
+      snapshot_digest: snapshot.deterministic_immutable_digest,
+      policy_version: snapshot.policy_version,
+      policy_digest: snapshot.policy_digest,
+      enforcement_policy_version: compiledEnforcementPolicy.policy_version,
+      enforcement_policy_digest: compiledEnforcementPolicy.policy_digest,
+      enforcement_authority_digest: enforcementContract.enforcement_authority_digest,
+      ontology_version: snapshot.ontology_version,
+      ontology_digest: snapshot.ontology_digest,
+      adapter_registry_version: snapshot.adapter_registry_version,
+      as_of_valid_time: snapshot.bitemporal.as_of_valid_time,
+      as_of_knowledge_time: snapshot.bitemporal.as_of_knowledge_time,
+      tenant_feature_revision: Number(currentFeature.revision),
+      action_digest: entity360Digest(action),
+      phase,
+      authority_owner: "UNIVERSAL_CORE",
+      decision_authority: "UNIVERSAL_CORE",
+      decision_receipt_schema_version: enforcementContract.decision_receipt_schema_version,
+      entity360_self_approval: false,
+      provider_mutation: false,
+      execution_authorized: false,
+    };
+    const receipt = Object.freeze({ ...receiptUnsigned,
+      receipt_digest: entity360Digest(receiptUnsigned) });
+    const persisted = await store.writeEnforcementContextReceipt({
+      tenant_id: identity.tenant_id,
+      entity_id: snapshot.entity_id,
+      snapshot_version: snapshot.snapshot_version,
+      expected_feature_revision: Number(currentFeature.revision),
+      receipt,
+      actor_id: identity.actor_id,
+      idempotency_key: `entity360-enforcement-context-${receipt.receipt_digest}`,
+    });
+    if (persisted?.receipt?.receipt_digest !== receipt.receipt_digest) {
+      fail("entity360_enforcement_context_receipt_readback_invalid", 503);
+    }
+    return Object.freeze({ snapshot, verification, receipt: Object.freeze(persisted.receipt),
+      feature_flag: Object.freeze({ mode: currentFeature.mode, enabled: currentFeature.enabled,
+        revision: Number(currentFeature.revision), source: currentFeature.source }),
+      production_decision_changed: false,
+      execution_authorized: false });
+  }
+
+  async function readEnforcementContextReceipt(rawIdentity, input = {}) {
+    const identity = requireIdentity(rawIdentity);
+    requireInputTenant(identity, input);
+    const workId = requireWorkBinding(identity, input);
+    await requireOperationalStore();
+    const receipt = await store.readEnforcementContextReceipt({
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      receipt_digest: text(input.receipt_digest,
+        "entity360_enforcement_context_receipt_digest_required", 64),
+    });
+    if (!receipt) fail("entity360_enforcement_context_receipt_not_found", 404);
+    return receipt;
+  }
+
   async function configureFeatureFlag(rawIdentity, input = {}) {
     const identity = requireIdentity(rawIdentity);
     requireInputTenant(identity, input);
@@ -826,34 +1151,50 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       || Object.hasOwn(input, "flag_id")) {
       fail("entity360_feature_flag_server_binding_required", 403);
     }
-    const featureMode = normalizeEntity360Mode(input.mode);
+    const featureMode = normalizeTenantFeatureMode(input.mode);
     const enabled = input.enabled === true;
-    if ((featureMode === "OFF" && enabled) || (featureMode === "SHADOW" && !enabled)) {
+    if ((featureMode === "OFF" && enabled)
+      || (["SHADOW", "ENFORCED"].includes(featureMode) && !enabled)) {
       fail("entity360_feature_flag_state_invalid");
     }
-    // OFF is the tenant safety rollback and remains reachable when snapshot
-    // runtime readiness is lost. Enabling SHADOW still requires the complete
-    // verified runtime and Store health contract.
-    if (featureMode === "SHADOW") {
-      if (state !== "ready") fail("entity360_runtime_not_ready", 503);
-      await requireOperationalStore();
+    const expectedRevision = integer(input.expected_revision,
+      "entity360_feature_expected_revision_invalid");
+    if (featureMode === "ENFORCED") {
+      if (configuredMode !== "ENFORCE") fail("entity360_mode_invalid", 503);
+      await requireEnforcementReadiness();
+    } else if (featureMode === "SHADOW") {
+      const current = typeof store.readFeatureFlag === "function"
+        ? await store.readFeatureFlag({ tenant_id: identity.tenant_id, flag_id: "entity360" })
+        : null;
+      const safetyDowngrade = configuredMode === "ENFORCE"
+        && current?.mode === "ENFORCED" && Number(current.revision) === expectedRevision;
+      if (safetyDowngrade) {
+        const storeHealth = await readOperationalStoreHealth();
+        const reason = storeHealthFailureReason(storeHealth);
+        if (reason) fail("entity360_store_verification_failed", 503, { reason });
+      } else {
+        if (state !== "ready") fail("entity360_runtime_not_ready", 503);
+        await requireOperationalStore();
+      }
     }
     const result = await store.writeFeatureFlag({
       tenant_id: identity.tenant_id,
       flag_id: "entity360",
       mode: featureMode,
       enabled,
-      policy_digest: featureMode === "SHADOW" ? compiledPolicy.policy_digest : null,
-      enforcement_authority_digest: null,
+      policy_digest: featureMode === "OFF" ? null : compiledPolicy.policy_digest,
+      enforcement_authority_digest: featureMode === "ENFORCED"
+        ? enforcementContract.enforcement_authority_digest : null,
       config: input.config || {},
-      expected_revision: integer(input.expected_revision,
-        "entity360_feature_expected_revision_invalid"),
+      expected_revision: expectedRevision,
       actor_id: identity.actor_id,
       idempotency_key: text(input.idempotency_key,
         "entity360_idempotency_key_required", 240),
     });
     return Object.freeze({ ...result, configured_by: "universal_core_governed_operator",
-      production_decision_changed: false, execution_authorized: false });
+      authority_owner: "UNIVERSAL_CORE", entity360_self_approval: false,
+      provider_mutation: false, production_decision_changed: false,
+      execution_authorized: false });
   }
 
   async function invoke(capability, rawIdentity, input = {}) {
@@ -865,6 +1206,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     requireInputTenant(identity, input);
     await requireOperationalStore();
     if (capability === "entity_360_resolve") return resolve(identity, input);
+    if (capability === "entity_360_enforcement_context_receipt_read") {
+      return readEnforcementContextReceipt(identity, input);
+    }
     if (capability === "entity_360_snapshot_assemble") return assemble(identity, input);
     if (capability === "entity_360_snapshot_latest") {
       const workId = requireWorkBinding(identity, input);
@@ -934,14 +1278,19 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
   }
 
   return Object.freeze({
-    schema_version: "entity_360_runtime_v1",
+    schema_version: configuredMode === "ENFORCE"
+      ? "entity_360_runtime_v2" : "entity_360_runtime_v1",
     mode: configuredMode,
     initialize,
     health,
     invoke,
     preflightObservationGate,
     observeCurrentPath,
+    resolveEnforcementContext,
+    readEnforcementContextReceipt,
     policy: compiledPolicy,
     ontology: compiledOntology,
+    enforcement_policy: compiledEnforcementPolicy,
+    enforcement_contract: enforcementContract,
   });
 }

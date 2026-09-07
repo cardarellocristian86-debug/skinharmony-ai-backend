@@ -179,6 +179,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
   probeCooldownMs,
   now = () => Date.now(),
   allowedPurposes = PURPOSES,
+  probePurpose = "nyra-policy-registry-core-signer-probe-v1",
   responseSignatureAlgorithm = "Ed25519",
   authorityScope = null,
 } = {}) {
@@ -198,6 +199,18 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
     "policy_registry_core_signer_response_limit_invalid");
   const cooldownMs = boundedInteger(probeCooldownMs, 5_000, 100, 60_000,
     "policy_registry_core_signer_probe_cooldown_invalid");
+  if (!(allowedPurposes instanceof Set) || allowedPurposes.size < 1) {
+    fail("policy_registry_core_signer_purpose_invalid");
+  }
+  const resolvedAllowedPurposes = new Set(allowedPurposes);
+  const resolvedProbePurpose = exactText(
+    probePurpose,
+    ID,
+    "policy_registry_core_signer_probe_purpose_invalid",
+  );
+  if (!resolvedAllowedPurposes.has(resolvedProbePurpose)) {
+    fail("policy_registry_core_signer_probe_purpose_invalid");
+  }
   const pinnedPublicKey = publicOnlyEd25519(publicKey, resolvedKeyId);
   const publicKeyFingerprint = fingerprint(pinnedPublicKey);
   let signerState = "configured";
@@ -211,7 +224,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
     if (!Buffer.isBuffer(payload) || payload.length < 1 || payload.length > 262_144) {
       fail("policy_registry_core_signer_payload_invalid");
     }
-    if (!(allowedPurposes instanceof Set) || !allowedPurposes.has(purpose)) fail("policy_registry_core_signer_purpose_invalid");
+    if (!resolvedAllowedPurposes.has(purpose)) fail("policy_registry_core_signer_purpose_invalid");
     if (underlyingInFlight) fail("policy_registry_core_signer_busy");
     const digest = crypto.createHash("sha256").update(payload).digest("hex");
     const request = {
@@ -326,7 +339,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
       nonce: crypto.randomBytes(24).toString("base64url"),
       issued_at: new Date(timestamp).toISOString(),
     })}`, "utf8");
-    const current = signPayload(challenge, "nyra-policy-registry-core-signer-probe-v1")
+    const current = signPayload(challenge, resolvedProbePurpose)
       .then(() => true, () => false);
     probeInFlight = current;
     void Promise.allSettled([current, underlyingInFlight].filter(Boolean)).then(() => {
@@ -345,7 +358,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
     signPayload,
     async verifyPayload({ payload, signature, key_id, algorithm, purpose } = {}) {
       if (!Buffer.isBuffer(payload) || key_id !== resolvedKeyId || algorithm !== "Ed25519"
-        || !(allowedPurposes instanceof Set) || !allowedPurposes.has(purpose)) return false;
+        || !resolvedAllowedPurposes.has(purpose)) return false;
       try { return crypto.verify(null, payload, pinnedPublicKey, decodeCanonicalBase64url(signature, 64, "policy_registry_core_signer_signature_invalid")); }
       catch { return false; }
     },
@@ -358,6 +371,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
         key_id: resolvedKeyId,
         public_key_fingerprint: publicKeyFingerprint,
         target_commit: resolvedTargetCommit,
+        probe_purpose: resolvedProbePurpose,
         probe_attempts: probeAttempts,
         operation_in_flight: Boolean(underlyingInFlight),
       });

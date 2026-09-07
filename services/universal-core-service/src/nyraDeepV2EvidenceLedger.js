@@ -807,7 +807,14 @@ export function createNyraDeepV2EvidenceLedger({
     }
     const nowMs = normalizeEpoch(queryNow, normalizeEpoch(now(), Date.now()));
     const matched = [];
-    for (const record of records.values()) {
+    // A bounded explicit handoff must not rescan and reverify the complete
+    // tenant ledger. Resolve its already opaque record refs directly; this
+    // preserves every scope/signature check below while making the hot path
+    // proportional to the request instead of accumulated ledger history.
+    const candidates = wantedRefs.size > 0
+      ? [...wantedRefs].map((recordRef) => records.get(recordRef)).filter(Boolean)
+      : records.values();
+    for (const record of candidates) {
       if (!verifyRecord(record)) continue;
       if (record.tenant_ref !== tenantRef) continue;
       if (!handoff && record.request_ref !== requestRef) continue;
