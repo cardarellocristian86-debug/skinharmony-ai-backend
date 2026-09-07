@@ -118,6 +118,7 @@ import {
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
+import { isBoundedInternalCoordinationWrite } from "./boundedInternalCoordination.js";
 import {
   isProviderSetupLinkBindingAttempt,
   providerSetupLinkBindingApprovalDigest,
@@ -13777,7 +13778,21 @@ export function createUniversalCoreService(options = {}) {
     // issued by Universal Core, but can never manufacture an ALLOW.
     const policyRegistryEnforcementActive = nyraPolicyRegistryMode === "enforced" ||
       (nyraPolicyRegistryEvaluationEnabled && policyRegistryEvaluation.snapshot_present === true);
-    const policyRegistryDenied = policyRegistryEnforcementActive && policyRegistryEvaluation.verdict !== "ALLOW";
+    // The Policy Registry controls policy-scoped business actions.  Its
+    // snapshots intentionally default-deny action names that are not in a
+    // tenant policy pack.  The bounded coordination set is not a business
+    // capability: it has a separate, closed action/target allowlist in
+    // `boundedInternalCoordination.js`, is tenant-bound, effect-free and
+    // independently authorized below.  Applying the tenant policy snapshot
+    // to this bootstrap plane made `agent.heartbeat` impossible, so every
+    // normal Nyra request failed before it could register its signed presence.
+    // Keep the registry as a deny-only control for every policy-scoped action;
+    // only an exact bounded coordination envelope is outside its scope.  This
+    // is not an authorization bypass: the closed Core authorization check
+    // remains mandatory and no action is executed by this evaluator.
+    const boundedInternalCoordination = isBoundedInternalCoordinationWrite(evaluatedActionBody);
+    const policyRegistryDenied = policyRegistryEnforcementActive &&
+      !boundedInternalCoordination && policyRegistryEvaluation.verdict !== "ALLOW";
     const authorization = policyRegistryDenied
       ? {
           ...coreAuthorization,
@@ -13804,7 +13819,9 @@ export function createUniversalCoreService(options = {}) {
       preflight_id: workPreflight.preflight_id,
       authorization_state: authorization.state,
       policy_registry_evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-      policy_registry_enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
+      policy_registry_enforcement: boundedInternalCoordination
+        ? "not_applicable_bounded_internal_coordination"
+        : policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
       policy_registry_verdict: policyRegistryEvaluation.verdict,
       policy_registry_snapshot_digest: policyRegistryEvaluation.snapshot_digest,
       action_classification: riskClassification.classification,
@@ -13849,7 +13866,12 @@ export function createUniversalCoreService(options = {}) {
       authorization,
       policy_registry: {
         evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-        enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
+        enforcement: boundedInternalCoordination
+          ? "not_applicable_bounded_internal_coordination"
+          : policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
+        scope: boundedInternalCoordination
+          ? "not_applicable_bounded_internal_coordination"
+          : "policy_scoped_action",
         verdict: policyRegistryEvaluation.verdict,
         reasons: policyRegistryEvaluation.reasons,
         snapshot_digest: policyRegistryEvaluation.snapshot_digest,
