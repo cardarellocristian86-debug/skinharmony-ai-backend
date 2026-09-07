@@ -78,10 +78,34 @@ function canonicalBase64url(value, byteLength) {
   }
 }
 
-function publicKeyObject(value) {
+function publicKeyObject(value, expectedKeyId) {
   const raw = String(value || "").trim();
   if (!raw) throw new Error("key_material_missing");
   const normalized = raw.replaceAll("\\n", "\n").replaceAll("\\r", "\r").trim();
+  if (normalized.startsWith("{")) {
+    let jwk;
+    try {
+      jwk = JSON.parse(normalized);
+    } catch {
+      throw new Error("key_material_encoding_invalid");
+    }
+    if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)
+      || Object.keys(jwk).sort().join("\\0") !== "alg\\0crv\\0kid\\0kty\\0use\\0x"
+      || jwk.alg !== "EdDSA" || jwk.crv !== "Ed25519" || jwk.kty !== "OKP" || jwk.use !== "sig"
+      || jwk.kid !== expectedKeyId || !canonicalBase64url(jwk.x, 32)) {
+      throw new Error("key_material_encoding_invalid");
+    }
+    try {
+      const key = crypto.createPublicKey({ key: jwk, format: "jwk" });
+      if (key.type !== "public" || key.asymmetricKeyType !== "ed25519") {
+        throw new Error("key_material_encoding_invalid");
+      }
+      return key;
+    } catch (error) {
+      if (error?.message === "key_material_encoding_invalid") throw error;
+      throw new Error("key_material_encoding_invalid");
+    }
+  }
   if (normalized.includes("-----BEGIN")) {
     if (!normalized.startsWith("-----BEGIN PUBLIC KEY-----") || normalized.includes("PRIVATE KEY")) {
       throw new Error("nyra_public_key_required");
@@ -237,7 +261,7 @@ export function createNyraPolicyRegistryProofService({
       throw new Error("core_signer_invalid");
     }
     corePublic = signer.public_key;
-    nyraPublic = publicKeyObject(env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY);
+    nyraPublic = publicKeyObject(env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY, nyraKeyId);
     coreFingerprint = publicFingerprint(corePublic);
     nyraFingerprint = publicFingerprint(nyraPublic);
     const pinnedCoreFingerprint = String(
