@@ -67,6 +67,10 @@ const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
   tenant_work_assign_v3: "work.gallery.assignment.offer",
   tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
   tenant_work_archive_v3: "work.gallery.archive",
+  // Legacy reconciliation is a same-tenant, ledger-preserving Gallery
+  // transition. The store revalidates Owner confirmation, exact legacy
+  // status, stale classification, activity and successor requirements.
+  tenant_work_legacy_reconcile_close: "work.gallery.archive",
   // Historical archive is a narrowly scoped Gallery transition.  The store
   // still requires an explicit Owner-confirmed identity and re-reads the
   // Work, legacy bridge, participants, leases and branches transactionally;
@@ -101,6 +105,7 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
     "tenant_work_assign_v3",
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
+    "tenant_work_legacy_reconcile_close",
     "tenant_work_historical_archive_v3",
     "tenant_work_reopen_v3",
   ].includes(name)) return workId;
