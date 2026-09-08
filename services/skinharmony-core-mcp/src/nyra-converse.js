@@ -1729,7 +1729,7 @@ function directiveObservationSummary(workContext, english) {
     : `Readback: progresso ${progress}; blocker ${blockerText}; checkpoint ${checkpoint}; closure verificata ${closure}.`;
 }
 
-function directiveStateSummary({ directive, workBound, focus, english }) {
+function directiveStateSummary({ directive, workBound, focus, english, relatedChildRequested = false }) {
   const disposition = directive.decision.disposition;
   const ticket = directive.ticket_request || {};
   const hardBlock = directive.core_diagnostics?.state === "BLOCKED";
@@ -1755,9 +1755,14 @@ function directiveStateSummary({ directive, workBound, focus, english }) {
   if (directive.work_context?.status === "RELEASE_READY") return english
     ? "The Work is release-ready: tasks, evidence, and independent verification are already satisfied."
     : "Il Work è release-ready: task, evidenze e verifica indipendente sono già acquisiti.";
-  if (disposition === "REQUEST_WORK_BOOTSTRAP") return english
-    ? "The new Work is specified and ready for its duplicate review."
-    : "Il nuovo Work è definito e pronto per la review anti-duplicato.";
+  if (disposition === "REQUEST_WORK_BOOTSTRAP") {
+    if (relatedChildRequested) return english
+      ? "The additional implementation is specified as a related child Work and is ready for duplicate review; the parent link will be revalidated before creation."
+      : "L'implementazione aggiuntiva è definita come Work figlio collegato ed è pronta per la review anti-duplicato; il legame al padre sarà rivalidato prima della creazione.";
+    return english
+      ? "The new Work is specified and ready for its duplicate review. If it extends an active Work, provide that canonical parent Work id so Nyra can propose a governed child instead of treating it as a duplicate."
+      : "Il nuovo Work è definito e pronto per la review anti-duplicato. Se estende un Work attivo, indica il suo Work id canonico: Nyra potrà proporre un Work figlio governato invece di trattarlo come duplicato.";
+  }
   if (["REQUEST_CORE_TICKET", "MANUAL_HANDOFF"].includes(disposition) ||
       ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(ticket.state)) return english
     ? "The preparation is complete: Universal Core can review the exact ticket candidate."
@@ -1798,11 +1803,11 @@ function directiveTicketSummary(ticket, english) {
     : "Il ticket resta in attesa finché evidenze e criteri di accettazione indicati non sono verificati.";
 }
 
-function directiveReplySeed(locale, directive, workBound, { message = "", style = "balanced" } = {}) {
+function directiveReplySeed(locale, directive, workBound, { message = "", style = "balanced", relatedChildRequested = false } = {}) {
   const english = locale === "en";
   const focus = directiveConversationFocus(message);
   const responseStyle = ["concise", "balanced", "detailed"].includes(style) ? style : "balanced";
-  const parts = [directiveStateSummary({ directive, workBound, focus, english })];
+  const parts = [directiveStateSummary({ directive, workBound, focus, english, relatedChildRequested })];
   if (pureWorkObservationRequest(message)) {
     const observation = directiveObservationSummary(directive.work_context, english);
     if (observation) parts.push(observation);
@@ -3091,7 +3096,7 @@ export function createNyraConverseHandler({
       locale,
       directive,
       Boolean(boundedPreflight.work.work_id),
-      { message, style },
+      { message, style, relatedChildRequested: Boolean(args.work_bootstrap?.parent_work_id) },
     );
     const agentBrief = connectedAiBrief(locale, directive);
     const id = turnId({

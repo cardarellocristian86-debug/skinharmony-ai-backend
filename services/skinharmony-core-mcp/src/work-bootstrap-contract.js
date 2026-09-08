@@ -10,13 +10,14 @@ import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchest
 const PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,127}$/;
 const SESSION_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,127}$/;
 const REQUEST_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$/;
+const WORK_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const WORK_TYPES = new Set([
   "software_git", "software_non_git", "deployment", "research", "document",
   "commercial_crm", "hardware", "generic",
 ]);
 const SPEC_FIELDS = new Set([
   "request_id", "work_name", "work_type", "idea", "objective", "architecture",
-  "next_action", "acceptance_criteria", "constraints", "tasks",
+  "next_action", "acceptance_criteria", "constraints", "tasks", "parent_work_id",
 ]);
 const TASK_FIELDS = new Set(["title", "weight", "required"]);
 const AUTHORIZATION_PHASES = new Set(["review", "create"]);
@@ -116,6 +117,13 @@ export function normalizeGovernedWorkBootstrapSpec(input = {}) {
     request_id,
     work_name: text(source.work_name, 1_000, "nyra_work_bootstrap_name_invalid"),
     work_type,
+    parent_work_id: source.parent_work_id === undefined || source.parent_work_id === null
+      ? null
+      : (() => {
+          const value = text(source.parent_work_id, 64, "nyra_work_bootstrap_parent_invalid").toLowerCase();
+          if (!WORK_ID.test(value)) fail("nyra_work_bootstrap_parent_invalid");
+          return value;
+        })(),
     idea: text(source.idea, 8_000, "nyra_work_bootstrap_idea_invalid"),
     objective: text(source.objective, 8_000, "nyra_work_bootstrap_objective_invalid"),
     architecture: Object.freeze(architecture),
@@ -186,6 +194,7 @@ export function materializeGovernedWorkBootstrapRequest({
       initial_message: normalized.objective,
       work_name: normalized.work_name,
       work_type: normalized.work_type,
+      parent_work_id: normalized.parent_work_id,
       idea: normalized.idea,
       objective: normalized.objective,
       architecture: Object.freeze({
