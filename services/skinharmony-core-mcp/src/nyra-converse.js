@@ -997,27 +997,40 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     bindingWorkId,
   );
   const pendingTaskIds = new Set(pendingRequiredTasks.map((item) => item.task_id));
+  const requiredTasksById = new Map();
+  for (const task of requiredTasks) {
+    const matches = requiredTasksById.get(task.task_id) || [];
+    matches.push(task);
+    requiredTasksById.set(task.task_id, matches);
+  }
   const unverifiedEvidenceIds = new Set(unverifiedEvidence.map((item) => item.evidence_id));
   const requiredVerifiedEvidenceIds = new Set(requiredEvidence
     .filter((item) => item.independently_verified)
     .map((item) => item.evidence_id));
-  // A native precommit gate creates a narrow, server-owned ticket task as
-  // well as recording the V2 task scope that it will fulfill atomically after
-  // the ticket is issued. Both are legitimate prerequisites for the same
-  // transition. Treating only the synthetic ticket task as covered leaves the
-  // original V2 task "incomplete", so Nyra can never request the ticket that
-  // is expressly required to complete it.
+  // A native precommit gate creates a narrow, server-owned ticket task after
+  // the V2 scope has already completed and passed acceptance.  The ticket is
+  // the only task that may remain pending.  Requiring the scoped tasks to be
+  // pending here contradicts the store claim invariant and makes the ticket
+  // impossible to request.  Match the store semantics while retaining a
+  // fail-closed exact-presence check for every scoped task.
   const precommitCoveredTaskIds = new Set(precommitTicketGate
     ? [precommitTicketGate.task_id, ...(precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
       ? precommitTicketGate.v2_scope_tasks.map((item) => item.task_id)
       : [])]
     : []);
-  const nativePrecommitTasksPending = [...precommitCoveredTaskIds]
-    .every((taskId) => pendingTaskIds.has(taskId));
+  const nativeV2ScopeComplete = Boolean(
+    precommitTicketGate?.schema_version === "precommit_ticket_gate_v2" &&
+    !precommitTicketGate.v2_scope_tasks.some((item) => item.task_id === precommitTicketGate.task_id) &&
+    precommitTicketGate.v2_scope_tasks.every((item) => {
+      const matches = requiredTasksById.get(item.task_id) || [];
+      return matches.length === 1 && matches[0].status === "completed" &&
+        matches[0].acceptance_verified === true;
+    })
+  );
   const precommitTicketGateApplicable = Boolean(
     precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
     (precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-      ? nativePrecommitTasksPending
+      ? pendingTaskIds.has(precommitTicketGate.task_id) && nativeV2ScopeComplete
       : pendingTaskIds.has(precommitTicketGate.task_id) &&
         precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
         precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id)))
