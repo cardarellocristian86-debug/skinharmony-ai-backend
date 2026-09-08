@@ -63,7 +63,7 @@ const RESERVED_AUTHORITY_KEYS = new Set([
 // for an explicit plural/option list or an explicit choice *among* Works;
 // callers can always use work_selection_mode: "list" for an unambiguous read.
 const GALLERY_CLEANLINESS_PATTERN = /(?:\b(?:gallery|galleria)\b[\s\S]{0,80}\b(?:pulit\w*|vuot\w*|clean|empty|stato|status)\b|\b(?:pulit\w*|vuot\w*|clean|empty)\b[\s\S]{0,80}\b(?:gallery|galleria)\b)/iu;
-const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:gallery|galleria)\b[\s\S]{0,80}\b(?:pulit\w*|vuot\w*|clean|empty|stato|status)\b|\b(?:pulit\w*|vuot\w*|clean|empty)\b[\s\S]{0,80}\b(?:gallery|galleria)\b)/iu;
+const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:che|quali|what|which)\b[\s\S]{0,100}\b(?:work|lavori|works)\b[\s\S]{0,60}\b(?:apert\w*|attiv\w*|open|active)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:gallery|galleria)\b[\s\S]{0,80}\b(?:pulit\w*|vuot\w*|clean|empty|stato|status)\b|\b(?:pulit\w*|vuot\w*|clean|empty)\b[\s\S]{0,80}\b(?:gallery|galleria)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /(?:\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve)|remediat\w*|rimed\w*|soluzion\w*|solution\w*)\b|\b(?:come|how)\b.{0,100}\b(?:risolv\w*|rimedia\w*|fix\w*|resolve\w*|complet\w*)\b)/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
@@ -2184,19 +2184,27 @@ function workSelectionReplySeed(locale, selection, message = "") {
   if (!selection.choices.length) return english
     ? "There are no more Works on this page. No Work was resumed or changed."
     : "Non ci sono altri Work in questa pagina. Non ho ripreso né modificato alcun Work.";
-  // Work metadata is rendered by the structured selector.  Never concatenate
-  // tenant-provided names here: eight valid 240-character names would exceed
-  // the response contract and would turn untrusted text into model narration.
+  // Render a short server-derived list as data, so a plain chat response is
+  // useful even where the Gallery widget is hidden. Titles are deliberately
+  // constrained much more strictly than the stored Work name; an unsuitable
+  // title falls back to its ordinal instead of entering model narration.
+  const visible = selection.choices.map((choice, index) => {
+    const title = boundedPublicText(choice.work_name, 80);
+    const safeTitle = title && /^[\p{L}\p{N}][\p{L}\p{N} .,:;()'’&+/_-]{0,79}$/u.test(title)
+      ? title : `Work ${choice.ordinal || index + 1}`;
+    const state = boundedPublicText(choice.status, 40) || "UNKNOWN";
+    return `${safeTitle} (${state})`;
+  }).join("; ");
   const continuation = selection.has_more
     ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")
     : "";
   return english
     ? (GALLERY_CLEANLINESS_PATTERN.test(message)
       ? `The Gallery is not clean: ${selection.total_count} active Work${selection.total_count === 1 ? " is" : "s are"} visible in the read-only selector. No Work was resumed or changed.${continuation}`
-      : `Choose one of the ${selection.choices.length} displayed Works; I will not continue one automatically.${continuation}`)
+      : `Open Works: ${visible}. I did not resume or change any Work.${continuation}`)
     : (GALLERY_CLEANLINESS_PATTERN.test(message)
       ? `La Gallery non è pulita: ${selection.total_count} Work attiv${selection.total_count === 1 ? "o" : "i"} visibil${selection.total_count === 1 ? "e" : "i"} nel selettore in sola lettura. Non ho ripreso né modificato alcun Work.${continuation}`
-      : `Scegli uno dei ${selection.choices.length} Work mostrati; non ne continuo nessuno automaticamente.${continuation}`);
+      : `Work aperti: ${visible}. Non ho ripreso né modificato alcun Work.${continuation}`);
 }
 
 async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {

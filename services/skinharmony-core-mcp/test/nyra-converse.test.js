@@ -602,11 +602,27 @@ test("lists Work choices in the same Nyra session without preflight, interpretat
   assert.equal(payload.orchestration_directive.ticket_request.required, false);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
-  assert.match(payload.host_response_contract.reply_seed, /non ne continuo nessuno automaticamente/i);
+  assert.match(payload.host_response_contract.reply_seed, /Non ho ripreso né modificato alcun Work/i);
   assert.equal(response.content[0].text.includes(WORK_ID), false);
-  assert.equal(response.content[0].text.includes("Conversation quality"), false);
+  assert.equal(response.content[0].text.includes("Conversation quality"), true);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
+});
+
+test("answers a plain Italian question about open Works with their visible names and states", async () => {
+  const { handler, calls } = harness({ listWorkChoices: [{
+    work_id: WORK_ID, project_id: "nyra_conversational_runtime",
+    work_name: "Entità 360", status: "BLOCKED",
+  }] });
+  const response = await handler({
+    message: "Nyra, che Work ci sono aperti?",
+    locale: "it", response_style: "concise",
+  }, identity());
+  assert.equal(calls.listWorkChoices.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(response.structuredContent.work_selection.requested, true);
+  assert.match(response.structuredContent.host_response_contract.reply_seed, /Work aperti: Entità 360 \(BLOCKED\)/);
+  assert.match(response.structuredContent.host_response_contract.reply_seed, /Non ho ripreso né modificato/i);
 });
 
 test("uses the explicit Work selection mode as the same read-only path", async () => {
