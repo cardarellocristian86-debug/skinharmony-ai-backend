@@ -48,11 +48,12 @@ import { classifyNyraIntent } from "./nyra-intent-router.js";
 // tool descriptors. Keep this revision aligned with every published tool
 // contract change so a reconnect cannot silently retain a stale schema.
 const SERVER_VERSION = "0.19.0-nyra-nonblocking-fast-path";
-const TOOL_CONTRACT_REVISION = "nyra-risk-tier-fast-path-v1";
+const TOOL_CONTRACT_REVISION = "nyra-horizontal-intent-bridge-v1";
 const SERVER_INSTRUCTIONS = [
-  "Reuse a bound Work and its compact checkpoint; do not recreate known intent.",
+  "Reuse Work checkpoints; do not recreate intent.",
   "Use nyra_control_room_status for state and blockers. Do not call work_preflight manually.",
-  "Low-risk reads use the fast path. Durable or external effects require the exact Core ticket and one current owner confirmation.",
+  "Connected AIs map human wording to one nyra_intent_bridge capability; Nyra revalidates without granting authority.",
+  "Low-risk reads use fast path; effects require an exact Core ticket and current owner confirmation.",
   "The authenticated host executes; Nyra coordinates and Core authorizes. Neither bypasses host policy or needs a provider API key.",
   "For current research, call nyra_research_plan then the authenticated host's web tool; keep only distilled evidence in tenant-isolated shadow memory.",
   "Host-native agents use narrow roles and host assignments; automatic coordination never invokes a server-side model provider or replaces host approval.",
@@ -100,6 +101,17 @@ const COMPACT_OUTPUT_SCHEMAS = Object.freeze({
       control_room: { type: "object" },
     }),
     required: Object.freeze(["ok", "tenant_id", "control_room"]),
+    additionalProperties: true,
+  }),
+  nyra_intent_bridge: Object.freeze({
+    type: "object",
+    properties: Object.freeze({
+      ok: { type: "boolean" },
+      schema_version: { const: "nyra_capability_intent_v1" },
+      state: { type: "string" },
+      execution_authorized: { const: false },
+    }),
+    required: Object.freeze(["ok", "schema_version", "state", "execution_authorized"]),
     additionalProperties: true,
   }),
 });
@@ -649,6 +661,11 @@ function normalizeLegacyNyraContinueArguments(value) {
 // be part of the connected AI's tool catalog.
 const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "nyra_converse",
+  // Connected AIs perform probabilistic language interpretation outside the
+  // deterministic runtime. This front door accepts only one exact catalog
+  // capability proposal and revalidates it against host, tenant and Core
+  // policy before a state-pure read; actions remain held.
+  "nyra_intent_bridge",
   // A capability-filtered, server-derived status read remains available even
   // when Dialogue is on, otherwise the control surface could not report its
   // own state. It cannot mutate state or grant authority.
@@ -713,6 +730,14 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
     // at least one possible target; the dynamic catalog independently filters
     // every exact target through the same host-app policy.
     if (tool.name === "core_capability_read") {
+      if (!principal) return true;
+      if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
+      return principal?.registered === true && [
+        HOST_APP_CAPABILITIES.CORE_READ,
+        HOST_APP_CAPABILITIES.WORK_READ,
+      ].some((capability) => hostPrincipalAllows(identity, capability));
+    }
+    if (tool.name === "nyra_intent_bridge") {
       if (!principal) return true;
       if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
       return principal?.registered === true && [
@@ -1019,6 +1044,15 @@ export function qualifiesForStatePureReadPath(toolName, tools = [...TOOLS, ...WO
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {
   const requestedTool = String(toolName || "");
+  if (requestedTool === "nyra_intent_bridge") {
+    // A proposal never opens/resumes a Work. Exact reads mirror the existing
+    // dynamic-read preflight matrix so DTT/context-producing handlers cannot
+    // acquire a bypass merely by entering through the language bridge.
+    if (String(args?.operation_class || "") !== "READ_ONLY") return false;
+    const capability = String(args?.capability_id || "");
+    return GENERIC_PREFLIGHT_CAPABILITIES.has(capability) ||
+      DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(capability);
+  }
   const heartbeatArgs = requestedTool === "core_capability_invoke"
     ? args?.arguments
     : args;

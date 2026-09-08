@@ -65,6 +65,7 @@ export const CHATGPT_GOVERNED_READ_TOOL_NAMES = Object.freeze(new Set([
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",
+  "nyra_intent_bridge",
   "core_capability_read",
 ]));
 
@@ -162,7 +163,7 @@ export function hasTenantBoundChatGptReadCompatibility(identity, toolName = "") 
 
 export function dynamicHostCapabilityTarget(toolName, args = {}) {
   const requested = String(toolName || "");
-  if (["core_capability_read", "core_capability_invoke"].includes(requested)) {
+  if (["core_capability_read", "core_capability_invoke", "nyra_intent_bridge"].includes(requested)) {
     return String(args?.capability_id || "").trim() || requested;
   }
   return requested;

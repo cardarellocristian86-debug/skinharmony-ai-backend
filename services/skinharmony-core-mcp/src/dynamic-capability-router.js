@@ -32,7 +32,11 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "nyra_work_assignment_submit",
   "core_capability_catalog",
   "core_branch_registry",
-  "core_semantic_select",
+  // The connected AI performs language understanding, while this bounded
+  // bridge validates and dispatches one exact catalog proposal. Replacing the
+  // old server-side semantic selector keeps the compact surface within its
+  // strict context budget and removes an unnecessary model/tool round trip.
+  "nyra_intent_bridge",
   "core_capability_read",
   "core_capability_invoke",
   "nyra_policy_registry_rollback",
@@ -83,6 +87,37 @@ const CATALOG_VERSION = "core_dynamic_capabilities_v1";
 const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
 const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
   "work_continuity_native_acceptance_contract_read";
+const NYRA_INTENT_BRIDGE_SCHEMA_VERSION = "nyra_capability_intent_v1";
+const NYRA_INTENT_BRIDGE_OPERATION_CLASSES = new Set([
+  "READ_ONLY",
+  "GOVERNED_ACTION_PROPOSAL",
+]);
+const NYRA_INTENT_BRIDGE_TARGET_SCOPES = new Set([
+  "GLOBAL",
+  "WORK",
+  "ENTITY",
+  "RESEARCH",
+  "MEMORY",
+  "CONTROL",
+  "WORKSPACE",
+  "AGENT",
+  "SUITE",
+  "ANALYZER",
+]);
+const NYRA_INTENT_BRIDGE_CONFIDENCE = new Set(["LOW", "MEDIUM", "HIGH"]);
+const NYRA_INTENT_BRIDGE_KEYS = new Set([
+  "message",
+  "capability_id",
+  "operation_class",
+  "target_scope",
+  "confidence",
+  "ambiguous",
+  "injection_signals",
+  "arguments",
+  // This field is attached only after public schema validation by the MCP
+  // gateway. It is not part of the connected AI proposal.
+  "work_preflight",
+]);
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -262,6 +297,90 @@ function assertRevision(expected, actual) {
   if (!/^[a-f0-9]{64}$/.test(String(expected || "")) || expected !== actual) {
     throw new Error("dynamic_capability_catalog_revision_mismatch");
   }
+}
+
+function normalizeNyraIntentBridge(args, state) {
+  if (!args || typeof args !== "object" || Array.isArray(args) ||
+      Object.getPrototypeOf(args) !== Object.prototype ||
+      !Object.keys(args).every((key) => NYRA_INTENT_BRIDGE_KEYS.has(key))) {
+    throw new Error("nyra_intent_bridge_contract_invalid");
+  }
+  const message = typeof args.message === "string" ? args.message.trim() : "";
+  if (!message || message.length > 12_000) throw new Error("nyra_intent_bridge_contract_invalid");
+  const capabilityId = String(args.capability_id || "");
+  if (!CAPABILITY_ID.test(capabilityId)) {
+    throw new Error("nyra_intent_bridge_contract_invalid");
+  }
+  const operationClass = String(args.operation_class || "");
+  const targetScope = String(args.target_scope || "");
+  const confidence = String(args.confidence || "");
+  if (!NYRA_INTENT_BRIDGE_OPERATION_CLASSES.has(operationClass) ||
+      !NYRA_INTENT_BRIDGE_TARGET_SCOPES.has(targetScope) ||
+      !NYRA_INTENT_BRIDGE_CONFIDENCE.has(confidence) ||
+      typeof args.ambiguous !== "boolean" ||
+      !Array.isArray(args.injection_signals) || args.injection_signals.length > 20 ||
+      args.injection_signals.some((signal) =>
+        typeof signal !== "string" || !signal.trim() || signal.length > 80) ||
+      (args.arguments !== undefined && (!args.arguments ||
+        typeof args.arguments !== "object" || Array.isArray(args.arguments) ||
+        Object.getPrototypeOf(args.arguments) !== Object.prototype))) {
+    throw new Error("nyra_intent_bridge_contract_invalid");
+  }
+  const targetArguments = args.arguments || {};
+  assertBoundedSafeArguments(
+    targetArguments,
+    "$.arguments",
+    { nodes: 0 },
+    0,
+    capabilityId,
+  );
+  const hasWorkTarget = typeof targetArguments.work_id === "string" &&
+    targetArguments.work_id.trim().length > 0;
+  if (targetScope === "WORK" && !hasWorkTarget) {
+    throw new Error("nyra_intent_bridge_target_scope_mismatch");
+  }
+  return Object.freeze({
+    catalog_revision: state.revision,
+    capability_id: capabilityId,
+    operation_class: operationClass,
+    target_scope: targetScope,
+    confidence,
+    ambiguous: args.ambiguous,
+    injection_signals: Object.freeze([...args.injection_signals]),
+    message_digest: sha256(message),
+    arguments: targetArguments,
+    argument_digest: sha256(targetArguments),
+    work_preflight: args.work_preflight,
+  });
+}
+
+function nyraIntentBridgeHold(proposal, tool, reason) {
+  const targetAccessMode = tool.annotations?.readOnlyHint === true ? "read" : "invoke";
+  return textResult({
+    ok: true,
+    schema_version: NYRA_INTENT_BRIDGE_SCHEMA_VERSION,
+    state: "HOLD",
+    reason,
+    capability_id: tool.name,
+    catalog_revision: proposal.catalog_revision,
+    target_scope: proposal.target_scope,
+    requested_operation_class: proposal.operation_class,
+    target_access_mode: targetAccessMode,
+    message_digest: proposal.message_digest,
+    argument_digest: proposal.argument_digest,
+    proposal_digest: sha256({
+      schema_version: NYRA_INTENT_BRIDGE_SCHEMA_VERSION,
+      capability_id: tool.name,
+      catalog_revision: proposal.catalog_revision,
+      operation_class: proposal.operation_class,
+      target_scope: proposal.target_scope,
+      message_digest: proposal.message_digest,
+      argument_digest: proposal.argument_digest,
+    }),
+    invocation_required: targetAccessMode === "invoke",
+    execution_authorized: false,
+    external_action_authorized: false,
+  });
 }
 
 function hasNativeReportAdmission(identity, capabilityId) {
@@ -530,6 +649,60 @@ export function createDynamicCapabilityHandlers({
           candidate_capability_ids: candidates.map((item) => item.id),
           execution_authorized: false,
         },
+      };
+    },
+
+    nyra_intent_bridge: async (args, identity) => {
+      const state = stateFor(identity);
+      const proposal = normalizeNyraIntentBridge(args, state);
+      const tool = exactAuthorizedCapability(state, proposal.capability_id);
+      const readOnly = tool.annotations?.readOnlyHint === true;
+      if (proposal.injection_signals.length > 0) {
+        return nyraIntentBridgeHold(proposal, tool, "injection_signals_present");
+      }
+      if (proposal.ambiguous) {
+        return nyraIntentBridgeHold(proposal, tool, "intent_ambiguous");
+      }
+      if (proposal.confidence === "LOW") {
+        return nyraIntentBridgeHold(proposal, tool, "intent_confidence_low");
+      }
+      if ((proposal.operation_class === "READ_ONLY") !== readOnly) {
+        return nyraIntentBridgeHold(proposal, tool, "operation_class_mismatch");
+      }
+      if (!readOnly) {
+        // A connected model may identify the exact governed mutation, but that
+        // proposal is never authority.  A separate, server-bound continuation
+        // must re-enter the existing Core/owner gate before any handler runs.
+        return nyraIntentBridgeHold(
+          proposal,
+          tool,
+          "governed_mutation_continuation_required",
+        );
+      }
+      requireScopes(identity, tool.scopes || []);
+      const callArgs = targetArguments(tool, {
+        arguments: proposal.arguments,
+        work_preflight: proposal.work_preflight,
+      }, identity);
+      const result = await handlers[tool.name](callArgs, identity);
+      const targetResult = result?.structuredContent || {};
+      const payload = {
+        ok: targetResult.ok !== false,
+        schema_version: NYRA_INTENT_BRIDGE_SCHEMA_VERSION,
+        state: "READ_COMPLETED",
+        capability_id: tool.name,
+        catalog_revision: state.revision,
+        target_scope: proposal.target_scope,
+        message_digest: proposal.message_digest,
+        message_digest_authority: "SERVER_DERIVED",
+        argument_digest: proposal.argument_digest,
+        result: targetResult,
+        execution_authorized: false,
+        external_action_authorized: false,
+      };
+      return {
+        ...result,
+        ...textResult(payload),
       };
     },
 

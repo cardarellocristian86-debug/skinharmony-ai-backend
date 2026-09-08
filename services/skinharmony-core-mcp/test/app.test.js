@@ -1243,7 +1243,7 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_VERSION, CORE_HEALTH_CONTRACT_VERSION);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_DIGEST, CORE_HEALTH_CONTRACT_DIGEST);
   assert.equal(health.version, "0.19.0-nyra-nonblocking-fast-path");
-  assert.equal(health.tool_contract_revision, "nyra-risk-tier-fast-path-v1");
+  assert.equal(health.tool_contract_revision, "nyra-horizontal-intent-bridge-v1");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
