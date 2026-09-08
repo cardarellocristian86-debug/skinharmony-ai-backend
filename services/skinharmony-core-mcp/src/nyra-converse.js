@@ -62,7 +62,8 @@ const RESERVED_AUTHORITY_KEYS = new Set([
 // or tasks) as a request to enumerate the Gallery.  The prose route is only
 // for an explicit plural/option list or an explicit choice *among* Works;
 // callers can always use work_selection_mode: "list" for an unambiguous read.
-const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b)/iu;
+const GALLERY_CLEANLINESS_PATTERN = /(?:\b(?:gallery|galleria)\b[\s\S]{0,80}\b(?:pulit\w*|vuot\w*|clean|empty|stato|status)\b|\b(?:pulit\w*|vuot\w*|clean|empty)\b[\s\S]{0,80}\b(?:gallery|galleria)\b)/iu;
+const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:gallery|galleria)\b[\s\S]{0,80}\b(?:pulit\w*|vuot\w*|clean|empty|stato|status)\b|\b(?:pulit\w*|vuot\w*|clean|empty)\b[\s\S]{0,80}\b(?:gallery|galleria)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /(?:\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve)|remediat\w*|rimed\w*|soluzion\w*|solution\w*)\b|\b(?:come|how)\b.{0,100}\b(?:risolv\w*|rimedia\w*|fix\w*|resolve\w*|complet\w*)\b)/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
@@ -2158,14 +2159,18 @@ function controlRoomReplySeed(locale, controlRoom) {
     : `Stato attuale Control Room: ${statuses}. Richieste governate: ${requests}. Questa è una lettura: non ho aperto, selezionato, ripreso o creato alcun Work, ticket o azione.`;
 }
 
-function workSelectionReplySeed(locale, selection) {
+function workSelectionReplySeed(locale, selection, message = "") {
   const english = locale === "en";
   if (!selection.available) return english
     ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
     : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
   if (selection.total_count === 0) return english
-    ? "There are no active Works available to select. No Work was resumed or changed."
-    : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.";
+    ? (GALLERY_CLEANLINESS_PATTERN.test(message)
+      ? "The Gallery is clean: there are no active Works. No Work was resumed or changed."
+      : "There are no active Works available to select. No Work was resumed or changed.")
+    : (GALLERY_CLEANLINESS_PATTERN.test(message)
+      ? "The Gallery is not clean: the visible active Works are shown in the read-only selector. No Work was resumed or changed."
+      : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.");
   if (!selection.choices.length) return english
     ? "There are no more Works on this page. No Work was resumed or changed."
     : "Non ci sono altri Work in questa pagina. Non ho ripreso né modificato alcun Work.";
@@ -2176,8 +2181,12 @@ function workSelectionReplySeed(locale, selection) {
     ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")
     : "";
   return english
-    ? `Choose one of the ${selection.choices.length} displayed Works; I will not continue one automatically.${continuation}`
-    : `Scegli uno dei ${selection.choices.length} Work mostrati; non ne continuo nessuno automaticamente.${continuation}`;
+    ? (GALLERY_CLEANLINESS_PATTERN.test(message)
+      ? `The Gallery is not clean: ${selection.total_count} active Work${selection.total_count === 1 ? " is" : "s are"} visible in the read-only selector. No Work was resumed or changed.${continuation}`
+      : `Choose one of the ${selection.choices.length} displayed Works; I will not continue one automatically.${continuation}`)
+    : (GALLERY_CLEANLINESS_PATTERN.test(message)
+      ? `La Gallery non è pulita: ${selection.total_count} Work attiv${selection.total_count === 1 ? "o" : "i"} visibil${selection.total_count === 1 ? "e" : "i"} nel selettore in sola lettura. Non ho ripreso né modificato alcun Work.${continuation}`
+      : `Scegli uno dei ${selection.choices.length} Work mostrati; non ne continuo nessuno automaticamente.${continuation}`);
 }
 
 async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {
@@ -2280,7 +2289,7 @@ async function workSelectionResult({
       }),
     }),
   });
-  const replySeed = workSelectionReplySeed(locale, selection);
+  const replySeed = workSelectionReplySeed(locale, selection, message);
   const nextAction = selectionRequired
     ? (locale === "en" ? "Choose one Work in the selector." : "Scegli un Work nel selettore.")
     : null;
