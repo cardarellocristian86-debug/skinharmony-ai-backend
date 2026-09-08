@@ -74,6 +74,25 @@ function stalenessExecutionActivity(participants = [], leases = [], at = Date.no
   };
 }
 
+// A persisted autopilot record is planning history, not proof of an active
+// delivery. Keep this predicate shared by the owner archive transaction and
+// its read-only dry-run so the Gallery cannot report an item as ineligible
+// while the guarded archive route would accept the same immutable state.
+function isOrphanedNonExecutingAutopilotMaterialization(rows = []) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every((row) => {
+    const plan = plainRecord(row.plan) ? row.plan : {};
+    const execution = plainRecord(plan.execution) ? plan.execution : {};
+    const contract = plainRecord(row.task_contract) ? row.task_contract : {};
+    return row.run_status === "materialized" &&
+      ["offered", "submitted", "expired", "cancelled"].includes(row.assignment_status) &&
+      execution.execution_authorized !== true && execution.tool_invocation_allowed !== true &&
+      execution.model_invocation_allowed !== true && execution.external_action_allowed !== true &&
+      contract.execution_authorized !== true && contract.model_invocation_allowed !== true &&
+      contract.external_action_allowed !== true &&
+      (!Array.isArray(contract.tool_allowlist) || contract.tool_allowlist.length === 0);
+  });
+}
+
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
@@ -2969,18 +2988,7 @@ export function createWorkContinuityV2Store({
         JOIN core_nyra_autopilot_assignments a
           ON a.tenant_id=r.tenant_id AND a.work_id=r.work_id AND a.run_id=r.run_id
         WHERE r.tenant_id=$1 AND r.work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
-      const orphanedAutopilotOnly = autopilot.rows.length > 0 && autopilot.rows.every((row) => {
-        const plan = plainRecord(row.plan) ? row.plan : {};
-        const execution = plainRecord(plan.execution) ? plan.execution : {};
-        const contract = plainRecord(row.task_contract) ? row.task_contract : {};
-        return row.run_status === "materialized" &&
-          ["offered", "submitted", "expired", "cancelled"].includes(row.assignment_status) &&
-          execution.execution_authorized !== true && execution.tool_invocation_allowed !== true &&
-          execution.model_invocation_allowed !== true && execution.external_action_allowed !== true &&
-          contract.execution_authorized !== true && contract.model_invocation_allowed !== true &&
-          contract.external_action_allowed !== true &&
-          (!Array.isArray(contract.tool_allowlist) || contract.tool_allowlist.length === 0);
-      });
+      const orphanedAutopilotOnly = isOrphanedNonExecutingAutopilotMaterialization(autopilot.rows);
       // Read contexts do not revive a historical Work.  Keep their audit rows
       // in the coordination ledger, but omit them from staleness evaluation;
       // all execution-capable participation remains in the calculation.
@@ -5859,7 +5867,13 @@ export function createWorkContinuityV2Store({
     for (const work of works) {
       const legacyReconciliationEligible = work.work_type === "legacy" &&
         Boolean(work.legacy_work_id);
-      if (!legacyReconciliationEligible) {
+      // A linked software Work can be a historical bridge. Its archive route
+      // does not complete it; it only removes an objectively inert duplicate
+      // from the operational Gallery. Other adapter-backed Work types remain
+      // outside this narrow route and retain their normal closure semantics.
+      const historicalBridgeArchiveEligible = work.work_type === "software_git" &&
+        Boolean(work.legacy_work_id);
+      if (!legacyReconciliationEligible && !historicalBridgeArchiveEligible) {
         const activity = { participants: [], leases: [] };
         result.push({
           work_id: work.work_id,
@@ -5885,9 +5899,15 @@ export function createWorkContinuityV2Store({
         continue;
       }
       const sourceId = work.legacy_work_id;
-      const [participants, leases] = await Promise.all([
+      const [participants, leases, branches, autopilot] = await Promise.all([
         query("SELECT session_id,branch_id,status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
         query("SELECT session_id,branch_id,purpose,status,expires_at,nyra_read_binding_attested FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
+        query("SELECT branch_id FROM core_continuity_branches WHERE tenant_id=$1 AND work_id=$2 AND status='active'", [actor.tenant_id, sourceId]),
+        query(`SELECT r.status AS run_status,r.plan, a.status AS assignment_status,a.task_contract
+          FROM core_nyra_autopilot_runs r
+          JOIN core_nyra_autopilot_assignments a
+            ON a.tenant_id=r.tenant_id AND a.work_id=r.work_id AND a.run_id=r.run_id
+          WHERE r.tenant_id=$1 AND r.work_id=$2`, [actor.tenant_id, sourceId]),
       ]);
       const activity = stalenessExecutionActivity(
         participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
@@ -5908,8 +5928,10 @@ export function createWorkContinuityV2Store({
       const projectedTimestampValid = Number.isFinite(projectedUpdatedAtMs);
       const timestampProjectionDrift = !authoritativeTimestampValid || !projectedTimestampValid ||
         Math.abs(authoritativeUpdatedAtMs - projectedUpdatedAtMs) > 5 * 60_000;
+      const orphanedAutopilotOnly = isOrphanedNonExecutingAutopilotMaterialization(autopilot.rows);
       const staleFromExecution = classifyStaleWork({ ...work,
         updated_at: authoritativeTimestampValid ? authoritativeUpdatedAt : null,
+        orphaned_autopilot_only: orphanedAutopilotOnly,
         ...activity }, now());
       // Keep the decision fail-closed even if a future classifier revision
       // stops consuming a new execution-activity field: a live non-read-only
@@ -5931,6 +5953,11 @@ export function createWorkContinuityV2Store({
         && authoritativeStatus === "blocked"
         && stale.classification === "BLOCKED_VALID"
         && activity.execution_activity_count === 0;
+      // The transactional archive can optionally retire an exact untouched
+      // bootstrap set, but a dry-run must not infer that mutating opt-in.
+      const historicalArchivable = historicalBridgeArchiveEligible &&
+        branches.rows.length === 0 && activity.execution_activity_count === 0 &&
+        ["STALE", "ABANDONED", "BLOCKED_VALID"].includes(stale.classification);
       result.push({ work_id: work.work_id, work_code: work.work_code,
         parent_work_id: work.parent_work_id || null, successor_work_id: work.successor_work_id || null,
         superseded_by_work_id: work.superseded_by_work_id || null,
@@ -5943,14 +5970,19 @@ export function createWorkContinuityV2Store({
         timestamp_projection_drift: timestampProjectionDrift,
         work_type: work.work_type,
         legacy_reconciliation_eligible: legacyReconciliationEligible,
-        allowed_actions: completedProjectionRepair
+        historical_bridge_archive_eligible: historicalBridgeArchiveEligible,
+        orphaned_autopilot_only: orphanedAutopilotOnly,
+        active_branch_count: branches.rows.length,
+        allowed_actions: historicalArchivable
+          ? ["ARCHIVE_HISTORICAL"]
+          : completedProjectionRepair
           ? ["REPAIR_COMPLETED_PROJECTION"]
           : blockedSupersedable
             ? ["SUPERSEDE"]
             : reconcilable
               ? (authoritativeStatus === "release_ready" ? ["SUPERSEDE"] : ["CANCEL", "SUPERSEDE"])
               : [],
-        owner_confirmation_required: reconcilable || completedProjectionRepair
+        owner_confirmation_required: historicalArchivable || reconcilable || completedProjectionRepair
           || blockedSupersedable,
         successor_required_for_supersede: !projectionDrift
           && (reconcilable || blockedSupersedable),

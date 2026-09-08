@@ -679,6 +679,32 @@ test("stale dry-run never suggests legacy reconciliation for adapter-backed V2 W
   assert.equal(classification.owner_confirmation_required, false);
 });
 
+test("stale dry-run exposes only a branchless, non-executing historical bridge for archival", async () => {
+  const pool = new ReconciliationPool();
+  const work = pool.works.get(`tenant-a:${SOURCE}`);
+  work.work_type = "software_git";
+  pool.autopilotRuns = [{
+    run_id: "55555555-5555-4555-8555-555555555555",
+    status: "materialized",
+    plan: { execution: { execution_authorized: false, tool_invocation_allowed: false,
+      model_invocation_allowed: false, external_action_allowed: false } },
+  }];
+  pool.autopilotAssignments = [{
+    run_id: "55555555-5555-4555-8555-555555555555",
+    status: "submitted",
+    task_contract: { execution_authorized: false, model_invocation_allowed: false,
+      external_action_allowed: false, tool_allowlist: [] },
+  }];
+  const dryRun = await store(pool).reconcileStaleDryRun(identity());
+  const classification = dryRun.classifications.find((item) => item.work_id === SOURCE);
+  assert.equal(classification.legacy_reconciliation_eligible, false);
+  assert.equal(classification.historical_bridge_archive_eligible, true);
+  assert.equal(classification.orphaned_autopilot_only, true);
+  assert.equal(classification.classification, "STALE");
+  assert.deepEqual(classification.allowed_actions, ["ARCHIVE_HISTORICAL"]);
+  assert.equal(classification.owner_confirmation_required, true);
+});
+
 test("stale dry-run suppresses every mutation when authoritative V1 and projected V2 drift", async () => {
   const driftPool = new ReconciliationPool({
     sourceStatus: "release_ready",
