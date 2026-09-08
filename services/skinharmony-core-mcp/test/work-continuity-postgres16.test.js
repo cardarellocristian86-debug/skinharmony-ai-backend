@@ -1707,10 +1707,10 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     ));
     assert.equal(evaluation.core_join_material, undefined);
 
-    // Completing a task that was pending in the frozen evaluation cannot
-    // retroactively promote that idempotent evaluation to ticket-ready.
-    // Mutating Task A itself, including an ABA restore, invalidates the
-    // revision-bound retry altogether.
+    // Completing the unrelated pending task permits a fresh evaluation, but
+    // cannot retroactively promote the prior frozen one. Mutating Task A
+    // itself, including an ABA restore, invalidates the fresh revision-bound
+    // retry altogether.
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: unrelatedTaskId,
@@ -1722,9 +1722,9 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
       release: release(),
-      idempotency_key: `closure-${runId}`,
+      idempotency_key: `closure-ready-${runId}`,
     });
-    assert.equal(scopedReplay.commit_ticket_ready, false);
+    assert.equal(scopedReplay.commit_ticket_ready, true);
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
@@ -1744,7 +1744,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
       release: release(),
-      idempotency_key: `closure-${runId}`,
+      idempotency_key: `closure-ready-${runId}`,
     }), /native_v2_task_closure_binding_changed/);
 
     // Once a release join is active, no task writer can create a stale action
