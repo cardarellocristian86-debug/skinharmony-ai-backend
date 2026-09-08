@@ -1707,9 +1707,10 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     ));
     assert.equal(evaluation.core_join_material, undefined);
 
-    // A future lateral task may evolve without invalidating Task A's scoped
-    // precommit ticket. Mutating Task A itself, including an ABA restore,
-    // invalidates the revision-bound retry.
+    // Completing a task that was pending in the frozen evaluation cannot
+    // retroactively promote that idempotent evaluation to ticket-ready.
+    // Mutating Task A itself, including an ABA restore, invalidates the
+    // revision-bound retry altogether.
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: unrelatedTaskId,
@@ -1723,7 +1724,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       release: release(),
       idempotency_key: `closure-${runId}`,
     });
-    assert.equal(scopedReplay.commit_ticket_ready, true);
+    assert.equal(scopedReplay.commit_ticket_ready, false);
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
