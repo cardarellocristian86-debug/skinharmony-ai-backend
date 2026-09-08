@@ -86,6 +86,21 @@ function applyOwnerRoot(identity, config) {
   };
 }
 
+function applyPlatformOwner(identity, config) {
+  // A platform owner is not a superior tenant role. It is a separate,
+  // server-derived marker used only by the Core administration boundary. In
+  // particular, a tenant owner, an OAuth client id, a bearer app, or an
+  // `owner_confirmed` request field can never manufacture it.
+  if (
+    identity?.kind !== "oauth" ||
+    identity?.oauthOwnerBound !== true ||
+    config.platformOwnerAdminEnforced !== true ||
+    config.platformOwnerEmergencyStop === true ||
+    !(config.platformOwnerSubjects || []).includes(identity.subject)
+  ) return identity;
+  return { ...identity, platformOwner: true };
+}
+
 // Good Mode is a tenant-bound host policy, not a caller-supplied boolean. This
 // helper deliberately rechecks the deployment configuration wherever an MCP
 // handler needs to mint the initial host-native delegation. It applies only to
@@ -355,7 +370,10 @@ export function createAuthenticator(config, options = {}) {
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
     return attachAuthenticatedHostPrincipal(
-      applyTenantMemberRole(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config),
+      applyTenantMemberRole(applyPlatformOwner(
+        applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config),
+        config,
+      ), config),
       config.hostAppRegistry,
     );
   };

@@ -40,6 +40,28 @@ test("keeps the legacy all-capability Codex principal code-dark by default", () 
   assert.equal(invalid.legacyCodexHostPrincipalConfigurationValid, false);
 });
 
+test("enforces the platform administration boundary only when a server allowlist exists", () => {
+  const disabled = loadConfig({});
+  assert.deepEqual(disabled.platformOwnerSubjects, []);
+  assert.equal(disabled.platformOwnerAdminEnforced, false);
+  assert.equal(disabled.platformOwnerEmergencyStop, false);
+
+  const enabled = loadConfig({
+    NYRA_PLATFORM_OWNER_SUBJECTS: "auth0|cristian",
+  });
+  assert.deepEqual(enabled.platformOwnerSubjects, ["auth0|cristian"]);
+  assert.equal(enabled.platformOwnerAdminEnforced, true);
+  assert.equal(loadConfig({
+    NYRA_PLATFORM_OWNER_SUBJECTS: "auth0|cristian",
+    NYRA_PLATFORM_OWNER_ADMIN_ENFORCED: "false",
+    NYRA_PLATFORM_OWNER_EMERGENCY_STOP: "true",
+  }).platformOwnerAdminEnforced, false);
+  assert.equal(loadConfig({
+    NYRA_PLATFORM_OWNER_SUBJECTS: "auth0|cristian",
+    NYRA_PLATFORM_OWNER_EMERGENCY_STOP: "true",
+  }).platformOwnerEmergencyStop, true);
+});
+
 test("keeps Nyra Dialogue disabled unless the deployment explicitly enables it", () => {
   assert.equal(loadConfig({}).nyraDialogueEnabled, false);
   assert.equal(loadConfig({ NYRA_DIALOGUE_ENABLED: "true" }).nyraDialogueEnabled, true);
