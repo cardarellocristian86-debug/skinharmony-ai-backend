@@ -36,6 +36,9 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
   const oldPlanId = "44444444-4444-4444-8444-444444444444";
   const newPlanId = "55555555-5555-4555-8555-555555555555";
   const evaluationId = "66666666-6666-4666-8666-666666666666";
+  const ancestorPlanId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const evidenceId = "77777777-7777-4777-8777-777777777777";
+  const evidenceDigest = "7".repeat(64);
   const task = { task_id: taskId, title: "Verified bounded repair", weight: 1,
     required: true, status: "completed", acceptance_verified: true, revision: 1 };
   const taskBinding = buildNativeV2TaskBinding({ tenant_id: tenantId, work_id: workId,
@@ -50,19 +53,24 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
 
   function clientFor({ activeClaim = false, fulfilled = false,
     scopeTasks = [], ticketTaskState = "planned", candidate = taskId,
-    freshGate = false, priorEvidence = true, competingPlanned = false } = {}) {
+    freshGate = false, priorEvidence = true, competingPlanned = false,
+    evidenceRows = null, missingAncestor = false, cyclicAncestor = false } = {}) {
     const scoped = { ...emptyScope, tasks: scopeTasks };
     const evaluated = { ...evaluation, native_v2_precommit_scope: scoped };
     const plans = [
       // Append-only terminal history is not another current plan.
-      { plan_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      { plan_id: ancestorPlanId,
         supersedes_plan_id: null, status: "closed",
         plan: oldPlan, plan_digest: stableDigest(oldPlan), plan_version: 0 },
-      { plan_id: oldPlanId, supersedes_plan_id: null, status: "superseded",
+      { plan_id: oldPlanId, supersedes_plan_id: ancestorPlanId, status: "superseded",
         plan: oldPlan, plan_digest: stableDigest(oldPlan), plan_version: 1 },
       { plan_id: newPlanId, supersedes_plan_id: oldPlanId, status: "planned",
         plan: newPlan, plan_digest: stableDigest(newPlan), plan_version: 2 },
     ];
+    if (missingAncestor) plans.shift();
+    if (cyclicAncestor && plans[0]?.plan_id === ancestorPlanId) {
+      plans[0].supersedes_plan_id = oldPlanId;
+    }
     if (competingPlanned) plans.push({
       plan_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       supersedes_plan_id: oldPlanId, status: "planned",
@@ -120,12 +128,15 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
           return fulfilled ? { rows: [{ ticket_id: "hnt_existing" }], rowCount: 1 }
             : { rows: [], rowCount: 0 };
         }
-        if (q.startsWith("SELECT n.evidence_id FROM tenant_work_native_verifier_evidence")) {
-          assert.equal(parameters[4], oldPlanId,
-            "legacy empty-scope evidence must come from the exact stale gate plan");
-          return priorEvidence
-            ? { rows: [{ evidence_id: "77777777-7777-4777-8777-777777777777" }], rowCount: 1 }
-            : { rows: [], rowCount: 0 };
+        if (q.startsWith("SELECT n.plan_id,n.evidence_id,n.evidence_digest FROM tenant_work_native_verifier_evidence")) {
+          assert.match(q, /e\.kind='native_verifier_terminal_report'/);
+          assert.match(q, /e\.digest=n\.evidence_digest/);
+          assert.deepEqual(parameters[4], [oldPlanId, ancestorPlanId],
+            "legacy evidence search must contain only the stale gate and its ancestors");
+          const rows = evidenceRows || (priorEvidence ? [{ plan_id: ancestorPlanId,
+            evidence_id: evidenceId, evidence_digest: evidenceDigest }] : []);
+          const filtered = rows.filter((row) => parameters[4].includes(row.plan_id));
+          return { rows: filtered, rowCount: filtered.length };
         }
         if (q.startsWith("SELECT c.claim_id,")) {
           return activeClaim
@@ -145,13 +156,45 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
   assert.equal(allowed.precommit_revalidation.plan_id, newPlanId);
   assert.equal(allowed.precommit_revalidation.task_id, taskId);
   assert.equal(allowed.precommit_revalidation.v2_task_digest, taskBinding.v2_task_digest);
+  assert.equal(allowed.precommit_revalidation.source_plan_id, ancestorPlanId);
+  assert.equal(allowed.precommit_revalidation.source_evidence_id, evidenceId);
+  assert.equal(allowed.precommit_revalidation.source_evidence_digest, evidenceDigest);
   assert.match(allowed.precommit_revalidation.revalidation_digest, /^[a-f0-9]{64}$/);
+  const { revalidation_digest: allowedDigest, ...allowedMaterial } =
+    allowed.precommit_revalidation;
+  assert.equal(allowedDigest, stableDigest(allowedMaterial));
+  assert.notEqual(allowedDigest, stableDigest({
+    ...allowedMaterial,
+    source_evidence_digest: "9".repeat(64),
+  }), "source evidence substitution must invalidate exact replay");
+
+  const nearerEvidenceId = "88888888-8888-4888-8888-888888888887";
+  const nearest = await store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [
+    { plan_id: ancestorPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest },
+    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64) },
+  ] }), source);
+  assert.equal(nearest.precommit_revalidation.source_plan_id, oldPlanId);
+  assert.equal(nearest.precommit_revalidation.source_evidence_id, nearerEvidenceId);
 
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ activeClaim: true }), source), /native_v2_task_revalidation_claim_invalid/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ priorEvidence: false }), source),
   /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [{
+    plan_id: "99999999-9999-4999-8999-999999999999",
+    evidence_id: evidenceId, evidence_digest: evidenceDigest,
+  }] }), source), /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [
+    { plan_id: oldPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest },
+    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64) },
+  ] }), source), /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ missingAncestor: true }), source),
+  /native_v2_task_revalidation_lineage_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ cyclicAncestor: true }), source),
+  /native_v2_task_revalidation_lineage_invalid/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ competingPlanned: true }), source),
   /native_v2_task_revalidation_plan_not_current/);
