@@ -1718,6 +1718,13 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       status: "completed",
       required: true,
     });
+    await pool.query(`UPDATE tenant_work_task SET acceptance_verified=true,
+        completed_at=coalesce(completed_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      unrelatedTaskId,
+    ]);
     const scopedReplay = await runtime.evaluateClosure(coordinator, {
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
@@ -1725,6 +1732,75 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       idempotency_key: `closure-ready-${runId}`,
     });
     assert.equal(scopedReplay.commit_ticket_ready, true);
+
+    // Persist the exact server-owned ticket-acquisition task that previously
+    // deadlocked closure evaluation. It is the sole pending task, so a fresh
+    // evaluation may become ticket-ready while leaving the task visibly open.
+    const client = await pool.connect();
+    let persistedGate;
+    try {
+      await client.query("BEGIN");
+      persistedGate = await v2Store.materializeNativePrecommitTicketGateWithClient(client, {
+        server_owned: true,
+        tenant_id: tenantId,
+        work_id: firstWork.work_id,
+        plan_id: planned.plan.plan_id,
+        evaluation_id: scopedReplay.evaluation_id,
+        evaluation_digest: scopedReplay.evaluation_digest,
+        workspace_digest: scopedReplay.precommit_verification.workspace_digest,
+        v2_task_scope: scopedReplay.native_v2_precommit_scope,
+      });
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    assert.equal(persistedGate.action_kind, "git.commit");
+    assert.equal(persistedGate.gate_kind, "ticket_acquisition");
+    assert.equal(persistedGate.fresh, true);
+    assert.equal(persistedGate.fulfilled, false);
+    const persistedGateTask = await pool.query(`SELECT status,required,acceptance_verified
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      persistedGate.task_id,
+    ]);
+    assert.equal(persistedGateTask.rowCount, 1);
+    assert.deepEqual(persistedGateTask.rows[0], {
+      status: "planned",
+      required: true,
+      acceptance_verified: false,
+    });
+    const closureWithPersistedGate = await runtime.evaluateClosure(coordinator, {
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      release: release(),
+      idempotency_key: `closure-with-persisted-gate-task-${runId}`,
+    });
+    assert.equal(closureWithPersistedGate.commit_ticket_ready, true);
+    assert.equal(closureWithPersistedGate.precommit_verification.ready, true);
+    assert.equal(closureWithPersistedGate.closed, false);
+    assert.equal(closureWithPersistedGate.native_v2_precommit_pending_task_allowed, true);
+    assert.equal(closureWithPersistedGate.native_v2_work_tasks_verified, false);
+    assert.ok(closureWithPersistedGate.missing.includes(
+      `native_v2_task_acceptance_not_current:${persistedGate.task_id}`,
+    ));
+    const persistedGateTaskAfterEvaluation = await pool.query(`SELECT status,required,acceptance_verified
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      persistedGate.task_id,
+    ]);
+    assert.deepEqual(persistedGateTaskAfterEvaluation.rows[0], {
+      status: "planned",
+      required: true,
+      acceptance_verified: false,
+    });
+
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
