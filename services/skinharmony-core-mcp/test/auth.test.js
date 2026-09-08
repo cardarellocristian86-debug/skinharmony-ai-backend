@@ -324,6 +324,44 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   assert.equal(otherIdentity.godMode, undefined);
 });
 
+test("marks only a bound, allowlisted OAuth subject as platform owner without changing tenant role", async () => {
+  const subject = "google-oauth2|cristian";
+  const fixture = auth0Fixture({
+    sub: subject,
+    iat: Math.floor(Date.now() / 1000),
+    auth_time: Math.floor(Date.now() / 1000),
+    "https://skinharmony.it/tenant_id": "forged-tenant",
+  });
+  const config = {
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { [subject]: "codexai" },
+    platformOwnerSubjects: [subject],
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+    godModeEnabled: false,
+  };
+  const platform = await createAuthenticator(config, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(platform.tenantId, "codexai");
+  assert.equal(platform.role, "member");
+  assert.equal(platform.platformOwner, true);
+  assert.equal(platform.godMode, undefined);
+
+  const stopped = await createAuthenticator({
+    ...config,
+    platformOwnerEmergencyStop: true,
+  }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(stopped.platformOwner, undefined);
+
+  const unboundFixture = auth0Fixture({ sub: subject });
+  const unbound = await createAuthenticator({
+    ...config,
+    ...unboundFixture.config,
+    oauthOwnerTenantBindings: {},
+  }, { jwksCache: unboundFixture.cache })(`Bearer ${unboundFixture.token}`);
+  assert.equal(unbound.platformOwner, undefined);
+});
+
 test("never elevates an OAuth identity from a client ID alone", async () => {
   const fixture = auth0Fixture({
     sub: "google-oauth2|not-allowlisted",

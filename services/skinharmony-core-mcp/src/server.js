@@ -3083,7 +3083,11 @@ const app = createApp(config, {
     // dynamic wrappers are resolved to their exact capability here, so an app
     // cannot inherit a user's Work permissions or bypass its registry grant.
     const hostAuthorization = requireHostAppToolCapability({
-      identity, toolName, args, tools: TOOLS,
+      identity,
+      toolName,
+      args,
+      tools: TOOLS,
+      platformOwnerAdminRequired: config.platformOwnerAdminEnforced === true,
     });
     // The catalog and compact invoke wrapper normally see only the registered
     // app's ambient upper bound. A spawned child is different: before the

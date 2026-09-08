@@ -334,6 +334,7 @@ export function requireHostAppToolCapability({
   toolName,
   args = {},
   tools = [],
+  platformOwnerAdminRequired = false,
 } = {}) {
   // Direct internal callers predate the public host-principal envelope. Every
   // public MCP request receives it in the authenticated identity layer.
@@ -351,6 +352,10 @@ export function requireHostAppToolCapability({
   }
   const required = requiredHostAppCapabilityForTool(toolName, args, tools);
   if (!required) return null;
+  if (platformOwnerAdminRequired === true && CORE_ADMIN_TOOLS.has(target) &&
+      identity?.platformOwner !== true) {
+    fail("platform_owner_required");
+  }
   const requiredCapabilities = [required];
   const governedOperationCapability = target === "nyra_continue"
     ? {

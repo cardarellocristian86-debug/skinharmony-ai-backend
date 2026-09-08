@@ -228,7 +228,14 @@ confirmation, and the normal Core gate.
 Do not replace this with `owner_confirmed: true` on a bearer request. That
 field accompanies an already verified OAuth confirmation and cannot establish
 identity. Platform ownership is a separate, explicitly allowlisted OAuth
-subject policy; it is never inherited by ordinary tenant owners.
+subject policy. Configure the exact verified subject in
+`NYRA_PLATFORM_OWNER_SUBJECTS`, retain its independent
+`AUTH0_OWNER_TENANT_BINDINGS_JSON` binding and register the OAuth host with
+the `core.admin` ceiling. When that list is non-empty,
+`NYRA_PLATFORM_OWNER_ADMIN_ENFORCED` defaults to true and Policy Registry
+lifecycle tools reject every non-platform identity; an emergency stop removes
+this marker on the next request. It never expands tenant data access,
+capabilities, OAuth scopes or any customer's authority.
 
 ## Governed Continuity Fabric
 

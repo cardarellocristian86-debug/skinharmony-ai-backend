@@ -552,6 +552,16 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
+  // Platform administration is deliberately separate from tenant ownership
+  // and the legacy Good Mode compatibility profile. A subject listed here
+  // can qualify for the narrow Core administration boundary only after its
+  // JWT and server-side owner-to-tenant binding have both been verified.
+  const platformOwnerSubjects = csv(env.NYRA_PLATFORM_OWNER_SUBJECTS);
+  const platformOwnerAdminEnforced = platformOwnerSubjects.length > 0 && flag(
+    env.NYRA_PLATFORM_OWNER_ADMIN_ENFORCED,
+    true,
+  );
+  const platformOwnerEmergencyStop = flag(env.NYRA_PLATFORM_OWNER_EMERGENCY_STOP, false);
   // Owner elevation is only the short bootstrap for a bounded Core
   // delegation. Long-running work continues through signed, expiring action
   // tickets instead of treating an old browser login as fresh confirmation.
@@ -707,6 +717,9 @@ export function loadConfig(env = process.env) {
     godModeClientIds,
     godModeCodexEnabled,
     godModeEmergencyStop,
+    platformOwnerSubjects,
+    platformOwnerAdminEnforced,
+    platformOwnerEmergencyStop,
     memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
     personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365),
     researchRetentionDays: integer(env.RESEARCH_RETENTION_DAYS, 365, 1, 3_650),

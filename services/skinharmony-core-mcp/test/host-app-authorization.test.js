@@ -120,6 +120,36 @@ test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact 
   }, "work_preflight"), false);
 });
 
+test("requires a separately derived platform owner marker for Core administration", () => {
+  const tenantOwner = identity(["core.admin"]);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: tenantOwner,
+    toolName: "nyra_policy_registry_activate",
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: tenantOwner,
+    toolName: "nyra_policy_registry_activate",
+    tools: TOOLS,
+    platformOwnerAdminRequired: true,
+  }), /platform_owner_required/);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: { ...tenantOwner, platformOwner: true },
+    toolName: "nyra_policy_registry_activate",
+    tools: TOOLS,
+    platformOwnerAdminRequired: true,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: { ...tenantOwner, platformOwner: true, authenticatedHostPrincipal: {
+      ...tenantOwner.authenticatedHostPrincipal,
+      capabilities: ["core.operate"],
+    } },
+    toolName: "nyra_policy_registry_activate",
+    tools: TOOLS,
+    platformOwnerAdminRequired: true,
+  }), /host_app_capability_required:core\.admin/);
+});
+
 test("enforces work.read on direct and dynamic Work reads", () => {
   const denied = identity([]);
   let failure;

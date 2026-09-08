@@ -2980,6 +2980,7 @@ export function createApp(config, options = {}) {
           toolName: tool.name,
           args: rawArgs,
           tools: TOOLS,
+          platformOwnerAdminRequired: config.platformOwnerAdminEnforced === true,
         });
         if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
           identity.environmentDelegationBound !== true &&
