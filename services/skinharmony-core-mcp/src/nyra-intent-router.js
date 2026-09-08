@@ -57,12 +57,30 @@ const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
 const FUTURE_SCOPE = /\b(?:pi[uù]\s+avanti|in\s+seguito|dopo|quando|poi|later|afterwards?|eventually|in\s+the\s+future|when)\b/iu;
 const OWNER_RESERVED = /(?:\b(?:lo\s+far[oò]\s+io|lo\s+faccio\s+io|faccio\s+io|lo\s+far[aà]\s+l[’']?owner|owner\s+(?:esegue|far[aà]|will\s+do)|i(?:'|’)ll\s+do\s+it)(?=\s|[;,.!?]|$)|\b(?:merge|deploy\w*|push|pull(?:\s+request)?|\bpr\b|publish\w*|release)\b.{0,40}\b(?:manual(?:e|mente)?|owner)\b)/iu;
-// V1 deliberately admits only the one route that can be made safe without a
-// Work or an LLM-produced answer. Other semantic interpretations remain on
-// the existing Core/Work path until they have their own bounded contract.
+// V1 deliberately admitted only two global routes. V2 is the connected-AI
+// intent bridge: an upstream model may translate the user's language into a
+// small, closed read-only intent, but it never supplies authority, an ID, a
+// digest, a route to invoke, or an answer. Core still validates local text,
+// arguments and the canonical Work binding before selecting a read plane.
 const SEMANTIC_HINT_ROUTES = new Set(["GLOBAL_CONTROL_READ", "NYRA_INTROSPECTION_READ"]);
 const SEMANTIC_HINT_SPEECH_ACTS = new Set(["QUESTION", "REQUEST", "REPORT"]);
 const SEMANTIC_HINT_CONFIDENCE = new Set(["LOW", "MEDIUM", "HIGH"]);
+const INTENT_BRIDGE_KINDS = new Set([
+  "GALLERY_READ",
+  "WORK_STATUS_READ",
+  "CONTROL_ROOM_READ",
+  "NYRA_SELF_MODEL_READ",
+  "NYRA_GAP_READ",
+  "ADVISORY_EXPLAIN",
+]);
+const INTENT_BRIDGE_SCOPE_BY_KIND = Object.freeze({
+  GALLERY_READ: "GLOBAL",
+  WORK_STATUS_READ: "WORK",
+  CONTROL_ROOM_READ: "GLOBAL",
+  NYRA_SELF_MODEL_READ: "NONE",
+  NYRA_GAP_READ: "NONE",
+  ADVISORY_EXPLAIN: "NONE",
+});
 export const NYRA_CONSEQUENTIAL_CATEGORY_PATTERNS = Object.freeze([
   Object.freeze({ category: "release", mention: /\b(?:deploy\w*|deployment|merge|push|publish\w*|release|distribuisc\w*|distribuzion\w*|pubblic\w*|rilasci\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu, imperative: /\b(?:deploy|merge|push|publish|release|distribuisc\w*|pubblic\w*|rilasci\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu }),
   Object.freeze({ category: "communication", mention: /\b(?:send|email|message|notify|invia\w*|manda\w*|messaggi\w*|messaggia\w*|notific\w*)\b/iu, imperative: /\b(?:send|message|notify|invia\w*|manda\w*|messaggia\w*|notifica\w*)\b/iu }),
@@ -348,6 +366,8 @@ function normalizeSemanticHint(value, message) {
     state: value === undefined ? "NOT_PROVIDED" : "IGNORED",
     message_digest: messageDigest,
     route_candidate: null,
+    intent_kind: null,
+    target_scope: null,
     speech_act: null,
     operation_class: null,
     confidence: null,
@@ -357,25 +377,54 @@ function normalizeSemanticHint(value, message) {
   });
   if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
   const candidate = String(value.route_candidate || "");
+  const intentKind = String(value.intent_kind || "");
+  const targetScope = String(value.target_scope || "");
   const speechAct = String(value.speech_act || "");
   const operationClass = String(value.operation_class || "");
   const confidence = String(value.confidence || "");
-  const allowedKeys = new Set([
+  const v1AllowedKeys = new Set([
     "schema_version", "route_candidate", "speech_act", "operation_class",
     "confidence", "ambiguous", "injection_signals",
   ]);
-  const valid = value.schema_version === "nyra_semantic_intent_hint_v1" &&
+  const v1Valid = value.schema_version === "nyra_semantic_intent_hint_v1" &&
     SEMANTIC_HINT_ROUTES.has(candidate) && SEMANTIC_HINT_SPEECH_ACTS.has(speechAct) &&
     operationClass === "READ_ONLY" && SEMANTIC_HINT_CONFIDENCE.has(confidence) &&
     typeof value.ambiguous === "boolean" && value.ambiguous === false &&
     Array.isArray(value.injection_signals) && value.injection_signals.length === 0 &&
-    Object.keys(value).every((key) => allowedKeys.has(key));
-  if (!valid) return fallback;
-  return Object.freeze({
+    Object.keys(value).every((key) => v1AllowedKeys.has(key));
+  if (v1Valid) return Object.freeze({
     schema_version: "nyra_semantic_intake_v1",
     state: "CANDIDATE",
     message_digest: messageDigest,
     route_candidate: candidate,
+    intent_kind: null,
+    target_scope: null,
+    speech_act: speechAct,
+    operation_class: operationClass,
+    confidence,
+    ambiguous: false,
+    injection_signals_present: false,
+    authority: "NONE",
+  });
+  const v2AllowedKeys = new Set([
+    "schema_version", "intent_kind", "target_scope", "speech_act",
+    "operation_class", "confidence", "ambiguous", "injection_signals",
+  ]);
+  const v2Valid = value.schema_version === "nyra_intent_bridge_v2" &&
+    INTENT_BRIDGE_KINDS.has(intentKind) &&
+    INTENT_BRIDGE_SCOPE_BY_KIND[intentKind] === targetScope &&
+    SEMANTIC_HINT_SPEECH_ACTS.has(speechAct) && operationClass === "READ_ONLY" &&
+    SEMANTIC_HINT_CONFIDENCE.has(confidence) && value.ambiguous === false &&
+    Array.isArray(value.injection_signals) && value.injection_signals.length === 0 &&
+    Object.keys(value).every((key) => v2AllowedKeys.has(key));
+  if (!v2Valid) return fallback;
+  return Object.freeze({
+    schema_version: "nyra_intent_bridge_v2",
+    state: "CANDIDATE",
+    message_digest: messageDigest,
+    route_candidate: null,
+    intent_kind: intentKind,
+    target_scope: targetScope,
     speech_act: speechAct,
     operation_class: operationClass,
     confidence,
@@ -483,7 +532,8 @@ export function classifyNyraIntent({
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);
   const hostHintIntrospectionRead = !safeId(workId) && semanticIntake.state === "CANDIDATE" &&
-    semanticIntake.route_candidate === "NYRA_INTROSPECTION_READ" &&
+    (semanticIntake.route_candidate === "NYRA_INTROSPECTION_READ" ||
+      ["NYRA_SELF_MODEL_READ", "NYRA_GAP_READ"].includes(semanticIntake.intent_kind)) &&
     actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
     clauses.every((clause) => clause.action_candidates.length === 0) &&
     !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
@@ -496,7 +546,8 @@ export function classifyNyraIntent({
     !WORK_RESUME.test(normalized) && (!explicitWorkScope || explicitReadOnlyFence) && (!actionVerbPresent || explicitReadOnlyFence) &&
     semanticAssessment.disposition === "allow";
   const hostHintGlobalControlRead = semanticIntake.state === "CANDIDATE" &&
-    semanticIntake.route_candidate === "GLOBAL_CONTROL_READ" &&
+    (semanticIntake.route_candidate === "GLOBAL_CONTROL_READ" ||
+      semanticIntake.intent_kind === "CONTROL_ROOM_READ") &&
     actionClauses.length === 0 && !ACTION_NOUN.test(text) && !workCreateRequested &&
     !WORK_RESUME.test(normalized) && !explicitWorkScope && !actionVerbPresent &&
     semanticAssessment.disposition === "allow";
@@ -528,7 +579,8 @@ export function classifyNyraIntent({
     // A semantic hint identifies the bounded class, never an action.  Within
     // that class only an explicit gap question selects the gap read; every
     // other self-model question must retain its operational-model answer.
-    intent = (NYRA_GAP_READ.test(text) || NYRA_HOST_GAP_READ.test(text))
+    intent = (NYRA_GAP_READ.test(text) || NYRA_HOST_GAP_READ.test(text) ||
+      semanticIntake.intent_kind === "NYRA_GAP_READ")
       ? "nyra_gap_read" : "nyra_self_model_read";
     route = "ADVISORY_READ";
     confidence = safeIntrospectionRead ? 0.99 : 0.86;
@@ -545,6 +597,27 @@ export function classifyNyraIntent({
     route = "CONTROL_ROOM_READ";
     confidence = safeGlobalControlRead ? 0.99 : 0.86;
     reason = safeGlobalControlRead ? "deterministic_global_control_read" : "host_semantic_hint_global_control_read";
+  } else if (semanticIntake.state === "CANDIDATE" &&
+      semanticIntake.intent_kind === "WORK_STATUS_READ" && safeId(workId) &&
+      actionClauses.length === 0 && !ACTION_NOUN.test(text) && !workBootstrap &&
+      !workCreateRequested && !WORK_RESUME.test(normalized) &&
+      semanticAssessment.disposition === "allow") {
+    // The bridge may preserve an already supplied Work scope, but it cannot
+    // name or bind a Work itself. The normal authenticated preflight/read
+    // path remains mandatory.
+    intent = "analysis";
+    route = "CORE_CONTEXT_THEN_NYRA";
+    confidence = 0.86;
+    reason = "host_intent_bridge_work_status_read";
+  } else if (semanticIntake.state === "CANDIDATE" &&
+      semanticIntake.intent_kind === "ADVISORY_EXPLAIN" && !safeId(workId) &&
+      actionClauses.length === 0 && !ACTION_NOUN.test(text) && !workBootstrap &&
+      !workCreateRequested && !WORK_RESUME.test(normalized) &&
+      semanticAssessment.disposition === "allow") {
+    intent = "advisory_read";
+    route = "ADVISORY_READ";
+    confidence = 0.86;
+    reason = "host_intent_bridge_advisory_explain";
   } else if (explicitReadOnlyBoundary) {
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
@@ -645,7 +718,9 @@ export function classifyNyraIntent({
       intent === "ticket_or_action" ? "single_consequential" : "clarification_required",
     semantic_intake: Object.freeze({
       ...semanticIntake,
-      state: reason === "host_semantic_hint_global_control_read" ? "ACCEPTED" : semanticIntake.state,
+      state: ["host_semantic_hint_global_control_read", "host_semantic_hint_nyra_introspection_read",
+        "host_intent_bridge_work_status_read", "host_intent_bridge_advisory_explain"].includes(reason)
+        ? "ACCEPTED" : semanticIntake.state,
       lexical_disposition: semanticAssessment.disposition,
       lexical_risk_band: semanticAssessment.risk_band,
     }),

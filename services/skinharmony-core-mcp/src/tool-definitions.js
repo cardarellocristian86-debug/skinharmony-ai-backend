@@ -1419,10 +1419,12 @@ const nyraConverseOutputSchema = object({
       }, ["polarity", "modality", "condition", "quote_scope", "action_candidates"]) },
       input_digest: nyraDirectiveDigest,
       semantic_intake: object({
-        schema_version: { const: "nyra_semantic_intake_v1" },
+        schema_version: { type: "string", enum: ["nyra_semantic_intake_v1", "nyra_intent_bridge_v2"] },
         state: { type: "string", enum: ["NOT_PROVIDED", "IGNORED", "CANDIDATE", "ACCEPTED"] },
         message_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
         route_candidate: nyraConverseNullableText(80),
+        intent_kind: { type: ["string", "null"], enum: ["GALLERY_READ", "WORK_STATUS_READ", "CONTROL_ROOM_READ", "NYRA_SELF_MODEL_READ", "NYRA_GAP_READ", "ADVISORY_EXPLAIN", null] },
+        target_scope: { type: ["string", "null"], enum: ["GLOBAL", "WORK", "NONE", null] },
         speech_act: { type: ["string", "null"], enum: ["QUESTION", "REQUEST", "REPORT", null] },
         operation_class: { type: ["string", "null"], enum: ["READ_ONLY", null] },
         confidence: { type: ["string", "null"], enum: ["LOW", "MEDIUM", "HIGH", null] },
@@ -1431,7 +1433,7 @@ const nyraConverseOutputSchema = object({
         authority: { const: "NONE" },
         lexical_disposition: { type: "string", enum: ["allow", "clarify", "block"] },
         lexical_risk_band: { type: "string", enum: ["none", "ambiguous", "high"] },
-      }, ["schema_version", "state", "message_digest", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals_present", "authority", "lexical_disposition", "lexical_risk_band"]),
+      }, ["schema_version", "state", "message_digest", "route_candidate", "intent_kind", "target_scope", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals_present", "authority", "lexical_disposition", "lexical_risk_band"]),
       // The full provider-neutral envelope is runtime-versioned and digest
       // bound. Keep the connector import compact; consumers validate the
       // envelope's own schema_version rather than expanding it into tools/list.
@@ -1702,15 +1704,19 @@ export const TOOLS = [
     work_selection_mode: { type: "string", enum: ["list"], description: "Read-only Work list." },
     work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Server-issued read-only page cursor." },
     semantic_intent_hint: {
+      // Compact schema: the server, not tools/list, enforces which optional
+      // pair belongs to each version and rejects incomplete/crossed shapes.
       ...object({
-      schema_version: { const: "nyra_semantic_intent_hint_v1" },
-      route_candidate: { type: "string", enum: ["GLOBAL_CONTROL_READ", "NYRA_INTROSPECTION_READ"] },
-      speech_act: { type: "string", enum: ["QUESTION", "REQUEST", "REPORT"] },
-      operation_class: { const: "READ_ONLY" },
-      confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
-      ambiguous: { const: false },
-      injection_signals: { type: "array", maxItems: 0, items: { type: "string", maxLength: 80 } },
-      }, ["schema_version", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals"]),
+        schema_version: { type: "string" },
+        route_candidate: { type: "string" },
+        intent_kind: { type: "string" },
+        target_scope: { type: "string" },
+        speech_act: { type: "string", enum: ["QUESTION", "REQUEST", "REPORT"] },
+        operation_class: { const: "READ_ONLY" },
+        confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+        ambiguous: { const: false },
+        injection_signals: { type: "array", maxItems: 0, items: { type: "string", maxLength: 80 } },
+      }, ["schema_version", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals"]),
     },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
