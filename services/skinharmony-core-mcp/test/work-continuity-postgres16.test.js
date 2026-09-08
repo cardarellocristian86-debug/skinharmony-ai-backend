@@ -1689,7 +1689,11 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       idempotency_key: `closure-${runId}`,
     });
     assert.equal(evaluation.closed, false);
-    assert.equal(evaluation.commit_ticket_ready, true);
+    assert.equal(
+      evaluation.commit_ticket_ready,
+      false,
+      "an unrelated required V2 task must block commit-ticket acquisition",
+    );
     assert.equal(evaluation.native_v2_task_bindings_verified, true);
     assert.equal(evaluation.native_v2_work_tasks_verified, false);
     assert.match(evaluation.native_v2_task_scope_snapshot_digest, /^[a-f0-9]{64}$/);
@@ -1703,9 +1707,10 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     ));
     assert.equal(evaluation.core_join_material, undefined);
 
-    // A future lateral task may evolve without invalidating Task A's scoped
-    // precommit ticket. Mutating Task A itself, including an ABA restore,
-    // invalidates the revision-bound retry.
+    // Completing the unrelated pending task permits a fresh evaluation, but
+    // cannot retroactively promote the prior frozen one. Mutating Task A
+    // itself, including an ABA restore, invalidates the fresh revision-bound
+    // retry altogether.
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: unrelatedTaskId,
@@ -1713,13 +1718,102 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       status: "completed",
       required: true,
     });
+    await pool.query(`UPDATE tenant_work_task SET acceptance_verified=true,
+        completed_at=coalesce(completed_at,now())
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      unrelatedTaskId,
+    ]);
     const scopedReplay = await runtime.evaluateClosure(coordinator, {
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
       release: release(),
-      idempotency_key: `closure-${runId}`,
+      idempotency_key: `closure-ready-${runId}`,
     });
     assert.equal(scopedReplay.commit_ticket_ready, true);
+
+    // Persist the exact server-owned ticket-acquisition task that previously
+    // deadlocked closure evaluation. It is the sole pending task, so a fresh
+    // evaluation may become ticket-ready while leaving the task visibly open.
+    const persistedGate = {
+      task_id: crypto.randomUUID(),
+      action_kind: "git.commit",
+      gate_kind: "ticket_acquisition",
+    };
+    const gateClient = await pool.connect();
+    try {
+      await gateClient.query("BEGIN");
+      await gateClient.query(`INSERT INTO tenant_work_task
+        (tenant_id,task_id,work_id,title,weight,required,status,acceptance_verified)
+      VALUES ($1,$2,$3,'Acquire exact Core git.commit ticket',1,true,'planned',false)`, [
+        tenantId,
+        persistedGate.task_id,
+        firstWork.work_id,
+      ]);
+      await gateClient.query(`INSERT INTO tenant_work_precommit_ticket_gate
+        (tenant_id,work_id,task_id,plan_id,evaluation_id,evaluation_digest,
+         workspace_digest,supersession_digest,reconciliation_digest,gate_source,
+         action_kind,gate_kind,created_by_user_id)
+      VALUES ($1,$3,$2,$4,$5,$6,$7,$8,$9,'native_closure_evaluation',
+        'git.commit','ticket_acquisition','postgres16-runtime-regression')`, [
+        tenantId,
+        persistedGate.task_id,
+        firstWork.work_id,
+        planned.plan.plan_id,
+        scopedReplay.evaluation_id,
+        scopedReplay.evaluation_digest,
+        scopedReplay.precommit_verification.workspace_digest,
+        digest({ tenantId, runId, kind: "ticket-gate-supersession" }),
+        digest({ tenantId, runId, kind: "ticket-gate-reconciliation" }),
+      ]);
+      await gateClient.query("COMMIT");
+    } catch (error) {
+      await gateClient.query("ROLLBACK");
+      throw error;
+    } finally {
+      gateClient.release();
+    }
+    const persistedGateTask = await pool.query(`SELECT status,required,acceptance_verified
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      persistedGate.task_id,
+    ]);
+    assert.equal(persistedGateTask.rowCount, 1);
+    assert.deepEqual(persistedGateTask.rows[0], {
+      status: "planned",
+      required: true,
+      acceptance_verified: false,
+    });
+    const closureWithPersistedGate = await runtime.evaluateClosure(coordinator, {
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      release: release(),
+      idempotency_key: `closure-with-persisted-gate-task-${runId}`,
+    });
+    assert.equal(closureWithPersistedGate.commit_ticket_ready, true);
+    assert.equal(closureWithPersistedGate.precommit_verification.ready, true);
+    assert.equal(closureWithPersistedGate.closed, false);
+    assert.equal(closureWithPersistedGate.native_v2_precommit_pending_task_allowed, true);
+    assert.equal(closureWithPersistedGate.native_v2_work_tasks_verified, false);
+    assert.ok(closureWithPersistedGate.missing.includes(
+      `native_v2_task_acceptance_not_current:${persistedGate.task_id}`,
+    ));
+    const persistedGateTaskAfterEvaluation = await pool.query(`SELECT status,required,acceptance_verified
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+      tenantId,
+      firstWork.work_id,
+      persistedGate.task_id,
+    ]);
+    assert.deepEqual(persistedGateTaskAfterEvaluation.rows[0], {
+      status: "planned",
+      required: true,
+      acceptance_verified: false,
+    });
+
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
@@ -1739,7 +1833,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
       release: release(),
-      idempotency_key: `closure-${runId}`,
+      idempotency_key: `closure-ready-${runId}`,
     }), /native_v2_task_closure_binding_changed/);
 
     // Once a release join is active, no task writer can create a stale action

@@ -1278,6 +1278,69 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
   };
 }
 
+export function nativeV2PrecommitPendingTaskAllowed(snapshot) {
+  if (!snapshot || snapshot.scope_valid !== true) return false;
+  const pending = Array.isArray(snapshot.pending_required_task_ids)
+    ? [...new Set(snapshot.pending_required_task_ids.map((value) =>
+      String(value || "").trim().toLowerCase()).filter(Boolean))]
+    : [];
+  if (pending.length === 0) return true;
+  const ticketTaskId = String(snapshot.precommit_ticket_task_id || "")
+    .trim().toLowerCase();
+  return snapshot.precommit_ticket_task_server_recognized === true &&
+    UUID_PATTERN.test(ticketTaskId) &&
+    pending.length === 1 &&
+    pending[0] === ticketTaskId;
+}
+
+export function bindNativeV2TaskSnapshotToEvaluation(evaluation, snapshot) {
+  if (!snapshot) return evaluation;
+  const snapshotMissing = snapshot.work_valid ? [] : snapshot.missing;
+  const missing = [...new Set([...(evaluation.missing || []), ...snapshotMissing])];
+  const scopeValid = snapshot.scope_valid === true;
+  const workValid = snapshot.work_valid === true;
+  const precommitPendingTaskAllowed =
+    nativeV2PrecommitPendingTaskAllowed(snapshot);
+  const precommitScope = Object.freeze({
+    schema_version: "native_v2_precommit_scope_v1",
+    scope_snapshot_digest: snapshot.scope_snapshot_digest,
+    v2_task_governed: snapshot.v2_task_governed === true,
+    tasks: Object.freeze(snapshot.task_bindings
+      .filter((binding) => binding.native_bindings.length > 0)
+      .map((binding) => Object.freeze({
+        task_id: binding.task_id,
+        v2_task_digest: binding.v2_task_digest,
+        revision: binding.revision,
+      }))
+      .sort((left, right) => left.task_id.localeCompare(right.task_id))),
+  });
+  return Object.freeze({
+    ...evaluation,
+    closed: evaluation.closed === true && workValid,
+    missing,
+    precommit_verification: Object.freeze({
+      ...evaluation.precommit_verification,
+      ready: evaluation.precommit_verification?.ready === true &&
+        precommitPendingTaskAllowed,
+    }),
+    commit_ticket_ready: evaluation.commit_ticket_ready === true &&
+      precommitPendingTaskAllowed,
+    native_v2_precommit_pending_task_allowed: precommitPendingTaskAllowed,
+    native_v2_task_bindings_verified: scopeValid,
+    native_v2_work_tasks_verified: workValid,
+    native_v2_task_scope_snapshot_digest: snapshot.scope_snapshot_digest,
+    native_v2_precommit_scope: precommitScope,
+    native_v2_work_snapshot_digest: snapshot.work_snapshot_digest,
+    native_v2_task_snapshot_digest: snapshot.work_snapshot_digest,
+    native_v2_required_task_count: snapshot.task_bindings
+      .filter((binding) => binding.required === true).length,
+    native_v2_task_revision_digest: digest(snapshot.task_bindings.map((binding) => ({
+      task_id: binding.task_id,
+      revision: binding.revision,
+    }))),
+  });
+}
+
 export function normalizeNativePrecommitEvidence(value) {
   const evidence = requireObject(value, "native_precommit_evidence");
   const allowedKeys = new Set([
@@ -3176,6 +3239,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
         scopeMissing.push("native_v2_task_binding_mixed_generation");
       }
     }
+    const pendingRequiredTaskIds = taskBindings
+      .filter((binding) => binding.required === true &&
+        (binding.status !== "completed" || binding.acceptance_verified !== true))
+      .map((binding) => binding.task_id)
+      .sort();
+    let precommitTicketTaskId = null;
+    if (resolvedWorkTasks?.v2_task_governed === true && pendingRequiredTaskIds.length) {
+      const gate = await client.query(`SELECT task_id FROM (
+          SELECT task_id,1::integer AS gate_version
+          FROM tenant_work_precommit_ticket_gate
+          WHERE tenant_id=$1 AND work_id=$2
+            AND action_kind='git.commit' AND gate_kind='ticket_acquisition'
+          UNION ALL
+          SELECT task_id,gate_version
+          FROM tenant_work_precommit_ticket_gate_supersession
+          WHERE tenant_id=$1 AND work_id=$2
+            AND action_kind='git.commit' AND gate_kind='ticket_acquisition'
+        ) AS recognized_gate
+        ORDER BY gate_version DESC LIMIT 1`, [context.tenantId, context.workId]);
+      if (gate.rows[0]?.task_id) {
+        precommitTicketTaskId = uuid(
+          gate.rows[0].task_id,
+          "native_v2_precommit_ticket_task_invalid",
+        ).toLowerCase();
+      }
+    }
     const baseMaterial = {
       schema_version: "native_v2_task_closure_snapshot_v1",
       tenant_id: context.tenantId,
@@ -3193,6 +3282,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ...baseMaterial,
       snapshot_scope: "all_required_work_tasks",
       task_bindings: taskBindings,
+      pending_required_task_ids: pendingRequiredTaskIds,
+      precommit_ticket_task_id: precommitTicketTaskId,
+      precommit_ticket_task_server_recognized: precommitTicketTaskId !== null,
     };
     const uniqueScopeMissing = [...new Set(scopeMissing)];
     const uniqueWorkMissing = [...new Set(workMissing)];
@@ -3235,49 +3327,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_v2_task_closure_binding_changed");
     }
     return snapshot;
-  }
-
-  function bindNativeV2TaskSnapshotToEvaluation(evaluation, snapshot) {
-    if (!snapshot) return evaluation;
-    const snapshotMissing = snapshot.work_valid ? [] : snapshot.missing;
-    const missing = [...new Set([...(evaluation.missing || []), ...snapshotMissing])];
-    const scopeValid = snapshot.scope_valid === true;
-    const workValid = snapshot.work_valid === true;
-    const precommitScope = Object.freeze({
-      schema_version: "native_v2_precommit_scope_v1",
-      scope_snapshot_digest: snapshot.scope_snapshot_digest,
-      v2_task_governed: snapshot.v2_task_governed === true,
-      tasks: Object.freeze(snapshot.task_bindings
-        .filter((binding) => binding.native_bindings.length > 0)
-        .map((binding) => Object.freeze({
-          task_id: binding.task_id,
-          v2_task_digest: binding.v2_task_digest,
-          revision: binding.revision,
-        }))
-        .sort((left, right) => left.task_id.localeCompare(right.task_id))),
-    });
-    return Object.freeze({
-      ...evaluation,
-      closed: evaluation.closed === true && workValid,
-      missing,
-      precommit_verification: Object.freeze({
-        ...evaluation.precommit_verification,
-        ready: evaluation.precommit_verification?.ready === true && scopeValid,
-      }),
-      commit_ticket_ready: evaluation.commit_ticket_ready === true && scopeValid,
-      native_v2_task_bindings_verified: scopeValid,
-      native_v2_work_tasks_verified: workValid,
-      native_v2_task_scope_snapshot_digest: snapshot.scope_snapshot_digest,
-      native_v2_precommit_scope: precommitScope,
-      native_v2_work_snapshot_digest: snapshot.work_snapshot_digest,
-      native_v2_task_snapshot_digest: snapshot.work_snapshot_digest,
-      native_v2_required_task_count: snapshot.task_bindings
-        .filter((binding) => binding.required === true).length,
-      native_v2_task_revision_digest: digest(snapshot.task_bindings.map((binding) => ({
-        task_id: binding.task_id,
-        revision: binding.revision,
-      }))),
-    });
   }
 
   async function transaction(fn) {
