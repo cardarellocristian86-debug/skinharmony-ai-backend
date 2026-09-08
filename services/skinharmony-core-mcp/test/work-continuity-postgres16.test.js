@@ -1689,7 +1689,11 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       idempotency_key: `closure-${runId}`,
     });
     assert.equal(evaluation.closed, false);
-    assert.equal(evaluation.commit_ticket_ready, true);
+    assert.equal(
+      evaluation.commit_ticket_ready,
+      false,
+      "an unrelated required V2 task must block commit-ticket acquisition",
+    );
     assert.equal(evaluation.native_v2_task_bindings_verified, true);
     assert.equal(evaluation.native_v2_work_tasks_verified, false);
     assert.match(evaluation.native_v2_task_scope_snapshot_digest, /^[a-f0-9]{64}$/);
