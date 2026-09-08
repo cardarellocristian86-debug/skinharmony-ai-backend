@@ -1575,6 +1575,8 @@ export function createWorkContinuityV2Store({
   } = {}) {
     if (!["PLANNED", "ACTIVE"].includes(initialStatus)) fail("work_initial_status_invalid");
     const workId = input.work_id ? uuid(input.work_id) : crypto.randomUUID();
+    const parentWorkId = input.parent_work_id === undefined || input.parent_work_id === null
+      ? null : uuid(input.parent_work_id, "parent_work_id_invalid");
     const projectId = text(input.project_id, "project_id_invalid", 128);
     const workName = text(input.work_name, "work_name_invalid", 1_000);
     const workType = text(input.work_type, "work_type_invalid", 80);
@@ -1625,7 +1627,7 @@ export function createWorkContinuityV2Store({
           assigned_user_ids=$8::jsonb,supervising_user_ids=$9::jsonb,agent_ids=$10::jsonb,visibility_scope=$11,
           priority=$12,priority_score=$13,priority_version=$14,priority_context=$15::jsonb,intent_digest=$16,
           objective=$17,next_action=$18,created_by_agent_id=$19,created_by_session_fingerprint=$20,
-          acceptance_criteria=$21::jsonb,idea=$22,architecture=$23::jsonb,updated_at=now()
+          acceptance_criteria=$21::jsonb,idea=$22,architecture=$23::jsonb,parent_work_id=$24,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId,
           workName, workType, projectId, actor.user_id, input.team_id || null,
           JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
@@ -1633,7 +1635,7 @@ export function createWorkContinuityV2Store({
           input.intent_digest ? digest(input.intent_digest, "intent_digest_invalid") : null,
           String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
           actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria),
-          idea, JSON.stringify(architecture)]);
+          idea, JSON.stringify(architecture), parentWorkId]);
         await insertTasks();
         return { work: await loadWork(client, actor, workId), created: true };
       }
@@ -1648,14 +1650,14 @@ export function createWorkContinuityV2Store({
       const workCode = await allocateCode(client, actor, projectId);
       await client.query(`INSERT INTO tenant_work
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,team_id,
-         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria,idea,architecture)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'${initialStatus}',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb,$24,$25::jsonb)`,
+         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria,idea,architecture,parent_work_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'${initialStatus}',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb,$24,$25::jsonb,$26)`,
       [actor.tenant_id, workId, legacyWorkId, workCode, workName, workType, projectId, actor.user_id, input.team_id || null,
         JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
         priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts),
         input.intent_digest ? digest(input.intent_digest, "intent_digest_invalid") : null,
         String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
-        actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria), idea, JSON.stringify(architecture)]);
+        actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria), idea, JSON.stringify(architecture), parentWorkId]);
       await injectFailure("v2_work_created", { tenant_id: actor.tenant_id, work_id: workId });
       await insertTasks();
       await injectFailure("v2_tasks_created", { tenant_id: actor.tenant_id, work_id: workId });
@@ -1703,7 +1705,7 @@ export function createWorkContinuityV2Store({
       ? requestedDecision : (requestedDecision || "NO_CONFLICT_PROCEED");
     if (review.decision_required) {
       if (!isAdmin(actor)) fail("open_work_review_owner_decision_required");
-      if (!["CONTINUE_NEW_WORK", "PARALLEL_VALID"].includes(effectiveDecision)) {
+      if (!["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(effectiveDecision)) {
         fail("open_work_review_proceed_decision_required");
       }
     }
@@ -1773,6 +1775,19 @@ export function createWorkContinuityV2Store({
         ...currentCandidates.map((item) => String(item.work_id || "")),
         String(selectedCurrentWork?.work_id || ""),
       ].filter(Boolean));
+      if (effectiveDecision === "CREATE_CHILD_WORK") {
+        const parentWorkId = uuid(input.parent_work_id, "open_work_review_child_parent_required");
+        const parentWork = currentWorks.find((work) =>
+          work.work_id === parentWorkId && work.project_id === input.project_id &&
+          OPERATIONAL_STATUSES.has(work.status) && canRead(work, actor));
+        // A child relationship resolves a reviewed overlap; it is never a
+        // bypass around duplicate detection. The parent must remain visible,
+        // operational and present in both the reviewed and current candidate
+        // sets while the bootstrap transaction holds its project lock.
+        if (!parentWork || !originalCandidateIds.has(parentWorkId) || !currentCandidateIds.has(parentWorkId)) {
+          fail("open_work_review_child_parent_conflict");
+        }
+      }
       const newCandidate = [...currentCandidateIds].some((workId) => !originalCandidateIds.has(workId));
       const newConflictFlag = Object.entries(currentFlags).some(([name, value]) =>
         value === true && original.conflict_flags?.[name] !== true);

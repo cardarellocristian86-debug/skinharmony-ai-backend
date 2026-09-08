@@ -322,7 +322,7 @@ export const WORK_CONTINUITY_TOOLS = [
       intent_type: { type: "string", const: "CREATE_WORK" }, request_id: text(160),
       idempotency_key: text(240),
       review_id: uuid, review_digest: hash,
-      review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
+      review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"] },
       project_id: identifier, work_id: uuid, session_id: identifier, work_name: text(1_000),
       work_type: { type: "string", enum: ["software_git", "software_non_git", "deployment", "research", "document", "commercial_crm", "hardware", "generic"] },
       idea: text(8_000), objective: text(8_000), architecture: { type: "object", additionalProperties: true },
@@ -343,7 +343,7 @@ export const WORK_CONTINUITY_TOOLS = [
     object({
       intent_type: { type: "string", const: "CREATE_WORK" }, request_id: text(160),
       review_id: uuid, review_digest: hash,
-      review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
+      review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"] },
       project_id: identifier, work_id: uuid, work_name: text(1_000),
       work_type: { type: "string", enum: ["software_git", "software_non_git", "deployment", "research", "document", "commercial_crm", "hardware", "generic"] },
       idea: text(8_000), objective: text(8_000), architecture: { type: "object", additionalProperties: true },

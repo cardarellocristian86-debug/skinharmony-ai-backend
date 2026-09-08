@@ -310,11 +310,11 @@ class AtomicWorkPool {
     }
     if (q.startsWith("INSERT INTO tenant_work ")) {
       let row;
-      if (parameters.length === 25) {
+      if (parameters.length === 26) {
         const [tenantId, workId, legacyWorkId, workCode, workName, workType, projectId, ownerUserId,
           teamId, assigned, supervising, agents, visibility, priority, priorityScore, priorityVersion,
           priorityContext, intentDigest, objective, nextAction, agentId, sessionFingerprint, criteria,
-          idea, architecture] = parameters;
+          idea, architecture, parentWorkId] = parameters;
         row = { tenant_id: tenantId, work_id: workId, legacy_work_id: legacyWorkId, work_code: workCode,
           work_name: workName, work_type: workType, project_id: projectId, owner_user_id: ownerUserId,
           created_by_user_id: ownerUserId, team_id: teamId, assigned_user_ids: JSON.parse(assigned),
@@ -324,6 +324,7 @@ class AtomicWorkPool {
           priority_context: JSON.parse(priorityContext), intent_digest: intentDigest, objective, next_action: nextAction,
           created_by_agent_id: agentId, created_by_session_fingerprint: sessionFingerprint,
           acceptance_criteria: JSON.parse(criteria), idea, architecture: JSON.parse(architecture),
+          parent_work_id: parentWorkId,
           progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
           updated_at: "2026-08-08T10:00:00.000Z" };
       } else {
@@ -388,6 +389,7 @@ class AtomicWorkPool {
         intent_digest: parameters[15], objective: parameters[16], next_action: parameters[17],
         created_by_agent_id: parameters[18], created_by_session_fingerprint: parameters[19],
         acceptance_criteria: JSON.parse(parameters[20]), idea: parameters[21], architecture: JSON.parse(parameters[22]),
+        parent_work_id: parameters[23],
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
@@ -1566,6 +1568,66 @@ test("significant overlap requires an owner decision and does not consume on den
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
   const created = await store.createNewWork(identity(), { ...input, review_decision: "CONTINUE_NEW_WORK" });
   assert.equal(created.review.decision, "CONTINUE_NEW_WORK");
+});
+
+test("a reviewed additional implementation becomes a linked child Work instead of a duplicate", async () => {
+  const pool = new AtomicWorkPool();
+  const parentWorkId = "11111111-1111-4111-8111-111111111111";
+  pool.works.set(key("tenant-a", parentWorkId), {
+    tenant_id: "tenant-a", work_id: parentWorkId, legacy_work_id: null,
+    work_code: "NYRA-20260808-0001", work_name: "Continuity transaction", work_type: "generic",
+    project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE", priority: "P2",
+    priority_score: 400, progress_bp: 2_000, next_action: "continue", updated_at: "2026-08-08T09:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, {
+    ...createInput(),
+    request_id: "request-child-implementation",
+    session_id: "session-child-implementation",
+    work_name: "Continuity transaction implementation extension",
+    objective: "Implement the next bounded part of the continuity transaction",
+    parent_work_id: parentWorkId,
+  });
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    review_decision: "CREATE_CHILD_WORK",
+  });
+  assert.equal(created.review.decision, "CREATE_CHILD_WORK");
+  assert.equal(created.work.parent_work_id, parentWorkId);
+  assert.equal(pool.works.get(key("tenant-a", created.work.work_id)).parent_work_id, parentWorkId);
+  assert.equal(pool.works.size, 2);
+});
+
+test("a child decision cannot select an unrelated or unreviewed parent", async () => {
+  const pool = new AtomicWorkPool();
+  const reviewedParentId = "11111111-1111-4111-8111-111111111111";
+  const unrelatedParentId = "22222222-2222-4222-8222-222222222222";
+  pool.works.set(key("tenant-a", reviewedParentId), {
+      tenant_id: "tenant-a", work_id: reviewedParentId, legacy_work_id: null,
+      work_code: `NYRA-${reviewedParentId.slice(0, 4)}`, work_name: "Continuity transaction",
+      work_type: "generic", project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner",
+      assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
+      priority: "P4", priority_score: 0, progress_bp: 0, next_action: "continue", updated_at: "2026-08-08T09:00:00.000Z",
+    });
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, {
+    ...createInput(), request_id: "request-child-invalid", session_id: "session-child-invalid",
+    parent_work_id: unrelatedParentId,
+  });
+  pool.works.set(key("tenant-a", unrelatedParentId), {
+    tenant_id: "tenant-a", work_id: unrelatedParentId, legacy_work_id: null,
+    work_code: "NYRA-2222", work_name: "Unrelated scope", work_type: "generic", project_id: "nyra-core",
+    owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [], supervising_user_ids: [],
+    agent_ids: [], visibility_scope: "private", status: "ACTIVE", priority: "P4", priority_score: 0,
+    progress_bp: 0, next_action: "continue", updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input, review_decision: "CREATE_CHILD_WORK",
+  }), /open_work_review_child_parent_conflict/);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
 });
 
 test("Gallery V3 queues, archives, and reopens native Work without restoring execution state", async () => {

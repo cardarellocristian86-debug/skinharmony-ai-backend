@@ -653,7 +653,7 @@ export function createNyraGovernedContinueHandler({
             fail("nyra_continue_work_bootstrap_review_mismatch", 409);
           }
         } else if (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
-            (args.review_decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID"].includes(args.review_decision))) {
+            (args.review_decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(args.review_decision))) {
           fail("owner_confirmation_required", 403);
         }
         return;
@@ -785,7 +785,7 @@ export function createNyraGovernedContinueHandler({
         terminal = false;
       } else {
         if (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
-            (args.review_decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID"].includes(args.review_decision))) {
+            (args.review_decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(args.review_decision))) {
           fail("owner_confirmation_required", 403);
         }
         const review = await store.readCompletedOperation({ identity, continuation_ref: args.continuation_ref,
