@@ -2460,10 +2460,17 @@ const baseHandlers = {
     },
     tenant_work_historical_archive_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
-      await requireOwnerGovernance(
+      // The archive itself remains Owner-confirmed in the store.  Its Core
+      // authorization is a closed, same-tenant Gallery coordination action:
+      // it cannot execute a provider operation, delete the ledger, or claim
+      // completion.  Sending it through the broad owner-action policy plane
+      // made an enforced policy snapshot default-deny it before the stricter
+      // historical archive invariants could run.
+      await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.historical_bridge_archive",
-        args.work_id,
+        tenantWorkCoordinationActionType("tenant_work_historical_archive_v3"),
+        tenantWorkCoordinationTarget("tenant_work_historical_archive_v3", args),
+        args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
         result: await workContinuityV2Store.archiveHistoricalBridgedWork(
