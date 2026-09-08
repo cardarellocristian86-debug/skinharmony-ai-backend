@@ -2503,14 +2503,28 @@ test("covers the bound V2 task as well as the synthetic native ticket task", asy
     task_id: scopedTaskId,
     work_id: WORK_ID,
     title: "Complete the Work-bound precommit transition",
-    status: "planned",
+    status: "completed",
     required: true,
-    acceptance_verified: false,
+    acceptance_verified: true,
   });
   context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
     v2_scope_tasks: [{ task_id: scopedTaskId, v2_task_digest: "9".repeat(64), revision: 1 }],
   });
-  const payload = (await harness({ directiveContext: context }).handler({
+  const openedContinuations = [];
+  const payload = (await harness({
+    directiveContext: context,
+    openContinuation: async (request) => {
+      openedContinuations.push(request);
+      return {
+        schema_version: "nyra_continuation_ref_v1",
+        available: true,
+        continuation_ref: `nyc1_${"b".repeat(40)}`,
+        expires_at: "2026-09-09T01:00:00.000Z",
+        state: "READY",
+        reason: null,
+      };
+    },
+  }).handler({
     message: "Nyra, esegui un solo git commit locale",
     work_id: WORK_ID,
     project_id: "nyra_core",
@@ -2522,6 +2536,50 @@ test("covers the bound V2 task as well as the synthetic native ticket task", asy
   assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
   assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
   assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+  assert.equal(directive.ticket_request.continuation.available, true);
+  assert.equal(openedContinuations.length, 1);
+});
+
+test("keeps native V2 precommit scope fail-closed unless every scoped task is complete", async (t) => {
+  const scopedTaskId = "e4c8e893-1a86-4ed3-bd85-5150d451af76";
+  const cases = [
+    ["planned", { status: "planned", acceptance_verified: false }, scopedTaskId],
+    ["acceptance unverified", { status: "completed", acceptance_verified: false }, scopedTaskId],
+    ["missing", null, scopedTaskId],
+    ["ticket overlap", { status: "completed", acceptance_verified: true }, TASK_ID],
+  ];
+  for (const [label, scopedTask, gateTaskId] of cases) {
+    await t.test(label, async () => {
+      const context = directiveContextFixture();
+      context.evidence = context.evidence.map((item) => ({
+        ...item,
+        independently_verified: true,
+      }));
+      if (scopedTask) {
+        context.tasks.push({
+          tenant_id: "tenant-a",
+          task_id: gateTaskId,
+          work_id: WORK_ID,
+          title: "Complete the Work-bound precommit transition",
+          required: true,
+          ...scopedTask,
+        });
+      }
+      context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+        v2_scope_tasks: [{ task_id: gateTaskId, v2_task_digest: "9".repeat(64), revision: 1 }],
+      });
+      const payload = (await harness({ directiveContext: context }).handler({
+        message: "Nyra, esegui un solo git commit locale",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+        continuation_operation: "authorize_action",
+        locale: "it",
+      }, identity())).structuredContent;
+      assert.equal(payload.orchestration_directive.work_context.precommit_ticket_gate_applicable, false);
+      assert.equal(payload.orchestration_directive.ticket_request.state, "NEEDS_CONTEXT");
+      assert.equal(payload.orchestration_directive.ticket_request.binding.precommit_ticket_gate, null);
+    });
+  }
 });
 
 test("keeps a historical native gate with unavailable V2 scope observable but non-applicable", async () => {
