@@ -2519,10 +2519,16 @@ const baseHandlers = {
     tenant_work_stale_reconcile_dry_run: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.reconcileStaleDryRun(withTenantWorkAcl(identity), args) }),
     tenant_work_legacy_reconcile_close: async (args, identity) => {
-      await requireOwnerGovernance(
+      // Reconciliation remains explicitly Owner-confirmed inside the
+      // transactional legacy store. Its outer Core route is a closed,
+      // same-tenant Gallery metadata transition; the generic owner-action
+      // policy plane otherwise default-denies it before those exact stale and
+      // activity checks can execute.
+      await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.legacy_reconcile_close",
-        `${args.work_id}:${args.action}`,
+        tenantWorkCoordinationActionType("tenant_work_legacy_reconcile_close"),
+        tenantWorkCoordinationTarget("tenant_work_legacy_reconcile_close", args),
+        args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
         result: await workContinuityV2Store.reconcileLegacyClosed(withTenantWorkAcl(identity), args),

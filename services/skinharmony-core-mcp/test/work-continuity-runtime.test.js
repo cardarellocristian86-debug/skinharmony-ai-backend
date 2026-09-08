@@ -1215,6 +1215,7 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_assign_v3: tenantWorkCoordinationActionType("tenant_work_assign_v3"),
     tenant_work_assignment_accept_v3: tenantWorkCoordinationActionType("tenant_work_assignment_accept_v3"),
     tenant_work_archive_v3: tenantWorkCoordinationActionType("tenant_work_archive_v3"),
+    tenant_work_legacy_reconcile_close: tenantWorkCoordinationActionType("tenant_work_legacy_reconcile_close"),
     tenant_work_historical_archive_v3: tenantWorkCoordinationActionType("tenant_work_historical_archive_v3"),
     tenant_work_reopen_v3: tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
     tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
@@ -1232,6 +1233,7 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_assign_v3: "work.gallery.assignment.offer",
     tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
     tenant_work_archive_v3: "work.gallery.archive",
+    tenant_work_legacy_reconcile_close: "work.gallery.archive",
     tenant_work_historical_archive_v3: "work.gallery.archive",
     tenant_work_reopen_v3: "work.gallery.reopen",
     tenant_work_task_record: "task.update",
@@ -1244,6 +1246,7 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     "tenant_work_assign_v3",
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
+    "tenant_work_legacy_reconcile_close",
     "tenant_work_historical_archive_v3",
     "tenant_work_reopen_v3",
   ]) {
