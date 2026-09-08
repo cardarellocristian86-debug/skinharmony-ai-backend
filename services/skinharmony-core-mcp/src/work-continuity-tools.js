@@ -67,6 +67,12 @@ const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
   tenant_work_assign_v3: "work.gallery.assignment.offer",
   tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
   tenant_work_archive_v3: "work.gallery.archive",
+  // Historical archive is a narrowly scoped Gallery transition.  The store
+  // still requires an explicit Owner-confirmed identity and re-reads the
+  // Work, legacy bridge, participants, leases and branches transactionally;
+  // mapping it here prevents the policy snapshot from mistaking that local
+  // audit transition for an open-ended business-side effect.
+  tenant_work_historical_archive_v3: "work.gallery.archive",
   tenant_work_reopen_v3: "work.gallery.reopen",
   // Task state is a bounded coordination update; evidence stays on the
   // continuity path but receives a Core-valid, server-derived target below.
