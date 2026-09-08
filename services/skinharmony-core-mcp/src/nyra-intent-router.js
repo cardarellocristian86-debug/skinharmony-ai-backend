@@ -41,7 +41,12 @@ const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+d
 const NYRA_HOST_GAP_READ = /(?:¿?qué|que)\s+necesitas\s+para\s+trabajar\s+mejor/iu;
 const DISTILLED_LESSONS_READ = /\b(?:lezion[ie]\s+distillat\w*|distilled\s+lessons?|errori\s+(?:passati|ricorrenti)|failure\s+lessons?)\b/iu;
 const GLOBAL_READ_DOMAIN = /\b(?:nyra|universal\s+core|core|icf|entity\s*360|e360|self[\s_-]?model|autodiagnos\w*|self[\s_-]?diagnos\w*|software\s+(?:atlas|architecture)|architecture\s+atlas|memori\w*|memory|gallery|verified[\s_-]?learning|capabilit\w*|funzion\w*)\b/iu;
-const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|commit|push|pull\s+request|\bpr\b|merge|deploy(?:ed|ing)?|publish\w*|release|rollback)\b/iu;
+// JavaScript `\b` is ASCII-oriented: it sees the boundary inside Spanish
+// "próximo" and would mistake it for the standalone acronym PR. Use Unicode
+// letter/digit guards so an intent bridge can safely carry multilingual reads
+// without weakening recognition of an actual `PR` token.
+const STANDALONE_PR = "(?<![\\p{L}\\p{N}_])pr(?![\\p{L}\\p{N}_])";
+const ACTION_NOUN = new RegExp(`\\b(?:ticket|delega\\w*|delegation|autorizz\\w*|authoriz\\w*|commit|push|pull\\s+request|${STANDALONE_PR}|merge|deploy(?:ed|ing)?|publish\\w*|release|rollback)\\b`, "iu");
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
 const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:manca|serve))/iu;
 const NEGATION = /\b(?:non|no|senza|never|do\s+not|don't)\b/iu;
@@ -104,7 +109,7 @@ const ACTION_TYPES = Object.freeze([
   ["runtime_control", RUNTIME_CONTROL_MUTATION],
   ["commit", /\bcommit\w*\b/iu],
   ["push", /\bpush\w*\b/iu],
-  ["pull_request", /\b(?:pull(?:\s+request)?|pr)\b/iu],
+  ["pull_request", new RegExp(`\\b(?:pull(?:\\s+request)?|${STANDALONE_PR})\\b`, "iu")],
   ["merge", /\bmerge\w*\b/iu],
   ["deploy", /\bdeploy(?:ed|ing)?\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu],
   ["publish", /\b(?:publish\w*|release|rilasci\w*)\b/iu],
