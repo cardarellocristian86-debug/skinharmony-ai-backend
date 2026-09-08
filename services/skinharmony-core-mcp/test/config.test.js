@@ -86,6 +86,16 @@ test("core block remediation mode defaults to shadow and accepts only the bounde
   );
 });
 
+test("governed continuity rollout is bounded to OFF, SHADOW and ENFORCED", () => {
+  assert.equal(loadConfig({}).governedContinuityContextMode, "SHADOW");
+  for (const mode of ["OFF", "SHADOW", "ENFORCED"]) {
+    assert.equal(loadConfig({ GOVERNED_CONTINUITY_CONTEXT_MODE: mode })
+      .governedContinuityContextMode, mode);
+  }
+  assert.throws(() => loadConfig({ GOVERNED_CONTINUITY_CONTEXT_MODE: "ACTIVE" }),
+    /GOVERNED_CONTINUITY_CONTEXT_MODE must be OFF, SHADOW, or ENFORCED/);
+});
+
 test("AI work quality mode defaults to observe and exposes bounded rollout tiers", () => {
   assert.equal(loadConfig({}).aiWorkQualityMode, "observe");
   for (const mode of ["observe", "draft", "sandbox_active", "scoped_active", "privileged"]) {

@@ -2685,6 +2685,13 @@ export function createApp(config, options = {}) {
       tenant_isolated: true,
       bounded_leases: true,
       agent_ownership_allowed: false,
+      governed_continuity_context: {
+        mode: config.governedContinuityContextMode,
+        explicit_capabilities_active: config.governedContinuityContextMode !== "OFF",
+        legacy_completion_requires_governed_commit:
+          config.governedContinuityContextMode === "ENFORCED",
+        authority_granted: false,
+      },
     },
     host_native_agents: {
       enabled: config.hostNativeAgentProtocolEnabled === true,

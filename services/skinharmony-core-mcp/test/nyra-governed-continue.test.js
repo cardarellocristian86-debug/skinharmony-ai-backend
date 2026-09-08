@@ -885,17 +885,15 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.deepEqual(store.calls[0], ["open", "tenant-a", "nyra_dir_1234567890abcdef12345678"]);
 
   const definition = TOOLS.find((tool) => tool.name === "nyra_continue");
-  const ownerOperationBranch = definition.inputSchema.anyOf.find((branch) =>
-    branch.properties?.operation?.enum?.includes("reconcile_persisted_precommit"));
-  assert.deepEqual(ownerOperationBranch.required,
-    ["work_id", "owner_confirmed", "confirmation_reference"]);
-  assert.deepEqual(ownerOperationBranch.not.required, ["continuation_ref"]);
-  const mergePreviewBranch = definition.inputSchema.anyOf.find((branch) =>
-    branch.properties?.operation?.const === "preview_native_plan_merge");
-  assert.deepEqual(mergePreviewBranch.required, ["work_id"]);
-  assert.deepEqual(mergePreviewBranch.not.required, ["continuation_ref"]);
-  assert(ownerOperationBranch.properties.operation.enum.includes("align_native_plan_status"));
-  assert(ownerOperationBranch.properties.operation.enum.includes("reevaluate_native_closure"));
+  assert.equal(definition.inputSchema.anyOf, undefined);
+  assert.deepEqual(definition.inputSchema.required, ["operation", "idempotency_key"]);
+  assert(definition.inputSchema.properties.operation.enum.includes("reconcile_persisted_precommit"));
+  assert(definition.inputSchema.properties.operation.enum.includes("align_native_plan_status"));
+  assert(definition.inputSchema.properties.operation.enum.includes("reevaluate_native_closure"));
+  assert(definition.inputSchema.properties.work_id);
+  assert(definition.inputSchema.properties.continuation_ref);
+  assert(definition.inputSchema.properties.owner_confirmed);
+  assert(definition.inputSchema.properties.confirmation_reference);
 });
 
 test("runtime rejects missing continuation bindings before any governed operation", async () => {
@@ -975,7 +973,8 @@ test("an expired open reference is atomically retired before the same Nyra bindi
       const sql = String(statement);
       statements.push(sql);
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" ||
-          sql.startsWith("SET LOCAL ") || sql.includes("CREATE TABLE IF NOT EXISTS nyra_governed_continuation")) {
+          sql.startsWith("SET LOCAL ") || sql.includes("pg_advisory_xact_lock") ||
+          sql.includes("CREATE TABLE IF NOT EXISTS nyra_governed_continuation")) {
         return { rows: [] };
       }
       if (sql.includes("SET state='EXPIRED'")) return { rowCount: 1, rows: [] };

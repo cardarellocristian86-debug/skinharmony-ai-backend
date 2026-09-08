@@ -300,7 +300,9 @@ function validateNodes(nodes, limits) {
 }
 
 function publicTree(tree) {
-  const { outcome_idempotency: _outcomeIdempotency, ...visible } = tree;
+  const { outcome_idempotency: _outcomeIdempotency,
+    completion_verification_idempotency: _completionVerificationIdempotency,
+    ...visible } = tree;
   return clone(visible);
 }
 
@@ -582,6 +584,66 @@ export function createDynamicTaskTreeRuntime({
 
     async get(input) {
       return publicTree(await treeFor(input));
+    },
+
+    async recordCompletionVerification({ tenant_id, work_id, tree_id, verification,
+      idempotency_key }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const workId = requireWorkId(work_id);
+      const treeId = requireText(tree_id, "tree_id", 160);
+      const idempotencyKey = requireIdempotencyKey(idempotency_key);
+      if (!verification || typeof verification !== "object" || Array.isArray(verification)
+          || verification.schema_version !== "completion_verification_result_v1"
+          || verification.completion_verified !== true
+          || verification.execution_authorized !== false
+          || verification.manifest?.tenant_id !== tenantId
+          || verification.manifest?.work_id !== workId) {
+        throw new Error("completion_verification_invalid");
+      }
+      const requestDigest = digestHex({ tenant_id: tenantId, work_id: workId,
+        tree_id: treeId, verification });
+      const receiptKey = digestHex({ tenant_id: tenantId, work_id: workId,
+        tree_id: treeId, idempotency_key: idempotencyKey });
+      const scope = digestHex({ tenant_id: tenantId, work_id: workId, tree_id: treeId,
+        kind: "completion_verification" });
+      return serializeOutcome(scope, async () => {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const tree = await treeFor({ tenant_id: tenantId, work_id: workId, tree_id: treeId });
+          const receipts = tree.completion_verification_idempotency || {};
+          if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) {
+            throw new Error("dynamic_task_tree_state_corrupt");
+          }
+          if (Object.hasOwn(receipts, receiptKey)) {
+            if (receipts[receiptKey]?.request_digest !== requestDigest) {
+              throw new Error("completion_verification_idempotency_conflict");
+            }
+            return { ...clone(receipts[receiptKey].result), idempotent_replay: true };
+          }
+          const persisted = {
+            ...clone(verification),
+            persisted: true,
+            tree_id: treeId,
+            idempotent_replay: false,
+          };
+          tree.completion_verifications = Array.isArray(tree.completion_verifications)
+            ? tree.completion_verifications : [];
+          if (tree.completion_verifications.length >= 64) {
+            throw new Error("completion_verification_limit_exceeded");
+          }
+          tree.completion_verifications.push(clone(persisted));
+          tree.completion_verification_idempotency = {
+            ...receipts,
+            [receiptKey]: { request_digest: requestDigest, result: persisted },
+          };
+          try {
+            await persist(tree);
+            return persisted;
+          } catch (error) {
+            if (error.message !== "dynamic_task_tree_revision_conflict") throw error;
+          }
+        }
+        throw new Error("dynamic_task_tree_revision_conflict");
+      });
     },
 
     async proposeExpansion({ tenant_id, work_id, tree_id, parent_node_id, nodes }) {

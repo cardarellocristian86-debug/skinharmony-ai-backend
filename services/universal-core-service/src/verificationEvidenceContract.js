@@ -494,3 +494,324 @@ export async function validateVerificationEvidenceContractAsync(evidence, option
 
 export const VERIFICATION_EVIDENCE_SCHEMA_VERSION = SCHEMA_VERSION;
 export const VERIFICATION_EVIDENCE_DRAFT_SCHEMA_VERSION = DRAFT_SCHEMA_VERSION;
+
+const COMPLETION_MANIFEST_SCHEMA_VERSION = "completion_manifest_v1";
+const PORTABLE_BUNDLE_SCHEMA_VERSION = "portable_verification_bundle_v1";
+const PORTABLE_BUNDLE_PURPOSE = "NYRA_PORTABLE_VERIFICATION_BUNDLE_V1\0";
+const COMPLETION_STAGES = Object.freeze([
+  "IMPLEMENTED", "TESTED", "MERGED", "DEPLOYED", "VERIFIED_LIVE",
+]);
+const SHA256_PATTERN = /^(?:[a-z]{3}_)?[a-f0-9]{64}$/u;
+
+function requireDigest(value, field) {
+  const normalized = requireText(value, field, 80).toLowerCase();
+  if (!SHA256_PATTERN.test(normalized)) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
+function requirePositiveInteger(value, field) {
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 1) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
+function uniqueSortedText(values, field, { maximum = 256, required = false } = {}) {
+  if (!Array.isArray(values) || (required && values.length === 0) || values.length > maximum) {
+    throw new Error(`${field}_invalid`);
+  }
+  const normalized = values.map((value) => requireText(value, field, 1_000));
+  if (new Set(normalized).size !== normalized.length) throw new Error(`${field}_duplicate`);
+  return normalized.sort();
+}
+
+function canonicalTimestamp(value, field) {
+  const normalized = requireText(value, field, 40);
+  const milliseconds = Date.parse(normalized);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== normalized) {
+    throw new Error(`${field}_invalid`);
+  }
+  return normalized;
+}
+
+function normalizeCompletionManifest(input = {}) {
+  const tenantId = requireText(input.tenant_id, "completion_tenant_id", 120);
+  const workId = requireUuid(input.work_id, "completion_work_id");
+  const taskId = requireUuid(input.task_id, "completion_task_id");
+  const requiredClaims = uniqueSortedText(input.required_claims, "completion_required_claims", {
+    maximum: 128,
+    required: true,
+  });
+  const bindings = Array.isArray(input.evidence_bindings) ? input.evidence_bindings.map((binding) => ({
+    claim: requireText(binding?.claim, "completion_evidence_claim", 4_000),
+    evidence_digest: requireText(binding?.evidence_digest, "completion_evidence_digest", 96),
+    tree_id: requireText(binding?.tree_id, "completion_evidence_tree_id", 160),
+    node_id: requireText(binding?.node_id, "completion_evidence_node_id", 120),
+    tenant_id: requireText(binding?.tenant_id, "completion_evidence_tenant_id", 120),
+    work_id: requireUuid(binding?.work_id, "completion_evidence_work_id"),
+    work_revision: requirePositiveInteger(binding?.work_revision,
+      "completion_evidence_work_revision"),
+    task_revision: requirePositiveInteger(binding?.task_revision,
+      "completion_evidence_task_revision"),
+    environment: requireText(binding?.environment, "completion_evidence_environment", 120),
+    scope: requireText(binding?.scope, "completion_evidence_scope", 500),
+  })) : [];
+  if (bindings.length > 128) throw new Error("completion_evidence_bindings_invalid");
+  bindings.sort((left, right) => left.claim.localeCompare(right.claim));
+  if (new Set(bindings.map((binding) => binding.claim)).size !== bindings.length) {
+    throw new Error("completion_evidence_claim_duplicate");
+  }
+  if (requiredClaims.some((claim) => !bindings.some((binding) => binding.claim === claim))) {
+    throw new Error("completion_required_evidence_missing");
+  }
+  const workRevision = requirePositiveInteger(input.work_revision, "completion_work_revision");
+  const taskRevision = requirePositiveInteger(input.task_revision, "completion_task_revision");
+  for (const binding of bindings) {
+    if (binding.tenant_id !== tenantId || binding.work_id !== workId
+        || binding.work_revision !== workRevision || binding.task_revision !== taskRevision) {
+      throw new Error("completion_evidence_scope_mismatch");
+    }
+  }
+  const completionStage = requireText(input.completion_stage, "completion_stage", 32).toUpperCase();
+  if (!COMPLETION_STAGES.includes(completionStage)) throw new Error("completion_stage_invalid");
+  const material = {
+    schema_version: COMPLETION_MANIFEST_SCHEMA_VERSION,
+    tenant_id: tenantId,
+    work_id: workId,
+    work_revision: workRevision,
+    task_id: taskId,
+    task_revision: taskRevision,
+    intent_digest: requireDigest(input.intent_digest, "completion_intent_digest"),
+    required_claims: requiredClaims,
+    artifact_refs: uniqueSortedText(input.artifact_refs || [], "completion_artifact_refs"),
+    commit_refs: uniqueSortedText(input.commit_refs || [], "completion_commit_refs"),
+    deploy_refs: uniqueSortedText(input.deploy_refs || [], "completion_deploy_refs"),
+    live_verification_refs: uniqueSortedText(input.live_verification_refs || [],
+      "completion_live_verification_refs"),
+    evidence_bindings: bindings,
+    dependency_manifest_ref: requireText(input.dependency_manifest_ref,
+      "completion_dependency_manifest_ref", 500),
+    context_snapshot_ref: requireText(input.context_snapshot_ref,
+      "completion_context_snapshot_ref", 500),
+    policy_revision: requireDigest(input.policy_revision, "completion_policy_revision"),
+    verifier_revision: requireText(input.verifier_revision, "completion_verifier_revision", 160),
+    effect_lineage_refs: uniqueSortedText(input.effect_lineage_refs || [],
+      "completion_effect_lineage_refs"),
+    completion_stage: completionStage,
+  };
+  if (COMPLETION_STAGES.indexOf(completionStage) >= COMPLETION_STAGES.indexOf("IMPLEMENTED")
+      && material.artifact_refs.length === 0) throw new Error("completion_artifact_missing");
+  if (COMPLETION_STAGES.indexOf(completionStage) >= COMPLETION_STAGES.indexOf("MERGED")
+      && material.commit_refs.length === 0) throw new Error("completion_commit_missing");
+  if (COMPLETION_STAGES.indexOf(completionStage) >= COMPLETION_STAGES.indexOf("DEPLOYED")
+      && material.deploy_refs.length === 0) throw new Error("completion_deploy_missing");
+  if (completionStage === "VERIFIED_LIVE" && material.live_verification_refs.length === 0) {
+    throw new Error("completion_live_verification_missing");
+  }
+  return material;
+}
+
+export function buildCompletionManifest(input = {}) {
+  const material = normalizeCompletionManifest(input);
+  return Object.freeze({ ...material, manifest_digest: digest("cmp", material) });
+}
+
+export async function verifyCompletionEvidence(manifestInput, {
+  evidence_contracts = [],
+  resolve_verifier_identity = null,
+  resolve_evidence_artifact = null,
+  require_verified_identities = true,
+  require_registered_artifacts = true,
+} = {}) {
+  const manifest = buildCompletionManifest(Object.fromEntries(Object.entries(manifestInput || {})
+    .filter(([key]) => !["schema_version", "manifest_digest"].includes(key))));
+  if (manifestInput?.manifest_digest !== manifest.manifest_digest) {
+    throw new Error("completion_manifest_digest_invalid");
+  }
+  if (!Array.isArray(evidence_contracts) || evidence_contracts.length > 128) {
+    throw new Error("completion_evidence_contracts_invalid");
+  }
+  const contracts = new Map(evidence_contracts.map((contract) => [contract?.evidence_digest, contract]));
+  const claims = [];
+  for (const binding of manifest.evidence_bindings) {
+    const evidence = contracts.get(binding.evidence_digest);
+    if (!evidence) throw new Error("completion_evidence_contract_missing");
+    const verified = await validateVerificationEvidenceContractAsync(evidence, {
+      tenant_id: manifest.tenant_id,
+      work_id: manifest.work_id,
+      tree_id: binding.tree_id,
+      node_id: binding.node_id,
+      minimum_approvals: 1,
+      resolve_verifier_identity,
+      resolve_evidence_artifact,
+      require_verified_identities,
+      require_registered_artifacts,
+    });
+    if (verified.evidence_digest !== binding.evidence_digest || verified.claim !== binding.claim
+        || verified.contract_satisfied !== true) throw new Error("completion_claim_not_verified");
+    claims.push({
+      claim: binding.claim,
+      evidence_digest: binding.evidence_digest,
+      verified: true,
+      identity_verification_satisfied: verified.identity_verification.satisfied,
+      artifact_registry_satisfied: verified.artifacts.every((artifact) =>
+        artifact.registry_verified === true),
+    });
+  }
+  const result = {
+    schema_version: "completion_verification_result_v1",
+    manifest,
+    claims,
+    completion_stage: manifest.completion_stage,
+    completion_verified: claims.length === manifest.required_claims.length
+      && claims.every((claim) => claim.verified),
+    execution_authorized: false,
+  };
+  return Object.freeze({ ...result, verification_digest: digest("cmv", result) });
+}
+
+function ed25519PublicKey(value) {
+  try {
+    const key = value instanceof crypto.KeyObject ? value : crypto.createPublicKey(value);
+    if (key.type !== "public" || key.asymmetricKeyType !== "ed25519") {
+      throw new Error("portable_bundle_public_key_invalid");
+    }
+    return key;
+  } catch (error) {
+    if (error?.message === "portable_bundle_public_key_invalid") throw error;
+    throw new Error("portable_bundle_public_key_invalid");
+  }
+}
+
+function publicKeyFingerprint(key) {
+  return crypto.createHash("sha256").update(key.export({ format: "der", type: "spki" })).digest("hex");
+}
+
+function portableSigningPayload(bundleDigest) {
+  return Buffer.from(`${PORTABLE_BUNDLE_PURPOSE}${bundleDigest}`, "utf8");
+}
+
+export async function exportPortableVerificationBundle({
+  completion_verification,
+  evidence_contracts,
+  revocation_snapshot,
+  signed_at,
+  signer,
+} = {}) {
+  if (completion_verification?.completion_verified !== true
+      || completion_verification?.execution_authorized !== false) {
+    throw new Error("portable_bundle_completion_unverified");
+  }
+  const publicKey = ed25519PublicKey(signer?.public_key);
+  const trustAnchor = {
+    key_id: requireText(signer?.key_id, "portable_bundle_key_id", 160),
+    algorithm: "Ed25519",
+    public_key_spki_base64: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+    public_key_fingerprint: publicKeyFingerprint(publicKey),
+  };
+  const revocations = {
+    as_of: canonicalTimestamp(revocation_snapshot?.as_of, "portable_bundle_revocation_as_of"),
+    revision: requireDigest(revocation_snapshot?.revision, "portable_bundle_revocation_revision"),
+    quality: requireText(revocation_snapshot?.quality, "portable_bundle_revocation_quality", 80),
+    revoked_key_ids: uniqueSortedText(revocation_snapshot?.revoked_key_ids || [],
+      "portable_bundle_revoked_key_ids", { maximum: 1_000 }),
+  };
+  const signedAt = canonicalTimestamp(signed_at, "portable_bundle_signed_at");
+  if (Date.parse(revocations.as_of) < Date.parse(signedAt)) {
+    throw new Error("portable_bundle_revocation_snapshot_stale");
+  }
+  if (revocations.revoked_key_ids.includes(trustAnchor.key_id)) {
+    throw new Error("portable_bundle_signer_revoked");
+  }
+  const payload = {
+    schema_version: PORTABLE_BUNDLE_SCHEMA_VERSION,
+    canonicalization: "nyra_stable_json_v1",
+    completion_verification,
+    evidence_contracts,
+    revocation_snapshot: revocations,
+    trust_anchor: trustAnchor,
+    signed_at: signedAt,
+  };
+  const bundleDigest = digest("pvb", payload);
+  let signature;
+  if (typeof signer?.sign_payload === "function") {
+    signature = await signer.sign_payload(portableSigningPayload(bundleDigest),
+      PORTABLE_BUNDLE_PURPOSE.slice(0, -1));
+  } else if (signer?.private_key) {
+    signature = crypto.sign(null, portableSigningPayload(bundleDigest), signer.private_key)
+      .toString("base64url");
+  } else {
+    throw new Error("portable_bundle_signer_unavailable");
+  }
+  const normalizedSignature = requireText(signature, "portable_bundle_signature", 256);
+  return Object.freeze({ ...payload, bundle_digest: bundleDigest, signature: normalizedSignature });
+}
+
+export function verifyPortableVerificationBundle(bundle, {
+  trusted_public_keys = [],
+  valid_at,
+} = {}) {
+  if (bundle?.schema_version !== PORTABLE_BUNDLE_SCHEMA_VERSION) {
+    throw new Error("portable_bundle_schema_invalid");
+  }
+  const { bundle_digest: bundleDigest, signature, ...payload } = bundle;
+  if (digest("pvb", payload) !== bundleDigest) throw new Error("portable_bundle_digest_invalid");
+  const keyId = requireText(bundle?.trust_anchor?.key_id, "portable_bundle_key_id", 160);
+  const trusted = trusted_public_keys.find((candidate) => candidate?.key_id === keyId);
+  if (!trusted) throw new Error("portable_bundle_trust_anchor_unknown");
+  const publicKey = ed25519PublicKey(trusted.public_key);
+  if (publicKeyFingerprint(publicKey) !== bundle.trust_anchor.public_key_fingerprint) {
+    throw new Error("portable_bundle_trust_anchor_mismatch");
+  }
+  const signatureBytes = Buffer.from(requireText(signature, "portable_bundle_signature", 256),
+    "base64url");
+  if (signatureBytes.length !== 64
+      || !crypto.verify(null, portableSigningPayload(bundleDigest), publicKey, signatureBytes)) {
+    throw new Error("portable_bundle_signature_invalid");
+  }
+  const validAt = canonicalTimestamp(valid_at, "portable_bundle_valid_at");
+  const revocationAsOf = canonicalTimestamp(bundle.revocation_snapshot?.as_of,
+    "portable_bundle_revocation_as_of");
+  if (Date.parse(validAt) < Date.parse(bundle.signed_at)) throw new Error("portable_bundle_not_yet_valid");
+  if (Date.parse(revocationAsOf) < Date.parse(validAt)) {
+    throw new Error("portable_bundle_current_revocation_unknown");
+  }
+  if (bundle.revocation_snapshot.revoked_key_ids.includes(keyId)) {
+    throw new Error("portable_bundle_signer_revoked");
+  }
+  const manifest = bundle.completion_verification?.manifest;
+  const rebuilt = buildCompletionManifest(Object.fromEntries(Object.entries(manifest || {})
+    .filter(([key]) => !["schema_version", "manifest_digest"].includes(key))));
+  if (rebuilt.manifest_digest !== manifest?.manifest_digest) {
+    throw new Error("portable_bundle_manifest_invalid");
+  }
+  const evidenceByDigest = new Map((bundle.evidence_contracts || [])
+    .map((evidence) => [evidence?.evidence_digest, evidence]));
+  for (const binding of rebuilt.evidence_bindings) {
+    const evidence = evidenceByDigest.get(binding.evidence_digest);
+    const structural = validateVerificationEvidenceContract(evidence, {
+      tenant_id: rebuilt.tenant_id,
+      work_id: rebuilt.work_id,
+      tree_id: binding.tree_id,
+      node_id: binding.node_id,
+      minimum_approvals: 1,
+    });
+    if (structural.claim !== binding.claim || structural.quorum.satisfied !== true) {
+      throw new Error("portable_bundle_claim_binding_invalid");
+    }
+  }
+  return Object.freeze({
+    schema_version: "portable_verification_result_v1",
+    integrity_verified: true,
+    signer_verified: true,
+    evidence_structure_verified: true,
+    provenance_scope_verified: true,
+    claim_bindings_verified: true,
+    verifier_identity_assertion: "SIGNED_EXPORT_ASSERTION",
+    current_revocation_known_at: validAt,
+    bundle_digest: bundleDigest,
+    manifest_digest: rebuilt.manifest_digest,
+  });
+}
+
+export const COMPLETION_MANIFEST_VERSION = COMPLETION_MANIFEST_SCHEMA_VERSION;
+export const PORTABLE_VERIFICATION_BUNDLE_VERSION = PORTABLE_BUNDLE_SCHEMA_VERSION;

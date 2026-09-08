@@ -38,6 +38,57 @@ test("supporting evidence moves posterior above prior and ranks hypotheses", () 
   assert(result.ranking[0].posterior_probability > result.ranking[0].prior_probability);
 });
 
+test("correlated copies from one origin do not simulate independent corroboration", () => {
+  const single = rankHypotheses({
+    question: "One source",
+    hypotheses: [
+      { id: "yes", prior_probability: 0.5, evidence: [
+        { id: "one", direction: "support", strength: 0.6, reliability: 0.8, source: "https://example.com/report?utm_source=a" },
+      ] },
+      { id: "no", prior_probability: 0.5 },
+    ],
+  });
+  const flooded = rankHypotheses({
+    question: "Copied source",
+    hypotheses: [
+      { id: "yes", prior_probability: 0.5, evidence: Array.from({ length: 20 }, (_, index) => ({
+        id: `copy-${index}`,
+        direction: "support",
+        strength: 0.6,
+        reliability: 0.8,
+        source: `https://example.com/report?utm_source=${index}`,
+      })) },
+      { id: "no", prior_probability: 0.5 },
+    ],
+  });
+  assert.equal(flooded.ranking.find((item) => item.id === "yes").posterior_probability,
+    single.ranking.find((item) => item.id === "yes").posterior_probability);
+  const admitted = flooded.ranking.find((item) => item.id === "yes").evidence;
+  assert.equal(admitted.length, 1);
+  assert.equal(admitted[0].corroboration_count, 20);
+  assert.equal(admitted[0].correlated_evidence_ids.length, 20);
+  assert.equal(admitted[0].method, undefined);
+  assert.equal(flooded.ranking.find((item) => item.id === "yes").method,
+    "transparent_log_odds_update_v3_origin_bounded");
+});
+
+test("derived evidence shares its root origin while an independent source adds weight", () => {
+  const result = rankHypotheses({
+    hypotheses: [
+      { id: "candidate", prior_probability: 0.5, evidence: [
+        { id: "original", direction: "support", strength: 0.5, reliability: 0.8, origin_ref: "origin:report-1" },
+        { id: "summary", direction: "support", strength: 0.7, reliability: 0.8, origin_ref: "origin:report-1", derived_from: ["origin:report-1"] },
+        { id: "independent", direction: "support", strength: 0.5, reliability: 0.8, origin_ref: "origin:report-2" },
+      ] },
+      { id: "alternative", prior_probability: 0.5 },
+    ],
+  });
+  const candidate = result.ranking.find((item) => item.id === "candidate");
+  assert.equal(candidate.evidence.length, 2);
+  assert.equal(candidate.evidence.find((item) => item.origin_ref === "origin:report-1").corroboration_count, 2);
+  assert(candidate.posterior_probability > 0.7);
+});
+
 test("event evaluation uses probability impact and urgency", () => {
   const result = evaluateEvents({
     question: "What can happen?",

@@ -1,6 +1,7 @@
 const DEFAULT_MIGRATION_STATEMENT_TIMEOUT_MS = 30_000;
 const DEFAULT_MIGRATION_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_INITIALIZATION_RETRY_DELAYS_MS = Object.freeze([100, 500]);
+export const POSTGRES_MIGRATION_ADVISORY_LOCK = "skinharmony:postgres-migration:v1";
 
 function boundedInteger(value, fallback, minimum, maximum) {
   const normalized = String(value ?? "").trim();
@@ -190,6 +191,13 @@ export async function runPostgresMigrationBlock(client, sql, {
     open = true;
     await client.query(`SET LOCAL statement_timeout = '${statementMs}ms'`);
     await client.query(`SET LOCAL lock_timeout = '${lockMs}ms'`);
+    // CREATE TABLE IF NOT EXISTS is not immune to PostgreSQL catalog races
+    // when two freshly deployed replicas initialize the same relation. One
+    // transaction-scoped lock serializes only schema installers; it is
+    // released automatically on COMMIT/ROLLBACK and obeys lock_timeout.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+      POSTGRES_MIGRATION_ADVISORY_LOCK,
+    ]);
     const result = await migrationQuery(client, statementMs)(migrationSql);
     await client.query("COMMIT");
     open = false;

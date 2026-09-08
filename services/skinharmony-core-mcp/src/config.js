@@ -531,6 +531,12 @@ export function loadConfig(env = process.env) {
   // derivative of the first host-supplied request as an immutable Intent
   // Anchor. Existing tenants retain the previous no-capture behaviour.
   const workContinuityAutoCaptureEnabled = flag(env.WORK_CONTINUITY_AUTO_CAPTURE_ENABLED, false);
+  const governedContinuityContextMode = String(
+    env.GOVERNED_CONTINUITY_CONTEXT_MODE || "SHADOW",
+  ).trim().toUpperCase();
+  if (!["OFF", "SHADOW", "ENFORCED"].includes(governedContinuityContextMode)) {
+    throw new Error("GOVERNED_CONTINUITY_CONTEXT_MODE must be OFF, SHADOW, or ENFORCED");
+  }
   const hostNativeAgentProtocolEnabled = flag(env.HOST_NATIVE_AGENT_PROTOCOL_ENABLED, false);
   // When enabled, every functional Nyra/Core tool call must first refresh a
   // server-derived signed presence in the tenant registry. It is intentionally
@@ -663,6 +669,7 @@ export function loadConfig(env = process.env) {
     coreBlockRemediationTtlSeconds,
     coreBlockRemediationTransientRetryLimit,
     workContinuityAutoCaptureEnabled,
+    governedContinuityContextMode,
     nyraDialogueEnabled,
     hostNativeAgentProtocolEnabled,
     mandatoryAgentPresenceEnabled,

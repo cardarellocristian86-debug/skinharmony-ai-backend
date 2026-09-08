@@ -36,7 +36,8 @@ const config = {
   codexKeys: ["codex-key"],
   codexScopes: ["core:read", "core:govern"],
   defaultTenantId: "owner-private",
-  supportedScopes: ["core:read", "core:govern"]
+  supportedScopes: ["core:read", "core:govern"],
+  governedContinuityContextMode: "SHADOW",
 };
 
 function signedTestJwt(privateKey, kid, payload) {
@@ -976,6 +977,14 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(serverSource, /core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt/);
   assert.match(serverSource, /bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
   assert.match(serverSource, /core_authorization_receipt: coreDecision\.core_authorization_receipt/);
+  const queueStart = serverSource.indexOf("tenant_work_queue_create_v3: async");
+  const queueEnd = serverSource.indexOf("work_continuity_v2_read: async", queueStart);
+  const queueHandler = serverSource.slice(queueStart, queueEnd);
+  assert.ok(queueStart >= 0 && queueEnd > queueStart);
+  assert.match(queueHandler, /requireHostWorkCreateCapability\(identity\)/);
+  assert.match(queueHandler, /const request = bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
+  assert.match(queueHandler, /tenantWorkCoordinationTarget\("tenant_work_queue_create_v3", request\)/);
+  assert.match(queueHandler, /queueNewWork\(withTenantWorkAcl\(identity\), request\)/);
   const createStart = serverSource.indexOf("async function createCanonicalWorkGoverned");
   const createEnd = serverSource.indexOf("async function readNyraDirectiveContext", createStart);
   const createHandler = serverSource.slice(createStart, createEnd);
@@ -1260,6 +1269,10 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.work_continuity.auto_capture_enabled, false);
   assert.equal(health.work_continuity.intent_anchor_redacted, true);
   assert.equal(health.work_continuity.raw_prompts_stored, false);
+  assert.equal(health.work_continuity.governed_continuity_context.mode, "SHADOW");
+  assert.equal(health.work_continuity.governed_continuity_context.explicit_capabilities_active, true);
+  assert.equal(health.work_continuity.governed_continuity_context.legacy_completion_requires_governed_commit, false);
+  assert.equal(health.work_continuity.governed_continuity_context.authority_granted, false);
   assert.equal(health.work_continuity.tenant_isolated, true);
   assert.equal(health.work_continuity.bounded_leases, true);
   assert.equal(health.work_continuity.agent_ownership_allowed, false);
@@ -2724,10 +2737,10 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(nyraContinue);
   assert(nyraContinue.inputSchema.properties.operation.enum.includes("finalize_verified_work"));
   assert.equal(nyraContinue.inputSchema.required.includes("continuation_ref"), false);
-  assert(nyraContinue.inputSchema.anyOf.some((branch) =>
-    branch.properties?.operation?.enum?.includes("finalize_verified_work")
-    && branch.required?.includes("work_id")
-    && branch.required?.includes("confirmation_reference")));
+  assert.equal(nyraContinue.inputSchema.anyOf, undefined);
+  assert(nyraContinue.inputSchema.properties.work_id);
+  assert(nyraContinue.inputSchema.properties.continuation_ref);
+  assert(nyraContinue.inputSchema.properties.confirmation_reference);
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
   assert(body.result.tools.every((tool) => tool.securitySchemes.every((scheme) => scheme.type === "oauth2")));
   const readTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === true);

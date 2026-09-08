@@ -123,6 +123,10 @@ import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
 } from "./work-bootstrap-contract.js";
+import {
+  buildExecutionConstraintsProjection,
+  evaluateGovernedContinuityRollout,
+} from "./governed-continuity-context.js";
 import { ensureNyraReadBinding } from "./nyra-read-binding.js";
 import { attachObservedContinuity } from "./work-preflight-observation.js";
 import {
@@ -1118,6 +1122,20 @@ function continuityTextResult(payload) {
     structuredContent: payload,
     content: [{ type: "text", text: JSON.stringify(payload) }],
   };
+}
+
+function requireGovernedContinuityContextWrite({ legacyCompletion = false } = {}) {
+  const decision = evaluateGovernedContinuityRollout({
+    mode: config.governedContinuityContextMode,
+    mutation: true,
+    legacy_completion: legacyCompletion,
+  });
+  if (!decision.allowed) {
+    const error = new Error(decision.reason);
+    error.code = decision.reason;
+    throw error;
+  }
+  return decision;
 }
 
 function continuityMethod(method) {
@@ -2420,14 +2438,20 @@ const baseHandlers = {
     work_continuity_v2_create: createCanonicalWorkGoverned,
     tenant_work_queue_create_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      requireHostWorkCreateCapability(identity);
+      // The duplicate review hashes a request after binding its host/session
+      // provenance. Queueing must consume that exact canonical request too;
+      // passing the transport-shaped args here made every valid reviewed
+      // request fail its durable request_digest binding.
+      const request = bindWorkBootstrapRequestToAuthenticatedHost({ request: args, identity });
       await requireBoundedTenantCoordination(
         identity,
         tenantWorkCoordinationActionType("tenant_work_queue_create_v3"),
-        tenantWorkCoordinationTarget("tenant_work_queue_create_v3", args),
-        args.idempotency_key,
+        tenantWorkCoordinationTarget("tenant_work_queue_create_v3", request),
+        request.idempotency_key,
       );
       return continuityTextResult({ ok: true,
-        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), args),
+        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), request),
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",
@@ -2524,7 +2548,65 @@ const baseHandlers = {
     },
     tenant_work_task_record: async (args, identity) => {
       requireTenantWorkCapability(identity, "operate");
+      if (args.status === "completed") requireGovernedContinuityContextWrite({
+        legacyCompletion: true,
+      });
       return continuityTextResult({ ok: true, result: await workContinuityV2Store.recordTask(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_task_contract_record: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      requireGovernedContinuityContextWrite();
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.recordTaskContract(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_dependency_manifest_record: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      requireGovernedContinuityContextWrite();
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.recordDependencyManifest(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_trajectory_evaluate: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      requireGovernedContinuityContextWrite();
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.evaluateWorkTrajectory(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_task_commit: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      requireGovernedContinuityContextWrite();
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.commitTaskState(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_task_invalidate: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      requireGovernedContinuityContextWrite();
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.invalidateTaskState(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_state_projection_read: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.readWorkStateProjection(withTenantWorkAcl(identity), args) }),
+    tenant_work_execution_constraints_read: async (args, identity) => {
+      await workContinuityV2Store.readWorkStateProjection(withTenantWorkAcl(identity), args);
+      const dimension = (state, value, evidence_refs = []) => ({ state, value, evidence_refs });
+      const acl = withTenantWorkAcl(identity).tenant_work_acl;
+      return continuityTextResult({ ok: true, result: buildExecutionConstraintsProjection({
+        work_id: args.work_id,
+        task_id: args.task_id,
+        runtime: dimension("OBSERVED", { node_version: process.version }, ["runtime:node-process"]),
+        tools: dimension("OBSERVED", { published_capability_count: TOOLS.length }, ["mcp:tools-list"]),
+        network: dimension("UNKNOWN", null),
+        resources: dimension("UNKNOWN", null),
+        concurrency: dimension("UNKNOWN", null),
+        budgets: dimension("OBSERVED", { request_body_limit_bytes: 1_048_576 }, ["runtime:http-limit"]),
+        policy: dimension("OBSERVED", { universal_core_origin: config.universalCoreUrl,
+          governed_continuity_context_mode: config.governedContinuityContextMode },
+          ["core:configured-origin"]),
+        effect_ceiling: dimension("VERIFIED", {
+          role: acl.role,
+          tenant_id: acl.tenant_id,
+          is_tenant_owner: acl.is_tenant_owner === true,
+        }, ["identity:tenant-work-acl"]),
+      }) });
     },
     tenant_work_evidence_record: async (args, identity) => {
       requireTenantWorkCapability(identity, "review_candidate");

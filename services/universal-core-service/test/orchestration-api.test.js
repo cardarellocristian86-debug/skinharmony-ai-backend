@@ -5,7 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
-import { buildVerificationEvidenceContract } from "../src/verificationEvidenceContract.js";
+import {
+  buildCompletionManifest,
+  buildVerificationEvidenceContract,
+} from "../src/verificationEvidenceContract.js";
 import { createFileDynamicTaskTreeJoinVerdictStore } from "../src/dynamicTaskTreeJoinVerdictStore.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
 import {
@@ -404,6 +407,65 @@ test("orchestration API is tenant-and-Work-bound, paged and proposal-only", asyn
     }, key);
     assert.equal(verificationOutcome.status, 200);
     assert.equal(verificationOutcome.json.state, "verified");
+
+    const completionEvidence = evidenceFor(tree.json, "verify", 2);
+    const completionManifest = buildCompletionManifest({
+      tenant_id: "tenant-orchestration",
+      work_id: tree.json.work_id,
+      work_revision: 1,
+      task_id: "33333333-3333-4333-8333-333333333333",
+      task_revision: 1,
+      intent_digest: "a".repeat(64),
+      required_claims: [completionEvidence.claim],
+      artifact_refs: ["urn:test:orchestration-build"],
+      commit_refs: [],
+      deploy_refs: [],
+      live_verification_refs: [],
+      evidence_bindings: [{
+        claim: completionEvidence.claim,
+        evidence_digest: completionEvidence.evidence_digest,
+        tree_id: tree.json.tree_id,
+        node_id: "verify",
+        tenant_id: "tenant-orchestration",
+        work_id: tree.json.work_id,
+        work_revision: 1,
+        task_revision: 1,
+        environment: "test",
+        scope: "orchestration-api",
+      }],
+      dependency_manifest_ref: "urn:test:dependencies",
+      context_snapshot_ref: "urn:test:context",
+      policy_revision: "b".repeat(64),
+      verifier_revision: "ect:v2",
+      effect_lineage_refs: [],
+      completion_stage: "TESTED",
+    });
+    const completion = await request(base, "POST",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/completion-verifications`, {
+        idempotency_key: "completion-verification-1",
+        manifest: completionManifest,
+        evidence_contracts: [completionEvidence],
+      }, key);
+    assert.equal(completion.status, 200);
+    assert.equal(completion.json.completion_verified, true);
+    assert.equal(completion.json.persisted, true);
+    assert.equal(completion.json.execution_authorized, false);
+    const completionReplay = await request(base, "POST",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/completion-verifications`, {
+        idempotency_key: "completion-verification-1",
+        manifest: completionManifest,
+        evidence_contracts: [completionEvidence],
+      }, key);
+    assert.equal(completionReplay.status, 200);
+    assert.equal(completionReplay.json.idempotent_replay, true);
+    const wrongWorkCompletion = await request(base, "POST",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/completion-verifications`, {
+        idempotency_key: "completion-verification-wrong-work",
+        manifest: { ...completionManifest, work_id: DTT_WORK_B },
+        evidence_contracts: [completionEvidence],
+      }, key);
+    assert.equal(wrongWorkCompletion.status, 400);
+    assert.equal(wrongWorkCompletion.json.error, "completion_evidence_scope_mismatch");
 
     const forgedJoin = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/core-join`, {
       verdict_reference: "caller-manufactured-allow",

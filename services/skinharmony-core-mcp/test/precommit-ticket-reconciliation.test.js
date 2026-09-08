@@ -459,6 +459,7 @@ class PrecommitPool {
         completed_at: "2026-08-29T10:00:00.000Z" });
       return { rows: [{ task_id: row.task_id }], rowCount: 1 };
     }
+    if (q.startsWith("SELECT pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
     throw new Error(`precommit_fake_query_unhandled:${q}`);
   }
 }

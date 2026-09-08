@@ -1299,6 +1299,11 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_historical_archive_v3: tenantWorkCoordinationActionType("tenant_work_historical_archive_v3"),
     tenant_work_reopen_v3: tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
     tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
+    tenant_work_task_contract_record: tenantWorkCoordinationActionType("tenant_work_task_contract_record"),
+    tenant_work_dependency_manifest_record: tenantWorkCoordinationActionType("tenant_work_dependency_manifest_record"),
+    tenant_work_trajectory_evaluate: tenantWorkCoordinationActionType("tenant_work_trajectory_evaluate"),
+    tenant_work_task_commit: tenantWorkCoordinationActionType("tenant_work_task_commit"),
+    tenant_work_task_invalidate: tenantWorkCoordinationActionType("tenant_work_task_invalidate"),
     tenant_work_evidence_record: tenantWorkCoordinationActionType("tenant_work_evidence_record"),
   }, {
     tenant_work_open_review: "work.bootstrap.review",
@@ -1317,9 +1322,18 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_historical_archive_v3: "work.gallery.archive",
     tenant_work_reopen_v3: "work.gallery.reopen",
     tenant_work_task_record: "task.update",
+    tenant_work_task_contract_record: "task.update",
+    tenant_work_dependency_manifest_record: "task.update",
+    tenant_work_trajectory_evaluate: "task.update",
+    tenant_work_task_commit: "task.update",
+    tenant_work_task_invalidate: "task.update",
     tenant_work_evidence_record: "continuity.update",
   });
   assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: WORK_ID }), `task:${WORK_ID}`);
+  for (const name of ["tenant_work_task_contract_record", "tenant_work_dependency_manifest_record",
+    "tenant_work_trajectory_evaluate", "tenant_work_task_commit", "tenant_work_task_invalidate"]) {
+    assert.equal(tenantWorkCoordinationTarget(name, { work_id: WORK_ID }), `task:${WORK_ID}`, name);
+  }
   assert.equal(tenantWorkCoordinationTarget("tenant_work_evidence_record", { work_id: WORK_ID }), `work_continuity_evidence:${WORK_ID}`);
   assert.equal(tenantWorkCoordinationTarget("tenant_work_queue_create_v3", {}), "tenant_work_queue_create_v3");
   for (const name of [

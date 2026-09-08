@@ -158,8 +158,10 @@ import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./gov
 import { createRelationalOrchestrationSupervisor } from "./relationalOrchestrationSupervisor.js";
 import { createDynamicTaskTreeRuntime } from "./dynamicTaskTree.js";
 import {
+  buildCompletionManifest,
   buildVerificationEvidenceContract,
   prepareVerificationEvidenceDraft,
+  verifyCompletionEvidence,
 } from "./verificationEvidenceContract.js";
 import { createFileDynamicTaskTreeStateStore, createPostgresDynamicTaskTreeStateStore } from "./dynamicTaskTreeStateStore.js";
 import {
@@ -14632,6 +14634,47 @@ export function createUniversalCoreService(options = {}) {
       });
     } catch (error) {
       const code = error.message || "verification_evidence_draft_invalid";
+      return publicError(res, dttStatusForError(code), code);
+    }
+  });
+
+  app.post("/v1/orchestration/dtt/:treeId/completion-verifications", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
+    try {
+      await dynamicTaskTreeRuntime.get({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+      });
+      if (req.body?.manifest?.tenant_id !== req.tenantId
+          || req.body?.manifest?.work_id !== req.workId) {
+        throw new Error("completion_evidence_scope_mismatch");
+      }
+      const result = await verifyCompletionEvidence(req.body.manifest, {
+        evidence_contracts: req.body?.evidence_contracts,
+        resolve_verifier_identity: resolveDttVerifierIdentity,
+        resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
+        require_verified_identities: true,
+        require_registered_artifacts: true,
+      });
+      const persisted = await dynamicTaskTreeRuntime.recordCompletionVerification({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+        verification: result,
+        idempotency_key: req.body?.idempotency_key,
+      });
+      audit.append("completion_evidence_verified", {
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        key_id: req.coreKey.key_id,
+        tree_id: req.params.treeId,
+        manifest_digest: result.manifest.manifest_digest,
+        verification_digest: result.verification_digest,
+        completion_stage: result.completion_stage,
+      });
+      return res.json({ ...persisted, ok: true, execution_authorized: false });
+    } catch (error) {
+      const code = error.message || "completion_evidence_verification_failed";
       return publicError(res, dttStatusForError(code), code);
     }
   });
