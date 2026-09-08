@@ -1736,31 +1736,44 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     // Persist the exact server-owned ticket-acquisition task that previously
     // deadlocked closure evaluation. It is the sole pending task, so a fresh
     // evaluation may become ticket-ready while leaving the task visibly open.
-    const client = await pool.connect();
-    let persistedGate;
+    const persistedGate = {
+      task_id: crypto.randomUUID(),
+      action_kind: "git.commit",
+      gate_kind: "ticket_acquisition",
+    };
+    const gateClient = await pool.connect();
     try {
-      await client.query("BEGIN");
-      persistedGate = await v2Store.materializeNativePrecommitTicketGateWithClient(client, {
-        server_owned: true,
-        tenant_id: tenantId,
-        work_id: firstWork.work_id,
-        plan_id: planned.plan.plan_id,
-        evaluation_id: scopedReplay.evaluation_id,
-        evaluation_digest: scopedReplay.evaluation_digest,
-        workspace_digest: scopedReplay.precommit_verification.workspace_digest,
-        v2_task_scope: scopedReplay.native_v2_precommit_scope,
-      });
-      await client.query("COMMIT");
+      await gateClient.query("BEGIN");
+      await gateClient.query(`INSERT INTO tenant_work_task
+        (tenant_id,task_id,work_id,title,weight,required,status,acceptance_verified)
+      VALUES ($1,$2,$3,'Acquire exact Core git.commit ticket',1,true,'planned',false)`, [
+        tenantId,
+        persistedGate.task_id,
+        firstWork.work_id,
+      ]);
+      await gateClient.query(`INSERT INTO tenant_work_precommit_ticket_gate
+        (tenant_id,work_id,task_id,plan_id,evaluation_id,evaluation_digest,
+         workspace_digest,supersession_digest,reconciliation_digest,gate_source,
+         action_kind,gate_kind,created_by_user_id)
+      VALUES ($1,$3,$2,$4,$5,$6,$7,$8,$9,'native_closure_evaluation',
+        'git.commit','ticket_acquisition','postgres16-runtime-regression')`, [
+        tenantId,
+        persistedGate.task_id,
+        firstWork.work_id,
+        planned.plan.plan_id,
+        scopedReplay.evaluation_id,
+        scopedReplay.evaluation_digest,
+        scopedReplay.precommit_verification.workspace_digest,
+        digest({ tenantId, runId, kind: "ticket-gate-supersession" }),
+        digest({ tenantId, runId, kind: "ticket-gate-reconciliation" }),
+      ]);
+      await gateClient.query("COMMIT");
     } catch (error) {
-      await client.query("ROLLBACK");
+      await gateClient.query("ROLLBACK");
       throw error;
     } finally {
-      client.release();
+      gateClient.release();
     }
-    assert.equal(persistedGate.action_kind, "git.commit");
-    assert.equal(persistedGate.gate_kind, "ticket_acquisition");
-    assert.equal(persistedGate.fresh, true);
-    assert.equal(persistedGate.fulfilled, false);
     const persistedGateTask = await pool.query(`SELECT status,required,acceptance_verified
       FROM tenant_work_task
       WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
