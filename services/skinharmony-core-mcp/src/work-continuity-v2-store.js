@@ -4732,21 +4732,25 @@ export function createWorkContinuityV2Store({
           ancestorCursor = byPlanId.get(ancestorCursor.supersedes_plan_id);
           if (!ancestorCursor) fail("native_v2_task_revalidation_lineage_invalid");
         }
-        const priorEvidence = await client.query(`SELECT n.plan_id,n.evidence_id,n.evidence_digest
+        const priorEvidence = await client.query(`SELECT n.plan_id,n.evidence_id,n.evidence_digest,n.v2_task_digest
           FROM tenant_work_native_verifier_evidence n
           JOIN tenant_work_evidence e
             ON e.tenant_id=n.tenant_id AND e.work_id=n.work_id
               AND e.evidence_id=n.evidence_id
           WHERE n.tenant_id=$1 AND n.work_id=$2 AND n.v2_task_id=$3
-            AND n.v2_task_digest=$4 AND n.plan_id=ANY($5::uuid[]) AND e.required=true
+            AND n.plan_id=ANY($4::uuid[]) AND e.required=true
             AND e.independently_verified=true
             AND e.kind='native_verifier_terminal_report'
             AND e.digest=n.evidence_digest
           ORDER BY n.evidence_id FOR UPDATE OF n,e`,
-        [tenantId, workId, taskId, binding.v2_task_digest, ancestorPlanIds]);
+        [tenantId, workId, taskId, ancestorPlanIds]);
         const evidenceByPlan = new Map();
         for (const row of priorEvidence.rows) {
-          if (!ancestorVisited.has(row.plan_id) || !HASH.test(String(row.evidence_digest || ""))) {
+          if (!ancestorVisited.has(row.plan_id) ||
+              !HASH.test(String(row.evidence_digest || "")) ||
+              (row.v2_task_digest !== null &&
+                (!HASH.test(String(row.v2_task_digest || "")) ||
+                  row.v2_task_digest !== binding.v2_task_digest))) {
             fail("native_v2_task_revalidation_evidence_required");
           }
           const rows = evidenceByPlan.get(row.plan_id) || [];
@@ -4758,10 +4762,27 @@ export function createWorkContinuityV2Store({
         if (nearestEvidence.length !== 1) {
           fail("native_v2_task_revalidation_evidence_required");
         }
+        const sourceV2TaskDigestState = nearestEvidence[0].v2_task_digest === null
+          ? "legacy_null"
+          : "exact";
+        if (sourceV2TaskDigestState === "legacy_null") {
+          const releaseJoin = await client.query(`SELECT EXISTS(
+              SELECT 1 FROM core_continuity_release_joins
+              WHERE tenant_id=$1 AND work_id=$2
+              FOR SHARE
+            ) AS release_join_present`, [tenantId, workId]);
+          if (releaseJoin.rows[0]?.release_join_present !== true) {
+            fail("native_v2_task_revalidation_evidence_required");
+          }
+        }
         legacyEvidenceSource = {
           source_plan_id: nearestPlanId,
           source_evidence_id: nearestEvidence[0].evidence_id,
           source_evidence_digest: nearestEvidence[0].evidence_digest,
+          source_v2_task_digest_state: sourceV2TaskDigestState,
+          ...(sourceV2TaskDigestState === "legacy_null"
+            ? { legacy_task_frozen_by: "release_join" }
+            : {}),
         };
       }
       const claimStates = await client.query(`SELECT c.claim_id,
@@ -5422,7 +5443,8 @@ export function createWorkContinuityV2Store({
         const persistedMaterial = plainRecord(persisted) ? { ...persisted } : null;
         if (persistedMaterial) delete persistedMaterial.revalidation_digest;
         const legacySourceFields = [persisted?.source_plan_id,
-          persisted?.source_evidence_id, persisted?.source_evidence_digest];
+          persisted?.source_evidence_id, persisted?.source_evidence_digest,
+          persisted?.source_v2_task_digest_state];
         const legacySourceBound = legacySourceFields.every(Boolean);
         if (!plainRecord(persisted) ||
             persisted.schema_version !== "native_v2_precommit_task_revalidation_v1" ||
@@ -5434,24 +5456,42 @@ export function createWorkContinuityV2Store({
             (legacySourceFields.some(Boolean) && !legacySourceBound) ||
             (legacySourceBound && (!UUID.test(String(persisted.source_plan_id || "")) ||
               !UUID.test(String(persisted.source_evidence_id || "")) ||
-              !HASH.test(String(persisted.source_evidence_digest || "")))) ||
+              !HASH.test(String(persisted.source_evidence_digest || "")) ||
+              !["exact", "legacy_null"].includes(persisted.source_v2_task_digest_state))) ||
+            (persisted?.source_v2_task_digest_state === "legacy_null" &&
+              persisted?.legacy_task_frozen_by !== "release_join") ||
+            (persisted?.legacy_task_frozen_by !== undefined &&
+              persisted?.source_v2_task_digest_state !== "legacy_null") ||
             objectDigest(persistedMaterial) !== persisted.revalidation_digest) {
           fail("native_verifier_evidence_revalidation_invalid");
         }
         if (legacySourceBound) {
+          if (persisted.source_v2_task_digest_state === "legacy_null") {
+            const releaseJoin = await client.query(`SELECT EXISTS(
+                SELECT 1 FROM core_continuity_release_joins
+                WHERE tenant_id=$1 AND work_id=$2
+                FOR SHARE
+              ) AS release_join_present`, [tenantId, work.work_id]);
+            if (releaseJoin.rows[0]?.release_join_present !== true) {
+              fail("native_verifier_evidence_revalidation_invalid");
+            }
+          }
           const sourceEvidence = await client.query(`SELECT n.evidence_id
             FROM tenant_work_native_verifier_evidence n
             JOIN tenant_work_evidence e
               ON e.tenant_id=n.tenant_id AND e.work_id=n.work_id
                 AND e.evidence_id=n.evidence_id
             WHERE n.tenant_id=$1 AND n.work_id=$2 AND n.plan_id=$3
-              AND n.evidence_id=$4 AND n.v2_task_id=$5 AND n.v2_task_digest=$6
+              AND n.evidence_id=$4 AND n.v2_task_id=$5
+              AND (($8='legacy_null' AND n.v2_task_digest IS NULL)
+                OR ($8='exact' AND n.v2_task_digest=$6))
               AND n.evidence_digest=$7 AND e.digest=n.evidence_digest
               AND e.kind='native_verifier_terminal_report'
               AND e.required=true AND e.independently_verified=true
             FOR UPDATE OF n,e`, [tenantId, work.work_id,
             persisted.source_plan_id, persisted.source_evidence_id, v2TaskId,
-            currentV2TaskBinding.v2_task_digest, persisted.source_evidence_digest]);
+            currentV2TaskBinding.v2_task_digest, persisted.source_evidence_digest,
+            persisted.source_v2_task_digest_state]);
           if (sourceEvidence.rowCount !== 1) {
             fail("native_verifier_evidence_revalidation_invalid");
           }
