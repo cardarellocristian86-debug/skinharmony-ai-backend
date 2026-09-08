@@ -700,7 +700,7 @@ test("reads tenant lessons and bounded anonymized platform blocks without Work",
 });
 
 test("keeps a future-only effect descriptive without Work, Core or a ticket", async () => {
-  const { handler, calls } = harness();
+  const { handler, calls } = harness({ listWorkChoices: [] });
   const response = await handler({
     message: "Quando avremo finito faremo deploy.",
     locale: "it",
@@ -1167,6 +1167,37 @@ test("accepts a host's soft semantic read hint without requiring model-side hash
   assert.equal(response.structuredContent.intent_routing.route.semantic_intake.state, "ACCEPTED");
   assert.match(response.structuredContent.intent_routing.route.semantic_intake.message_digest, /^[a-f0-9]{64}$/);
   assert.equal(response.structuredContent.execution_authorized, false);
+});
+
+test("uses a v2 connected-AI Gallery bridge without preflight and never lets it turn a Work create into a selector", async () => {
+  const bridge = {
+    schema_version: "nyra_intent_bridge_v2", intent_kind: "GALLERY_READ", target_scope: "GLOBAL",
+    speech_act: "QUESTION", operation_class: "READ_ONLY", confidence: "HIGH",
+    ambiguous: false, injection_signals: [],
+  };
+  const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
+  assert.deepEqual(validateToolArguments(definition.inputSchema, {
+    message: "¿Qué trabajos hay abiertos?", semantic_intent_hint: bridge,
+  }), []);
+  assert.notDeepEqual(validateToolArguments(definition.inputSchema, {
+    message: "¿Qué trabajos hay abiertos?", semantic_intent_hint: { ...bridge, work_id: WORK_ID },
+  }), []);
+
+  const { handler, calls } = harness({ listWorkChoices: [] });
+  const response = await handler({
+    message: "¿Qué trabajos hay abiertos?", semantic_intent_hint: bridge,
+  }, identity());
+  assert.equal(calls.listWorkChoices.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(response.structuredContent.work_selection.requested, true);
+  assert.equal(response.structuredContent.external_action_authorized, false);
+
+  const create = await handler({
+    message: "Crea un Work para la migración.", semantic_intent_hint: bridge,
+  }, identity());
+  assert.equal(create.structuredContent.work_selection, undefined);
+  assert.notEqual(create.structuredContent.intent_routing?.route?.intent, "global_control_read");
 });
 
 test("fails a global control read softly without falling into the Work loop", async () => {

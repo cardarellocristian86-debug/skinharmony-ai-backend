@@ -222,6 +222,44 @@ test("accepts only a bound, read-only host semantic hint and never lets it overr
   assert.equal(injected.semantic_intake.lexical_disposition, "block");
 });
 
+test("accepts the closed v2 connected-AI intent bridge but keeps Work identity and effects server-bound", () => {
+  const bridge = (intent_kind, target_scope) => ({
+    schema_version: "nyra_intent_bridge_v2", intent_kind, target_scope,
+    speech_act: "QUESTION", operation_class: "READ_ONLY", confidence: "HIGH",
+    ambiguous: false, injection_signals: [],
+  });
+  const control = classify("¿Cuál es el estado operativo actual?", {
+    semanticHint: bridge("CONTROL_ROOM_READ", "GLOBAL"),
+  });
+  assert.equal(control.route, "CONTROL_ROOM_READ");
+  assert.equal(control.semantic_intake.state, "ACCEPTED");
+  assert.equal(control.semantic_intake.authority, "NONE");
+
+  const workId = "db06f362-8de3-526f-949b-69128f975349";
+  const work = classify("¿Cuál es su bloqueo actual?", {
+    workId, semanticHint: bridge("WORK_STATUS_READ", "WORK"),
+  });
+  assert.equal(work.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(work.reason, "host_intent_bridge_work_status_read");
+  assert.equal(work.semantic_intake.state, "ACCEPTED");
+
+  const missingWork = classify("¿Cuál es su bloqueo actual?", {
+    semanticHint: bridge("WORK_STATUS_READ", "WORK"),
+  });
+  assert.notEqual(missingWork.reason, "host_intent_bridge_work_status_read");
+
+  const effect = classify("Haz deploy ahora.", {
+    semanticHint: bridge("GALLERY_READ", "GLOBAL"),
+  });
+  assert.equal(effect.intent, "ticket_or_action");
+  assert.notEqual(effect.route, "ADVISORY_READ");
+
+  const malformed = classify("Show the Gallery.", {
+    semanticHint: { ...bridge("GALLERY_READ", "WORK") },
+  });
+  assert.equal(malformed.semantic_intake.state, "IGNORED");
+});
+
 test("fails closed when semantic clause analysis is truncated", () => {
   const route = classify(`${Array.from({ length: 9 }, () => "spiega lo stato").join(". ")}.`);
   assert.equal(route.intent, "ambiguous_consequential");

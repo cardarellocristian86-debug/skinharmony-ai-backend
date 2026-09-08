@@ -1964,10 +1964,20 @@ function textResult(payload) {
   };
 }
 
-function workSelectionRequested(args, message) {
+function workSelectionRequested(args, message, intentRoute = null) {
   if (boundedWorkId(args?.work_id) || args?.work_bootstrap !== undefined ||
       args?.continuation_operation !== undefined) return false;
   if (args?.work_selection_mode === "list") return true;
+  // An attached v2 bridge can make a multilingual Gallery question precise
+  // without an ever-growing phrase dictionary. It remains only a proposal:
+  // the router must have accepted its strict read-only envelope and the
+  // request must still be unbound and free of an effect/continuation.
+  if (intentRoute?.semantic_intake?.state === "CANDIDATE" &&
+      intentRoute.semantic_intake?.schema_version === "nyra_intent_bridge_v2" &&
+      intentRoute.semantic_intake?.intent_kind === "GALLERY_READ" &&
+      intentRoute.canonical_intent?.consequential_intent !== true &&
+      intentRoute.canonical_intent?.work_requirement !== "NEW" &&
+      intentRoute.intent !== "work_resume") return true;
   return WORK_SELECTION_LIST_PATTERN.test(String(message || ""));
 }
 
@@ -2830,10 +2840,20 @@ export function createNyraConverseHandler({
     // so an owner can still observe that Dialogue is OFF without reopening it.
     if (dialogueEnabled !== true) throw fail("nyra_dialogue_disabled", 503);
 
+    const intentRoute = classifyNyraIntent({
+      message,
+      workBootstrap: args.work_bootstrap !== undefined,
+      tenantId,
+      workId: boundedWorkId(args.work_id),
+      sessionFingerprint: identity.agentPresence?.session_fingerprint,
+      semanticHint: args.semantic_intent_hint,
+    });
     // This branch is deliberately before persisted context, preflight and
-    // Core interpretation.  Choosing a Work is a Gallery read, never a
-    // request to attach the conversation session to a Work.
-    if (workSelectionRequested(args, message)) {
+    // Core interpretation. Choosing a Work is a Gallery read, never a
+    // request to attach the conversation session to a Work. Classification is
+    // intentionally read-only and precedes it only so the bounded intent
+    // bridge can select this same path without a synonym list.
+    if (workSelectionRequested(args, message, intentRoute)) {
       return workSelectionResult({
         identity,
         tenantId,
@@ -2846,15 +2866,6 @@ export function createNyraConverseHandler({
         listWorkChoices,
       });
     }
-
-    const intentRoute = classifyNyraIntent({
-      message,
-      workBootstrap: args.work_bootstrap !== undefined,
-      tenantId,
-      workId: boundedWorkId(args.work_id),
-      sessionFingerprint: identity.agentPresence?.session_fingerprint,
-      semanticHint: args.semantic_intent_hint,
-    });
     if (["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(intentRoute.route)) {
       if (continuationOperation !== null) {
         throw fail("nyra_converse_continuation_operation_not_applicable");
