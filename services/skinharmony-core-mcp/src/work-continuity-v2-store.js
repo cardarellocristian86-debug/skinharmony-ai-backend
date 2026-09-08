@@ -2956,10 +2956,36 @@ export function createWorkContinuityV2Store({
       if (branches.rows.length || activeExecutionLease || activeExecutionParticipant) {
         fail("historical_bridge_archive_active_work_denied");
       }
+      // An autopilot materialization may have persisted planning assignments
+      // but never gained an executable tool/model/external surface.  Once it
+      // has sat for twelve hours without a branch, execution participant or
+      // execution lease, it is safe to archive as an abandoned bootstrap
+      // rather than leaving a duplicate release attempt operational for the
+      // normal 24-hour stale window.  This never covers a claimed, verified
+      // or quarantined assignment, nor a plan/contract that could execute.
+      const autopilot = await client.query(`SELECT r.status AS run_status,r.plan,
+          a.status AS assignment_status,a.task_contract
+        FROM core_nyra_autopilot_runs r
+        JOIN core_nyra_autopilot_assignments a
+          ON a.tenant_id=r.tenant_id AND a.work_id=r.work_id AND a.run_id=r.run_id
+        WHERE r.tenant_id=$1 AND r.work_id=$2 FOR UPDATE`, [actor.tenant_id, work.legacy_work_id]);
+      const orphanedAutopilotOnly = autopilot.rows.length > 0 && autopilot.rows.every((row) => {
+        const plan = plainRecord(row.plan) ? row.plan : {};
+        const execution = plainRecord(plan.execution) ? plan.execution : {};
+        const contract = plainRecord(row.task_contract) ? row.task_contract : {};
+        return row.run_status === "materialized" &&
+          ["offered", "submitted", "expired", "cancelled"].includes(row.assignment_status) &&
+          execution.execution_authorized !== true && execution.tool_invocation_allowed !== true &&
+          execution.model_invocation_allowed !== true && execution.external_action_allowed !== true &&
+          contract.execution_authorized !== true && contract.model_invocation_allowed !== true &&
+          contract.external_action_allowed !== true &&
+          (!Array.isArray(contract.tool_allowlist) || contract.tool_allowlist.length === 0);
+      });
       // Read contexts do not revive a historical Work.  Keep their audit rows
       // in the coordination ledger, but omit them from staleness evaluation;
       // all execution-capable participation remains in the calculation.
       const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
+        orphaned_autopilot_only: orphanedAutopilotOnly,
         participants: participants.rows
           .filter((row) => !effectiveHasOnlyReadLease(row.session_id))
           .map((row) => ({ ...row, active: row.status === "active" })),
@@ -2980,6 +3006,7 @@ export function createWorkContinuityV2Store({
         from_status: work.status,
         reason,
         classification: stale.classification,
+        orphaned_autopilot_only: orphanedAutopilotOnly,
         legacy_work_id: work.legacy_work_id,
         legacy_status: String(legacy.status || "").toLowerCase(),
         blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,

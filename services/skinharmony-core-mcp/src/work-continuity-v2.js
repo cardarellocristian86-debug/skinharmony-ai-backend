@@ -536,6 +536,17 @@ export function classifyStaleWork(work, now = new Date()) {
   const effectiveLeases = (work.leases || []).filter((item) => item.status === "active" && new Date(item.expires_at).getTime() > at);
   const ageMs = at - updatedAt;
   if (ageMs < 0) return { classification: "UNKNOWN", reasons: ["work_timestamp_in_future"] };
+  // A materialized Nyra plan with no executable surface is not an active
+  // delivery merely because its planning assignments were persisted.  The
+  // stricter archive path supplies this flag only after it has re-read the
+  // bridged Work, found no active branch or execution binding, and verified
+  // every assignment's contract is non-executing.  It gets a shorter, but
+  // still substantial, grace period so an abandoned bootstrap cannot pin the
+  // operational Gallery for a full day.
+  if (OPERATIONAL_STATUSES.has(work.status) && work.orphaned_autopilot_only === true &&
+      !effectiveParticipants.length && !effectiveLeases.length && ageMs > 12 * 60 * 60 * 1000) {
+    return { classification: "STALE", reasons: ["orphaned_autopilot_materialization", "no_effective_presence_or_lease"] };
+  }
   if (OPERATIONAL_STATUSES.has(work.status) && !effectiveParticipants.length && !effectiveLeases.length && ageMs > 30 * 24 * 60 * 60 * 1000) return { classification: "ABANDONED", reasons: ["no_effective_presence_or_lease", "abandoned_update"] };
   if (OPERATIONAL_STATUSES.has(work.status) && !effectiveParticipants.length && !effectiveLeases.length && ageMs > 24 * 60 * 60 * 1000) return { classification: "STALE", reasons: ["no_effective_presence_or_lease", "stale_update"] };
   if (work.status === "BLOCKED") return { classification: "BLOCKED_VALID", reasons: ["persisted_blocker"] };

@@ -51,6 +51,21 @@ test("expired presence classifies an operational work as stale without mutating 
   assert.equal(result.classification, "STALE");
 });
 
+test("an orphaned non-executing Nyra materialization becomes stale after its bounded grace period", () => {
+  const work = {
+    status: "ACTIVE",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    orphaned_autopilot_only: true,
+    participants: [],
+    leases: [],
+  };
+  const early = classifyStaleWork(work, "2026-01-01T11:59:59.000Z");
+  assert.equal(early.classification, "ACTIVE_VALID");
+  const stale = classifyStaleWork(work, "2026-01-01T12:00:01.000Z");
+  assert.equal(stale.classification, "STALE");
+  assert.deepEqual(stale.reasons, ["orphaned_autopilot_materialization", "no_effective_presence_or_lease"]);
+});
+
 test("ACL helpers are tenant-bound and deterministic", () => {
   const actor = deriveActorAcl({ tenant_id: "t", user_id: "u", team_ids: ["b", "a", "a"] });
   assert.deepEqual(actor.team_ids, ["a", "b"]);
