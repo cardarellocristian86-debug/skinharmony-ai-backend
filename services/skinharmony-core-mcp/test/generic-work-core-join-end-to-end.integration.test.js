@@ -188,6 +188,7 @@ class VerdictPersistencePool {
     const query = queryText.replace(/\s+/g, " ").trim();
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(query)) return { rows: [], rowCount: 0 };
     if (query.startsWith("SET LOCAL ")) return { rows: [], rowCount: 0 };
+    if (query.startsWith("SELECT pg_advisory_xact_lock")) return { rows: [], rowCount: 1 };
     if (query.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
     if (query.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const found = parameters[0] === this.work.tenant_id && parameters[1] === this.work.work_id;

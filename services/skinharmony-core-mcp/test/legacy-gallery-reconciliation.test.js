@@ -385,6 +385,7 @@ class ReconciliationPool {
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 ORDER BY")) {
       return { rows: [...this.works.values()].filter((item) => item.tenant_id === params[0]).map((item) => ({ ...item })) };
     }
+    if (q.includes("FROM tenant_work_state_projection")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT work_id,report_digest,created_at")) return { rows: [] };
     throw new Error(`unexpected_query:${q}`);
   }

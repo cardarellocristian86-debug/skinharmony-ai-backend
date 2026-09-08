@@ -150,6 +150,8 @@ services:
         value: none
       - key: NYRA_FAST_READ_PATH_ENABLED
         value: "true"
+      - key: GOVERNED_CONTINUITY_CONTEXT_MODE
+        value: "SHADOW"
       - key: UNIVERSAL_CORE_REQUEST_TIMEOUT_MS
         value: "8000"
       - key: UNIVERSAL_CORE_LONG_REQUEST_TIMEOUT_MS

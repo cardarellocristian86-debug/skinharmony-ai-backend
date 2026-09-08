@@ -4,6 +4,11 @@
 -- evidence and closure digests remain in their domain tables.
 BEGIN;
 
+-- PostgreSQL can still race in its catalogs when concurrent rolling-deploy
+-- replicas execute CREATE TABLE IF NOT EXISTS. Serialize only schema installers
+-- with the same transaction-scoped lock used by the runtime initializer.
+SELECT pg_advisory_xact_lock(hashtextextended('skinharmony:postgres-migration:v1',0));
+
 CREATE TABLE IF NOT EXISTS tenant_work (
   tenant_id varchar(64) NOT NULL,
   work_id uuid NOT NULL,

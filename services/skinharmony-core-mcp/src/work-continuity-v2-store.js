@@ -17,6 +17,16 @@ import {
 } from "./work-continuity-runtime.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 import { buildNativePlanMergePreview } from "./native-plan-merge-preview.js";
+import {
+  buildCommittedTaskState,
+  buildTaskStateContract,
+  evaluateTrajectory,
+  foldWorkProjection,
+  governedDigest,
+  projectWorkStateForView,
+  normalizeEffectObservation,
+  validateDependencyManifest,
+} from "./governed-continuity-context.js";
 
 // This is a diagnostic-presence lease only.  It is created by Nyra before an
 // exact Work read and deliberately grants no execution authority.  Historical
@@ -303,10 +313,128 @@ INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260903_native_v2_task_revision_v1') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260908_generic_closure_evidence_reconciliation_batch_v3') ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS tenant_work_task_contract (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, task_id uuid NOT NULL,
+  contract_revision bigint NOT NULL CHECK (contract_revision > 0),
+  intent_digest char(64) NOT NULL, contract jsonb NOT NULL, contract_digest char(64) NOT NULL,
+  created_by_user_id varchar(128) NOT NULL, created_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id,task_id,contract_revision),
+  UNIQUE (tenant_id,work_id,task_id,contract_digest),
+  FOREIGN KEY (tenant_id,work_id,task_id) REFERENCES tenant_work_task(tenant_id,work_id,task_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_task_commit (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, task_id uuid NOT NULL,
+  revision bigint NOT NULL CHECK (revision > 0), contract_revision bigint NOT NULL CHECK (contract_revision > 0),
+  input_digest char(64) NOT NULL, output_ref varchar(500) NOT NULL, output_digest char(64) NOT NULL,
+  evidence_refs jsonb NOT NULL, effect_lineage_refs jsonb NOT NULL, validation_ref varchar(500) NOT NULL,
+  ledger_position bigint NOT NULL CHECK (ledger_position > 0), committed_state jsonb NOT NULL,
+  commit_digest char(64) NOT NULL, idempotency_key varchar(160) NOT NULL, request_digest char(64) NOT NULL,
+  committed_by_user_id varchar(128) NOT NULL, committed_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id,task_id,revision),
+  UNIQUE (tenant_id,work_id,ledger_position), UNIQUE (tenant_id,work_id,task_id,idempotency_key),
+  FOREIGN KEY (tenant_id,work_id,task_id,contract_revision)
+    REFERENCES tenant_work_task_contract(tenant_id,work_id,task_id,contract_revision)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_state_projection (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL,
+  work_revision bigint NOT NULL CHECK (work_revision >= 0), intent_digest char(64) NOT NULL,
+  projection_version integer NOT NULL CHECK (projection_version > 0),
+  ledger_watermark bigint NOT NULL CHECK (ledger_watermark >= 0), projection jsonb NOT NULL,
+  projection_digest char(64) NOT NULL, updated_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_effect_observation (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, effect_ref varchar(160) NOT NULL,
+  observation_revision bigint NOT NULL CHECK (observation_revision > 0),
+  state varchar(24) NOT NULL CHECK (state IN ('SUCCEEDED','KNOWN_NO_EFFECT','AMBIGUOUS','RECONCILING')),
+  provider_receipt_digest char(64), observation jsonb NOT NULL, observation_digest char(64) NOT NULL,
+  ledger_position bigint NOT NULL CHECK (ledger_position > 0), idempotency_key varchar(160) NOT NULL,
+  request_digest char(64) NOT NULL, observed_by_user_id varchar(128) NOT NULL, observed_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id,effect_ref,observation_revision),
+  UNIQUE (tenant_id,work_id,ledger_position), UNIQUE (tenant_id,work_id,effect_ref,idempotency_key),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_task_invalidation (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, task_id uuid NOT NULL,
+  invalidation_id uuid NOT NULL, prior_commit_revision bigint NOT NULL CHECK (prior_commit_revision > 0),
+  changed_dependency_refs jsonb NOT NULL, reason varchar(500) NOT NULL,
+  ledger_position bigint NOT NULL CHECK (ledger_position > 0),
+  idempotency_key varchar(160) NOT NULL, request_digest char(64) NOT NULL,
+  invalidated_by_user_id varchar(128) NOT NULL, invalidated_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,invalidation_id), UNIQUE (tenant_id,work_id,ledger_position),
+  UNIQUE (tenant_id,work_id,task_id,idempotency_key),
+  FOREIGN KEY (tenant_id,work_id,task_id,prior_commit_revision)
+    REFERENCES tenant_work_task_commit(tenant_id,work_id,task_id,revision)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_dependency_manifest (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, task_id uuid NOT NULL,
+  manifest_revision bigint NOT NULL CHECK (manifest_revision > 0), manifest jsonb NOT NULL,
+  manifest_digest char(64) NOT NULL, idempotency_key varchar(160) NOT NULL,
+  request_digest char(64) NOT NULL, ledger_position bigint NOT NULL CHECK (ledger_position > 0),
+  recorded_by_user_id varchar(128) NOT NULL, recorded_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id,task_id,manifest_revision),
+  UNIQUE (tenant_id,work_id,task_id,manifest_digest),
+  UNIQUE (tenant_id,work_id,task_id,idempotency_key), UNIQUE (tenant_id,work_id,ledger_position),
+  FOREIGN KEY (tenant_id,work_id,task_id) REFERENCES tenant_work_task(tenant_id,work_id,task_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_trajectory_event (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL,
+  trajectory_revision bigint NOT NULL CHECK (trajectory_revision > 0),
+  agent_id varchar(128) NOT NULL, harness_digest char(64) NOT NULL,
+  proposal jsonb NOT NULL, policy jsonb NOT NULL, trajectory jsonb NOT NULL,
+  trajectory_digest char(64) NOT NULL, idempotency_key varchar(160) NOT NULL,
+  request_digest char(64) NOT NULL, ledger_position bigint NOT NULL CHECK (ledger_position > 0),
+  recorded_by_user_id varchar(128) NOT NULL, recorded_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id,work_id,trajectory_revision),
+  UNIQUE (tenant_id,work_id,idempotency_key), UNIQUE (tenant_id,work_id,ledger_position),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id)
+);
+CREATE TABLE IF NOT EXISTS tenant_work_trajectory_state (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL,
+  trajectory_revision bigint NOT NULL CHECK (trajectory_revision > 0), trajectory jsonb NOT NULL,
+  trajectory_digest char(64) NOT NULL, ledger_watermark bigint NOT NULL CHECK (ledger_watermark > 0),
+  updated_at timestamptz NOT NULL, PRIMARY KEY (tenant_id,work_id),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id)
+);
+CREATE INDEX IF NOT EXISTS tenant_work_task_commit_latest_idx
+  ON tenant_work_task_commit(tenant_id,work_id,task_id,revision DESC);
+CREATE INDEX IF NOT EXISTS tenant_work_task_invalidation_task_idx
+  ON tenant_work_task_invalidation(tenant_id,work_id,task_id,invalidated_at DESC);
+CREATE INDEX IF NOT EXISTS tenant_work_effect_observation_latest_idx
+  ON tenant_work_effect_observation(tenant_id,work_id,effect_ref,observation_revision DESC);
+CREATE INDEX IF NOT EXISTS tenant_work_dependency_manifest_latest_idx
+  ON tenant_work_dependency_manifest(tenant_id,work_id,task_id,manifest_revision DESC);
+CREATE INDEX IF NOT EXISTS tenant_work_trajectory_event_latest_idx
+  ON tenant_work_trajectory_event(tenant_id,work_id,trajectory_revision DESC);
+CREATE OR REPLACE FUNCTION tenant_work_governed_state_append_only() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'tenant_work_governed_state_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS tenant_work_task_contract_no_mutation ON tenant_work_task_contract;
+CREATE TRIGGER tenant_work_task_contract_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_task_contract
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_task_commit_no_mutation ON tenant_work_task_commit;
+CREATE TRIGGER tenant_work_task_commit_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_task_commit
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_task_invalidation_no_mutation ON tenant_work_task_invalidation;
+CREATE TRIGGER tenant_work_task_invalidation_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_task_invalidation
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_effect_observation_no_mutation ON tenant_work_effect_observation;
+CREATE TRIGGER tenant_work_effect_observation_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_effect_observation
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_dependency_manifest_no_mutation ON tenant_work_dependency_manifest;
+CREATE TRIGGER tenant_work_dependency_manifest_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_dependency_manifest
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_trajectory_event_no_mutation ON tenant_work_trajectory_event;
+CREATE TRIGGER tenant_work_trajectory_event_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_trajectory_event
+FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260908_governed_task_state_projection_v1') ON CONFLICT DO NOTHING;
 `;
 
 const HASH = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GOVERNED_REF = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$/;
 const GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION = "generic_work_core_join_v1";
 const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const GENERIC_WORK_CORE_JOIN_ID = GENERIC_WORK_CORE_JOIN_KEY_ID;
@@ -1744,14 +1872,88 @@ export function createWorkContinuityV2Store({
       WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
     [actor.tenant_id, workId]);
     const sequence = Number(previous.rows[0]?.sequence_number || 0) + 1;
+    const eventId = crypto.randomUUID();
     const event = { tenant_id: actor.tenant_id, work_id: workId, sequence_number: sequence,
       event_type: eventType, payload: stable(payload), previous_event_hash: previous.rows[0]?.event_hash || null };
     const eventHash = objectDigest(event);
     await client.query(`INSERT INTO tenant_work_event
       (tenant_id,work_id,event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_by_user_id)
-      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id, workId, crypto.randomUUID(),
+      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id, workId, eventId,
       sequence, eventType, JSON.stringify(event.payload), event.previous_event_hash, eventHash, actor.user_id]);
+    // Keep the established public event receipt stable. Projection catch-up
+    // reads the full row transactionally from the Ledger when needed.
     return { sequence_number: sequence, event_type: eventType, event_hash: eventHash };
+  }
+
+  function currentIsoTimestamp() {
+    const value = now();
+    const resolved = value instanceof Date ? value : new Date(value);
+    if (!Number.isFinite(resolved.getTime())) fail("governed_state_clock_invalid");
+    return resolved.toISOString();
+  }
+
+  async function readWorkProjectionWithClient(client, actor, work, { persist = false } = {}) {
+    if (!HASH.test(String(work?.intent_digest || ""))) {
+      if (persist) fail("work_projection_intent_unavailable");
+      return Object.freeze({
+        schema_version: "work_state_projection_v1",
+        available: false,
+        reason: "verified_intent_digest_unavailable",
+        work_id: work?.work_id || null,
+        authority_granted: false,
+        persistence_state: "UNAVAILABLE",
+      });
+    }
+    const storedResult = await client.query(`SELECT work_revision,intent_digest,projection_version,
+        ledger_watermark,projection,projection_digest,updated_at
+      FROM tenant_work_state_projection
+      WHERE tenant_id=$1 AND work_id=$2${persist ? " FOR UPDATE" : ""}`,
+    [actor.tenant_id, work.work_id]);
+    const stored = storedResult.rows[0] || null;
+    if (stored && (stored.intent_digest !== work.intent_digest ||
+        stored.projection_digest !== stored.projection?.projection_digest ||
+        Number(stored.ledger_watermark) !== Number(stored.projection?.ledger_watermark))) {
+      fail("work_projection_persisted_invalid");
+    }
+    const watermark = Number(stored?.ledger_watermark || 0);
+    const eventResult = await client.query(`SELECT event_id,sequence_number,event_type,payload
+      FROM tenant_work_event
+      WHERE tenant_id=$1 AND work_id=$2 AND sequence_number>$3
+      ORDER BY sequence_number
+      LIMIT 10001`, [actor.tenant_id, work.work_id, watermark]);
+    if (eventResult.rows.length > 10_000) fail("work_projection_catchup_limit_exceeded");
+    const projection = foldWorkProjection({
+      work_id: work.work_id,
+      intent_digest: work.intent_digest,
+      base: stored?.projection || null,
+      events: eventResult.rows.map((event) => ({
+        ...event,
+        sequence_number: Number(event.sequence_number),
+      })),
+    });
+    if (stored && eventResult.rows.length === 0 &&
+        projection.projection_digest !== stored.projection_digest) {
+      fail("work_projection_persisted_invalid");
+    }
+    if (!persist) return Object.freeze({
+      ...projection,
+      persistence_state: stored && eventResult.rows.length === 0 ? "CURRENT" : "READ_ONLY_CATCHUP",
+    });
+    const persisted = await client.query(`INSERT INTO tenant_work_state_projection
+      (tenant_id,work_id,work_revision,intent_digest,projection_version,ledger_watermark,
+       projection,projection_digest,updated_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)
+      ON CONFLICT (tenant_id,work_id) DO UPDATE
+      SET work_revision=EXCLUDED.work_revision,intent_digest=EXCLUDED.intent_digest,
+        projection_version=EXCLUDED.projection_version,ledger_watermark=EXCLUDED.ledger_watermark,
+        projection=EXCLUDED.projection,projection_digest=EXCLUDED.projection_digest,
+        updated_at=EXCLUDED.updated_at
+      WHERE tenant_work_state_projection.ledger_watermark=$10
+      RETURNING projection`, [actor.tenant_id, work.work_id, projection.work_revision,
+        projection.intent_digest, projection.projection_version, projection.ledger_watermark,
+        JSON.stringify(projection), projection.projection_digest, currentIsoTimestamp(), watermark]);
+    if (!persisted.rows[0]) fail("work_projection_cas_conflict");
+    return Object.freeze({ ...projection, persistence_state: "CURRENT" });
   }
   async function v2CreationIntentBindingValid(client, tenantId, work, createdEvent) {
     const eventIntentDigest = createdEvent?.payload?.intent_digest || null;
@@ -2585,18 +2787,36 @@ export function createWorkContinuityV2Store({
   async function readWork(identity, { work_id }) {
     await initialize();
     const actor = actorFromIdentity(identity);
-    const result = await query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, uuid(work_id)]);
-    const work = result.rows[0] && normalizeWork(result.rows[0]);
-    if (!work) fail("tenant_work_not_found");
-    assertPermission(canRead, work, actor);
-    const [tasks, evidence, receipt, report] = await Promise.all([
-      query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 ORDER BY task_id", [actor.tenant_id, work.work_id]),
-      query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]),
-      query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]),
-      query("SELECT report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]),
-    ]);
-    return { schema_version: "work_continuity_v2", work, tasks: tasks.rows, evidence: evidence.rows,
-      closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null };
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, uuid(work_id));
+      assertPermission(canRead, work, actor);
+      // A pg Client is a single transactional connection. Keep the bounded
+      // reads explicitly sequential so pg@9 cannot reject concurrent
+      // client.query calls and every snapshot is observed in one order.
+      const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 ORDER BY task_id", [actor.tenant_id, work.work_id]);
+      const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]);
+      const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]);
+      const report = await client.query("SELECT report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]);
+      const contracts = await client.query(`SELECT DISTINCT ON (task_id) task_id,contract_revision,contract,contract_digest,created_at
+        FROM tenant_work_task_contract WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY task_id,contract_revision DESC`, [actor.tenant_id, work.work_id]);
+      const commits = await client.query(`SELECT DISTINCT ON (task_id) task_id,revision,committed_state,commit_digest,committed_at
+        FROM tenant_work_task_commit WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY task_id,revision DESC`, [actor.tenant_id, work.work_id]);
+      const manifests = await client.query(`SELECT DISTINCT ON (task_id) task_id,manifest_revision,manifest,manifest_digest,recorded_at
+        FROM tenant_work_dependency_manifest WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY task_id,manifest_revision DESC`, [actor.tenant_id, work.work_id]);
+      const trajectory = await client.query(`SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at
+        FROM tenant_work_trajectory_state WHERE tenant_id=$1 AND work_id=$2`,
+      [actor.tenant_id, work.work_id]);
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+      return { schema_version: "work_continuity_v2", work, tasks: tasks.rows, evidence: evidence.rows,
+        task_contracts: contracts.rows, committed_task_states: commits.rows,
+        dependency_manifests: manifests.rows,
+        work_trajectory: trajectory.rows[0] || null,
+        work_state_projection: projection,
+        closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null };
+    });
   }
   async function previewNativePlanMerge(identity, { work_id }) {
     await initialize();
@@ -2739,7 +2959,33 @@ export function createWorkContinuityV2Store({
       if (view === "team") return work.team_id && (actor.team_ids.includes(work.team_id) || actor.managed_team_ids.includes(work.team_id)) && canRead(work, actor);
       return canRead(work, actor);
     });
-    if (view !== "archive" || !visible.length) return visible;
+    if (!visible.length) return visible;
+    const continuityRows = await query(`SELECT p.work_id,p.work_revision,p.projection_version,
+        p.ledger_watermark,p.projection,p.projection_digest,
+        t.trajectory_revision,t.trajectory,t.trajectory_digest
+      FROM tenant_work_state_projection p
+      LEFT JOIN tenant_work_trajectory_state t
+        ON t.tenant_id=p.tenant_id AND t.work_id=p.work_id
+      WHERE p.tenant_id=$1 AND p.work_id=ANY($2::uuid[])`,
+    [actor.tenant_id, visible.map((work) => work.work_id)]);
+    const continuityByWork = new Map(continuityRows.rows.map((row) => [String(row.work_id), {
+      schema_version: "gallery_governed_continuity_v1",
+      work_revision: Number(row.work_revision),
+      projection_version: Number(row.projection_version),
+      ledger_watermark: Number(row.ledger_watermark),
+      projection_digest: row.projection_digest,
+      current_task: row.projection?.current_task || null,
+      blockers: row.projection?.blockers || [],
+      unresolved_effects: row.projection?.unresolved_effects || [],
+      next_allowed_actions: row.projection?.next_allowed_actions || [],
+      trajectory_revision: row.trajectory_revision == null ? null : Number(row.trajectory_revision),
+      trajectory_disposition: row.trajectory?.disposition || null,
+      trajectory_digest: row.trajectory_digest || null,
+      authority_granted: false,
+    }]));
+    const withContinuity = visible.map((work) => ({ ...work,
+      governed_continuity: continuityByWork.get(String(work.work_id)) || null }));
+    if (view !== "archive") return withContinuity;
     const reportRows = await query(`SELECT work_id,report_digest,created_at,
         report->>'final_status' AS final_status,
         report->>'closed_at' AS report_closed_at,
@@ -2753,7 +2999,8 @@ export function createWorkContinuityV2Store({
       closed_at: row.report_closed_at || null,
       final_evidence_digest: row.report_final_evidence_digest || null,
     }]));
-    return visible.map((work) => ({ ...work, final_report_summary: summaries.get(String(work.work_id)) || null }));
+    return withContinuity.map((work) => ({ ...work,
+      final_report_summary: summaries.get(String(work.work_id)) || null }));
   }
   async function assignQueuedWork(identity, input = {}) {
     await initialize();
@@ -3621,6 +3868,14 @@ export function createWorkContinuityV2Store({
         LEFT JOIN core_continuity_branches b ON b.tenant_id=w.tenant_id AND b.work_id=w.work_id
         WHERE w.tenant_id=$1 AND w.work_id=$2`, [actor.tenant_id, coordinationWorkId])
         : { rows: [{ active_participants: 0, active_leases: 0, active_branches: 0 }] };
+      const continuity = await query(`SELECT p.work_revision,p.projection_version,p.ledger_watermark,
+          p.projection,p.projection_digest,t.trajectory_revision,t.trajectory,t.trajectory_digest
+        FROM tenant_work_state_projection p
+        LEFT JOIN tenant_work_trajectory_state t
+          ON t.tenant_id=p.tenant_id AND t.work_id=p.work_id
+        WHERE p.tenant_id=$1 AND p.work_id=$2`, [actor.tenant_id, work.work_id]);
+      const continuityRow = continuity.rows[0] || null;
+      const blockers = continuityRow?.projection?.blockers || [];
       rows.push({
         tenant_id: actor.tenant_id, project_id: work.project_id,
         work_id: coordinationWorkId || work.work_id,
@@ -3628,9 +3883,26 @@ export function createWorkContinuityV2Store({
         status: mapV2StatusToLegacy(work.status), current_version: 2, next_action: work.next_action || "",
         updated_at: work.updated_at, active_participants: Number(activity.rows[0]?.active_participants || 0),
         active_leases: Number(activity.rows[0]?.active_leases || 0),
-        active_branches: Number(activity.rows[0]?.active_branches || 0), blockers: [], blocker_count: 0,
+        active_branches: Number(activity.rows[0]?.active_branches || 0), blockers,
+        blocker_count: blockers.length,
         work_code: work.work_code, work_name: work.work_name, work_type: work.work_type,
         progress_bp: work.progress_bp, priority: work.priority, priority_score: work.priority_score,
+        governed_continuity: continuityRow ? {
+          schema_version: "gallery_governed_continuity_v1",
+          work_revision: Number(continuityRow.work_revision),
+          projection_version: Number(continuityRow.projection_version),
+          ledger_watermark: Number(continuityRow.ledger_watermark),
+          projection_digest: continuityRow.projection_digest,
+          current_task: continuityRow.projection.current_task || null,
+          blockers,
+          unresolved_effects: continuityRow.projection.unresolved_effects || [],
+          next_allowed_actions: continuityRow.projection.next_allowed_actions || [],
+          trajectory_revision: continuityRow.trajectory_revision == null
+            ? null : Number(continuityRow.trajectory_revision),
+          trajectory_disposition: continuityRow.trajectory?.disposition || null,
+          trajectory_digest: continuityRow.trajectory_digest || null,
+          authority_granted: false,
+        } : null,
         continuity_v2: true,
       });
     }
@@ -3840,6 +4112,479 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, taskId, workId, task.title, task.weight, task.status, task.required]);
       if (persisted.rows[0]?.work_id !== workId) fail("tenant_work_task_binding_conflict");
       return refreshDerivedWithClient(client, actor, workId);
+    });
+  }
+
+  async function recordTaskContract(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const contract = buildTaskStateContract({
+      task_id: input.task_id,
+      work_id: input.work_id,
+      contract_revision: input.contract_revision,
+      intent_digest: input.intent_digest,
+      declared_inputs: input.declared_inputs,
+      dependency_refs: input.dependency_refs,
+      output_schema_ref: input.output_schema_ref,
+      required_claims: input.required_claims,
+      allowed_effects: input.allowed_effects,
+      recovery_policy: input.recovery_policy,
+      budgets: input.budgets,
+    });
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, contract.work_id, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      if (work.intent_digest !== contract.intent_digest) fail("task_contract_intent_drift");
+      const task = await client.query(`SELECT task_id FROM tenant_work_task
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 FOR UPDATE`,
+      [actor.tenant_id, contract.work_id, contract.task_id]);
+      if (!task.rows[0]) fail("task_contract_task_not_found");
+      const headResult = await client.query(`SELECT contract_revision,contract_digest,contract
+        FROM tenant_work_task_contract
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY contract_revision DESC LIMIT 1 FOR UPDATE`,
+      [actor.tenant_id, contract.work_id, contract.task_id]);
+      const head = headResult.rows[0] || null;
+      if (head && Number(head.contract_revision) === contract.contract_revision &&
+          head.contract_digest === contract.contract_digest) {
+        const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+        return Object.freeze({ contract: head.contract, projection, idempotent_replay: true });
+      }
+      const expectedRevision = Number(head?.contract_revision || 0) + 1;
+      if (contract.contract_revision !== expectedRevision) fail("task_contract_cas_conflict");
+      const createdAt = currentIsoTimestamp();
+      await client.query(`INSERT INTO tenant_work_task_contract
+        (tenant_id,work_id,task_id,contract_revision,intent_digest,contract,contract_digest,
+         created_by_user_id,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id,
+        contract.work_id, contract.task_id, contract.contract_revision, contract.intent_digest,
+        JSON.stringify(contract), contract.contract_digest, actor.user_id, createdAt]);
+      const event = await appendV2Event(client, actor, contract.work_id, "task_contract_recorded", {
+        task_id: contract.task_id,
+        contract_revision: contract.contract_revision,
+        contract_digest: contract.contract_digest,
+      });
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: true });
+      return Object.freeze({ contract, event, projection, idempotent_replay: false });
+    });
+  }
+
+  async function recordDependencyManifest(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const taskId = uuid(input.task_id, "task_id_invalid");
+    const idempotencyKey = galleryIdempotencyKey(input.idempotency_key,
+      "dependency_manifest_idempotency_key_invalid");
+    const material = {
+      schema_version: "dependency_manifest_v1",
+      plan_digest: input.plan_digest,
+      task_revision: Number(input.task_revision),
+      intent_digest: input.intent_digest,
+      dependency_ids: input.dependency_ids,
+      source_versions: input.source_versions,
+      relevant_predicates: input.relevant_predicates,
+      required_evidence_refs: input.required_evidence_refs,
+      policy_revision: input.policy_revision,
+    };
+    const candidate = { ...material,
+      manifest_digest: governedDigest("dependency_manifest", material) };
+    const requestDigest = governedDigest("dependency_manifest_request", {
+      work_id: workId, task_id: taskId,
+      expected_manifest_revision: Number(input.expected_manifest_revision), candidate,
+    });
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      const taskResult = await client.query(`SELECT revision FROM tenant_work_task
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 FOR UPDATE`,
+      [actor.tenant_id, workId, taskId]);
+      const task = taskResult.rows[0];
+      if (!task) fail("dependency_manifest_task_not_found");
+      const contractResult = await client.query(`SELECT contract FROM tenant_work_task_contract
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY contract_revision DESC LIMIT 1`, [actor.tenant_id, workId, taskId]);
+      if (!contractResult.rows[0]) fail("dependency_manifest_task_contract_required");
+      const manifest = validateDependencyManifest(candidate, {
+        task_revision: Number(task.revision), intent_digest: work.intent_digest,
+        mandatory_dependency_ids: contractResult.rows[0].contract.dependency_refs || [],
+      });
+      const replay = await client.query(`SELECT manifest,request_digest,manifest_revision
+        FROM tenant_work_dependency_manifest
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND idempotency_key=$4`,
+      [actor.tenant_id, workId, taskId, idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_digest !== requestDigest) {
+          fail("dependency_manifest_idempotency_conflict");
+        }
+        return Object.freeze({ manifest: replay.rows[0].manifest,
+          manifest_revision: Number(replay.rows[0].manifest_revision), idempotent_replay: true });
+      }
+      const head = await client.query(`SELECT manifest_revision FROM tenant_work_dependency_manifest
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY manifest_revision DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, taskId]);
+      const expected = Number(head.rows[0]?.manifest_revision || 0);
+      if (!Number.isSafeInteger(Number(input.expected_manifest_revision))
+          || Number(input.expected_manifest_revision) !== expected) {
+        fail("dependency_manifest_cas_conflict");
+      }
+      const revision = expected + 1;
+      const recordedAt = currentIsoTimestamp();
+      const event = await appendV2Event(client, actor, workId, "dependency_manifest_recorded", {
+        task_id: taskId, manifest_revision: revision, manifest_digest: manifest.manifest_digest,
+        plan_digest: manifest.plan_digest, task_revision: manifest.task_revision,
+      });
+      await client.query(`INSERT INTO tenant_work_dependency_manifest
+        (tenant_id,work_id,task_id,manifest_revision,manifest,manifest_digest,idempotency_key,
+         request_digest,ledger_position,recorded_by_user_id,recorded_at)
+        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11)`, [actor.tenant_id,
+        workId, taskId, revision, JSON.stringify(manifest), manifest.manifest_digest,
+        idempotencyKey, requestDigest, event.sequence_number, actor.user_id, recordedAt]);
+      return Object.freeze({ manifest, manifest_revision: revision, event,
+        idempotent_replay: false });
+    });
+  }
+
+  async function evaluateWorkTrajectory(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const idempotencyKey = galleryIdempotencyKey(input.idempotency_key,
+      "trajectory_idempotency_key_invalid");
+    const harnessDigest = String(input.harness_digest || "").toLowerCase();
+    if (!HASH.test(harnessDigest)) fail("trajectory_harness_digest_invalid");
+    const requestDigest = governedDigest("work_trajectory_request", {
+      work_id: workId, expected_trajectory_revision: Number(input.expected_trajectory_revision),
+      agent_id: actor.agent_id || actor.user_id, harness_digest: harnessDigest,
+      proposal: input.proposal, policy: input.policy,
+    });
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      const replay = await client.query(`SELECT trajectory,request_digest,trajectory_revision
+        FROM tenant_work_trajectory_event
+        WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`,
+      [actor.tenant_id, workId, idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_digest !== requestDigest) fail("trajectory_idempotency_conflict");
+        return Object.freeze({ trajectory: replay.rows[0].trajectory,
+          trajectory_revision: Number(replay.rows[0].trajectory_revision),
+          execution_authorized: false, idempotent_replay: true });
+      }
+      const currentResult = await client.query(`SELECT trajectory_revision,trajectory
+        FROM tenant_work_trajectory_state WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+      [actor.tenant_id, workId]);
+      const current = currentResult.rows[0] || null;
+      const revision = Number(current?.trajectory_revision || 0);
+      if (!Number.isSafeInteger(Number(input.expected_trajectory_revision))
+          || Number(input.expected_trajectory_revision) !== revision) fail("trajectory_cas_conflict");
+      const trajectory = evaluateTrajectory({ previous: current?.trajectory || null,
+        proposal: input.proposal, policy: input.policy });
+      const nextRevision = revision + 1;
+      const recordedAt = currentIsoTimestamp();
+      const event = await appendV2Event(client, actor, workId, "trajectory_evaluated", {
+        trajectory_revision: nextRevision, trajectory_digest: trajectory.trajectory_digest,
+        disposition: trajectory.disposition, reason_codes: trajectory.reason_codes,
+        agent_id: actor.agent_id || actor.user_id, harness_digest: harnessDigest,
+      });
+      await client.query(`INSERT INTO tenant_work_trajectory_event
+        (tenant_id,work_id,trajectory_revision,agent_id,harness_digest,proposal,policy,trajectory,
+         trajectory_digest,idempotency_key,request_digest,ledger_position,recorded_by_user_id,recorded_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14)`,
+      [actor.tenant_id, workId, nextRevision, actor.agent_id || actor.user_id, harnessDigest,
+        JSON.stringify(input.proposal), JSON.stringify(input.policy), JSON.stringify(trajectory),
+        trajectory.trajectory_digest, idempotencyKey, requestDigest, event.sequence_number,
+        actor.user_id, recordedAt]);
+      await client.query(`INSERT INTO tenant_work_trajectory_state
+        (tenant_id,work_id,trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at)
+        VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7)
+        ON CONFLICT (tenant_id,work_id) DO UPDATE SET
+          trajectory_revision=EXCLUDED.trajectory_revision,trajectory=EXCLUDED.trajectory,
+          trajectory_digest=EXCLUDED.trajectory_digest,ledger_watermark=EXCLUDED.ledger_watermark,
+          updated_at=EXCLUDED.updated_at
+        WHERE tenant_work_trajectory_state.trajectory_revision=$8`, [actor.tenant_id,
+        workId, nextRevision, JSON.stringify(trajectory), trajectory.trajectory_digest,
+        event.sequence_number, recordedAt, revision]);
+      return Object.freeze({ trajectory, trajectory_revision: nextRevision, event,
+        execution_authorized: false, idempotent_replay: false });
+    });
+  }
+
+  async function commitTaskState(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const taskId = uuid(input.task_id, "task_id_invalid");
+    const idempotencyKey = galleryIdempotencyKey(input.idempotency_key,
+      "task_commit_idempotency_key_invalid");
+    const requestMaterial = {
+      schema_version: "committed_task_state_request_v1",
+      work_id: workId,
+      task_id: taskId,
+      expected_task_revision: Number(input.expected_task_revision),
+      contract_revision: Number(input.contract_revision),
+      input_digest: input.input_digest,
+      output_ref: input.output_ref,
+      output_digest: input.output_digest,
+      evidence_refs: input.evidence_refs,
+      effect_lineage_refs: input.effect_lineage_refs,
+      dependency_manifest_digest: input.dependency_manifest_digest,
+      validation_ref: input.validation_ref,
+    };
+    const requestDigest = governedDigest("committed_task_state_request", requestMaterial);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      const replay = await client.query(`SELECT committed_state,request_digest
+        FROM tenant_work_task_commit
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND idempotency_key=$4`,
+      [actor.tenant_id, workId, taskId, idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_digest !== requestDigest) fail("task_commit_idempotency_conflict");
+        const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+        return Object.freeze({ committed_state: replay.rows[0].committed_state,
+          projection, idempotent_replay: true });
+      }
+      const taskResult = await client.query(`SELECT revision,status,acceptance_verified
+        FROM tenant_work_task
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 FOR UPDATE`,
+      [actor.tenant_id, workId, taskId]);
+      const task = taskResult.rows[0];
+      if (!task) fail("task_commit_task_not_found");
+      if (!Number.isSafeInteger(requestMaterial.expected_task_revision) ||
+          Number(task.revision) !== requestMaterial.expected_task_revision) fail("task_commit_cas_conflict");
+      const contractResult = await client.query(`SELECT contract,contract_digest
+        FROM tenant_work_task_contract
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND contract_revision=$4`,
+      [actor.tenant_id, workId, taskId, requestMaterial.contract_revision]);
+      const contract = contractResult.rows[0]?.contract;
+      if (!contract || contract.intent_digest !== work.intent_digest) fail("task_commit_contract_not_found");
+      const dependencyManifest = await client.query(`SELECT manifest,manifest_digest
+        FROM tenant_work_dependency_manifest
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY manifest_revision DESC LIMIT 1`, [actor.tenant_id, workId, taskId]);
+      if (!dependencyManifest.rows[0]
+          || dependencyManifest.rows[0].manifest_digest !== input.dependency_manifest_digest) {
+        fail("task_commit_dependency_manifest_required");
+      }
+      validateDependencyManifest(dependencyManifest.rows[0].manifest, {
+        task_revision: Number(task.revision), intent_digest: work.intent_digest,
+        mandatory_dependency_ids: contract.dependency_refs || [],
+      });
+      const evidenceRefs = Array.isArray(input.evidence_refs) ? input.evidence_refs : [];
+      if (evidenceRefs.length > 250 || new Set(evidenceRefs).size !== evidenceRefs.length ||
+          evidenceRefs.some((value) => !UUID.test(String(value)))) fail("task_commit_evidence_refs_invalid");
+      if (contract.required_claims?.length && !evidenceRefs.length) fail("task_commit_required_evidence_missing");
+      if (evidenceRefs.length) {
+        const evidence = await client.query(`SELECT evidence_id::text,digest,independently_verified
+          FROM tenant_work_evidence
+          WHERE tenant_id=$1 AND work_id=$2 AND evidence_id::text=ANY($3::text[])`,
+        [actor.tenant_id, workId, evidenceRefs]);
+        if (evidence.rows.length !== evidenceRefs.length ||
+            evidence.rows.some((row) => row.independently_verified !== true)) {
+          fail("task_commit_evidence_not_verified");
+        }
+      }
+      const effectRefs = Array.isArray(input.effect_lineage_refs) ? input.effect_lineage_refs : [];
+      if (effectRefs.length > 250 || new Set(effectRefs).size !== effectRefs.length ||
+          effectRefs.some((value) => !GOVERNED_REF.test(String(value)))) fail("task_commit_effect_refs_invalid");
+      if (effectRefs.length) {
+        const trajectory = await client.query(`SELECT trajectory FROM tenant_work_trajectory_state
+          WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+        if (!trajectory.rows[0]) fail("task_commit_trajectory_required");
+        if (trajectory.rows[0].trajectory?.disposition !== "ALLOW") fail("task_commit_trajectory_hold");
+      }
+      const before = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+      if (before.unresolved_effects.some((effect) => effectRefs.includes(effect.effect_ref))) {
+        fail("task_commit_effect_unresolved");
+      }
+      const head = await client.query(`SELECT revision FROM tenant_work_task_commit
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY revision DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, taskId]);
+      const revision = Number(head.rows[0]?.revision || 0) + 1;
+      const committedAt = currentIsoTimestamp();
+      const event = await appendV2Event(client, actor, workId, "task_state_committed", {
+        task_id: taskId, revision, contract_revision: requestMaterial.contract_revision,
+        input_digest: input.input_digest, output_digest: input.output_digest,
+        evidence_refs: evidenceRefs, effect_lineage_refs: effectRefs,
+        validation_ref: input.validation_ref,
+      });
+      const committedState = buildCommittedTaskState({
+        task_id: taskId, work_id: workId, revision,
+        contract_revision: requestMaterial.contract_revision,
+        input_digest: input.input_digest, output_ref: input.output_ref,
+        output_digest: input.output_digest, evidence_refs: evidenceRefs,
+        effect_lineage_refs: effectRefs, validation_ref: input.validation_ref,
+        ledger_position: event.sequence_number, committed_at: committedAt,
+      });
+      await client.query(`INSERT INTO tenant_work_task_commit
+        (tenant_id,work_id,task_id,revision,contract_revision,input_digest,output_ref,
+         output_digest,evidence_refs,effect_lineage_refs,validation_ref,ledger_position,
+         committed_state,commit_digest,idempotency_key,request_digest,committed_by_user_id,committed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13::jsonb,$14,$15,$16,$17,$18)`,
+      [actor.tenant_id, workId, taskId, revision, requestMaterial.contract_revision,
+        committedState.input_digest, committedState.output_ref, committedState.output_digest,
+        JSON.stringify(committedState.evidence_refs), JSON.stringify(committedState.effect_lineage_refs),
+        committedState.validation_ref, event.sequence_number, JSON.stringify(committedState),
+        committedState.commit_digest, idempotencyKey, requestDigest, actor.user_id, committedAt]);
+      await client.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=$4
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+      [actor.tenant_id, workId, taskId, committedAt]);
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: true });
+      await refreshDerivedWithClient(client, actor, workId);
+      return Object.freeze({ committed_state: committedState, event, projection,
+        idempotent_replay: false });
+    });
+  }
+
+  async function invalidateTaskState(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const taskId = uuid(input.task_id, "task_id_invalid");
+    const idempotencyKey = galleryIdempotencyKey(input.idempotency_key,
+      "task_invalidation_idempotency_key_invalid");
+    const changedDependencyRefs = stringArray(input.changed_dependency_refs,
+      "task_invalidation_dependencies_invalid", 250, 500).sort();
+    if (!changedDependencyRefs.length) fail("task_invalidation_dependencies_required");
+    const reason = text(input.reason, "task_invalidation_reason_invalid", 500);
+    const requestDigest = governedDigest("task_state_invalidation_request", {
+      work_id: workId, task_id: taskId, changed_dependency_refs: changedDependencyRefs, reason,
+    });
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      const replay = await client.query(`SELECT invalidation_id,request_digest,ledger_position
+        FROM tenant_work_task_invalidation
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND idempotency_key=$4`,
+      [actor.tenant_id, workId, taskId, idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_digest !== requestDigest) fail("task_invalidation_idempotency_conflict");
+        return Object.freeze({ invalidation: replay.rows[0],
+          projection: await readWorkProjectionWithClient(client, actor, work, { persist: false }),
+          idempotent_replay: true });
+      }
+      const commit = await client.query(`SELECT revision,contract_revision
+        FROM tenant_work_task_commit
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        ORDER BY revision DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, taskId]);
+      if (!commit.rows[0]) fail("task_invalidation_commit_not_found");
+      const contract = await client.query(`SELECT contract FROM tenant_work_task_contract
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND contract_revision=$4`,
+      [actor.tenant_id, workId, taskId, commit.rows[0].contract_revision]);
+      const dependencyRefs = new Set(contract.rows[0]?.contract?.dependency_refs || []);
+      if (!changedDependencyRefs.some((value) => dependencyRefs.has(value))) {
+        fail("task_invalidation_dependency_irrelevant");
+      }
+      const invalidatedAt = currentIsoTimestamp();
+      const invalidationId = crypto.randomUUID();
+      const event = await appendV2Event(client, actor, workId, "task_state_invalidated", {
+        task_id: taskId, prior_commit_revision: Number(commit.rows[0].revision),
+        changed_dependency_refs: changedDependencyRefs, reason,
+      });
+      await client.query(`INSERT INTO tenant_work_task_invalidation
+        (tenant_id,work_id,task_id,invalidation_id,prior_commit_revision,changed_dependency_refs,
+         reason,ledger_position,idempotency_key,request_digest,invalidated_by_user_id,invalidated_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12)`, [actor.tenant_id,
+        workId, taskId, invalidationId, Number(commit.rows[0].revision),
+        JSON.stringify(changedDependencyRefs), reason, event.sequence_number, idempotencyKey,
+        requestDigest, actor.user_id, invalidatedAt]);
+      await client.query(`UPDATE tenant_work_task
+        SET status='planned',acceptance_verified=false,completed_at=NULL
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [actor.tenant_id, workId, taskId]);
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: true });
+      await refreshDerivedWithClient(client, actor, workId);
+      return Object.freeze({ invalidation: Object.freeze({ invalidation_id: invalidationId,
+        prior_commit_revision: Number(commit.rows[0].revision), changed_dependency_refs: changedDependencyRefs,
+        reason, ledger_position: event.sequence_number, invalidated_at: invalidatedAt }),
+      event, projection, idempotent_replay: false });
+    });
+  }
+
+  async function observeEffectState(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const idempotencyKey = galleryIdempotencyKey(input.idempotency_key,
+      "effect_observation_idempotency_key_invalid");
+    const observedAt = input.observed_at || currentIsoTimestamp();
+    const observation = normalizeEffectObservation({
+      effect_ref: input.effect_ref,
+      state: input.state,
+      observed_at: observedAt,
+      provider_receipt_digest: input.provider_receipt_digest ?? null,
+    });
+    const requestDigest = governedDigest("effect_observation_request", observation);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRecordTask, work, actor);
+      assertOperationalWorkMutation(work);
+      const replay = await client.query(`SELECT observation,request_digest,ledger_position
+        FROM tenant_work_effect_observation
+        WHERE tenant_id=$1 AND work_id=$2 AND effect_ref=$3 AND idempotency_key=$4`,
+      [actor.tenant_id, workId, observation.effect_ref, idempotencyKey]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].request_digest !== requestDigest) fail("effect_observation_idempotency_conflict");
+        return Object.freeze({ observation: replay.rows[0].observation,
+          projection: await readWorkProjectionWithClient(client, actor, work, { persist: false }),
+          idempotent_replay: true });
+      }
+      const headResult = await client.query(`SELECT observation_revision,state,observation_digest
+        FROM tenant_work_effect_observation
+        WHERE tenant_id=$1 AND work_id=$2 AND effect_ref=$3
+        ORDER BY observation_revision DESC LIMIT 1 FOR UPDATE`,
+      [actor.tenant_id, workId, observation.effect_ref]);
+      const head = headResult.rows[0] || null;
+      if (head && ["SUCCEEDED", "KNOWN_NO_EFFECT"].includes(head.state)) {
+        if (head.state !== observation.state) fail("effect_observation_terminal_conflict");
+        fail("effect_observation_terminal_replay_key_required");
+      }
+      if (head?.state === "AMBIGUOUS" && !["AMBIGUOUS", "RECONCILING"].includes(observation.state)) {
+        fail("effect_reconciliation_required");
+      }
+      if (head?.state === "RECONCILING" && !["RECONCILING", "SUCCEEDED", "KNOWN_NO_EFFECT"].includes(observation.state)) {
+        fail("effect_observation_transition_invalid");
+      }
+      const revision = Number(head?.observation_revision || 0) + 1;
+      const event = await appendV2Event(client, actor, workId, "effect_observed", observation);
+      const observationDigest = governedDigest("effect_observation", {
+        work_id: workId, observation_revision: revision, ...observation,
+      });
+      await client.query(`INSERT INTO tenant_work_effect_observation
+        (tenant_id,work_id,effect_ref,observation_revision,state,provider_receipt_digest,
+         observation,observation_digest,ledger_position,idempotency_key,request_digest,
+         observed_by_user_id,observed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)`,
+      [actor.tenant_id, workId, observation.effect_ref, revision, observation.state,
+        observation.provider_receipt_digest, JSON.stringify(observation), observationDigest,
+        event.sequence_number, idempotencyKey, requestDigest, actor.user_id, observation.observed_at]);
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: true });
+      return Object.freeze({ observation: Object.freeze({ ...observation,
+        observation_revision: revision, observation_digest: observationDigest,
+        ledger_position: event.sequence_number }), event, projection, idempotent_replay: false });
+    });
+  }
+
+  async function readWorkStateProjection(identity, { work_id, view = null }) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(work_id);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId);
+      assertPermission(canRead, work, actor);
+      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+      if (view === null || view === undefined || view === "") return projection;
+      const selectedView = String(view).trim().toLowerCase();
+      if (selectedView === "owner" && !canAdminister(work, actor)) fail("work_projection_owner_view_denied");
+      if (selectedView === "verifier" && !canContributeEvidence(work, actor)) fail("work_projection_verifier_view_denied");
+      if (selectedView === "core" && actor.core_join_trusted !== true) fail("work_projection_core_view_denied");
+      return projectWorkStateForView(projection, selectedView);
     });
   }
   async function resolveNativeTaskBindingWithClient(client, source = {}) {
@@ -7560,7 +8305,9 @@ export function createWorkContinuityV2Store({
     materializeNativePrecommitTicketGateWithClient,
     fulfillPrecommitTicketTask,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
-    recordTask, resolveNativeTaskBindingWithClient, recordEvidence,
+    recordTask, recordTaskContract, recordDependencyManifest, evaluateWorkTrajectory,
+    commitTaskState, invalidateTaskState, observeEffectState,
+    readWorkStateProjection, resolveNativeTaskBindingWithClient, recordEvidence,
     recordOwnerManualMergeReleaseEvidence,
     recordNativeVerifierEvidenceWithClient,
     materializeGenericTerminalReconciliationV3WithClient,

@@ -604,12 +604,13 @@ test("lists Work choices in the same Nyra session without preflight, interpretat
   assert.equal(payload.external_action_authorized, false);
   assert.match(payload.host_response_contract.reply_seed, /Non ho ripreso né modificato alcun Work/i);
   assert.equal(response.content[0].text.includes(WORK_ID), false);
-  assert.equal(response.content[0].text.includes("Conversation quality"), true);
+  assert.equal(response.content[0].text.includes("Conversation quality"), false);
+  assert.equal(payload.work_selection.choices[0].work_name, "Conversation quality");
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
 });
 
-test("answers a plain Italian question about open Works with their visible names and states", async () => {
+test("keeps tenant Work titles out of model-facing Gallery narration", async () => {
   const { handler, calls } = harness({ listWorkChoices: [{
     work_id: WORK_ID, project_id: "nyra_conversational_runtime",
     work_name: "Entità 360", status: "BLOCKED",
@@ -621,8 +622,37 @@ test("answers a plain Italian question about open Works with their visible names
   assert.equal(calls.listWorkChoices.length, 1);
   assert.equal(calls.preflight.length, 0);
   assert.equal(response.structuredContent.work_selection.requested, true);
-  assert.match(response.structuredContent.host_response_contract.reply_seed, /Work aperti: Entità 360 \(BLOCKED\)/);
+  assert.match(response.structuredContent.host_response_contract.reply_seed, /Work aperti: Work 1 \(BLOCKED\)/);
+  assert.doesNotMatch(response.content[0].text, /Entità 360/);
+  assert.equal(response.structuredContent.work_selection.choices[0].work_name, "Entità 360");
   assert.match(response.structuredContent.host_response_contract.reply_seed, /Non ho ripreso né modificato/i);
+});
+
+test("auto locale answers an English Gallery question in English", async () => {
+  const { handler } = harness({ listWorkChoices: [{
+    work_id: WORK_ID, project_id: "nyra_conversational_runtime",
+    work_name: "Tenant supplied title", status: "ACTIVE",
+  }] });
+  const response = await handler({
+    message: "Which Works are active?", locale: "auto", response_style: "concise",
+  }, identity());
+  assert.match(response.content[0].text, /Open Works: Work 1 \(ACTIVE\)/);
+  assert.match(response.content[0].text, /I did not resume or change any Work/);
+  assert.doesNotMatch(response.content[0].text, /Tenant supplied title/);
+});
+
+test("does not let a Gallery phrase discard a consequential command", async () => {
+  const { handler, calls } = harness({ listWorkChoices: [{
+    work_id: WORK_ID, project_id: "nyra_conversational_runtime",
+    work_name: "Release target", status: "ACTIVE",
+  }] });
+  const response = await handler({
+    message: "What Work is active? Deploy it now.", locale: "auto",
+  }, identity());
+  assert.equal(calls.listWorkChoices.length, 0);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(response.structuredContent.work_selection?.requested, undefined);
+  assert.equal(response.structuredContent.action_policy.consequential_request_detected, true);
 });
 
 test("uses the explicit Work selection mode as the same read-only path", async () => {
@@ -914,7 +944,8 @@ test("discovers blocked Works through Gallery and asks for a scoped next-step re
   assert.equal(calls.preflight.length, 0);
   assert.deepEqual(payload.work_selection.choices.map((choice) => choice.work_name), ["Entity 360"]);
   assert.equal(payload.work_selection.total_count, 1);
-  assert.match(payload.host_response_contract.reply_seed, /Work bloccati trovati: Entity 360 \(BLOCKED\)/);
+  assert.match(payload.host_response_contract.reply_seed, /Work bloccati trovati: Work 1 \(BLOCKED\)/);
+  assert.doesNotMatch(payload.host_response_contract.reply_seed, /Entity 360/);
   assert.match(payload.host_response_contract.reply_seed, /prossimo passo verificabile/);
   assert.doesNotMatch(payload.host_response_contract.reply_seed, /Dialogue cleanup/);
 });

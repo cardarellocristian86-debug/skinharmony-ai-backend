@@ -265,6 +265,10 @@ services:
       # Blueprint opts in explicitly; neither flag enables a model provider.
       - key: WORK_CONTINUITY_AUTO_CAPTURE_ENABLED
         value: "true"
+      # Additive governed task/context state is deployed in observation mode.
+      # ENFORCED is a distinct later activation after live canary evidence.
+      - key: GOVERNED_CONTINUITY_CONTEXT_MODE
+        value: "SHADOW"
       - key: HOST_NATIVE_AGENT_PROTOCOL_ENABLED
         value: "true"
       # Canonical, non-secret project release scope. Nyra uses this binding to

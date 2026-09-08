@@ -1979,6 +1979,11 @@ function workSelectionRequested(args, message, intentRoute = null) {
       intentRoute.canonical_intent?.consequential_intent !== true &&
       intentRoute.canonical_intent?.work_requirement !== "NEW" &&
       intentRoute.intent !== "work_resume") return true;
+  // A lexical Gallery phrase is only a convenience for requests already
+  // classified as pure reads. Never let "what Work is active? deploy it"
+  // discard the consequential half of the user's command.
+  if (intentRoute?.canonical_intent?.operation_class !== "READ_ONLY" ||
+      intentRoute?.canonical_intent?.consequential_intent === true) return false;
   return WORK_SELECTION_LIST_PATTERN.test(String(message || ""));
 }
 
@@ -2171,7 +2176,7 @@ function controlRoomReplySeed(locale, controlRoom) {
 }
 
 function workSelectionReplySeed(locale, selection, message = "", selectionIntent = null) {
-  const english = locale === "en";
+  const english = advisoryUsesEnglish(locale, message);
   if (!selection.available) return english
     ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
     : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
@@ -2184,21 +2189,20 @@ function workSelectionReplySeed(locale, selection, message = "", selectionIntent
     : (selectionIntent === "blocked_work_next_step_read"
       ? "Non risultano Work bloccati nella Gallery visibile. Non ho ripreso né modificato alcun Work."
       : GALLERY_CLEANLINESS_PATTERN.test(message)
-      ? "The Gallery is not clean: the visible active Works are shown in the read-only selector. No Work was resumed or changed."
+      ? "La Gallery è pulita: non risultano Work attivi. Non ho ripreso né modificato alcun Work."
       : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.");
   if (!selection.choices.length) return english
     ? "There are no more Works on this page. No Work was resumed or changed."
     : "Non ci sono altri Work in questa pagina. Non ho ripreso né modificato alcun Work.";
-  // Render a short server-derived list as data, so a plain chat response is
-  // useful even where the Gallery widget is hidden. Titles are deliberately
-  // constrained much more strictly than the stored Work name; an unsuitable
-  // title falls back to its ordinal instead of entering model narration.
+  // Tenant-controlled titles remain structured Gallery data. They must never
+  // enter model-facing narration: a character allowlist does not make an
+  // instruction-like title trusted. Ordinals and bounded states preserve a
+  // useful non-widget fallback without crossing that trust boundary.
   const visible = selection.choices.map((choice, index) => {
-    const title = boundedPublicText(choice.work_name, 80);
-    const safeTitle = title && /^[\p{L}\p{N}][\p{L}\p{N} .,:;()'’&+/_-]{0,79}$/u.test(title)
-      ? title : `Work ${choice.ordinal || index + 1}`;
-    const state = boundedPublicText(choice.status, 40) || "UNKNOWN";
-    return `${safeTitle} (${state})`;
+    const ordinal = choice.ordinal || index + 1;
+    const candidateState = String(choice.status || "").toUpperCase();
+    const state = /^[A-Z][A-Z0-9_]{0,39}$/.test(candidateState) ? candidateState : "UNKNOWN";
+    return `Work ${ordinal} (${state})`;
   }).join("; ");
   const continuation = selection.has_more
     ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")

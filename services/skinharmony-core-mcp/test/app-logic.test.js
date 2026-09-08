@@ -26,12 +26,12 @@ test("permits request-bound OAuth owner elevation for verified Nyra closure only
   assert.equal(supportsOAuthOwnerElevation("work_continuity_generic_core_join"), false);
 });
 
-test("publishes operation-exact Nyra continuation requirements", () => {
+test("publishes a flat connector-compatible Nyra continuation contract", () => {
   const schema = TOOLS.find((tool) => tool.name === "nyra_continue").inputSchema;
-  assert(validateToolArguments(schema, {
+  assert.deepEqual(validateToolArguments(schema, {
     operation: "review_work_bootstrap",
     idempotency_key: "missing-reference",
-  }).some((item) => item.code === "any_of"));
+  }), []);
   assert(validateToolArguments(schema, {
     operation: "finalize_verified_work",
     work_id: "11111111-1111-4111-8111-111111111111",
@@ -39,16 +39,13 @@ test("publishes operation-exact Nyra continuation requirements", () => {
     owner_confirmed: true,
     confirmation_reference: "owner-finalize-exact-work",
   }).length === 0);
-  for (const omitted of ["work_id", "owner_confirmed", "confirmation_reference"]) {
-    const request = {
-      operation: "finalize_verified_work",
-      work_id: "11111111-1111-4111-8111-111111111111",
-      idempotency_key: "finalize-exact-work",
-      owner_confirmed: true,
-      confirmation_reference: "owner-finalize-exact-work",
-    };
-    delete request[omitted];
-    assert(validateToolArguments(schema, request).some((item) => item.code === "any_of"), omitted);
+  const published = compactPublishedToolDescriptor(
+    TOOLS.find((tool) => tool.name === "nyra_continue"),
+  ).inputSchema;
+  assert.equal(published.anyOf, undefined);
+  assert.deepEqual(published.required, ["operation", "idempotency_key"]);
+  for (const field of ["continuation_ref", "work_id", "work_bootstrap", "owner_confirmed", "confirmation_reference"]) {
+    assert.ok(published.properties[field], field);
   }
 });
 
@@ -70,12 +67,14 @@ test("compact Nyra continuation descriptor remains explicitly typable by Apps cl
     idempotency_key: "apps-explicit-arguments",
   }).length, 0);
 
-  // Compact publication must not weaken the exhaustive server-side contract.
-  assert(Array.isArray(canonical.inputSchema.anyOf));
-  assert(validateToolArguments(canonical.inputSchema, {
+  // Connector publication and canonical discovery intentionally share the
+  // same flat contract. The operation-exact handler remains fail closed
+  // before it can claim a continuation or cause an effect.
+  assert.equal(Object.hasOwn(canonical.inputSchema, "anyOf"), false);
+  assert.deepEqual(validateToolArguments(canonical.inputSchema, {
     operation: "authorize_action",
     idempotency_key: "still-missing-reference",
-  }).some((item) => item.code === "any_of"));
+  }), []);
 });
 
 test("resolves only deployed Nyra front-door descriptors across catalog projection drift", () => {

@@ -122,6 +122,42 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
     assert.equal(workflow.intelligence_path.execution_allowed, false);
     assert.equal(workflow.nyra_interpretation.ok, true);
 
+    const oneOrigin = await call("hypothesis_rank", {
+      question: "One independently sourced signal",
+      hypotheses: [
+        { id: "origin_supported", label: "Supported", prior_probability: 0.5, evidence: [
+          { id: "origin_once", label: "Signal", direction: "support", strength: 0.6,
+            reliability: 0.8, origin_ref: "source:report-1", source: "https://example.test/report" },
+        ] },
+        { id: "origin_alternative", label: "Alternative", prior_probability: 0.5 },
+      ],
+    });
+    const floodedOrigin = await call("hypothesis_rank", {
+      question: "Copies derived from one source",
+      hypotheses: [
+        { id: "origin_supported", label: "Supported", prior_probability: 0.5,
+          evidence: Array.from({ length: 20 }, (_, index) => ({
+            id: `origin_copy_${index}`,
+            label: `Derived copy ${index}`,
+            direction: "support",
+            strength: 0.6,
+            reliability: 0.8,
+            origin_ref: "source:report-1",
+            derived_from: ["source:report-1"],
+            source: `https://example.test/summary/${index}`,
+          })) },
+        { id: "origin_alternative", label: "Alternative", prior_probability: 0.5 },
+      ],
+    });
+    const onePosterior = oneOrigin.result.ranking.find((item) =>
+      item.id === "origin_supported").posterior_probability;
+    const floodedSupported = floodedOrigin.result.ranking.find((item) =>
+      item.id === "origin_supported");
+    assert.equal(floodedSupported.posterior_probability, onePosterior);
+    assert.equal(floodedSupported.evidence.length, 1);
+    assert.equal(floodedSupported.evidence[0].corroboration_count, 20);
+    assert.equal(floodedSupported.method, "transparent_log_odds_update_v3_origin_bounded");
+
     const recorded = await call("outcome_record", {
       outcome_id: "launch-week-one",
       prediction_id: "controlled-launch-success",

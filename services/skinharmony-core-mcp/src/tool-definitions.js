@@ -112,6 +112,9 @@ const evidenceItem = {
     strength: probability,
     reliability: probability,
     source: { type: "string", maxLength: 500 },
+    origin_ref: { type: "string", maxLength: 500 },
+    derived_from: { type: "array", maxItems: 20, uniqueItems: true, items: { type: "string", maxLength: 500 } },
+    content_digest: { type: "string", minLength: 16, maxLength: 128 },
   },
   additionalProperties: false,
 };
@@ -1589,32 +1592,12 @@ const nyraContinueInputSchema = Object.freeze({
   properties: nyraContinueProperties,
   required: Object.freeze(["operation", "idempotency_key"]),
   additionalProperties: false,
-  anyOf: Object.freeze([
-    Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
-      }),
-      required: Object.freeze(["continuation_ref"]),
-    }),
-    Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        operation: { const: "preview_native_plan_merge" },
-      }),
-      required: Object.freeze(["work_id"]),
-      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
-    }),
-    Object.freeze({
-      type: "object",
-      properties: Object.freeze({
-        operation: { type: "string", enum: ["align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
-        owner_confirmed: { const: true },
-      }),
-      required: Object.freeze(["work_id", "owner_confirmed", "confirmation_reference"]),
-      not: Object.freeze({ required: Object.freeze(["continuation_ref"]) }),
-    }),
-  ]),
+  // Keep the published connector shape flat. Some MCP/App hosts project an
+  // anyOf branch as the complete input contract and consequently discard the
+  // root idempotency key and payload fields before the call reaches Core.
+  // createNyraGovernedContinueHandler remains the authoritative,
+  // operation-exact validator and fails closed before claiming a continuation
+  // or producing an effect.
 });
 
 export const TOOLS = [

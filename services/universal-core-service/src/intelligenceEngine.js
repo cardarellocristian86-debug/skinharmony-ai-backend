@@ -80,8 +80,31 @@ function memoryContextProfile(payload = {}) {
   };
 }
 
+function evidenceOrigin(item = {}, index = 0) {
+  const derivedFrom = Array.isArray(item?.derived_from) ? item.derived_from : [];
+  const explicitOrigin = text(item?.origin_ref ?? derivedFrom[0]);
+  if (explicitOrigin) return explicitOrigin.toLowerCase();
+  const source = text(item?.source);
+  if (source) {
+    try {
+      const url = new URL(source);
+      url.hash = "";
+      for (const key of [...url.searchParams.keys()]) {
+        if (/^(utm_|fbclid$|gclid$)/i.test(key)) url.searchParams.delete(key);
+      }
+      url.searchParams.sort();
+      return url.toString().toLowerCase();
+    } catch {
+      return source.toLowerCase();
+    }
+  }
+  const digest = text(item?.content_digest);
+  if (digest) return `digest:${digest.toLowerCase()}`;
+  return `provided_context:${index}`;
+}
+
 function normalizedEvidence(rawEvidence = []) {
-  return list(rawEvidence, 100).map((item, index) => {
+  const normalized = list(rawEvidence, 100).map((item, index) => {
     const direction = ["against", "negative", "oppose"].includes(text(item?.direction).toLowerCase()) ? "against" : "support";
     return {
       id: text(item?.id, `evidence_${index + 1}`),
@@ -91,8 +114,31 @@ function normalizedEvidence(rawEvidence = []) {
       reliability: clamp(item?.reliability ?? item?.confidence ?? 0.7),
       source: text(item?.source, "provided_context"),
       provenance: text(item?.provenance, "request_evidence"),
+      origin_ref: text(item?.origin_ref),
+      derived_from: list(item?.derived_from, 20).map(String),
+      content_digest: text(item?.content_digest),
+      correlation_key: evidenceOrigin(item, index),
     };
   });
+  const byOriginAndDirection = new Map();
+  for (const item of normalized) {
+    const key = `${item.provenance.toLowerCase()}|${item.correlation_key}|${item.direction}`;
+    const current = byOriginAndDirection.get(key);
+    const contribution = item.strength * item.reliability;
+    if (!current) {
+      byOriginAndDirection.set(key, { ...item, corroboration_count: 1, correlated_evidence_ids: [item.id] });
+      continue;
+    }
+    current.corroboration_count += 1;
+    current.correlated_evidence_ids.push(item.id);
+    if (contribution > current.strength * current.reliability) {
+      Object.assign(current, item, {
+        corroboration_count: current.corroboration_count,
+        correlated_evidence_ids: current.correlated_evidence_ids,
+      });
+    }
+  }
+  return [...byOriginAndDirection.values()];
 }
 
 function probabilityEstimate(candidate = {}, payload = {}) {
@@ -133,7 +179,7 @@ function probabilityEstimate(candidate = {}, payload = {}) {
       directional_items_used: memory.directional_evidence.length,
       references: memory.references,
     },
-    method: "transparent_log_odds_update_v2",
+    method: "transparent_log_odds_update_v3_origin_bounded",
     estimated_from_assumptions: explicitPrior === undefined,
   };
 }

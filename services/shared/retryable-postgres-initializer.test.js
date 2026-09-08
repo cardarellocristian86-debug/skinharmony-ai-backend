@@ -55,11 +55,12 @@ test("uses a separate finite DDL budget and a transaction", async () => {
     "SET LOCAL statement_timeout = '30000ms'",
     "SET LOCAL lock_timeout = '5000ms'",
   ]);
-  assert.deepEqual(calls[3], {
+  assert.deepEqual(calls[3], "SELECT pg_advisory_xact_lock(hashtextextended($1,0))");
+  assert.deepEqual(calls[4], {
     text: "CREATE TABLE IF NOT EXISTS example(id integer)",
     query_timeout: 30_000,
   });
-  assert.deepEqual(calls.slice(4), ["COMMIT", "RELEASE"]);
+  assert.deepEqual(calls.slice(5), ["COMMIT", "RELEASE"]);
 });
 
 test("bounds invalid migration timeout configuration", () => {

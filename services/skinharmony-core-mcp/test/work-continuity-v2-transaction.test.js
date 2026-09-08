@@ -869,6 +869,7 @@ class AtomicWorkPool {
     if (q.startsWith("SELECT count(DISTINCT p.session_id)")) {
       return { rows: [{ active_participants: 0, active_leases: 0, active_branches: 0 }], rowCount: 1 };
     }
+    if (q.includes("FROM tenant_work_state_projection")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT work_id,report_digest,created_at")) {
       const rows = parameters[1].flatMap((workId) => {
         const row = this.reports.get(key(parameters[0], workId));
@@ -2089,7 +2090,8 @@ test("two no-conflict reviews cannot race into duplicate same-project Works", as
   assert.equal(first.work.work_name, "Continuity transaction");
   assert.equal(pool.queries.some((query) => query.startsWith("SELECT pg_advisory_xact_lock")), true);
   const lockCall = pool.queryParameters.find((call) =>
-    call.sql.startsWith("SELECT pg_advisory_xact_lock"));
+    call.sql.startsWith("SELECT pg_advisory_xact_lock") &&
+    String(call.parameters[0] || "").startsWith("tenant_work_bootstrap:"));
   assert.match(lockCall.parameters[0], /^tenant_work_bootstrap:[a-f0-9]{64}$/);
   assert.equal(lockCall.parameters[0].includes("\0"), false,
     "PostgreSQL text advisory-lock keys must never contain a NUL byte");
