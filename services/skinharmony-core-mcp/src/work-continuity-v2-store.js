@@ -125,6 +125,54 @@ ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate_supersession
   ADD COLUMN IF NOT EXISTS v2_scope_snapshot_digest char(64);
 ALTER TABLE IF EXISTS tenant_work_precommit_ticket_gate_supersession
   ADD COLUMN IF NOT EXISTS v2_scope_tasks jsonb;
+CREATE TABLE IF NOT EXISTS tenant_work_generic_evidence_reconciliation_batch_v3 (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, batch_id uuid NOT NULL,
+  batch_version bigint NOT NULL CHECK (batch_version>0), previous_batch_digest char(64),
+  plan_id uuid NOT NULL, plan_digest char(64) NOT NULL,
+  closure_evaluation_id uuid NOT NULL, closure_evaluation_digest char(64) NOT NULL,
+  native_work_snapshot_digest char(64) NOT NULL,
+  release_verdict_id varchar(160) NOT NULL, release_intent_digest char(64) NOT NULL,
+  core_join_record_digest char(64) NOT NULL, target_commit char(40) NOT NULL,
+  terminal_receipt_id uuid NOT NULL, terminal_receipt_digest char(64) NOT NULL,
+  live_readback_digest char(64) NOT NULL,
+  objective_acceptance_coverage_digest char(64) NOT NULL,
+  mapping_set_digest char(64) NOT NULL, batch_digest char(64) NOT NULL,
+  created_by varchar(128) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id,work_id,batch_id),
+  UNIQUE (tenant_id,work_id,batch_version), UNIQUE (tenant_id,work_id,batch_digest),
+  FOREIGN KEY (tenant_id,work_id) REFERENCES tenant_work(tenant_id,work_id),
+  FOREIGN KEY (tenant_id,terminal_receipt_id)
+    REFERENCES core_continuity_native_receipts(tenant_id,receipt_id)
+);
+ALTER TABLE IF EXISTS tenant_work_generic_evidence_reconciliation_batch_v3
+  ADD COLUMN IF NOT EXISTS terminal_receipt_id uuid;
+ALTER TABLE IF EXISTS tenant_work_generic_evidence_reconciliation_batch_v3
+  ADD COLUMN IF NOT EXISTS terminal_receipt_digest char(64);
+ALTER TABLE IF EXISTS tenant_work_generic_evidence_reconciliation_batch_v3
+  ADD COLUMN IF NOT EXISTS live_readback_digest char(64);
+CREATE TABLE IF NOT EXISTS tenant_work_generic_evidence_reconciliation_mapping_v3 (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, batch_id uuid NOT NULL,
+  legacy_evidence_id uuid NOT NULL, replacement_evidence_id uuid NOT NULL,
+  mapping_digest char(64) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id,work_id,batch_id,legacy_evidence_id),
+  CHECK (legacy_evidence_id<>replacement_evidence_id),
+  FOREIGN KEY (tenant_id,work_id,batch_id)
+    REFERENCES tenant_work_generic_evidence_reconciliation_batch_v3(tenant_id,work_id,batch_id),
+  FOREIGN KEY (tenant_id,work_id,legacy_evidence_id)
+    REFERENCES tenant_work_evidence(tenant_id,work_id,evidence_id),
+  FOREIGN KEY (tenant_id,work_id,replacement_evidence_id)
+    REFERENCES tenant_work_evidence(tenant_id,work_id,evidence_id)
+);
+DROP TRIGGER IF EXISTS tenant_work_generic_evidence_reconciliation_batch_v3_no_mutation
+  ON tenant_work_generic_evidence_reconciliation_batch_v3;
+CREATE TRIGGER tenant_work_generic_evidence_reconciliation_batch_v3_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_generic_evidence_reconciliation_batch_v3
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
+DROP TRIGGER IF EXISTS tenant_work_generic_evidence_reconciliation_mapping_v3_no_mutation
+  ON tenant_work_generic_evidence_reconciliation_mapping_v3;
+CREATE TRIGGER tenant_work_generic_evidence_reconciliation_mapping_v3_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_generic_evidence_reconciliation_mapping_v3
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_work_legacy_identity_idx
   ON tenant_work (tenant_id, legacy_work_id) WHERE legacy_work_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS tenant_work_core_join (
@@ -253,6 +301,8 @@ INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260901_precommit_ticket_gate_claim_v1') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260903_native_v2_task_revision_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260908_generic_closure_evidence_reconciliation_batch_v3') ON CONFLICT DO NOTHING;
 `;
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -1284,14 +1334,230 @@ function authoritativeNativeReleaseEvidence(item, work = {}) {
   );
 }
 
+function genericClosureCoverageDigest(work, plan) {
+  return objectDigest({
+    schema_version: "generic_closure_objective_acceptance_coverage_v1",
+    tenant_id: work.tenant_id,
+    work_id: work.work_id,
+    intent_digest: work.intent_digest,
+    objective: work.objective,
+    acceptance_criteria: Array.isArray(work.acceptance_criteria)
+      ? work.acceptance_criteria : [],
+    native_plan_id: plan.plan_id,
+    native_plan_digest: plan.plan_digest,
+    native_acceptance_contract_digest: objectDigest(plan.plan.acceptance_contract),
+  });
+}
+
+function genericClosureAcceptanceCoverageValid(work, plan) {
+  const contract = plan?.plan?.acceptance_contract;
+  const criteria = Array.isArray(contract?.criteria) ? contract.criteria : [];
+  if (!criteria.length || objectDigest(criteria) !== contract.criteria_digest) return false;
+  const canonicalCriteria = criteria.every((criterion) =>
+    plainRecord(criterion) &&
+    ["objective", "acceptance", "constraint"].includes(criterion.criterion_kind) &&
+    typeof criterion.criterion_id === "string" && criterion.criterion_id.length > 0 &&
+    typeof criterion.text === "string" && criterion.text.trim().length > 0 &&
+    objectDigest({
+      schema_version: "intent_acceptance_criterion_v1",
+      intent_digest: work.intent_digest,
+      criterion_id: criterion.criterion_id,
+      criterion_kind: criterion.criterion_kind,
+      text: criterion.text,
+    }) === criterion.criterion_digest);
+  if (!canonicalCriteria) return false;
+  const objectiveCriteria = criteria.filter((item) => item.criterion_kind === "objective");
+  if (objectiveCriteria.length !== 1 || objectiveCriteria[0].text !== work.objective) return false;
+  const expectedAcceptance = (Array.isArray(work.acceptance_criteria)
+    ? work.acceptance_criteria : []).map((item) => String(item));
+  const coveredAcceptance = criteria.filter((item) => item.criterion_kind === "acceptance")
+    .map((item) => item.text);
+  return expectedAcceptance.length === coveredAcceptance.length &&
+    expectedAcceptance.every((item, index) => item === coveredAcceptance[index]);
+}
+
+function validTerminalReconciliationHeadV3(head, work, evidenceById) {
+  const batch = head?.batch;
+  const plan = head?.native_plan;
+  const evaluation = head?.closure_evaluation;
+  const release = head?.release_join;
+  const terminalReceipt = head?.terminal_receipt;
+  const mappings = Array.isArray(head?.mappings) ? head.mappings : [];
+  const batchVersion = Number(batch?.batch_version);
+  const previousBatch = head?.previous_batch ?? null;
+  if (!plainRecord(batch) || batch.schema_version !==
+      "generic_closure_evidence_reconciliation_batch_v3" || head?.latest !== true ||
+      batch.tenant_id !== work.tenant_id || batch.work_id !== work.work_id ||
+      !Number.isSafeInteger(batchVersion) || batchVersion < 1 ||
+      !plainRecord(plan) || plan.current !== true || plan.plan_id !== batch.plan_id ||
+      plan.plan_digest !== batch.plan_digest || objectDigest(plan.plan) !== plan.plan_digest ||
+      !["verified", "closed"].includes(plan.status) ||
+      !genericClosureAcceptanceCoverageValid(work, plan) ||
+      genericClosureCoverageDigest(work, plan) !== batch.objective_acceptance_coverage_digest ||
+      !plainRecord(evaluation) || evaluation.evaluation_id !== batch.closure_evaluation_id ||
+      evaluation.evaluation_digest !== batch.closure_evaluation_digest ||
+      objectDigest(evaluation.evaluation) !== evaluation.evaluation_digest ||
+      evaluation.evaluation?.closed !== true ||
+      evaluation.evaluation?.native_v2_work_tasks_verified !== true ||
+      evaluation.evaluation?.target_commit !== batch.target_commit ||
+      !HASH.test(String(evaluation.evaluation?.native_v2_work_snapshot_digest || "")) ||
+      evaluation.evaluation.native_v2_work_snapshot_digest !== batch.native_work_snapshot_digest ||
+      !plainRecord(release) || release.evaluation_id !== evaluation.evaluation_id ||
+      release.verdict_id !== batch.release_verdict_id ||
+      release.release_intent_digest !== batch.release_intent_digest ||
+      release.core_join_record_digest !== batch.core_join_record_digest ||
+      objectDigest(release.core_join_record) !== release.core_join_record_digest ||
+      release.release_intent?.release_intent_digest !== release.release_intent_digest ||
+      objectDigest(Object.fromEntries(Object.entries(release.release_intent || {})
+        .filter(([key]) => key !== "release_intent_digest"))) !== release.release_intent_digest ||
+      release.release_intent?.head_commit !== batch.target_commit ||
+      !plainRecord(terminalReceipt) || terminalReceipt.receipt_type !== "closure_finalized" ||
+      terminalReceipt.receipt_id !== batch.terminal_receipt_id ||
+      terminalReceipt.payload_digest !== batch.terminal_receipt_digest ||
+      objectDigest(terminalReceipt.payload) !== terminalReceipt.payload_digest ||
+      terminalReceipt.payload?.work_id !== work.work_id ||
+      terminalReceipt.payload?.plan_id !== batch.plan_id ||
+      terminalReceipt.payload?.target_commit !== batch.target_commit ||
+      terminalReceipt.payload?.health_ok !== true ||
+      terminalReceipt.payload?.external_release !== true ||
+      terminalReceipt.payload?.closure_evaluation_id !== batch.closure_evaluation_id ||
+      terminalReceipt.payload?.closure_evaluation_digest !== batch.closure_evaluation_digest ||
+      terminalReceipt.payload?.release_intent_digest !== batch.release_intent_digest ||
+      terminalReceipt.payload?.core_join_verdict_id !== batch.release_verdict_id ||
+      terminalReceipt.payload?.external_readback_digest !== batch.live_readback_digest ||
+      !HASH.test(String(batch.live_readback_digest || "")) || !mappings.length) return false;
+  if (batchVersion === 1) {
+    if (batch.previous_batch_digest !== null || previousBatch !== null) return false;
+  } else {
+    if (!HASH.test(String(batch.previous_batch_digest || "")) ||
+        !plainRecord(previousBatch) || previousBatch.tenant_id !== work.tenant_id ||
+        previousBatch.work_id !== work.work_id ||
+        Number(previousBatch.batch_version) !== batchVersion - 1 ||
+        previousBatch.batch_digest !== batch.previous_batch_digest) return false;
+    const previousMaterial = {
+      schema_version: "generic_closure_evidence_reconciliation_batch_v3",
+      tenant_id: previousBatch.tenant_id, work_id: previousBatch.work_id,
+      batch_id: previousBatch.batch_id, batch_version: Number(previousBatch.batch_version),
+      previous_batch_digest: previousBatch.previous_batch_digest || null,
+      plan_id: previousBatch.plan_id, plan_digest: previousBatch.plan_digest,
+      closure_evaluation_id: previousBatch.closure_evaluation_id,
+      closure_evaluation_digest: previousBatch.closure_evaluation_digest,
+      native_work_snapshot_digest: previousBatch.native_work_snapshot_digest,
+      release_verdict_id: previousBatch.release_verdict_id,
+      release_intent_digest: previousBatch.release_intent_digest,
+      core_join_record_digest: previousBatch.core_join_record_digest,
+      target_commit: previousBatch.target_commit,
+      terminal_receipt_id: previousBatch.terminal_receipt_id,
+      terminal_receipt_digest: previousBatch.terminal_receipt_digest,
+      live_readback_digest: previousBatch.live_readback_digest,
+      objective_acceptance_coverage_digest:
+        previousBatch.objective_acceptance_coverage_digest,
+      mapping_set_digest: previousBatch.mapping_set_digest,
+    };
+    if (objectDigest(previousMaterial) !== previousBatch.batch_digest) return false;
+  }
+  const canonicalMappings = [];
+  for (const mapping of mappings) {
+    const legacy = evidenceById.get(mapping?.legacy_evidence_id);
+    const replacement = evidenceById.get(mapping?.replacement_evidence_id);
+    const native = mapping?.native_evidence;
+    const report = mapping?.verifier_report;
+    const receipt = mapping?.native_receipt;
+    if (!legacy || legacy.required !== true || legacy.independently_verified === true ||
+        !replacement || replacement.required !== true ||
+        replacement.kind !== "native_verifier_terminal_report" ||
+        !independentlyVerifiedGenericEvidence(replacement, work) ||
+        !plainRecord(native) || native.evidence_id !== replacement.evidence_id ||
+        native.evidence_digest !== replacement.digest || native.plan_id !== batch.plan_id ||
+        !plainRecord(report) || report.schema_version !== "native_agent_report_v1" ||
+        report.verdict !== "approved" || report.correction_required === true ||
+        !reportHasPassingTests(report) ||
+        native.report_digest !== objectDigest({ status: "completed", report }) ||
+        !Array.isArray(evaluation.evaluation?.report_bindings) ||
+        !evaluation.evaluation.report_bindings.some((binding) =>
+          binding.agent_id === replacement.verified_by_agent_id &&
+          binding.report_digest === native.report_digest) ||
+        !plainRecord(receipt) || receipt.receipt_type !== "agent_reported" ||
+        objectDigest(receipt.payload) !== receipt.payload_digest ||
+        receipt.payload?.report_digest !== native.report_digest ||
+        receipt.payload?.agent_id !== replacement.verified_by_agent_id) return false;
+    const expectedCriteria = (plan.plan.acceptance_contract.criteria || [])
+      .map((item) => item?.criterion_digest)
+      .filter((item) => HASH.test(String(item || ""))).sort();
+    const reportedCriteria = (report.acceptance_evidence || [])
+      .filter((item) => item?.passed === true && Array.isArray(item.evidence_refs) &&
+        item.evidence_refs.length > 0)
+      .map((item) => item?.criterion_digest)
+      .filter((item) => HASH.test(String(item || ""))).sort();
+    const builderTasks = (plan.plan.tasks || []).filter((item) => item?.kind === "builder")
+      .map((item) => String(item.task_id || "")).filter(Boolean).sort();
+    const verifiedTasks = [...new Set((report.verifies_task_ids || [])
+      .map((item) => String(item || "")).filter(Boolean))].sort();
+    if (!expectedCriteria.length || expectedCriteria.length !== reportedCriteria.length ||
+        expectedCriteria.some((item, index) => item !== reportedCriteria[index]) ||
+        !builderTasks.length || builderTasks.some((item) => !verifiedTasks.includes(item))) {
+      return false;
+    }
+    const material = { schema_version: "generic_closure_evidence_mapping_v3",
+      tenant_id: work.tenant_id, work_id: work.work_id, batch_id: batch.batch_id,
+      legacy_evidence_id: mapping.legacy_evidence_id,
+      replacement_evidence_id: mapping.replacement_evidence_id };
+    if (objectDigest(material) !== mapping.mapping_digest) return false;
+    canonicalMappings.push({ legacy_evidence_id: mapping.legacy_evidence_id,
+      replacement_evidence_id: mapping.replacement_evidence_id,
+      mapping_digest: mapping.mapping_digest });
+  }
+  canonicalMappings.sort((left, right) =>
+    left.legacy_evidence_id.localeCompare(right.legacy_evidence_id));
+  if (objectDigest(canonicalMappings) !== batch.mapping_set_digest) return false;
+  const material = { schema_version: batch.schema_version, tenant_id: batch.tenant_id,
+    work_id: batch.work_id, batch_id: batch.batch_id, batch_version: batchVersion,
+    previous_batch_digest: batch.previous_batch_digest || null, plan_id: batch.plan_id,
+    plan_digest: batch.plan_digest, closure_evaluation_id: batch.closure_evaluation_id,
+    closure_evaluation_digest: batch.closure_evaluation_digest,
+    native_work_snapshot_digest: batch.native_work_snapshot_digest,
+    release_verdict_id: batch.release_verdict_id,
+    release_intent_digest: batch.release_intent_digest,
+    core_join_record_digest: batch.core_join_record_digest, target_commit: batch.target_commit,
+    terminal_receipt_id: batch.terminal_receipt_id,
+    terminal_receipt_digest: batch.terminal_receipt_digest,
+    live_readback_digest: batch.live_readback_digest,
+    objective_acceptance_coverage_digest: batch.objective_acceptance_coverage_digest,
+    mapping_set_digest: batch.mapping_set_digest };
+  return objectDigest(material) === batch.batch_digest;
+}
+
+export function deriveEffectiveGenericClosureEvidence(state = {}) {
+  const work = plainRecord(state.work) ? state.work : {};
+  const evidence = Array.isArray(state.evidence)
+    ? state.evidence.filter((item) => item?.required !== false) : [];
+  const evidenceById = new Map(evidence.map((item) => [item?.evidence_id, item]));
+  const superseded = new Set();
+  let invalidReconciliationCount = 0;
+  const terminalHead = state.generic_evidence_reconciliation_head_v3;
+  if (terminalHead !== undefined && terminalHead !== null) {
+    if (validTerminalReconciliationHeadV3(terminalHead, work, evidenceById)) {
+      for (const mapping of terminalHead.mappings) superseded.add(mapping.legacy_evidence_id);
+    } else {
+      invalidReconciliationCount += 1;
+    }
+  }
+  return Object.freeze({
+    schema_version: "generic_closure_effective_evidence_v3",
+    evidence: Object.freeze(evidence.filter((item) => !superseded.has(item.evidence_id))),
+    superseded_legacy_evidence_ids: Object.freeze([...superseded].sort()),
+    reconciliation_count: superseded.size,
+    invalid_reconciliation_count: invalidReconciliationCount,
+  });
+}
+
 export function deriveGenericClosureReadiness(state = {}) {
   const work = plainRecord(state.work) ? state.work : {};
   const tasks = Array.isArray(state.tasks)
     ? state.tasks.filter((item) => item?.required !== false)
     : [];
-  const evidence = Array.isArray(state.evidence)
-    ? state.evidence.filter((item) => item?.required !== false)
-    : [];
+  const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state);
+  const evidence = effectiveEvidence.evidence;
   const completedTasks = tasks.filter((item) =>
     item?.status === "completed" && item?.acceptance_verified === true);
   const independentlyVerifiedEvidence = evidence.filter((item) =>
@@ -1305,14 +1571,19 @@ export function deriveGenericClosureReadiness(state = {}) {
     item?.kind === "native_verifier_terminal_report");
   const nativeReleaseAuthorityPersisted = evidence.some((item) =>
     authoritativeNativeReleaseEvidence(item, work));
+  const workWideReconciliationPersisted = effectiveEvidence.reconciliation_count > 0 &&
+    effectiveEvidence.invalid_reconciliation_count === 0;
   const nativeTaskEvidenceOnly = nativeTaskEvidencePresent &&
-    !nativeReleaseAuthorityPersisted;
+    !nativeReleaseAuthorityPersisted && !workWideReconciliationPersisted;
   const coreJoinPersisted = Boolean(state.join);
   const missing = [];
   if (!tasks.length) missing.push("required_tasks_missing");
   else if (!requiredTasksComplete) missing.push("required_tasks_incomplete");
   if (!evidence.length) missing.push("required_evidence_missing");
   else if (!independentVerificationPersisted) missing.push("independent_verification_missing");
+  if (effectiveEvidence.invalid_reconciliation_count > 0) {
+    missing.push("evidence_reconciliation_invalid");
+  }
   if (nativeTaskEvidenceOnly) missing.push("native_closure_required");
   if (!coreJoinPersisted) missing.push("core_join_missing");
   return Object.freeze({
@@ -1326,7 +1597,10 @@ export function deriveGenericClosureReadiness(state = {}) {
     required_evidence_count: evidence.length,
     independently_verified_evidence_count: independentlyVerifiedEvidence.length,
     native_release_authority_persisted: nativeReleaseAuthorityPersisted,
+    work_wide_reconciliation_persisted: workWideReconciliationPersisted,
     native_task_evidence_only: nativeTaskEvidenceOnly,
+    reconciled_legacy_evidence_count: effectiveEvidence.reconciliation_count,
+    invalid_evidence_reconciliation_count: effectiveEvidence.invalid_reconciliation_count,
     missing: Object.freeze(missing),
   });
 }
@@ -4415,6 +4689,214 @@ export function createWorkContinuityV2Store({
       idempotent_replay: false,
     });
   }
+  async function materializeGenericTerminalReconciliationV3WithClient(client, source = {}) {
+    if (!client || typeof client.query !== "function") {
+      fail("generic_terminal_reconciliation_transaction_required");
+    }
+    if (source.server_owned !== true) {
+      fail("generic_terminal_reconciliation_server_owned_required");
+    }
+    const tenantId = text(source.tenant_id,
+      "generic_terminal_reconciliation_tenant_invalid", 64);
+    const workId = uuid(source.work_id, "generic_terminal_reconciliation_work_invalid");
+    const planId = uuid(source.plan_id, "generic_terminal_reconciliation_plan_invalid");
+    const workResult = await client.query(`SELECT * FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
+    const work = workResult.rows[0];
+    if (!work) return Object.freeze({
+      schema_version: "generic_closure_terminal_reconciliation_v3",
+      tenant_id: tenantId,
+      work_id: workId,
+      required: false,
+      materialized: false,
+      reason: "generic_work_projection_absent",
+    });
+    if (work.legacy_work_id !== workId) {
+      fail("generic_terminal_reconciliation_native_work_binding_invalid");
+    }
+    assertOperationalWorkMutation(work);
+    const evidenceResult = await client.query(`SELECT * FROM tenant_work_evidence
+      WHERE tenant_id=$1 AND work_id=$2 AND required=true
+      ORDER BY created_at,evidence_id FOR UPDATE`, [tenantId, workId]);
+    const evidenceById = new Map(evidenceResult.rows.map((row) => [row.evidence_id, row]));
+    const legacyEvidence = evidenceResult.rows.filter((row) =>
+      row.independently_verified !== true && row.kind !== "native_verifier_terminal_report");
+    if (!legacyEvidence.length) return Object.freeze({
+      schema_version: "generic_closure_terminal_reconciliation_v3",
+      tenant_id: tenantId,
+      work_id: workId,
+      required: false,
+      materialized: false,
+      reason: "legacy_evidence_reconciliation_not_required",
+    });
+    const planResult = await client.query(`SELECT plan_id,plan,plan_digest,status,plan_version
+      FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1 FOR UPDATE`,
+    [tenantId, workId]);
+    const planRow = planResult.rows[0];
+    if (!planRow || planRow.plan_id !== planId || planRow.status !== "verified" ||
+        objectDigest(planRow.plan) !== planRow.plan_digest) {
+      fail("generic_terminal_reconciliation_current_plan_invalid");
+    }
+    const evaluationResult = await client.query(`SELECT evaluation_id,evaluation,evaluation_digest
+      FROM core_continuity_closure_evaluations
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+      ORDER BY created_at DESC,evaluation_id DESC LIMIT 1 FOR UPDATE`,
+    [tenantId, workId, planId]);
+    const evaluationRow = evaluationResult.rows[0];
+    if (!evaluationRow || evaluationRow.evaluation?.closed !== true ||
+        evaluationRow.evaluation?.native_v2_work_tasks_verified !== true ||
+        objectDigest(evaluationRow.evaluation) !== evaluationRow.evaluation_digest ||
+        !HASH.test(String(evaluationRow.evaluation.native_v2_work_snapshot_digest || ""))) {
+      fail("generic_terminal_reconciliation_latest_evaluation_invalid");
+    }
+    const releaseResult = await client.query(`SELECT evaluation_id,verdict_id,release_intent,
+        release_intent_digest,core_join_record,core_join_record_digest
+      FROM core_continuity_release_joins
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND evaluation_id=$4
+      ORDER BY renewal_generation DESC,created_at DESC,verdict_id DESC LIMIT 1 FOR UPDATE`,
+    [tenantId, workId, planId, evaluationRow.evaluation_id]);
+    const releaseRow = releaseResult.rows[0];
+    const unsignedReleaseIntent = Object.fromEntries(Object.entries(
+      releaseRow?.release_intent || {}).filter(([key]) => key !== "release_intent_digest"));
+    if (!releaseRow || releaseRow.release_intent?.release_intent_digest !==
+          releaseRow.release_intent_digest ||
+        objectDigest(unsignedReleaseIntent) !== releaseRow.release_intent_digest ||
+        objectDigest(releaseRow.core_join_record) !== releaseRow.core_join_record_digest ||
+        releaseRow.release_intent?.head_commit !== evaluationRow.evaluation?.target_commit) {
+      fail("generic_terminal_reconciliation_release_join_invalid");
+    }
+    const terminalResult = await client.query(`SELECT receipt_id,receipt_type,payload,payload_digest
+      FROM core_continuity_native_receipts
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND receipt_type='closure_finalized'
+      ORDER BY created_at DESC,receipt_id DESC LIMIT 1 FOR UPDATE`, [tenantId, workId, planId]);
+    const terminalRow = terminalResult.rows[0];
+    if (!terminalRow || objectDigest(terminalRow.payload) !== terminalRow.payload_digest ||
+        terminalRow.payload?.target_commit !== evaluationRow.evaluation?.target_commit ||
+        terminalRow.payload?.health_ok !== true || terminalRow.payload?.external_release !== true ||
+        terminalRow.payload?.closure_evaluation_id !== evaluationRow.evaluation_id ||
+        terminalRow.payload?.closure_evaluation_digest !== evaluationRow.evaluation_digest ||
+        terminalRow.payload?.release_intent_digest !== releaseRow.release_intent_digest ||
+        terminalRow.payload?.core_join_verdict_id !== releaseRow.verdict_id ||
+        !HASH.test(String(terminalRow.payload?.external_readback_digest || ""))) {
+      fail("generic_terminal_reconciliation_live_readback_invalid");
+    }
+    const nativeResult = await client.query(`SELECT n.*,a.report AS verifier_report,
+        r.receipt_type,r.payload AS receipt_payload,r.payload_digest
+      FROM tenant_work_native_verifier_evidence n
+      JOIN core_continuity_native_agents a
+        ON a.tenant_id=n.tenant_id AND a.work_id=n.work_id AND a.plan_id=n.plan_id
+          AND a.task_id=n.task_id AND a.agent_id=n.verifier_agent_id
+      JOIN core_continuity_native_receipts r
+        ON r.tenant_id=n.tenant_id AND r.work_id=n.work_id AND r.plan_id=n.plan_id
+          AND r.receipt_id=n.native_receipt_id
+      WHERE n.tenant_id=$1 AND n.work_id=$2 AND n.plan_id=$3
+      ORDER BY n.evidence_id FOR UPDATE OF n,a,r`, [tenantId, workId, planId]);
+    const reportBindings = Array.isArray(evaluationRow.evaluation?.report_bindings)
+      ? evaluationRow.evaluation.report_bindings : [];
+    const replacementRow = nativeResult.rows.find((row) => {
+      const replacement = evidenceById.get(row.evidence_id);
+      return replacement?.required === true &&
+        independentlyVerifiedGenericEvidence(replacement, work) &&
+        reportBindings.some((binding) => binding.agent_id === row.verifier_agent_id &&
+          binding.report_digest === row.report_digest);
+    });
+    if (!replacementRow) fail("generic_terminal_reconciliation_verifier_report_invalid");
+    const priorResult = await client.query(`SELECT *
+      FROM tenant_work_generic_evidence_reconciliation_batch_v3
+      WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY batch_version DESC,created_at DESC,batch_id DESC LIMIT 1 FOR UPDATE`,
+    [tenantId, workId]);
+    const prior = priorResult.rows[0] || null;
+    const batchId = crypto.randomUUID();
+    const batchVersion = prior ? Number(prior.batch_version) + 1 : 1;
+    const mappings = legacyEvidence.map((legacy) => {
+      const material = { schema_version: "generic_closure_evidence_mapping_v3",
+        tenant_id: tenantId, work_id: workId, batch_id: batchId,
+        legacy_evidence_id: legacy.evidence_id,
+        replacement_evidence_id: replacementRow.evidence_id };
+      return Object.freeze({ ...material, mapping_digest: objectDigest(material) });
+    }).sort((left, right) => left.legacy_evidence_id.localeCompare(right.legacy_evidence_id));
+    const mappingSetDigest = objectDigest(mappings.map((mapping) => ({
+      legacy_evidence_id: mapping.legacy_evidence_id,
+      replacement_evidence_id: mapping.replacement_evidence_id,
+      mapping_digest: mapping.mapping_digest,
+    })));
+    const coverageDigest = genericClosureCoverageDigest(work, {
+      plan_id: planId, plan: planRow.plan, plan_digest: planRow.plan_digest,
+    });
+    const batchMaterial = {
+      schema_version: "generic_closure_evidence_reconciliation_batch_v3",
+      tenant_id: tenantId, work_id: workId, batch_id: batchId,
+      batch_version: batchVersion, previous_batch_digest: prior?.batch_digest || null,
+      plan_id: planId, plan_digest: planRow.plan_digest,
+      closure_evaluation_id: evaluationRow.evaluation_id,
+      closure_evaluation_digest: evaluationRow.evaluation_digest,
+      native_work_snapshot_digest: evaluationRow.evaluation.native_v2_work_snapshot_digest,
+      release_verdict_id: releaseRow.verdict_id,
+      release_intent_digest: releaseRow.release_intent_digest,
+      core_join_record_digest: releaseRow.core_join_record_digest,
+      target_commit: evaluationRow.evaluation.target_commit,
+      terminal_receipt_id: terminalRow.receipt_id,
+      terminal_receipt_digest: terminalRow.payload_digest,
+      live_readback_digest: terminalRow.payload.external_readback_digest,
+      objective_acceptance_coverage_digest: coverageDigest,
+      mapping_set_digest: mappingSetDigest,
+    };
+    const batch = Object.freeze({ ...batchMaterial, batch_digest: objectDigest(batchMaterial) });
+    const syntheticHead = {
+      latest: true, batch,
+      previous_batch: prior ? {
+        ...prior,
+        schema_version: "generic_closure_evidence_reconciliation_batch_v3",
+      } : null,
+      native_plan: { plan_id: planId, plan: planRow.plan, plan_digest: planRow.plan_digest,
+        status: planRow.status, current: true },
+      closure_evaluation: { evaluation_id: evaluationRow.evaluation_id,
+        evaluation: evaluationRow.evaluation, evaluation_digest: evaluationRow.evaluation_digest },
+      release_join: releaseRow,
+      terminal_receipt: terminalRow,
+      mappings: mappings.map((mapping) => ({ ...mapping,
+        native_evidence: { evidence_id: replacementRow.evidence_id,
+          evidence_digest: replacementRow.evidence_digest, plan_id: replacementRow.plan_id,
+          native_receipt_id: replacementRow.native_receipt_id,
+          native_receipt_digest: replacementRow.native_receipt_digest,
+          report_digest: replacementRow.report_digest,
+          verifier_agent_id: replacementRow.verifier_agent_id,
+          verifier_session_fingerprint: replacementRow.verifier_session_fingerprint },
+        verifier_report: replacementRow.verifier_report,
+        native_receipt: { receipt_type: replacementRow.receipt_type,
+          payload: replacementRow.receipt_payload,
+          payload_digest: replacementRow.payload_digest } })),
+    };
+    if (!validTerminalReconciliationHeadV3(syntheticHead, work, evidenceById)) {
+      fail("generic_terminal_reconciliation_readback_invalid");
+    }
+    await client.query(`INSERT INTO tenant_work_generic_evidence_reconciliation_batch_v3
+      (tenant_id,work_id,batch_id,batch_version,previous_batch_digest,plan_id,plan_digest,
+       closure_evaluation_id,closure_evaluation_digest,native_work_snapshot_digest,
+       release_verdict_id,release_intent_digest,core_join_record_digest,target_commit,
+       terminal_receipt_id,terminal_receipt_digest,live_readback_digest,
+       objective_acceptance_coverage_digest,mapping_set_digest,batch_digest,created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+    [tenantId, workId, batchId, batchVersion, prior?.batch_digest || null, planId,
+      planRow.plan_digest, evaluationRow.evaluation_id, evaluationRow.evaluation_digest,
+      evaluationRow.evaluation.native_v2_work_snapshot_digest, releaseRow.verdict_id,
+      releaseRow.release_intent_digest, releaseRow.core_join_record_digest,
+      evaluationRow.evaluation.target_commit, terminalRow.receipt_id, terminalRow.payload_digest,
+      terminalRow.payload.external_readback_digest, coverageDigest, mappingSetDigest,
+      batch.batch_digest, "core_native_finalize_terminal_reconciliation_v3"]);
+    for (const mapping of mappings) {
+      await client.query(`INSERT INTO tenant_work_generic_evidence_reconciliation_mapping_v3
+        (tenant_id,work_id,batch_id,legacy_evidence_id,replacement_evidence_id,mapping_digest)
+        VALUES ($1,$2,$3,$4,$5,$6)`, [tenantId, workId, batchId,
+        mapping.legacy_evidence_id, mapping.replacement_evidence_id, mapping.mapping_digest]);
+    }
+    return Object.freeze({ schema_version: "generic_closure_terminal_reconciliation_v3",
+      tenant_id: tenantId, work_id: workId, required: true, materialized: true,
+      batch_id: batchId, batch_version: batchVersion, batch_digest: batch.batch_digest,
+      mapping_count: mappings.length, target_commit: batch.target_commit });
+  }
   async function readPrecommitTicketGateWithClient(client, actor, workId, { lock = false } = {}) {
     const supersedingGateResult = await client.query(`SELECT *
       FROM tenant_work_precommit_ticket_gate_supersession
@@ -5178,7 +5660,8 @@ export function createWorkContinuityV2Store({
       FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2
       ORDER BY plan_version,plan_id FOR UPDATE`, [tenantId, workId]);
     const planRows = planRowsResult.rows;
-    const plan = [...planRows].reverse().find((row) => row.status !== "superseded") || null;
+    const currentPlans = planRows.filter((row) => row.status !== "superseded");
+    const plan = currentPlans.length === 1 ? currentPlans[0] : null;
     if (!plan || plan.plan_id !== planId || plan.status !== "planned" || objectDigest(plan.plan) !== plan.plan_digest) {
       fail("native_precommit_gate_plan_not_current");
     }
@@ -5211,7 +5694,26 @@ export function createWorkContinuityV2Store({
       if (existing.schema_version !== "precommit_ticket_gate_v2" ||
           existing.gate_source !== "native_closure_evaluation" || existing.fulfilled === true ||
           existing.fresh === true) fail("native_precommit_gate_conflict");
-      const activeClaim = await client.query(`SELECT c.claim_id
+      const allowedSupersessionDrift = new Set([
+        "precommit_gate_plan_drift",
+        "precommit_gate_supersession_drift",
+        "precommit_gate_evaluation_drift",
+        "precommit_gate_v2_scope_drift",
+      ]);
+      if (!Array.isArray(existing.drift_codes) || existing.drift_codes.length === 0 ||
+          existing.drift_codes.some((code) => !allowedSupersessionDrift.has(code))) {
+        fail("native_precommit_gate_drift_not_supersedable");
+      }
+      // A claim can have crossed the provider boundary before the gate-level
+      // fulfillment was appended.  Treat both the claim fulfillment and the
+      // durable ticket-locator reconciliation as proof that a ticket exists;
+      // never mint a newer gate in either state.  Only a claim with an
+      // append-only abandonment and no ticket is safe to leave behind.
+      const claimStates = await client.query(`SELECT c.claim_id,
+          f.ticket_id AS fulfilled_ticket_id,a.claim_id AS abandoned_claim_id,
+          EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation r
+            WHERE r.tenant_id=c.tenant_id AND r.work_id=c.work_id
+              AND r.claim_id=c.claim_id AND r.ticket_id IS NOT NULL) AS reconciled_ticket_present
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
@@ -5219,9 +5721,15 @@ export function createWorkContinuityV2Store({
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
           ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
             AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
-        WHERE c.tenant_id=$1 AND c.work_id=$2 AND f.claim_id IS NULL AND a.claim_id IS NULL
-        LIMIT 1 FOR UPDATE OF c`, [tenantId, workId]);
-      if (activeClaim.rows[0]) fail("native_precommit_gate_claim_active");
+        WHERE c.tenant_id=$1 AND c.work_id=$2
+        ORDER BY c.created_at,c.claim_id FOR UPDATE OF c`, [tenantId, workId]);
+      if (claimStates.rows.some((row) => row.fulfilled_ticket_id ||
+          row.reconciled_ticket_present === true)) {
+        fail("native_precommit_gate_ticket_exists");
+      }
+      if (claimStates.rows.some((row) => !row.abandoned_claim_id)) {
+        fail("native_precommit_gate_claim_active");
+      }
       const latest = await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate_supersession
         WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
           AND gate_kind='ticket_acquisition' ORDER BY gate_version DESC LIMIT 1 FOR UPDATE`,
@@ -5246,6 +5754,25 @@ export function createWorkContinuityV2Store({
         evaluationDigest, workspaceDigest, v2TaskScope.scope_snapshot_digest,
         JSON.stringify(v2TaskScope.tasks), supersessionDigest, reconciliationDigest,
         existing.reconciliation_digest, actor.user_id]);
+      await appendV2Event(client, actor, workId, "native_precommit_ticket_gate_superseded", {
+        task_id: existing.task_id,
+        gate_version: nextVersion,
+        superseded_projection_digest: existing.projection_digest,
+        supersedes_reconciliation_digest: existing.reconciliation_digest,
+        superseded_drift_codes: [...existing.drift_codes].sort(),
+        plan_id: planId,
+        evaluation_id: evaluationId,
+        evaluation_digest: evaluationDigest,
+        workspace_digest: workspaceDigest,
+        supersession_digest: supersessionDigest,
+        v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
+        v2_scope_tasks: v2TaskScope.tasks,
+        reconciliation_digest: reconciliationDigest,
+        gate_source: "native_closure_evaluation",
+        action_kind: "git.commit",
+        gate_kind: "ticket_acquisition",
+        execution_authorized: false,
+      });
       const projection = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
       if (projection?.fresh !== true || projection.schema_version !== "precommit_ticket_gate_v2") {
         fail("native_precommit_gate_projection_invalid");
@@ -5395,8 +5922,11 @@ export function createWorkContinuityV2Store({
       native_receipt_id: uuid(item?.native_receipt_id, "precommit_reconcile_receipt_invalid"),
       native_receipt_digest: digest(item?.native_receipt_digest, "precommit_reconcile_receipt_digest_invalid"),
     })).sort((left, right) => left.legacy_evidence_id.localeCompare(right.legacy_evidence_id));
+    if (new Set(mappings.map((item) => item.replacement_evidence_id)).size !==
+        mappings.length) {
+      fail("precommit_reconcile_terminal_closure_bridge_required");
+    }
     if (new Set(mappings.map((item) => item.legacy_evidence_id)).size !== mappings.length ||
-        new Set(mappings.map((item) => item.replacement_evidence_id)).size !== mappings.length ||
         new Set(mappings.map((item) => item.native_receipt_id)).size !== mappings.length ||
         mappings.some((item) => item.legacy_evidence_id === item.replacement_evidence_id)) {
       fail("precommit_reconcile_mappings_invalid");
@@ -6298,13 +6828,105 @@ export function createWorkContinuityV2Store({
       };
     });
   }
+  async function loadGenericEvidenceReconciliationHeadV3(client, tenantId, workId) {
+    const result = await client.query(`SELECT b.*,p.plan,p.plan_digest AS current_plan_digest,
+        p.status AS plan_status,
+        (p.plan_id=(SELECT latest.plan_id FROM core_continuity_native_plans latest
+          WHERE latest.tenant_id=b.tenant_id AND latest.work_id=b.work_id
+          ORDER BY latest.plan_version DESC,latest.created_at DESC,latest.plan_id DESC LIMIT 1)) AS plan_current,
+        e.evaluation,e.evaluation_digest AS current_evaluation_digest,
+        j.evaluation_id AS join_evaluation_id,j.verdict_id,j.release_intent,
+        j.release_intent_digest AS current_release_intent_digest,j.core_join_record,
+        j.core_join_record_digest AS current_core_join_record_digest,
+        terminal.receipt_id AS current_terminal_receipt_id,
+        terminal.receipt_type AS terminal_receipt_type,
+        terminal.payload AS terminal_receipt_payload,
+        terminal.payload_digest AS current_terminal_receipt_digest
+      FROM tenant_work_generic_evidence_reconciliation_batch_v3 b
+      LEFT JOIN core_continuity_native_plans p
+        ON p.tenant_id=b.tenant_id AND p.work_id=b.work_id AND p.plan_id=b.plan_id
+      LEFT JOIN core_continuity_closure_evaluations e
+        ON e.tenant_id=b.tenant_id AND e.work_id=b.work_id AND e.plan_id=b.plan_id
+          AND e.evaluation_id=b.closure_evaluation_id
+      LEFT JOIN LATERAL (SELECT r.* FROM core_continuity_release_joins r
+        WHERE r.tenant_id=b.tenant_id AND r.work_id=b.work_id AND r.plan_id=b.plan_id
+          AND r.evaluation_id=b.closure_evaluation_id
+        ORDER BY r.renewal_generation DESC,r.created_at DESC,r.verdict_id DESC LIMIT 1) j ON true
+      LEFT JOIN core_continuity_native_receipts terminal
+        ON terminal.tenant_id=b.tenant_id AND terminal.work_id=b.work_id
+          AND terminal.plan_id=b.plan_id AND terminal.receipt_id=b.terminal_receipt_id
+      WHERE b.tenant_id=$1 AND b.work_id=$2
+      ORDER BY b.batch_version DESC,b.created_at DESC,b.batch_id DESC LIMIT 1`,
+    [tenantId, workId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const previousBatchResult = Number(row.batch_version) > 1
+      ? await client.query(`SELECT *
+          FROM tenant_work_generic_evidence_reconciliation_batch_v3
+          WHERE tenant_id=$1 AND work_id=$2 AND batch_version=$3`,
+        [tenantId, workId, Number(row.batch_version) - 1])
+      : { rows: [] };
+    if (previousBatchResult.rows.length > 1) {
+      fail("generic_terminal_reconciliation_previous_head_ambiguous");
+    }
+    const mappings = await client.query(`SELECT m.legacy_evidence_id,m.replacement_evidence_id,
+        m.mapping_digest,n.evidence_id AS native_evidence_id,n.evidence_digest,
+        n.plan_id,n.native_receipt_id,n.native_receipt_digest,n.report_digest,
+        n.verifier_agent_id,n.verifier_session_fingerprint,a.report AS verifier_report,
+        r.receipt_type,r.payload AS receipt_payload,r.payload_digest
+      FROM tenant_work_generic_evidence_reconciliation_mapping_v3 m
+      LEFT JOIN tenant_work_native_verifier_evidence n
+        ON n.tenant_id=m.tenant_id AND n.work_id=m.work_id
+          AND n.evidence_id=m.replacement_evidence_id
+      LEFT JOIN core_continuity_native_agents a
+        ON a.tenant_id=n.tenant_id AND a.work_id=n.work_id AND a.plan_id=n.plan_id
+          AND a.task_id=n.task_id AND a.agent_id=n.verifier_agent_id
+      LEFT JOIN core_continuity_native_receipts r
+        ON r.tenant_id=n.tenant_id AND r.work_id=n.work_id AND r.plan_id=n.plan_id
+          AND r.receipt_id=n.native_receipt_id
+      WHERE m.tenant_id=$1 AND m.work_id=$2 AND m.batch_id=$3 ORDER BY m.legacy_evidence_id`,
+    [tenantId, workId, row.batch_id]);
+    return Object.freeze({ latest: true, batch: { ...row,
+      schema_version: "generic_closure_evidence_reconciliation_batch_v3" },
+    previous_batch: previousBatchResult.rows[0] ? {
+      ...previousBatchResult.rows[0],
+      schema_version: "generic_closure_evidence_reconciliation_batch_v3",
+    } : null,
+    native_plan: { plan_id: row.plan_id, plan: row.plan,
+      plan_digest: row.current_plan_digest, status: row.plan_status,
+      current: row.plan_current === true },
+    closure_evaluation: { evaluation_id: row.closure_evaluation_id,
+      evaluation: row.evaluation, evaluation_digest: row.current_evaluation_digest },
+    release_join: { evaluation_id: row.join_evaluation_id, verdict_id: row.verdict_id,
+      release_intent: row.release_intent,
+      release_intent_digest: row.current_release_intent_digest,
+      core_join_record: row.core_join_record,
+      core_join_record_digest: row.current_core_join_record_digest },
+    terminal_receipt: { receipt_id: row.current_terminal_receipt_id,
+      receipt_type: row.terminal_receipt_type, payload: row.terminal_receipt_payload,
+      payload_digest: row.current_terminal_receipt_digest },
+    mappings: mappings.rows.map((mapping) => ({ ...mapping,
+      native_evidence: { evidence_id: mapping.native_evidence_id,
+        evidence_digest: mapping.evidence_digest, plan_id: mapping.plan_id,
+        native_receipt_id: mapping.native_receipt_id,
+        native_receipt_digest: mapping.native_receipt_digest,
+        report_digest: mapping.report_digest,
+        verifier_agent_id: mapping.verifier_agent_id,
+        verifier_session_fingerprint: mapping.verifier_session_fingerprint },
+      verifier_report: mapping.verifier_report,
+      native_receipt: { receipt_type: mapping.receipt_type,
+        payload: mapping.receipt_payload, payload_digest: mapping.payload_digest } })) });
+  }
   async function closureState(client, actor, workId, lock = false) {
     const work = await loadWork(client, actor, workId, lock);
-    const tasks = await client.query("SELECT status,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
-    const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
+    const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, workId]);
+    const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, workId]);
+    const genericEvidenceReconciliationHeadV3 =
+      await loadGenericEvidenceReconciliationHeadV3(client, actor.tenant_id, workId);
     const join = await client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
     const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
     return { work, tasks: tasks.rows, evidence: evidence.rows,
+      generic_evidence_reconciliation_head_v3: genericEvidenceReconciliationHeadV3,
       join: join.rows[0] || null, receipt: receipt.rows[0] || null };
   }
   async function releaseTerminalCoordination(client, actor, workId) {
@@ -6440,6 +7062,7 @@ export function createWorkContinuityV2Store({
     const report = plainRecord(reportRow?.report) ? reportRow.report : null;
     if (!report) fail("work_closure_projection_backfill_invalid");
     const reportDigest = objectDigest(report);
+    const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state).evidence;
     const legacyReportDigest = deriveLegacyFinalReportDigest(report);
     let projectionBackfilled = reportRow.report_digest !== reportDigest;
     if (projectionBackfilled) {
@@ -6456,7 +7079,7 @@ export function createWorkContinuityV2Store({
           tenant_id: actor.tenant_id,
           work: state.work,
           tasks: tasks.rows,
-          evidence: state.evidence,
+          evidence: effectiveEvidence,
           core_join: state.join,
           closure_receipt: state.receipt,
           final_report: { ...reportRow, report_digest: reportDigest },
@@ -6496,7 +7119,7 @@ export function createWorkContinuityV2Store({
       tenant_id: actor.tenant_id,
       work: state.work,
       tasks: tasks.rows,
-      evidence: state.evidence,
+      evidence: effectiveEvidence,
       core_join: state.join,
       closure_receipt: state.receipt,
       final_report: { ...reportRow, report_digest: reportDigest },
@@ -6532,7 +7155,7 @@ export function createWorkContinuityV2Store({
         tenant_id: actor.tenant_id,
         work: state.work,
         tasks: tasks.rows,
-        evidence: state.evidence,
+        evidence: effectiveEvidence,
         core_join: state.join,
         closure_receipt: state.receipt,
         final_report: { ...reportRow, report_digest: reportDigest },
@@ -6569,28 +7192,29 @@ export function createWorkContinuityV2Store({
     const actor = actorFromIdentity(identity);
     if (!actor.agent_id || !actor.session_fingerprint) fail("generic_core_join_requester_presence_required");
     const state = await transaction(async (client) => {
-      const work = await loadWork(client, actor, uuid(work_id), false);
+      const workId = uuid(work_id);
+      const closure = await closureState(client, actor, workId, false);
+      const work = closure.work;
       assertPermission(canClose, work, actor);
       if (work.work_type !== adapter) fail("work_closure_adapter_mismatch");
-      const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, work.work_id]);
-      const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]);
-      return { work, tasks: tasks.rows, evidence: evidence.rows };
+      return closure;
     });
     const readiness = deriveGenericClosureReadiness(state);
+    const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state).evidence;
     if (!readiness.required_tasks_complete) fail("generic_core_join_tasks_incomplete");
     if (readiness.native_task_evidence_only) {
       fail("generic_core_join_native_closure_required");
     }
-    if (!state.evidence.length ||
-        state.evidence.some((item) => item.independently_verified !== true)) {
+    if (!effectiveEvidence.length ||
+        effectiveEvidence.some((item) => item.independently_verified !== true)) {
       fail("generic_core_join_evidence_incomplete");
     }
     if (!readiness.independent_verification_persisted) {
       fail("generic_core_join_verifier_not_independent");
     }
-    const verifier = state.evidence.find((item) =>
+    const verifier = effectiveEvidence.find((item) =>
       independentlyVerifiedGenericEvidence(item, state.work));
-    const evidenceDigests = state.evidence.map((item) => item.digest).sort();
+    const evidenceDigests = effectiveEvidence.map((item) => item.digest).sort();
     const evidenceDigest = objectDigest(evidenceDigests);
     const acceptanceCriteria = (state.work.acceptance_criteria || []).map((criterion, index) => ({
       criterion_id: `criterion-${String(index + 1).padStart(3, "0")}`,
@@ -6660,14 +7284,41 @@ export function createWorkContinuityV2Store({
       }
       const readiness = deriveGenericClosureReadiness(state);
       if (!readiness.ready) fail("work_closure_gate_unsatisfied");
-      const ownerManualMergeClosure = state.evidence.some((item) =>
+      const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state).evidence;
+      const effectiveEvidenceDigests = effectiveEvidence.map((item) => item.digest).sort();
+      const joinedVerdict = state.join?.core_join_context;
+      const currentEvidenceDigest = objectDigest(effectiveEvidenceDigests);
+      const currentVerifier = effectiveEvidence.find((item) =>
+        independentlyVerifiedGenericEvidence(item, state.work));
+      const currentAcceptanceCriteria = (state.work.acceptance_criteria || [])
+        .map((criterion, index) => ({
+          criterion_id: `criterion-${String(index + 1).padStart(3, "0")}`,
+          criterion_digest: objectDigest(criterion), evidence_digest: currentEvidenceDigest,
+          verification_digest: currentVerifier?.digest,
+        }));
+      const currentTaskState = state.tasks.map((task) => ({ task_id: task.task_id,
+        task_state_digest: objectDigest({ status: task.status,
+          acceptance_verified: task.acceptance_verified }),
+        completion_evidence_digest: currentEvidenceDigest,
+        verification_digest: currentVerifier?.digest }));
+      if (state.generic_evidence_reconciliation_head_v3 &&
+          (!joinedVerdict || !resolvedCoreJoinVerifier?.verify(joinedVerdict) ||
+          joinedVerdict.tenant_id !== actor.tenant_id || joinedVerdict.work_id !== workId ||
+          joinedVerdict.adapter !== adapter ||
+          joinedVerdict.evidence_digest !== currentEvidenceDigest ||
+          joinedVerdict.acceptance_criteria_digest !== objectDigest(currentAcceptanceCriteria) ||
+          joinedVerdict.task_state_digest !== objectDigest(currentTaskState))) {
+        fail("work_closure_core_join_stale");
+      }
+      const ownerManualMergeClosure = effectiveEvidence.some((item) =>
         authoritativeNativeReleaseEvidence(item, state.work));
-      const finalEvidenceDigest = crypto.createHash("sha256").update(JSON.stringify(state.evidence.map((item) => item.digest).sort())).digest("hex");
+      const finalEvidenceDigest = crypto.createHash("sha256")
+        .update(JSON.stringify(effectiveEvidence.map((item) => item.digest).sort())).digest("hex");
       const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: 10_000 }, {
         adapter, server_verified_closure_context: { schema_version: "work_closure_context_v1",
           server_verified: true, independent_verification: { passed: true },
           core_join: { received: true, digest: state.join.core_join_digest }, final_evidence_digest: finalEvidenceDigest,
-          evidence_summary: state.evidence.map((item) => ({ kind: item.kind, digest: item.digest })) },
+          evidence_summary: effectiveEvidence.map((item) => ({ kind: item.kind, digest: item.digest })) },
       });
       const reportDigest = objectDigest(finalized.final_report);
       await client.query(`INSERT INTO tenant_work_closure_receipt (tenant_id,receipt_id,work_id,adapter,core_join_digest,final_evidence_digest,receipt_digest)
@@ -6748,6 +7399,7 @@ export function createWorkContinuityV2Store({
     recordTask, resolveNativeTaskBindingWithClient, recordEvidence,
     recordOwnerManualMergeReleaseEvidence,
     recordNativeVerifierEvidenceWithClient,
+    materializeGenericTerminalReconciliationV3WithClient,
     persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,

@@ -138,8 +138,13 @@ export function compactPublishedToolDescriptor(tool) {
       },
     };
   } else if (tool.name === "nyra_continue") {
+    // Some Apps clients cannot materialize a callable argument model from a
+    // root-level anyOf and degrade the whole tool to `args: unknown`. Publish
+    // the explicit common wire fields here; the canonical descriptor and the
+    // handler continue to enforce every operation-specific shape fail-closed.
+    const { anyOf: _operationSpecificShapes, ...compactInputSchema } = inputSchema || {};
     inputSchema = {
-      ...inputSchema,
+      ...compactInputSchema,
       properties: Object.fromEntries(Object.entries(inputSchema?.properties || {}).map(([name, schema]) => [
         name,
         COMPACT_CONTINUATION_OBJECT_FIELDS.has(name) ? COMPACT_OPAQUE_BOUND_OBJECT : schema,

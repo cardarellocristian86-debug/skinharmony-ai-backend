@@ -224,6 +224,53 @@ test("PostgreSQL 16 carries a divergent bridged intent from createNewWork into t
     assert.equal(gate.schema_version, "precommit_ticket_gate_v2");
     assert.equal(gate.gate_source, "native_closure_evaluation");
     assert.equal(gate.fresh, true);
+
+    const nextEvaluationId = crypto.randomUUID();
+    const nextWorkspaceDigest = digest({ tenantId, runId, namespace: "workspace-v2" });
+    const nextEvaluation = { ...evaluation,
+      precommit_verification: { ready: true, workspace_digest: nextWorkspaceDigest } };
+    await pool.query(`INSERT INTO core_continuity_closure_evaluations
+        (tenant_id,work_id,plan_id,evaluation_id,evaluation,evaluation_digest,evaluated_by)
+      VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7)`, [tenantId, created.work.work_id, planId,
+      nextEvaluationId, JSON.stringify(nextEvaluation), digest(nextEvaluation),
+      "postgres16-native-gate-supersession-test"]);
+    await client.query("BEGIN");
+    const supersedingGate = await v2Store.materializeNativePrecommitTicketGateWithClient(client, {
+      server_owned: true,
+      tenant_id: tenantId,
+      work_id: created.work.work_id,
+      plan_id: planId,
+      evaluation_id: nextEvaluationId,
+      evaluation_digest: digest(nextEvaluation),
+      workspace_digest: nextWorkspaceDigest,
+      v2_task_scope: v2TaskScope,
+    });
+    await client.query("COMMIT");
+    assert.equal(supersedingGate.fresh, true);
+    assert.equal(supersedingGate.evaluation_id, nextEvaluationId);
+    const immutableGateChain = await pool.query(`SELECT 1 AS gate_version,
+          reconciliation_digest,NULL::char(64) AS supersedes_reconciliation_digest,
+          evaluation_id
+        FROM tenant_work_precommit_ticket_gate WHERE tenant_id=$1 AND work_id=$2
+        UNION ALL
+        SELECT gate_version,reconciliation_digest,supersedes_reconciliation_digest,evaluation_id
+        FROM tenant_work_precommit_ticket_gate_supersession
+        WHERE tenant_id=$1 AND work_id=$2 ORDER BY gate_version`,
+    [tenantId, created.work.work_id]);
+    assert.equal(immutableGateChain.rowCount, 2);
+    assert.equal(Number(immutableGateChain.rows[0].gate_version), 1);
+    assert.equal(immutableGateChain.rows[0].evaluation_id, evaluationId);
+    assert.equal(Number(immutableGateChain.rows[1].gate_version), 2);
+    assert.equal(immutableGateChain.rows[1].evaluation_id, nextEvaluationId);
+    assert.equal(immutableGateChain.rows[1].supersedes_reconciliation_digest,
+      immutableGateChain.rows[0].reconciliation_digest);
+    const auditEvent = await pool.query(`SELECT payload FROM tenant_work_event
+      WHERE tenant_id=$1 AND work_id=$2
+        AND event_type='native_precommit_ticket_gate_superseded'
+      ORDER BY sequence_number DESC LIMIT 1`, [tenantId, created.work.work_id]);
+    assert.equal(auditEvent.rowCount, 1);
+    assert.deepEqual(auditEvent.rows[0].payload.superseded_drift_codes,
+      ["precommit_gate_evaluation_drift"]);
   } finally {
     if (client) await client.query("ROLLBACK").catch(() => {});
     client?.release();
@@ -2260,5 +2307,172 @@ test("PostgreSQL 16 converges MCP-first and legacy Core-first migration registri
       await pool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`);
     }
     await pool.end();
+  }
+});
+
+test("PostgreSQL 16 persists terminal reconciliation v3 as an idempotent append-only head chain", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_terminal_v3_${runId.slice(0, 16)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 15_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const secondStore = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  try {
+    const version = await pool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+    await runtime.initialize();
+    await v2Store.initialize();
+    // A distinct store instance reruns the additive DDL. This exercises real
+    // CREATE/ALTER/TRIGGER idempotence rather than an in-process init memo.
+    await secondStore.initialize();
+
+    const schema = await pool.query(`SELECT
+        to_regclass('public.tenant_work_generic_evidence_reconciliation_batch_v3')::text AS batch_table,
+        to_regclass('public.tenant_work_generic_evidence_reconciliation_mapping_v3')::text AS mapping_table,
+        (SELECT count(*)::int FROM core_schema_migrations
+          WHERE migration_id='20260908_generic_closure_evidence_reconciliation_batch_v3') AS migration_count,
+        (SELECT count(*)::int FROM pg_trigger
+          WHERE tgrelid='tenant_work_generic_evidence_reconciliation_batch_v3'::regclass
+            AND tgname='tenant_work_generic_evidence_reconciliation_batch_v3_no_mutation'
+            AND NOT tgisinternal) AS batch_trigger_count,
+        (SELECT count(*)::int FROM pg_trigger
+          WHERE tgrelid='tenant_work_generic_evidence_reconciliation_mapping_v3'::regclass
+            AND tgname='tenant_work_generic_evidence_reconciliation_mapping_v3_no_mutation'
+            AND NOT tgisinternal) AS mapping_trigger_count`);
+    assert.equal(schema.rows[0].batch_table,
+      "tenant_work_generic_evidence_reconciliation_batch_v3");
+    assert.equal(schema.rows[0].mapping_table,
+      "tenant_work_generic_evidence_reconciliation_mapping_v3");
+    assert.equal(schema.rows[0].migration_count, 1);
+    assert.equal(schema.rows[0].batch_trigger_count, 1);
+    assert.equal(schema.rows[0].mapping_trigger_count, 1);
+
+    const legacy = await runtime.ensure(coordinatorIdentity(tenantId), {
+      project_id: `terminal-v3-${runId.slice(0, 12)}`,
+      session_id: `terminal-v3-session-${runId.slice(0, 12)}`,
+      initial_message: "Create a real PostgreSQL terminal reconciliation v3 fixture.",
+      idea: "Append-only terminal reconciliation ledger",
+      objective: "Preserve a DB-derived monotonic reconciliation head chain.",
+      acceptance_criteria: ["DDL, chain, foreign keys and mutation guards verify."],
+      constraints: ["Never rewrite reconciliation history."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Verify the terminal reconciliation ledger.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+    const projected = await v2Store.projectLegacyWork(reconciliationOwnerIdentity(tenantId), {
+      legacy_work_id: legacy.work_id,
+    });
+    const workId = projected.work_id;
+    const planId = crypto.randomUUID();
+    const receiptId = crypto.randomUUID();
+    const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+    const receiptPayload = { schema_version: "native_receipt_v1", target_commit: COMMIT };
+    await pool.query(`INSERT INTO core_continuity_native_plans
+        (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
+      VALUES ($1,$2,$3,$4::jsonb,$5,'verified',$6)`, [
+      tenantId, workId, planId, JSON.stringify(plan), digest(plan), "postgres16-terminal-v3",
+    ]);
+    await pool.query(`INSERT INTO core_continuity_native_receipts
+        (tenant_id,work_id,plan_id,receipt_id,receipt_type,payload,payload_digest,created_by)
+      VALUES ($1,$2,$3,$4,'closure_finalized',$5::jsonb,$6,$7)`, [
+      tenantId, workId, planId, receiptId, JSON.stringify(receiptPayload),
+      digest(receiptPayload), "postgres16-terminal-v3",
+    ]);
+
+    const legacyEvidenceIds = [crypto.randomUUID(), crypto.randomUUID()];
+    const replacementEvidenceId = crypto.randomUUID();
+    for (const [index, evidenceId] of [...legacyEvidenceIds, replacementEvidenceId].entries()) {
+      await pool.query(`INSERT INTO tenant_work_evidence
+          (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,metadata)
+        VALUES ($1,$2,$3,$4,$5,true,$6,'{}'::jsonb)`, [
+        tenantId, evidenceId, workId,
+        index === legacyEvidenceIds.length ? "native_verifier_terminal_report" : "legacy_report",
+        digest({ tenantId, workId, evidenceId }), index === legacyEvidenceIds.length,
+      ]);
+    }
+
+    const insertBatch = async ({ batchId, batchVersion, previousBatchDigest }) => {
+      const hashes = Array.from({ length: 8 }, (_, index) =>
+        digest({ tenantId, workId, batchVersion, index }));
+      const batchDigest = digest({ tenantId, workId, batchId, batchVersion, previousBatchDigest });
+      await pool.query(`INSERT INTO tenant_work_generic_evidence_reconciliation_batch_v3
+          (tenant_id,work_id,batch_id,batch_version,previous_batch_digest,plan_id,plan_digest,
+           closure_evaluation_id,closure_evaluation_digest,native_work_snapshot_digest,
+           release_verdict_id,release_intent_digest,core_join_record_digest,target_commit,
+           terminal_receipt_id,terminal_receipt_digest,live_readback_digest,
+           objective_acceptance_coverage_digest,mapping_set_digest,batch_digest,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`, [
+        tenantId, workId, batchId, batchVersion, previousBatchDigest, planId, hashes[0],
+        crypto.randomUUID(), hashes[1], hashes[2], `pg16-terminal-v3-${batchVersion}`,
+        hashes[3], hashes[4], COMMIT, receiptId, digest(receiptPayload), hashes[5], hashes[6],
+        hashes[7], batchDigest, "postgres16-terminal-v3",
+      ]);
+      return batchDigest;
+    };
+
+    const firstBatchId = crypto.randomUUID();
+    const firstDigest = await insertBatch({
+      batchId: firstBatchId, batchVersion: 1, previousBatchDigest: null,
+    });
+    // Many historical rows may converge on the same independently verified
+    // terminal report. The replacement deliberately has no unique constraint.
+    for (const legacyEvidenceId of legacyEvidenceIds) {
+      await pool.query(`INSERT INTO tenant_work_generic_evidence_reconciliation_mapping_v3
+          (tenant_id,work_id,batch_id,legacy_evidence_id,replacement_evidence_id,mapping_digest)
+        VALUES ($1,$2,$3,$4,$5,$6)`, [
+        tenantId, workId, firstBatchId, legacyEvidenceId, replacementEvidenceId,
+        digest({ tenantId, workId, firstBatchId, legacyEvidenceId, replacementEvidenceId }),
+      ]);
+    }
+    const secondBatchId = crypto.randomUUID();
+    const secondDigest = await insertBatch({
+      batchId: secondBatchId, batchVersion: 2, previousBatchDigest: firstDigest,
+    });
+
+    const chain = await pool.query(`SELECT batch_id,batch_version,previous_batch_digest,batch_digest
+      FROM tenant_work_generic_evidence_reconciliation_batch_v3
+      WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY batch_version DESC,created_at DESC,batch_id DESC`, [tenantId, workId]);
+    assert.equal(chain.rowCount, 2);
+    assert.equal(Number(chain.rows[0].batch_version), 2);
+    assert.equal(chain.rows[0].batch_id, secondBatchId);
+    assert.equal(chain.rows[0].batch_digest, secondDigest);
+    assert.equal(chain.rows[0].previous_batch_digest, firstDigest);
+    assert.equal(Number(chain.rows[1].batch_version), 1);
+    assert.equal(chain.rows[1].previous_batch_digest, null);
+    const manyToOne = await pool.query(`SELECT count(*)::int AS mapping_count,
+        count(DISTINCT replacement_evidence_id)::int AS replacement_count
+      FROM tenant_work_generic_evidence_reconciliation_mapping_v3
+      WHERE tenant_id=$1 AND work_id=$2 AND batch_id=$3`, [tenantId, workId, firstBatchId]);
+    assert.equal(manyToOne.rows[0].mapping_count, 2);
+    assert.equal(manyToOne.rows[0].replacement_count, 1);
+
+    await assert.rejects(pool.query(`UPDATE tenant_work_generic_evidence_reconciliation_batch_v3
+      SET previous_batch_digest=$4 WHERE tenant_id=$1 AND work_id=$2 AND batch_id=$3`, [
+      tenantId, workId, secondBatchId, digest({ altered: true }),
+    ]), /tenant_work_precommit_reconciliation_append_only/);
+    await assert.rejects(pool.query(`DELETE FROM tenant_work_generic_evidence_reconciliation_mapping_v3
+      WHERE tenant_id=$1 AND work_id=$2 AND batch_id=$3`, [tenantId, workId, firstBatchId]),
+    /tenant_work_precommit_reconciliation_append_only/);
+    await assert.rejects(async () => {
+      try {
+        await insertBatch({
+          batchId: crypto.randomUUID(), batchVersion: 2, previousBatchDigest: firstDigest,
+        });
+      } catch (error) {
+        assert.equal(error.code, "23505");
+        throw error;
+      }
+    });
+    await assert.rejects(pool.query(`INSERT INTO tenant_work_generic_evidence_reconciliation_mapping_v3
+        (tenant_id,work_id,batch_id,legacy_evidence_id,replacement_evidence_id,mapping_digest)
+      VALUES ($1,$2,$3,$4,$5,$6)`, [
+      tenantId, workId, secondBatchId, crypto.randomUUID(), replacementEvidenceId,
+      digest({ missing_legacy: true }),
+    ]), (error) => error?.code === "23503");
+  } finally {
+    await runtime.close();
   }
 });

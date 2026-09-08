@@ -307,6 +307,12 @@ test("previews a native-plan merge from the Work id without continuation or writ
     idempotency_key: "native-plan-merge-preview-extra",
     owner_confirmed: true,
   }, identity()), /nyra_continue_native_plan_merge_preview_binding_mismatch/);
+  await assert.rejects(handler({
+    operation: "preview_native_plan_merge",
+    work_id: WORK_ID,
+    continuation_ref: CONTINUATION_REF,
+    idempotency_key: "native-plan-merge-crossed-shape",
+  }, identity()), /nyra_continue_native_plan_merge_preview_binding_mismatch/);
 });
 
 test("aligns native-plan status only after owner and exact Core authorization", async () => {
@@ -890,6 +896,16 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.deepEqual(mergePreviewBranch.not.required, ["continuation_ref"]);
   assert(ownerOperationBranch.properties.operation.enum.includes("align_native_plan_status"));
   assert(ownerOperationBranch.properties.operation.enum.includes("reevaluate_native_closure"));
+});
+
+test("runtime rejects missing continuation bindings before any governed operation", async () => {
+  const calls = [];
+  const handler = bootstrapHandler(fakeStore(bootstrapRecord(), calls), calls);
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    idempotency_key: "runtime-missing-continuation",
+  }, identity()), /nyra_continue_ref_invalid/);
+  assert.deepEqual(calls, []);
 });
 
 test("the durable continuation store fails closed until PostgreSQL schema readiness is verified", async () => {

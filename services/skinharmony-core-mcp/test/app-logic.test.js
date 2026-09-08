@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   attachWorkPreflight,
+  compactPublishedToolDescriptor,
   configureToolForRuntime,
   filterToolsForClient,
   hasTenantBoundChatGptReadCompatibility,
@@ -49,6 +50,32 @@ test("publishes operation-exact Nyra continuation requirements", () => {
     delete request[omitted];
     assert(validateToolArguments(schema, request).some((item) => item.code === "any_of"), omitted);
   }
+});
+
+test("compact Nyra continuation descriptor remains explicitly typable by Apps clients", () => {
+  const canonical = TOOLS.find((tool) => tool.name === "nyra_continue");
+  const published = compactPublishedToolDescriptor(canonical);
+
+  assert.equal(published.inputSchema.type, "object");
+  assert.equal(Object.hasOwn(published.inputSchema, "anyOf"), false);
+  assert.deepEqual(published.inputSchema.required, ["operation", "idempotency_key"]);
+  assert.deepEqual(published.inputSchema.properties.operation.enum,
+    canonical.inputSchema.properties.operation.enum);
+  for (const field of ["continuation_ref", "work_id", "idempotency_key"]) {
+    assert.equal(typeof published.inputSchema.properties[field], "object", field);
+  }
+  assert.equal(validateToolArguments(published.inputSchema, {
+    operation: "authorize_action",
+    continuation_ref: `nyc1_${"a".repeat(40)}`,
+    idempotency_key: "apps-explicit-arguments",
+  }).length, 0);
+
+  // Compact publication must not weaken the exhaustive server-side contract.
+  assert(Array.isArray(canonical.inputSchema.anyOf));
+  assert(validateToolArguments(canonical.inputSchema, {
+    operation: "authorize_action",
+    idempotency_key: "still-missing-reference",
+  }).some((item) => item.code === "any_of"));
 });
 
 test("resolves only deployed Nyra front-door descriptors across catalog projection drift", () => {

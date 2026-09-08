@@ -425,6 +425,25 @@ class PrecommitPool {
       this.claimReconciliations.set(key(row.tenant_id, row.work_id, row.claim_id, row.stage), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT c.claim_id, f.ticket_id AS fulfilled_ticket_id")) {
+      const rows = [...this.claims.values()].filter((claim) =>
+        claim.tenant_id === parameters[0] && claim.work_id === parameters[1]).map((claim) => {
+        const fulfillment = this.claimFulfillments.get(key(
+          claim.tenant_id, claim.work_id, claim.gate_projection_digest,
+        ));
+        const abandonment = this.claimAbandonments.get(key(
+          claim.tenant_id, claim.work_id, claim.gate_projection_digest,
+        ));
+        const reconciledTicketPresent = [...this.claimReconciliations.values()].some((row) =>
+          row.tenant_id === claim.tenant_id && row.work_id === claim.work_id &&
+          row.claim_id === claim.claim_id && row.ticket_id);
+        return { claim_id: claim.claim_id,
+          fulfilled_ticket_id: fulfillment?.ticket_id || null,
+          abandoned_claim_id: abandonment?.claim_id || null,
+          reconciled_ticket_present: reconciledTicketPresent };
+      });
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT c.claim_id FROM tenant_work_precommit_ticket_gate_claim c")) {
       const row = [...this.claims.values()].find((claim) =>
         claim.tenant_id === parameters[0] && claim.work_id === parameters[1] &&
@@ -578,6 +597,21 @@ test("reconciles exact receipt-bound evidence idempotently without mutating clos
   assert.equal(replay.projection_digest, first.projection_digest);
   assert.equal(pool.gates.size, 1);
   assert.equal(pool.mappings.size, 1);
+});
+
+test("public precommit reconciliation rejects many-to-one mappings before any write", async () => {
+  const { pool, store, input } = fixture();
+  const secondLegacyId = "55555555-5555-4555-8555-555555555556";
+  const mappings = [LEGACY_EVIDENCE_ID, secondLegacyId].map((legacyEvidenceId) => ({
+    legacy_evidence_id: legacyEvidenceId,
+    replacement_evidence_id: REPLACEMENT_EVIDENCE_ID,
+    native_receipt_id: RECEIPT_ID,
+    native_receipt_digest: RECEIPT_DIGEST,
+  }));
+  await assert.rejects(store.reconcilePrecommitTicketGate(identity(), { ...input, mappings }),
+    /precommit_reconcile_terminal_closure_bridge_required/);
+  assert.equal(pool.mappings.size, 0);
+  assert.equal(pool.gates.size, 0);
 });
 
 test("server-derived reconciliation rejects ambiguous current plans without writes", async () => {
@@ -1024,6 +1058,9 @@ test("materializes one server-owned native closure gate for a canonical promoted
   assert.equal(superseding.plan_id, SUPERSEDING_PLAN_ID);
   assert.equal(pool.supersedingGates.length, 1);
   assert.equal(pool.tasks.size, 1, "native supersession reuses the immutable ticket-acquisition task");
+  assert.equal(pool.events.at(-1).event_type, "native_precommit_ticket_gate_superseded");
+  assert.deepEqual(pool.events.at(-1).payload.superseded_drift_codes,
+    ["precommit_gate_plan_drift", "precommit_gate_supersession_drift"]);
   await client.query("COMMIT");
 
   const serverDerivedReplay = await store.reconcilePersistedPrecommitTicketGate(identity(), {
@@ -1037,6 +1074,93 @@ test("materializes one server-owned native closure gate for a canonical promoted
   assert.equal(serverDerivedReplay.idempotent_replay, true);
   assert.equal(serverDerivedReplay.execution_authorized, false);
   assert.equal(serverDerivedReplay.provider_execution, false);
+
+  // An unresolved claim is a live execution lease.  A subsequent evaluation
+  // must not replace its gate until the claim has an append-only abandonment.
+  const firstClaim = await claimGate(store, superseding);
+  const driftedEvaluationId = crypto.randomUUID();
+  const driftedWorkspaceDigest = digest({ kind: "native-gate-task-drift" });
+  const driftedEvaluation = { ...nextEvaluation,
+    precommit_verification: { ready: true, workspace_digest: driftedWorkspaceDigest } };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: SUPERSEDING_PLAN_ID, evaluation_id: driftedEvaluationId,
+    evaluation: driftedEvaluation, evaluation_digest: digest(driftedEvaluation),
+    created_at: "2026-09-01T12:00:00.000Z" });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: driftedEvaluationId,
+    evaluation_digest: digest(driftedEvaluation), workspace_digest: driftedWorkspaceDigest,
+  }), /native_precommit_gate_claim_active/);
+  pool.claimAbandonments.set(key("tenant-a", WORK_ID, superseding.projection_digest), {
+    tenant_id: "tenant-a", work_id: WORK_ID,
+    gate_projection_digest: superseding.projection_digest,
+    claim_id: firstClaim.claim_id, abandonment_digest: digest({ abandoned: firstClaim.claim_id }),
+  });
+  const third = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: driftedEvaluationId,
+    evaluation_digest: digest(driftedEvaluation), workspace_digest: driftedWorkspaceDigest,
+  });
+  assert.equal(third.fresh, true);
+  assert.equal(pool.supersedingGates.length, 2);
+  assert.equal(pool.supersedingGates[1].supersedes_reconciliation_digest,
+    superseding.reconciliation_digest);
+
+  // Only drift caused by a newer authoritative plan/evaluation/supersession
+  // or V2 scope may advance the immutable gate chain.  A mutated gate task is
+  // not a liveness condition and must stay fail-closed.
+  const ticketEvaluationId = crypto.randomUUID();
+  const ticketWorkspaceDigest = digest({ kind: "native-gate-ticket-exists" });
+  const ticketEvaluation = { ...nextEvaluation,
+    precommit_verification: { ready: true, workspace_digest: ticketWorkspaceDigest } };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: SUPERSEDING_PLAN_ID, evaluation_id: ticketEvaluationId,
+    evaluation: ticketEvaluation, evaluation_digest: digest(ticketEvaluation),
+    created_at: "2026-09-01T13:00:00.000Z" });
+  const ticketTask = pool.tasks.get(key("tenant-a", third.task_id));
+  ticketTask.status = "blocked";
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: ticketEvaluationId,
+    evaluation_digest: digest(ticketEvaluation), workspace_digest: ticketWorkspaceDigest,
+  }), /native_precommit_gate_drift_not_supersedable/);
+  ticketTask.status = "planned";
+  const fourth = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: ticketEvaluationId,
+    evaluation_digest: digest(ticketEvaluation), workspace_digest: ticketWorkspaceDigest,
+  });
+  assert.equal(fourth.fresh, true);
+
+  // A durable ticket locator means the provider boundary was crossed even if
+  // gate fulfillment has not yet been appended.  It must block supersession.
+  const secondClaim = await claimGate(store, fourth, {
+    continuation_ref: "continuation-2", idempotency_key: "claim-2",
+  });
+  const secondClaimKey = key("tenant-a", WORK_ID, fourth.projection_digest);
+  pool.claimFulfillments.set(secondClaimKey, {
+    tenant_id: "tenant-a", work_id: WORK_ID,
+    gate_projection_digest: fourth.projection_digest,
+    claim_id: secondClaim.claim_id, ticket_id: "ticket-fulfilled-before-gate-row",
+  });
+  const finalEvaluationId = crypto.randomUUID();
+  const finalWorkspaceDigest = digest({ kind: "native-gate-after-ticket" });
+  const finalEvaluation = { ...nextEvaluation,
+    precommit_verification: { ready: true, workspace_digest: finalWorkspaceDigest } };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: SUPERSEDING_PLAN_ID, evaluation_id: finalEvaluationId,
+    evaluation: finalEvaluation, evaluation_digest: digest(finalEvaluation),
+    created_at: "2026-09-01T14:00:00.000Z" });
+  const finalGateInput = {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: finalEvaluationId,
+    evaluation_digest: digest(finalEvaluation), workspace_digest: finalWorkspaceDigest,
+  };
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client,
+    finalGateInput), /native_precommit_gate_ticket_exists/);
+  pool.claimFulfillments.delete(secondClaimKey);
+  pool.claimReconciliations.set(key("tenant-a", WORK_ID, secondClaim.claim_id,
+    "ticket_locator_received"), {
+    tenant_id: "tenant-a", work_id: WORK_ID, claim_id: secondClaim.claim_id,
+    stage: "ticket_locator_received", ticket_id: "ticket-already-issued",
+  });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client,
+    finalGateInput), /native_precommit_gate_ticket_exists/);
 
   const storedCreatedEvent = pool.events[0];
   storedCreatedEvent.payload.legacy_intent_digest = "f".repeat(64);

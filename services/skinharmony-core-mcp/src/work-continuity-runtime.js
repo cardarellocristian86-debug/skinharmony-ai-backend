@@ -2584,6 +2584,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
     : null;
   const nativeV2TaskBindingResolverRequired =
     options.nativeV2TaskBindingResolverRequired === true;
+  let genericTerminalReconciliationBridge =
+    typeof options.genericTerminalReconciliationBridge === "function"
+      ? options.genericTerminalReconciliationBridge : null;
+  const genericTerminalReconciliationBridgeRequired =
+    options.genericTerminalReconciliationBridgeRequired === true;
   const failureInjector = typeof options.failureInjector === "function"
     ? options.failureInjector
     : null;
@@ -3000,6 +3005,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_v2_task_binding_resolver_already_configured");
     }
     nativeV2TaskBindingResolver = resolver;
+    return true;
+  }
+
+  function setGenericTerminalReconciliationBridge(bridge) {
+    if (typeof bridge !== "function") {
+      throw new Error("generic_terminal_reconciliation_bridge_invalid");
+    }
+    if (genericTerminalReconciliationBridge &&
+        genericTerminalReconciliationBridge !== bridge) {
+      throw new Error("generic_terminal_reconciliation_bridge_already_configured");
+    }
+    genericTerminalReconciliationBridge = bridge;
     return true;
   }
 
@@ -7468,6 +7485,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
             authorization_signature: receipt.signature,
           },
         });
+        let genericTerminalReconciliation = null;
+        if (genericTerminalReconciliationBridge) {
+          genericTerminalReconciliation = await genericTerminalReconciliationBridge(client, {
+            server_owned: true,
+            tenant_id: context.tenantId,
+            work_id: context.workId,
+            plan_id: planId,
+          });
+          if (genericTerminalReconciliation?.schema_version !==
+                "generic_closure_terminal_reconciliation_v3" ||
+              genericTerminalReconciliation.tenant_id !== context.tenantId ||
+              genericTerminalReconciliation.work_id !== context.workId ||
+              typeof genericTerminalReconciliation.required !== "boolean" ||
+              (genericTerminalReconciliation.required === true &&
+                genericTerminalReconciliation.materialized !== true)) {
+            throw new Error("generic_terminal_reconciliation_bridge_result_invalid");
+          }
+        } else if (genericTerminalReconciliationBridgeRequired) {
+          throw new Error("generic_terminal_reconciliation_bridge_unavailable");
+        }
         await client.query(`UPDATE core_continuity_native_plans SET status='closed',closed_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
         [context.tenantId, context.workId, planId]);
@@ -7505,6 +7542,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           external_readback_digest: receipt.external_readback_digest,
           authorization_digest: suppliedAuthorizationDigest,
           final_receipt_digest: finalReceipt.payload_digest,
+          generic_terminal_reconciliation_digest:
+            genericTerminalReconciliation?.batch_digest || null,
           released_lease_count: coordination.released_lease_count,
           closed_participant_count: coordination.closed_participant_count,
         });
@@ -7524,6 +7563,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           released_lease_count: coordination.released_lease_count,
           closed_participant_count: coordination.closed_participant_count,
           final_receipt: finalReceipt,
+          generic_terminal_reconciliation: genericTerminalReconciliation,
           event,
         };
       },
@@ -8642,6 +8682,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     setNativeVerifierEvidenceBridge,
     setNativePrecommitGateBridge,
     setNativeV2TaskBindingResolver,
+    setGenericTerminalReconciliationBridge,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,

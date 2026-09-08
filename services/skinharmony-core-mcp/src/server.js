@@ -217,6 +217,8 @@ const workContinuityRuntime = createWorkContinuityRuntime(config, {
   nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
   nativePrecommitGateBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
   nativeV2TaskBindingResolverRequired: config.hostNativeAgentProtocolEnabled === true,
+  genericTerminalReconciliationBridgeRequired:
+    config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -257,6 +259,18 @@ if (workContinuityRuntime && workContinuityV2Store) {
     async (client, source) => {
       await workContinuityV2StoreReady;
       return workContinuityV2Store.materializeNativePrecommitTicketGateWithClient(
+        client,
+        source,
+      );
+    },
+  );
+  // Terminal generic reconciliation is derived exclusively inside the native
+  // finalize transaction, after the immutable live receipt has been written.
+  // It is not exposed as an MCP/caller-owned operation.
+  workContinuityRuntime.setGenericTerminalReconciliationBridge(
+    async (client, source) => {
+      await workContinuityV2StoreReady;
+      return workContinuityV2Store.materializeGenericTerminalReconciliationV3WithClient(
         client,
         source,
       );

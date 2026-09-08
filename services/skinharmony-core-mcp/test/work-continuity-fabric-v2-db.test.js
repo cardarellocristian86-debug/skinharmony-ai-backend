@@ -4392,9 +4392,23 @@ test("local closure becomes release-ready and external completion needs exact Co
   const pool = new ContinuityPool(clock);
   const closureAttestationSecret =
     "continuity-closure-attestation-test-secret-0123456789";
+  const terminalReconciliationCalls = [];
   const runtime = createWorkContinuityRuntime({
     dttAgentIdentitySigningSecret: closureAttestationSecret,
-  }, { pool, now: clock });
+  }, { pool, now: clock,
+    genericTerminalReconciliationBridgeRequired: true,
+    genericTerminalReconciliationBridge: async (client, source) => {
+      assert.equal(client, pool);
+      const receipt = [...pool.nativeReceipts.values()].find((row) =>
+        row.tenant_id === source.tenant_id && row.work_id === source.work_id &&
+        row.plan_id === source.plan_id && row.receipt_type === "closure_finalized");
+      assert.ok(receipt, "terminal bridge runs after the live closure receipt is persisted");
+      terminalReconciliationCalls.push(structuredClone(source));
+      return { schema_version: "generic_closure_terminal_reconciliation_v3",
+        tenant_id: source.tenant_id, work_id: source.work_id,
+        required: true, materialized: true, batch_digest: "6".repeat(64) };
+    },
+  });
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
@@ -5641,6 +5655,12 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(finalized.event.payload.released_lease_count, 2);
   assert.equal(finalized.event.payload.closed_participant_count, 2);
   assert.equal(finalized.final_receipt.host_type, "codex_native");
+  assert.equal(finalized.generic_terminal_reconciliation.materialized, true);
+  assert.equal(finalized.event.payload.generic_terminal_reconciliation_digest,
+    "6".repeat(64));
+  assert.deepEqual(terminalReconciliationCalls.at(-1), {
+    server_owned: true, tenant_id: "tenant-a", work_id: work.work_id, plan_id: planId,
+  });
   assert.equal(planRow.plan.host_type, "chatgpt_native");
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
   assert.equal(planRow.status, "closed");
