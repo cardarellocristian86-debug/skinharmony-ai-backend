@@ -101,6 +101,7 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
     "tenant_work_assign_v3",
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
+    "tenant_work_historical_archive_v3",
     "tenant_work_reopen_v3",
   ].includes(name)) return workId;
   // Repository Atlas bootstrap is a bounded internal graph mutation. Its

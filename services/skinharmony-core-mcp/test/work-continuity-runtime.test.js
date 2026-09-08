@@ -1244,6 +1244,7 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     "tenant_work_assign_v3",
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
+    "tenant_work_historical_archive_v3",
     "tenant_work_reopen_v3",
   ]) {
     assert.equal(tenantWorkCoordinationTarget(name, { work_id: WORK_ID }), WORK_ID, name);
