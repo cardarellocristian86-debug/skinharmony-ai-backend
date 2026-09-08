@@ -4706,6 +4706,7 @@ export function createWorkContinuityV2Store({
       const scopeTask = Array.isArray(staleGate.v2_scope_tasks)
         ? staleGate.v2_scope_tasks.find((item) => item.task_id === taskId)
         : null;
+      let legacyEvidenceSource = null;
       if (staleGate.v2_scope_tasks?.length) {
         if (!scopeTask || scopeTask.v2_task_digest !== binding.v2_task_digest ||
             Number(scopeTask.revision) !== Number(task.revision)) {
@@ -4715,19 +4716,53 @@ export function createWorkContinuityV2Store({
         // Gates produced before the V2 scope snapshot existed cannot name the
         // reusable task. Upgrade only from prior independently verified,
         // server-native evidence for this exact immutable task binding.
-        const priorEvidence = await client.query(`SELECT n.evidence_id
+        const stalePlan = byPlanId.get(staleGate.plan_id);
+        if (!stalePlan) fail("native_v2_task_revalidation_lineage_invalid");
+        const ancestorPlanIds = [];
+        const ancestorVisited = new Set();
+        let ancestorCursor = stalePlan;
+        while (ancestorCursor) {
+          if (ancestorVisited.has(ancestorCursor.plan_id) ||
+              objectDigest(ancestorCursor.plan) !== ancestorCursor.plan_digest) {
+            fail("native_v2_task_revalidation_lineage_invalid");
+          }
+          ancestorVisited.add(ancestorCursor.plan_id);
+          ancestorPlanIds.push(ancestorCursor.plan_id);
+          if (!ancestorCursor.supersedes_plan_id) break;
+          ancestorCursor = byPlanId.get(ancestorCursor.supersedes_plan_id);
+          if (!ancestorCursor) fail("native_v2_task_revalidation_lineage_invalid");
+        }
+        const priorEvidence = await client.query(`SELECT n.plan_id,n.evidence_id,n.evidence_digest
           FROM tenant_work_native_verifier_evidence n
           JOIN tenant_work_evidence e
             ON e.tenant_id=n.tenant_id AND e.work_id=n.work_id
               AND e.evidence_id=n.evidence_id
           WHERE n.tenant_id=$1 AND n.work_id=$2 AND n.v2_task_id=$3
-            AND n.v2_task_digest=$4 AND n.plan_id=$5 AND e.required=true
+            AND n.v2_task_digest=$4 AND n.plan_id=ANY($5::uuid[]) AND e.required=true
             AND e.independently_verified=true
+            AND e.kind='native_verifier_terminal_report'
+            AND e.digest=n.evidence_digest
           ORDER BY n.evidence_id FOR UPDATE OF n,e`,
-        [tenantId, workId, taskId, binding.v2_task_digest, staleGate.plan_id]);
-        if (!priorEvidence.rows.length) {
+        [tenantId, workId, taskId, binding.v2_task_digest, ancestorPlanIds]);
+        const evidenceByPlan = new Map();
+        for (const row of priorEvidence.rows) {
+          if (!ancestorVisited.has(row.plan_id) || !HASH.test(String(row.evidence_digest || ""))) {
+            fail("native_v2_task_revalidation_evidence_required");
+          }
+          const rows = evidenceByPlan.get(row.plan_id) || [];
+          rows.push(row);
+          evidenceByPlan.set(row.plan_id, rows);
+        }
+        const nearestPlanId = ancestorPlanIds.find((planId) => evidenceByPlan.has(planId));
+        const nearestEvidence = nearestPlanId ? evidenceByPlan.get(nearestPlanId) : [];
+        if (nearestEvidence.length !== 1) {
           fail("native_v2_task_revalidation_evidence_required");
         }
+        legacyEvidenceSource = {
+          source_plan_id: nearestPlanId,
+          source_evidence_id: nearestEvidence[0].evidence_id,
+          source_evidence_digest: nearestEvidence[0].evidence_digest,
+        };
       }
       const claimStates = await client.query(`SELECT c.claim_id,
           f.ticket_id AS fulfilled_ticket_id,a.claim_id AS abandoned_claim_id,
@@ -4756,6 +4791,7 @@ export function createWorkContinuityV2Store({
         task_revision: Number(task.revision),
         plan_id: precommitRevalidationPlanId,
         stale_gate_projection_digest: staleGate.projection_digest,
+        ...(legacyEvidenceSource || {}),
       };
       binding.precommit_revalidation = Object.freeze({
         ...revalidationMaterial,
@@ -5385,6 +5421,9 @@ export function createWorkContinuityV2Store({
         const persisted = nativeRow.v2_precommit_revalidation;
         const persistedMaterial = plainRecord(persisted) ? { ...persisted } : null;
         if (persistedMaterial) delete persistedMaterial.revalidation_digest;
+        const legacySourceFields = [persisted?.source_plan_id,
+          persisted?.source_evidence_id, persisted?.source_evidence_digest];
+        const legacySourceBound = legacySourceFields.every(Boolean);
         if (!plainRecord(persisted) ||
             persisted.schema_version !== "native_v2_precommit_task_revalidation_v1" ||
             persisted.tenant_id !== tenantId || persisted.work_id !== work.work_id ||
@@ -5392,8 +5431,30 @@ export function createWorkContinuityV2Store({
             persisted.v2_task_digest !== currentV2TaskBinding.v2_task_digest ||
             Number(persisted.task_revision) !== Number(v2Task.rows[0].revision) ||
             !HASH.test(String(persisted.stale_gate_projection_digest || "")) ||
+            (legacySourceFields.some(Boolean) && !legacySourceBound) ||
+            (legacySourceBound && (!UUID.test(String(persisted.source_plan_id || "")) ||
+              !UUID.test(String(persisted.source_evidence_id || "")) ||
+              !HASH.test(String(persisted.source_evidence_digest || "")))) ||
             objectDigest(persistedMaterial) !== persisted.revalidation_digest) {
           fail("native_verifier_evidence_revalidation_invalid");
+        }
+        if (legacySourceBound) {
+          const sourceEvidence = await client.query(`SELECT n.evidence_id
+            FROM tenant_work_native_verifier_evidence n
+            JOIN tenant_work_evidence e
+              ON e.tenant_id=n.tenant_id AND e.work_id=n.work_id
+                AND e.evidence_id=n.evidence_id
+            WHERE n.tenant_id=$1 AND n.work_id=$2 AND n.plan_id=$3
+              AND n.evidence_id=$4 AND n.v2_task_id=$5 AND n.v2_task_digest=$6
+              AND n.evidence_digest=$7 AND e.digest=n.evidence_digest
+              AND e.kind='native_verifier_terminal_report'
+              AND e.required=true AND e.independently_verified=true
+            FOR UPDATE OF n,e`, [tenantId, work.work_id,
+            persisted.source_plan_id, persisted.source_evidence_id, v2TaskId,
+            currentV2TaskBinding.v2_task_digest, persisted.source_evidence_digest]);
+          if (sourceEvidence.rowCount !== 1) {
+            fail("native_verifier_evidence_revalidation_invalid");
+          }
         }
         precommitRevalidation = persisted;
       } else {
