@@ -89,6 +89,7 @@ test("routes global runtime status to Control Room and keeps Work or mutation sc
     "Entity 360 è attiva?",
     "Semantic Scope Guard è attiva?",
     "Quali funzioni di Nyra e Universal Core sono attive adesso? Elencale con stato live. Non creare Work e resta in sola lettura.",
+    "Mostrami soltanto le funzioni disponibili, senza fare nulla.",
   ]) {
     const route = classify(message);
     assert.equal(route.intent, "global_control_read", message);

@@ -1729,7 +1729,40 @@ function directiveObservationSummary(workContext, english) {
     : `Readback: progresso ${progress}; blocker ${blockerText}; checkpoint ${checkpoint}; closure verificata ${closure}.`;
 }
 
-function directiveStateSummary({ directive, workBound, focus, english, relatedChildRequested = false }) {
+function unboundReadSummary(message, english) {
+  const text = String(message || "");
+  if (/\b(?:lettura|read)[\s\S]{0,80}\b(?:ticket|azioni? esterne?|external actions?)/iu.test(text)) {
+    return english
+      ? "A read stays in the read plane: it can return server-derived state but cannot reserve a ticket, confirm an owner decision, or authorize an external effect."
+      : "Una lettura resta nel read-plane: può restituire stato derivato dal server, ma non riserva ticket, non conferma decisioni Owner e non autorizza effetti esterni.";
+  }
+  if (/\b(?:implementaz\w*|child|figli[oa]|duplicat\w*|unir\w*|merge\w*)\b/iu.test(text) &&
+      /\b(?:work|lavoro)\b/iu.test(text)) {
+    return english
+      ? "An additional compatible implementation can be proposed as a related child Work. Core revalidates the canonical parent and duplicate review before any Work is created; this explanation creates nothing."
+      : "Un'implementazione aggiuntiva compatibile può essere proposta come Work figlio collegato. Core rivalida il padre canonico e la review anti-duplicato prima di creare qualunque Work; questa spiegazione non crea nulla.";
+  }
+  if (/\b(?:chius\w*|clos(?:e|ed|ure)|finalizz\w*)\b/iu.test(text)) {
+    return english
+      ? "A Work is closed only when required tasks and evidence are verified, the independent verifier is valid, and the server records a verified closure. Completion alone is not closure."
+      : "Un Work è chiuso solo quando task ed evidenze obbligatori sono verificati, il verifier indipendente è valido e il server registra una closure verificata. Completato non significa chiuso.";
+  }
+  if (/\b(?:deploy|rilasci\w*|release|produzione)\b/iu.test(text)) {
+    return english
+      ? "Deploy is protected by the exact Core decision, revision-bound precommit evidence, any required independent verification, and fresh Owner confirmation for the external effect. This is only a readback."
+      : "Il deploy è protetto dalla decisione Core esatta, dalle evidenze precommit vincolate alla revisione, dall'eventuale verifica indipendente e dalla conferma Owner fresca per l'effetto esterno. Questa è solo una lettura.";
+  }
+  if (/\b(?:limit\w*|limiti|cosa\s+puoi|funzion\w*)\b/iu.test(text)) {
+    return english
+      ? "Nyra can read and coordinate governed context; Universal Core is the authority for effects. Nyra does not create, merge, deploy, or close Work from a conversational read."
+      : "Nyra può leggere e coordinare contesto governato; Universal Core è l'autorità per gli effetti. Nyra non crea, fa merge, deploy o chiude Work da una lettura conversazionale.";
+  }
+  return english
+    ? "This is a read-only question. I did not create or select a Work, open a ticket, or request an external action."
+    : "Questa è una domanda in sola lettura. Non ho creato né selezionato Work, aperto ticket o richiesto azioni esterne.";
+}
+
+function directiveStateSummary({ directive, workBound, focus, english, message = "", relatedChildRequested = false }) {
   const disposition = directive.decision.disposition;
   const ticket = directive.ticket_request || {};
   const hardBlock = directive.core_diagnostics?.state === "BLOCKED";
@@ -1767,6 +1800,9 @@ function directiveStateSummary({ directive, workBound, focus, english, relatedCh
       ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(ticket.state)) return english
     ? "The preparation is complete: Universal Core can review the exact ticket candidate."
     : "La preparazione è completa: Universal Core può esaminare il candidate di ticket esatto.";
+  if (!workBound && disposition === "PROCEED_READ_ONLY") {
+    return unboundReadSummary(message, english);
+  }
   if (!workBound) return english
     ? "I need one canonical Work before I can coordinate the next step."
     : "Mi serve un solo Work canonico prima di coordinare il prossimo passo.";
@@ -1807,7 +1843,7 @@ function directiveReplySeed(locale, directive, workBound, { message = "", style 
   const english = locale === "en";
   const focus = directiveConversationFocus(message);
   const responseStyle = ["concise", "balanced", "detailed"].includes(style) ? style : "balanced";
-  const parts = [directiveStateSummary({ directive, workBound, focus, english, relatedChildRequested })];
+  const parts = [directiveStateSummary({ directive, workBound, focus, english, message, relatedChildRequested })];
   if (pureWorkObservationRequest(message)) {
     const observation = directiveObservationSummary(directive.work_context, english);
     if (observation) parts.push(observation);
@@ -2984,14 +3020,20 @@ export function createNyraConverseHandler({
       });
       workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
     }
-    // Every canonical read uses state-pure continuity, but only an explicit
-    // read fence or a factual Work observation suppresses diagnostic and
-    // preparation advice. A request such as "diagnose the blocker" remains
-    // advisory work while still creating no lease or persisted read context.
-    const advisoryOnly = statePureRead && (
+    // Canonical, unbound reads are a complete read-plane contract.  Do not
+    // reinterpret nouns such as "ticket" or "deploy" in an explanatory
+    // question as an effect after the router has already classified it as
+    // READ_ONLY.  An exact Work remains different: its diagnostic context may
+    // still expose a real Core blocker, while factual observations stay pure
+    // reads as before.
+    const unboundCanonicalRead = statePureRead &&
+      intentRoute.route !== "CORE_HOLD_THEN_NYRA" &&
+      intentRoute.canonical_intent.operation_class === "READ_ONLY" &&
+      !boundedWorkId(args.work_id);
+    const advisoryOnly = unboundCanonicalRead || (statePureRead && (
       intentRoute.reason === "explicit_read_only_fence" ||
       pureWorkObservationRequest(message)
-    );
+    ));
     const action = actionPolicy(
       advisoryOnly ? Object.freeze({ requested_now: [] }) : intentRoute.canonical_intent,
       connectorHint,
