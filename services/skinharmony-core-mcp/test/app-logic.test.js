@@ -144,11 +144,11 @@ test("routes only the retired governed continuation name to the opaque current c
 
 test("keeps claim-only and unregistered conversational hosts on the Nyra front door plus read-only status", () => {
   const claimOnlyTools = filterToolsForClient(TOOLS, { kind: "oauth" });
-  assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_control_room_status", "nyra_converse"]);
+  assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_control_room_status", "nyra_converse", "nyra_intent_bridge"]);
 
   const compatibility = tenantBoundChatGptCompatibilityIdentity();
   const names = filterToolsForClient(TOOLS, compatibility).map((tool) => tool.name);
-  assert.deepEqual(names, ["nyra_control_room_status", "nyra_converse"]);
+  assert.deepEqual(names, ["nyra_control_room_status", "nyra_converse", "nyra_intent_bridge"]);
   assert.equal(hasTenantBoundChatGptReadCompatibility(compatibility, "core_capability_read"), true);
   assert.equal(hasTenantBoundChatGptReadCompatibility({
     ...compatibility,
@@ -216,6 +216,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       "nyra_control_room_status",
       "nyra_converse",
       "nyra_continue",
+      "nyra_intent_bridge",
       "nyra_work_assignment_claim",
       "nyra_work_assignment_submit",
     ], clientType);
@@ -231,6 +232,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
     "nyra_control_room_status",
     "nyra_converse",
     "nyra_continue",
+    "nyra_intent_bridge",
     "nyra_autopilot_enable",
     "nyra_work_assignment_claim",
     "nyra_work_assignment_submit",
@@ -412,6 +414,18 @@ test("advertises explicit confirmation fields only on write tools", () => {
 
 test("routes normal actions through generic preflight without deadlocking Work bootstrap", () => {
   assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);
+  assert.equal(requiresGenericWorkPreflight("nyra_intent_bridge", {
+    operation_class: "GOVERNED_ACTION_PROPOSAL",
+    capability_id: "workspace_write_document",
+  }), false, "an AI proposal must not open or resume a Work");
+  assert.equal(requiresGenericWorkPreflight("nyra_intent_bridge", {
+    operation_class: "READ_ONLY",
+    capability_id: "entity_360_snapshot_read",
+  }), true, "DTT-backed reads retain their server-owned Work preflight");
+  assert.equal(requiresGenericWorkPreflight("nyra_intent_bridge", {
+    operation_class: "READ_ONLY",
+    capability_id: "memory_context",
+  }), false, "ordinary registered reads remain non-blocking");
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
     true,

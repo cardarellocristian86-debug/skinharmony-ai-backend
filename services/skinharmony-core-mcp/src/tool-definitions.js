@@ -1794,6 +1794,16 @@ export const TOOLS = [
     intent: { type: "string", maxLength: 240 },
     limit: { type: "integer", minimum: 1, maximum: 200 },
   }), ["core:read"]),
+  tool("nyra_intent_bridge", "Route connected AI intent", "Validate one connected-AI capability proposal against Nyra's authorized live catalog. Exact reads may run; actions remain held for a signed governed continuation.", object({
+    message: text(12_000),
+    capability_id: identifier,
+    operation_class: { type: "string", enum: ["READ_ONLY", "GOVERNED_ACTION_PROPOSAL"] },
+    target_scope: { type: "string", enum: ["GLOBAL", "WORK", "ENTITY", "RESEARCH", "MEMORY", "CONTROL", "WORKSPACE", "AGENT", "SUITE", "ANALYZER"] },
+    arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+    confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+    ambiguous: { type: "boolean" },
+    injection_signals: { type: "array", maxItems: 20, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 80 } },
+  }, ["message", "capability_id", "operation_class", "target_scope", "confidence", "ambiguous", "injection_signals"]), ["core:read"]),
   tool("core_capability_read", "Core capability read", "Run one registered read.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },

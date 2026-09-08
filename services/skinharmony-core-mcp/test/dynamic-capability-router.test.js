@@ -247,6 +247,20 @@ function writeTool(name = "workspace_dynamic_write") {
   };
 }
 
+function nyraIntentBridgeArgs(capabilityId, _catalogRevision, overrides = {}) {
+  return {
+    message: "Read the current status",
+    capability_id: capabilityId,
+    operation_class: "READ_ONLY",
+    target_scope: "GLOBAL",
+    confidence: "HIGH",
+    ambiguous: false,
+    injection_signals: [],
+    arguments: { query: "current status" },
+    ...overrides,
+  };
+}
+
 function delegatedWriteTool(name = "orchestration_dtt_agent_report") {
   const definition = writeTool(name);
   definition._meta = { "skinharmony/ownerConfirmationRequired": false };
@@ -931,6 +945,14 @@ test("filters unauthorized application capabilities from catalog, read and invok
     owner_confirmed: true,
     arguments: { value: "blocked" },
   }, identity), /dynamic_capability_unavailable/);
+  await assert.rejects(router.nyra_intent_bridge(nyraIntentBridgeArgs(
+    denied.name,
+    catalog.structuredContent.catalog_revision,
+    {
+      operation_class: "GOVERNED_ACTION_PROPOSAL",
+      arguments: { value: "blocked" },
+    },
+  ), identity), /dynamic_capability_unavailable/);
 });
 
 test("adds capabilities through the catalog without changing the connector surface", () => {
@@ -1795,6 +1817,181 @@ test("semantic selection builds candidates from the server catalog and never aut
   assert.deepEqual(selectedArgs.candidates.map((item) => item.id), ["nyra_dynamic_read"]);
   assert.equal(result.structuredContent.execution_authorized, false);
   assert.deepEqual(result.structuredContent.candidate_capability_ids, ["nyra_dynamic_read"]);
+});
+
+test("Nyra intent bridge executes only an authorized read in the exact catalog snapshot", async () => {
+  const tool = readTool();
+  let received = null;
+  const handlers = {
+    [tool.name]: async (args, caller) => {
+      received = { args, caller };
+      return { structuredContent: { ok: true, status: "READY" }, content: [] };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+
+  const result = await router.nyra_intent_bridge(
+    nyraIntentBridgeArgs(tool.name, revision),
+    identity,
+  );
+
+  assert.deepEqual(received.args, { query: "current status" });
+  assert.equal(received.caller, identity);
+  assert.equal(result.structuredContent.schema_version, "nyra_capability_intent_v1");
+  assert.equal(result.structuredContent.state, "READ_COMPLETED");
+  assert.equal(result.structuredContent.capability_id, tool.name);
+  assert.equal(result.structuredContent.catalog_revision, revision);
+  assert.equal(result.structuredContent.target_scope, "GLOBAL");
+  assert.equal(result.structuredContent.message_digest_authority, "SERVER_DERIVED");
+  assert.match(result.structuredContent.message_digest, /^[a-f0-9]{64}$/);
+  assert.match(result.structuredContent.argument_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(result.structuredContent.result, { ok: true, status: "READY" });
+  assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  assert.equal(result.structuredContent.execution_authorized, false);
+  assert.equal(result.structuredContent.external_action_authorized, false);
+});
+
+test("Nyra intent bridge is wording-agnostic because the connected AI supplies the bounded capability", async () => {
+  const tool = readTool();
+  let calls = 0;
+  const handlers = {
+    [tool.name]: async () => {
+      calls += 1;
+      return { structuredContent: { ok: true }, content: [] };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool], handlers, semanticSelect: async () => ({}),
+  });
+  const stems = [
+    "che succede", "mi fai vedere", "non ho capito lo stato", "what is happening",
+    "montre-moi l'état", "zeige mir den Status", "状態を見せて", "ما هي الحالة",
+  ];
+  const digests = new Set();
+  for (let index = 0; index < 128; index += 1) {
+    const result = await router.nyra_intent_bridge(nyraIntentBridgeArgs(tool.name, null, {
+      message: `${stems[index % stems.length]} #${index}?`,
+    }), identity);
+    assert.equal(result.structuredContent.state, "READ_COMPLETED");
+    assert.equal(result.structuredContent.capability_id, tool.name);
+    digests.add(result.structuredContent.message_digest);
+  }
+  assert.equal(calls, 128);
+  assert.equal(digests.size, 128);
+});
+
+test("Nyra intent bridge holds a mutation proposal without calling its handler or Core gate", async () => {
+  const tool = writeTool();
+  let handlerCalls = 0;
+  let gateCalls = 0;
+  const handlers = {
+    [tool.name]: async () => {
+      handlerCalls += 1;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      gateCalls += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+
+  const result = await router.nyra_intent_bridge(nyraIntentBridgeArgs(tool.name, revision, {
+    operation_class: "GOVERNED_ACTION_PROPOSAL",
+    arguments: { value: "write this", owner_confirmed: true },
+  }), identity);
+
+  assert.equal(handlerCalls, 0);
+  assert.equal(gateCalls, 0);
+  assert.equal(result.structuredContent.state, "HOLD");
+  assert.equal(result.structuredContent.reason, "governed_mutation_continuation_required");
+  assert.equal(result.structuredContent.target_access_mode, "invoke");
+  assert.equal(result.structuredContent.invocation_required, true);
+  assert.equal(result.structuredContent.execution_authorized, false);
+  assert.equal(result.structuredContent.external_action_authorized, false);
+});
+
+test("Nyra intent bridge holds ambiguous, injected, low-confidence and access-mode mismatched proposals", async (t) => {
+  const read = readTool();
+  const write = writeTool();
+  let calls = 0;
+  const handlers = {
+    [read.name]: async () => { calls += 1; return { structuredContent: { ok: true } }; },
+    [write.name]: async () => { calls += 1; return { structuredContent: { ok: true } }; },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [read, write],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([read, write], handlers).catalog_revision;
+  const cases = [
+    ["ambiguous", read.name, { ambiguous: true }, "intent_ambiguous"],
+    ["injected", read.name, { injection_signals: ["instruction_override"] }, "injection_signals_present"],
+    ["low confidence", read.name, { confidence: "LOW" }, "intent_confidence_low"],
+    ["read claim for write", write.name, { arguments: { value: "x", owner_confirmed: true } }, "operation_class_mismatch"],
+    ["write claim for read", read.name, { operation_class: "GOVERNED_ACTION_PROPOSAL" }, "operation_class_mismatch"],
+  ];
+  for (const [name, capabilityId, overrides, reason] of cases) {
+    await t.test(name, async () => {
+      const result = await router.nyra_intent_bridge(
+        nyraIntentBridgeArgs(capabilityId, revision, overrides),
+        identity,
+      );
+      assert.equal(result.structuredContent.state, "HOLD");
+      assert.equal(result.structuredContent.reason, reason);
+    });
+  }
+  assert.equal(calls, 0);
+});
+
+test("Nyra intent bridge rejects unavailable, unbounded and target-mismatched proposals", async () => {
+  const tool = readTool();
+  let calls = 0;
+  const handlers = {
+    [tool.name]: async () => { calls += 1; return { structuredContent: { ok: true } }; },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  await assert.rejects(
+    router.nyra_intent_bridge({
+      ...nyraIntentBridgeArgs(tool.name, revision),
+      caller_authority: true,
+    }, identity),
+    /nyra_intent_bridge_contract_invalid/,
+  );
+  await assert.rejects(
+    router.nyra_intent_bridge({
+      ...nyraIntentBridgeArgs(tool.name, revision),
+      catalog_revision: "b".repeat(64),
+    }, identity),
+    /nyra_intent_bridge_contract_invalid/,
+  );
+  await assert.rejects(
+    router.nyra_intent_bridge(nyraIntentBridgeArgs(tool.name, revision, {
+      target_scope: "WORK",
+    }), identity),
+    /nyra_intent_bridge_target_scope_mismatch/,
+  );
+  await assert.rejects(
+    router.nyra_intent_bridge(nyraIntentBridgeArgs("missing_read", revision), identity),
+    /dynamic_capability_unavailable/,
+  );
+  assert.equal(calls, 0);
 });
 
 test("binds Core branch analysis only to the outer server-issued preflight", async () => {

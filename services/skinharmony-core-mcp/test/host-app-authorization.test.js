@@ -17,6 +17,7 @@ const TOOLS = [
   { name: "work_preflight", annotations: { readOnlyHint: true } },
   { name: "core_branch_registry", annotations: { readOnlyHint: true } },
   { name: "core_semantic_select", annotations: { readOnlyHint: true } },
+  { name: "nyra_intent_bridge", annotations: { readOnlyHint: true } },
   { name: "core_capability_read", annotations: { readOnlyHint: true } },
   { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
@@ -79,7 +80,7 @@ function tenantBoundUnregisteredChatGpt(overrides = {}) {
 
 test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact dynamic reauthorization", () => {
   const compatible = tenantBoundUnregisteredChatGpt();
-  for (const name of ["nyra_control_room_status", "work_preflight", "core_branch_registry", "core_semantic_select"]) {
+  for (const name of ["nyra_control_room_status", "work_preflight", "core_branch_registry", "core_semantic_select", "nyra_intent_bridge"]) {
     assert.equal(hasTenantBoundChatGptReadCompatibility(compatible, name), true, name);
     assert.doesNotThrow(() => requireHostAppToolCapability({ identity: compatible, toolName: name, tools: TOOLS }));
   }
@@ -89,6 +90,18 @@ test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact 
     args: { capability_id: "work_continuity_v2_read" },
     tools: TOOLS,
   }));
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: compatible,
+    toolName: "nyra_intent_bridge",
+    args: { capability_id: "work_continuity_v2_read", operation_class: "READ_ONLY" },
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: compatible,
+    toolName: "nyra_intent_bridge",
+    args: { capability_id: "memory_context", operation_class: "READ_ONLY" },
+    tools: TOOLS,
+  }), /host_app_capability_required:core\.read/);
   assert.throws(() => requireHostAppToolCapability({
     identity: compatible,
     toolName: "core_capability_read",
