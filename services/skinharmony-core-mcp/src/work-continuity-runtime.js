@@ -2828,6 +2828,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       const persisted = row.v2_precommit_revalidation;
       const material = persisted && { ...persisted };
       if (material) delete material.revalidation_digest;
+      const legacySourceFields = [persisted?.source_plan_id,
+        persisted?.source_evidence_id, persisted?.source_evidence_digest];
+      const legacySourceBound = legacySourceFields.every(Boolean);
       if (!persisted || persisted.schema_version !==
             "native_v2_precommit_task_revalidation_v1" ||
           persisted.tenant_id !== context.tenantId ||
@@ -2838,6 +2841,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
           Number(persisted.task_revision) !== Number(v2TaskBinding?.revision) ||
           persisted.revalidation_digest !== row.v2_precommit_revalidation_digest ||
           !SHA256_DIGEST.test(String(persisted.stale_gate_projection_digest || "")) ||
+          (legacySourceFields.some(Boolean) && !legacySourceBound) ||
+          (legacySourceBound && (!UUID.test(String(persisted.source_plan_id || "")) ||
+            !UUID.test(String(persisted.source_evidence_id || "")) ||
+            !SHA256_DIGEST.test(String(persisted.source_evidence_digest || "")))) ||
           digest(material) !== persisted.revalidation_digest) {
         throw new Error("native_agent_acceptance_contract_binding_changed");
       }
