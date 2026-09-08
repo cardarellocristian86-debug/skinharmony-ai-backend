@@ -114,6 +114,12 @@ const NYRA_INTENT_BRIDGE_KEYS = new Set([
   "ambiguous",
   "injection_signals",
   "arguments",
+  // Standard MCP transport metadata is already schema-validated by the
+  // gateway and is deliberately excluded from semantic and target digests.
+  "agent_id",
+  "client_type",
+  "session_id",
+  "environment",
   // This field is attached only after public schema validation by the MCP
   // gateway. It is not part of the connected AI proposal.
   "work_preflight",
