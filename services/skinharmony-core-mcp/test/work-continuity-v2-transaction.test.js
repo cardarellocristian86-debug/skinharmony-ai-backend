@@ -12,7 +12,10 @@ import {
   createLocalGenericWorkCoreJoinSigner,
 } from "../../universal-core-service/src/genericWorkCoreJoin.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
-import { createWorkContinuityRuntime } from "../src/work-continuity-runtime.js";
+import {
+  buildNativeV2TaskBinding,
+  createWorkContinuityRuntime,
+} from "../src/work-continuity-runtime.js";
 
 function key(...parts) { return parts.join("\0"); }
 function cloneMap(map) { return new Map([...map].map(([k, v]) => [k, structuredClone(v)])); }
@@ -24,6 +27,153 @@ function stable(value) {
 function stableDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
+
+test("completed V2 task revalidation is limited to one exact stale native gate lineage", async () => {
+  const tenantId = "tenant-a";
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const ticketTaskId = "33333333-3333-4333-8333-333333333333";
+  const oldPlanId = "44444444-4444-4444-8444-444444444444";
+  const newPlanId = "55555555-5555-4555-8555-555555555555";
+  const evaluationId = "66666666-6666-4666-8666-666666666666";
+  const task = { task_id: taskId, title: "Verified bounded repair", weight: 1,
+    required: true, status: "completed", acceptance_verified: true, revision: 1 };
+  const taskBinding = buildNativeV2TaskBinding({ tenant_id: tenantId, work_id: workId,
+    task_id: taskId, title: task.title, weight: task.weight, required: task.required });
+  const oldPlan = { schema_version: "native_agent_plan_v2", tasks: [] };
+  const newPlan = { schema_version: "native_agent_plan_v2", tasks: [] };
+  const emptyScope = { schema_version: "native_v2_precommit_scope_v1",
+    scope_snapshot_digest: "a".repeat(64), v2_task_governed: false, tasks: [] };
+  const evaluation = { schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, precommit_verification: { ready: true,
+      workspace_digest: "b".repeat(64) }, native_v2_precommit_scope: emptyScope };
+
+  function clientFor({ activeClaim = false, fulfilled = false,
+    scopeTasks = [], ticketTaskState = "planned", candidate = taskId,
+    freshGate = false, priorEvidence = true, competingPlanned = false } = {}) {
+    const scoped = { ...emptyScope, tasks: scopeTasks };
+    const evaluated = { ...evaluation, native_v2_precommit_scope: scoped };
+    const plans = [
+      // Append-only terminal history is not another current plan.
+      { plan_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        supersedes_plan_id: null, status: "closed",
+        plan: oldPlan, plan_digest: stableDigest(oldPlan), plan_version: 0 },
+      { plan_id: oldPlanId, supersedes_plan_id: null, status: "superseded",
+        plan: oldPlan, plan_digest: stableDigest(oldPlan), plan_version: 1 },
+      { plan_id: newPlanId, supersedes_plan_id: oldPlanId, status: "planned",
+        plan: newPlan, plan_digest: stableDigest(newPlan), plan_version: 2 },
+    ];
+    if (competingPlanned) plans.push({
+      plan_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      supersedes_plan_id: oldPlanId, status: "planned",
+      plan: newPlan, plan_digest: stableDigest(newPlan), plan_version: 4,
+    });
+    const supersessionDigest = stableDigest({
+      schema_version: "native_plan_supersession_set_v1",
+      plans: plans.map((row) => ({ plan_id: row.plan_id,
+        plan_digest: row.plan_digest, status: row.status,
+        plan_version: row.plan_version,
+        supersedes_plan_id: row.supersedes_plan_id })),
+    });
+    return {
+      async query(sql, parameters = []) {
+        const q = String(sql).replace(/\s+/g, " ").trim();
+        if (q.startsWith("SELECT task_id,title,weight,required,status,acceptance_verified,revision FROM tenant_work_task") &&
+            q.includes("task_id=$3")) {
+          return { rows: [{ ...task, task_id: candidate }], rowCount: 1 };
+        }
+        if (q.startsWith("SELECT work_id,work_type FROM tenant_work")) {
+          return { rows: [{ work_id: workId, work_type: "software_git" }], rowCount: 1 };
+        }
+        if (q.startsWith("SELECT plan_id,supersedes_plan_id,status,plan,plan_digest FROM core_continuity_native_plans")) {
+          return { rows: plans, rowCount: plans.length };
+        }
+        if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate")) {
+          return { rows: [{ task_id: ticketTaskId,
+            plan_id: freshGate ? newPlanId : oldPlanId,
+            evaluation_id: evaluationId, evaluation_digest: stableDigest(evaluated),
+            workspace_digest: "b".repeat(64),
+            supersession_digest: freshGate ? supersessionDigest : "c".repeat(64),
+            reconciliation_digest: "d".repeat(64), action_kind: "git.commit",
+            gate_kind: "ticket_acquisition", gate_source: "native_closure_evaluation",
+            v2_scope_snapshot_digest: scoped.scope_snapshot_digest,
+            v2_scope_tasks: scopeTasks }], rowCount: 1 };
+        }
+        if (q.includes("FROM tenant_work_precommit_evidence_reconciliation r")) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (q.startsWith("SELECT task_id,status,required,acceptance_verified FROM tenant_work_task")) {
+          return { rows: [{ task_id: ticketTaskId, status: ticketTaskState,
+            required: true, acceptance_verified: fulfilled }], rowCount: 1 };
+        }
+        if (q.startsWith("SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id FROM core_continuity_native_plans")) {
+          return { rows: plans, rowCount: plans.length };
+        }
+        if (q.startsWith("SELECT evaluation_id,evaluation,evaluation_digest FROM core_continuity_closure_evaluations")) {
+          return { rows: [{ evaluation_id: evaluationId, evaluation: evaluated,
+            evaluation_digest: stableDigest(evaluated) }], rowCount: 1 };
+        }
+        if (q.startsWith("SELECT ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest")) {
+          return fulfilled ? { rows: [{ ticket_id: "hnt_existing" }], rowCount: 1 }
+            : { rows: [], rowCount: 0 };
+        }
+        if (q.startsWith("SELECT n.evidence_id FROM tenant_work_native_verifier_evidence")) {
+          assert.equal(parameters[4], oldPlanId,
+            "legacy empty-scope evidence must come from the exact stale gate plan");
+          return priorEvidence
+            ? { rows: [{ evidence_id: "77777777-7777-4777-8777-777777777777" }], rowCount: 1 }
+            : { rows: [], rowCount: 0 };
+        }
+        if (q.startsWith("SELECT c.claim_id,")) {
+          return activeClaim
+            ? { rows: [{ claim_id: "88888888-8888-4888-8888-888888888888",
+                fulfilled_ticket_id: null, abandoned_claim_id: null,
+                reconciled_ticket_present: false }], rowCount: 1 }
+            : { rows: [], rowCount: 0 };
+        }
+        throw new Error(`revalidation_test_query_unhandled:${q.slice(0, 120)}`);
+      },
+    };
+  }
+  const store = createWorkContinuityV2Store({ pool: { query: async () => ({ rows: [] }) } });
+  const source = { server_owned: true, tenant_id: tenantId, work_id: workId,
+    task_id: taskId, precommit_revalidation_plan_id: newPlanId };
+  const allowed = await store.resolveNativeTaskBindingWithClient(clientFor(), source);
+  assert.equal(allowed.precommit_revalidation.plan_id, newPlanId);
+  assert.equal(allowed.precommit_revalidation.task_id, taskId);
+  assert.equal(allowed.precommit_revalidation.v2_task_digest, taskBinding.v2_task_digest);
+  assert.match(allowed.precommit_revalidation.revalidation_digest, /^[a-f0-9]{64}$/);
+
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ activeClaim: true }), source), /native_v2_task_revalidation_claim_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ priorEvidence: false }), source),
+  /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ competingPlanned: true }), source),
+  /native_v2_task_revalidation_plan_not_current/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ fulfilled: true, ticketTaskState: "completed" }), source),
+  /native_v2_task_revalidation_gate_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ freshGate: true }), source),
+  /native_v2_task_revalidation_gate_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({
+    scopeTasks: [{ task_id: "99999999-9999-4999-8999-999999999999",
+      v2_task_digest: "e".repeat(64), revision: 1 }],
+  }), source), /native_v2_task_revalidation_scope_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ ticketTaskState: "completed" }), source),
+  /native_v2_task_revalidation_gate_invalid/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ candidate: ticketTaskId, ticketTaskState: "completed" }), {
+      ...source,
+      task_id: ticketTaskId,
+    }), /native_v2_task_revalidation_gate_invalid/);
+});
 async function manualClosureAuthority({ workId, intentDigest, repository = "owner/repo" } = {}) {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const keyId = "gwcj-test-manual-closure";

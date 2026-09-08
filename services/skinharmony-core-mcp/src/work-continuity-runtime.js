@@ -2312,6 +2312,8 @@ CREATE TABLE IF NOT EXISTS core_continuity_native_agents (
   task_id varchar(120) NOT NULL, agent_id varchar(120) NOT NULL, host_type varchar(40) NOT NULL,
   host_task_id varchar(240) NOT NULL, task_kind varchar(40) NOT NULL, task_digest char(64) NOT NULL,
   coordinator_session_fingerprint varchar(64) NOT NULL,
+  v2_precommit_revalidation_digest char(64),
+  v2_precommit_revalidation jsonb,
   assignment_capability_digest char(64) NOT NULL,
   status varchar(32) NOT NULL DEFAULT 'bound', report jsonb, report_digest char(64),
   native_session_fingerprint varchar(64), native_presence_signature varchar(80),
@@ -2334,6 +2336,10 @@ ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS v2_task_id uuid;
 ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS v2_task_digest char(64);
+ALTER TABLE core_continuity_native_agents
+  ADD COLUMN IF NOT EXISTS v2_precommit_revalidation_digest char(64);
+ALTER TABLE core_continuity_native_agents
+  ADD COLUMN IF NOT EXISTS v2_precommit_revalidation jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_native_agents_session_once_idx
   ON core_continuity_native_agents (tenant_id,plan_id,native_session_fingerprint)
   WHERE native_session_fingerprint IS NOT NULL;
@@ -2638,6 +2644,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   function nativeAssignmentBinding({
     v2_task_id: v2TaskId,
     v2_task_digest: v2TaskDigest,
+    v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
     ...binding
   } = {}) {
     // Keep historical capabilities valid: a pre-v2-task binding was signed
@@ -2655,6 +2662,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
         throw new Error("native_agent_v2_task_digest_invalid");
       }
       bound.v2_task_digest = normalizedDigest;
+    }
+    if (v2PrecommitRevalidationDigest !== undefined &&
+        v2PrecommitRevalidationDigest !== null) {
+      const normalizedRevalidationDigest = String(
+        v2PrecommitRevalidationDigest,
+      ).trim().toLowerCase();
+      if (!SHA256_DIGEST.test(normalizedRevalidationDigest)) {
+        throw new Error("native_agent_v2_revalidation_digest_invalid");
+      }
+      bound.v2_precommit_revalidation_digest = normalizedRevalidationDigest;
     }
     return bound;
   }
@@ -2704,7 +2721,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       input.assignment_capability,
     );
     await initialize();
-    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.host_type,a.host_task_id,
+    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.v2_precommit_revalidation_digest,a.host_type,a.host_task_id,
         a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
         a.lease_expires_at>clock_timestamp() AS lease_active,
         p.status AS plan_status
@@ -2739,6 +2756,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       lease_expires_at: leaseExpiresAt.toISOString(),
       v2_task_id: row.v2_task_id,
       v2_task_digest: row.v2_task_digest,
+      v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
     }));
     if (
       row.assignment_capability_digest !== suppliedAssignmentDigest ||
@@ -2777,6 +2795,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     await initialize();
     const current = await pool.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,
+        a.v2_precommit_revalidation_digest,a.v2_precommit_revalidation,
         p.plan,p.plan_digest,p.status AS plan_status
       FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
         ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
@@ -2795,10 +2814,33 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_agent_acceptance_contract_binding_changed");
     }
     const v2TaskBinding = row.v2_task_digest
-      ? await resolveNativeV2TaskBinding(pool, context, row.v2_task_id)
+      ? await resolveNativeV2TaskBinding(pool, context, row.v2_task_id, {
+          closureRevalidation: Boolean(row.v2_precommit_revalidation_digest),
+          ...(!row.v2_precommit_revalidation_digest ? {
+            precommitRevalidationPlanId: admission.plan_id,
+          } : {}),
+        })
       : null;
     if (v2TaskBinding && v2TaskBinding.v2_task_digest !== row.v2_task_digest) {
       throw new Error("native_agent_acceptance_contract_binding_changed");
+    }
+    if (row.v2_precommit_revalidation_digest) {
+      const persisted = row.v2_precommit_revalidation;
+      const material = persisted && { ...persisted };
+      if (material) delete material.revalidation_digest;
+      if (!persisted || persisted.schema_version !==
+            "native_v2_precommit_task_revalidation_v1" ||
+          persisted.tenant_id !== context.tenantId ||
+          persisted.work_id !== context.workId.toLowerCase() ||
+          persisted.task_id !== String(row.v2_task_id).toLowerCase() ||
+          persisted.plan_id !== admission.plan_id.toLowerCase() ||
+          persisted.v2_task_digest !== row.v2_task_digest ||
+          Number(persisted.task_revision) !== Number(v2TaskBinding?.revision) ||
+          persisted.revalidation_digest !== row.v2_precommit_revalidation_digest ||
+          !SHA256_DIGEST.test(String(persisted.stale_gate_projection_digest || "")) ||
+          digest(material) !== persisted.revalidation_digest) {
+        throw new Error("native_agent_acceptance_contract_binding_changed");
+      }
     }
     if (row.task_kind !== "verifier") {
       throw new Error("native_agent_acceptance_contract_verifier_required");
@@ -3022,6 +3064,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function resolveNativeV2TaskBinding(client, context, v2TaskId, {
     closureRevalidation = false,
+    precommitRevalidationPlanId = null,
   } = {}) {
     if (!v2TaskId) return null;
     const canonicalV2TaskId = String(v2TaskId).toLowerCase();
@@ -3037,6 +3080,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       work_id: context.workId,
       task_id: canonicalV2TaskId,
       closure_revalidation: closureRevalidation === true,
+      ...(precommitRevalidationPlanId ? {
+        precommit_revalidation_plan_id: uuid(
+          precommitRevalidationPlanId,
+          "native_v2_task_revalidation_plan_invalid",
+        ).toLowerCase(),
+      } : {}),
     });
     const expected = buildNativeV2TaskBinding(resolved || {});
     if (expected.tenant_id !== context.tenantId ||
@@ -3046,9 +3095,28 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_v2_task_binding_resolution_invalid");
     }
     if (!closureRevalidation && resolved?.acceptance_verified === true) {
-      throw new Error("native_v2_task_already_verified");
+      const revalidation = resolved?.precommit_revalidation;
+      const material = revalidation && { ...revalidation };
+      if (material) delete material.revalidation_digest;
+      if (!precommitRevalidationPlanId ||
+          revalidation?.schema_version !== "native_v2_precommit_task_revalidation_v1" ||
+          revalidation.tenant_id !== context.tenantId ||
+          revalidation.work_id !== String(context.workId).toLowerCase() ||
+          revalidation.task_id !== canonicalV2TaskId ||
+          revalidation.plan_id !== String(precommitRevalidationPlanId).toLowerCase() ||
+          revalidation.v2_task_digest !== expected.v2_task_digest ||
+          !SHA256_DIGEST.test(String(revalidation.stale_gate_projection_digest || "")) ||
+          !SHA256_DIGEST.test(String(revalidation.revalidation_digest || "")) ||
+          digest(material) !== revalidation.revalidation_digest) {
+        throw new Error("native_v2_task_already_verified");
+      }
     }
-    if (!closureRevalidation) return expected;
+    if (!closureRevalidation) return Object.freeze({
+      ...expected,
+      ...(resolved?.precommit_revalidation ? {
+        precommit_revalidation: resolved.precommit_revalidation,
+      } : {}),
+    });
     if (!Array.isArray(resolved?.work_task_bindings) ||
         !resolved.work_task_bindings.length) {
       throw new Error("native_v2_work_task_bindings_missing");
@@ -5749,7 +5817,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId]);
       const plan = planResult.rows[0]?.plan;
       const task = plan?.tasks?.find((candidate) => candidate.task_id === taskId);
-      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,v2_precommit_revalidation_digest,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND plan_id=$2 AND
@@ -5776,6 +5844,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ).toISOString(),
         v2_task_id: row.v2_task_id,
         v2_task_digest: row.v2_task_digest,
+        v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
       }));
       if (row.task_id !== taskId || row.agent_id !== agentId ||
           row.host_type !== hostType || row.host_task_id !== hostTaskId ||
@@ -5827,7 +5896,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY task_id FOR UPDATE`,
       [context.tenantId, context.workId, planId]);
-      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,v2_precommit_revalidation_digest,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND plan_id=$2 AND
@@ -5854,6 +5923,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           ).toISOString(),
           v2_task_id: row.v2_task_id,
           v2_task_digest: row.v2_task_digest,
+          v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
         }));
         if (row.task_id !== taskId || row.agent_id !== agentId ||
             row.host_type !== hostType || row.host_task_id !== hostTaskId ||
@@ -5900,7 +5970,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         client,
         context,
         v2TaskId,
+        { precommitRevalidationPlanId: planId },
       );
+      const v2PrecommitRevalidationDigest =
+        v2TaskBinding?.precommit_revalidation?.revalidation_digest || null;
+      const v2PrecommitRevalidation =
+        v2TaskBinding?.precommit_revalidation || null;
       const assignmentBinding = nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
@@ -5914,16 +5989,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
         lease_expires_at: leaseExpiresAt,
         v2_task_id: v2TaskId,
         v2_task_digest: v2TaskBinding?.v2_task_digest,
+        v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
       });
       const assignment = assignmentCapability(assignmentBinding);
       const assignmentDigest = assignmentCapabilityDigest(assignment);
       await client.query(`INSERT INTO core_continuity_native_agents
         (tenant_id,work_id,plan_id,task_id,agent_id,host_type,host_task_id,task_kind,task_digest,v2_task_id,
-         v2_task_digest,coordinator_session_fingerprint,assignment_capability_digest,bound_by,lease_expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+         v2_task_digest,v2_precommit_revalidation_digest,coordinator_session_fingerprint,
+         v2_precommit_revalidation,assignment_capability_digest,bound_by,lease_expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17)`,
       [context.tenantId, context.workId, planId, taskId, agentId, hostType, hostTaskId,
         task.kind, task.task_digest, v2TaskId, v2TaskBinding?.v2_task_digest || null,
-        coordinatorSessionFingerprint, assignmentDigest, context.actor, leaseExpiresAt]);
+        v2PrecommitRevalidationDigest,
+        coordinatorSessionFingerprint, JSON.stringify(v2PrecommitRevalidation),
+        assignmentDigest, context.actor, leaseExpiresAt]);
       const binding = {
         task_id: taskId,
         agent_id: agentId,
@@ -5933,6 +6012,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_digest: task.task_digest,
         ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
         ...(v2TaskBinding ? { v2_task_digest: v2TaskBinding.v2_task_digest } : {}),
+        ...(v2PrecommitRevalidationDigest ? {
+          v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
+        } : {}),
         ...(v2TaskBinding ? { v2_task_binding: v2TaskBinding } : {}),
         coordinator_session_fingerprint: coordinatorSessionFingerprint,
         assignment_capability_digest: assignmentDigest,
@@ -5955,6 +6037,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_digest: task.task_digest,
         ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
         ...(v2TaskBinding ? { v2_task_digest: v2TaskBinding.v2_task_digest } : {}),
+        ...(v2PrecommitRevalidationDigest ? {
+          v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
+        } : {}),
         assignment_capability_digest: assignmentDigest,
       });
       return {
@@ -6051,7 +6136,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           a.report,a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
-          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest
+          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest,
+          a.v2_precommit_revalidation_digest
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
         WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
@@ -6074,6 +6160,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ).toISOString(),
         v2_task_id: row.v2_task_id,
         v2_task_digest: row.v2_task_digest,
+        v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
       }));
       if (row.host_type !== reporterPresence.host_type) {
         throw new Error("native_agent_reporter_host_scope_mismatch");
@@ -6123,7 +6210,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
           a.lease_expires_at>clock_timestamp() AS lease_active,
-          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest
+          p.plan,p.status AS plan_status,a.v2_task_id,a.v2_task_digest,
+          a.v2_precommit_revalidation_digest
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
         WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
@@ -6160,6 +6248,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ).toISOString(),
         v2_task_id: row.v2_task_id,
         v2_task_digest: row.v2_task_digest,
+        v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
       }));
       if (
         row.assignment_capability_digest !== suppliedAssignmentDigest ||
