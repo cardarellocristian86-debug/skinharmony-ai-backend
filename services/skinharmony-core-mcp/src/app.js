@@ -2113,6 +2113,7 @@ const OAUTH_RECONNECT_DESCRIPTIONS = Object.freeze({
   missing_token: "Authentication is required; connect the OAuth account",
   expired_token: "Authentication expired; reconnect the OAuth account",
   insufficient_scope: "Additional OAuth permission is required; reconnect the account",
+  owner_authentication_required: "Owner authentication is required; reconnect the OAuth account",
   owner_authentication_stale: "Fresh owner authentication is required; reconnect the OAuth account",
 });
 
@@ -3332,9 +3333,25 @@ export function createApp(config, options = {}) {
         } catch {}
       }
       const reconnectDetails = oauthReconnectErrorDetails(error);
+      // A static host bearer can identify the installed application, but it
+      // cannot identify the human tenant owner. Previously this path returned
+      // a bare 403 for an owner-gated tool, leaving compatible MCP clients no
+      // standard way to upgrade the session. When OAuth is configured, return
+      // the RFC 9728 reconnect challenge instead. The retry still succeeds
+      // only after the OAuth subject is verified, server-bound to the tenant,
+      // and freshly bound to this exact request by elevateOAuthOwner.
+      const bearerOwnerUpgrade =
+        identity?.kind !== "oauth" &&
+        config.auth0Issuer &&
+        error?.oauthOwnerUpgradeRequired === true;
       const reconnectResult = identity?.kind === "oauth"
         ? oauthReconnectToolFailure(config, reconnectDetails, resourceMetadataPath)
-        : null;
+        : bearerOwnerUpgrade
+          ? oauthReconnectToolFailure(config, {
+            reason: "owner_authentication_required",
+            missingScopes: [],
+          }, resourceMetadataPath)
+          : null;
       if (reconnectResult) {
         const authChallenge = reconnectResult._meta["mcp/www_authenticate"][0];
         res.set("WWW-Authenticate", authChallenge);

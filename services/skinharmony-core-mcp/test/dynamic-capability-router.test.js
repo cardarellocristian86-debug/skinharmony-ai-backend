@@ -411,7 +411,11 @@ test("discovers, reads and owner-refreshes Nyra's persistent self-model through 
     owner_confirmed: true,
     confirmation_reference: "owner approved self model refresh",
     arguments: {},
-  }, { ...identity, ownerConfirmed: false }), /owner_confirmation_required/);
+  }, { ...identity, ownerConfirmed: false }), (error) => {
+    assert.match(error.message, /owner_confirmation_required/);
+    assert.equal(error.oauthOwnerUpgradeRequired, true);
+    return true;
+  });
   assert.equal(refreshCalls, 0);
 
   const refreshed = await router.core_capability_invoke({

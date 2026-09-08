@@ -747,7 +747,13 @@ export function createDynamicCapabilityHandlers({
         ownerConfirmationRequired &&
         (args.owner_confirmed !== true || identity.ownerConfirmed !== true)
       ) {
-        throw new Error("owner_confirmation_required");
+        // Preserve a private provenance marker so the MCP transport can offer
+        // an OAuth upgrade to a bearer-host. A handler-produced error with the
+        // same public message must never manufacture an authentication
+        // challenge.
+        const error = new Error("owner_confirmation_required");
+        error.oauthOwnerUpgradeRequired = true;
+        throw error;
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
       const callArgs = targetArguments(tool, args, identity);

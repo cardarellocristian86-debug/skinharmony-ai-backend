@@ -210,6 +210,26 @@ grant. Registered Good Mode/owner roles and OAuth scopes do not expand the
 configured app scopes or capabilities. Keep `core.admin` out of ordinary
 ChatGPT/Codex registrations unless the app is explicitly the policy operator.
 
+### Universal Owner confirmation
+
+Good Mode is not a customer requirement. A bearer credential identifies only
+the installed host application and remains sufficient for its bounded
+read/operator surface; it cannot prove which human accepted a consequential
+action.
+
+When a bearer host invokes an Owner-gated dynamic capability, the MCP server
+returns an RFC 9728 OAuth reconnect challenge **only when** `AUTH0_ISSUER` is
+configured. A compatible host can then use its normal **Reconnect** action and
+retry with a verified OAuth access token. Core subsequently requires an exact
+server-side OAuth-subject-to-tenant Owner binding, a registered OAuth host
+application/client id and capability ceiling, a fresh request-bound one-use
+confirmation, and the normal Core gate.
+
+Do not replace this with `owner_confirmed: true` on a bearer request. That
+field accompanies an already verified OAuth confirmation and cannot establish
+identity. Platform ownership is a separate, explicitly allowlisted OAuth
+subject policy; it is never inherited by ordinary tenant owners.
+
 ## Governed Continuity Fabric
 
 The Governed Continuity Fabric turns the first complete work request into a
