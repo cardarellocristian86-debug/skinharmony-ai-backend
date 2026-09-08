@@ -1088,7 +1088,11 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     intent_digest: intentDigest,
     status,
     progress_bp: progressBp,
-    checkpoint_available: checkpointAvailable,
+    // Checkpoint availability belongs to the preflight/dialogue projection.
+    // A governed continuation re-reads the same authoritative Work directly
+    // and therefore cannot reconstruct that transport-local bit. Keep it in
+    // the public context below, but never let it create false Work drift in
+    // the integrity digest.
     objective: boundedPublicText(work.objective, 500),
     work_next_action: boundedPublicText(work.next_action, 500),
     acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),

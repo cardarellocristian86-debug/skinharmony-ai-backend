@@ -2540,6 +2540,46 @@ test("covers the bound V2 task as well as the synthetic native ticket task", asy
   assert.equal(openedContinuations.length, 1);
 });
 
+test("keeps the Work integrity digest stable when continuation readback lacks dialogue checkpoint metadata", async () => {
+  const context = directiveContextFixture({
+    taskStatus: "completed",
+    acceptanceVerified: true,
+    evidenceVerified: true,
+  });
+  const preflight = preflightFixture();
+  preflight.structuredContent.work_preflight.nyra_control_context.nyra_dialogue = {
+    work: {
+      work_revision: 4,
+      intent_digest: INTENT_DIGEST,
+      checkpoint: { available: true },
+    },
+  };
+  const binding = {
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    work_revision: 4,
+    intent_digest: INTENT_DIGEST,
+  };
+  const dialogueProjection = (await harness({
+    preflightResult: preflight,
+    directiveContext: context,
+  }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent.orchestration_directive.work_context;
+  const continuationReadback = normalizeNyraDirectiveContext(
+    context,
+    identity(),
+    binding,
+  );
+
+  assert.equal(dialogueProjection.checkpoint_available, true);
+  assert.equal(continuationReadback.checkpoint_available, false);
+  assert.equal(dialogueProjection.context_digest, continuationReadback.context_digest);
+});
+
 test("keeps native V2 precommit scope fail-closed unless every scoped task is complete", async (t) => {
   const scopedTaskId = "e4c8e893-1a86-4ed3-bd85-5150d451af76";
   const cases = [
