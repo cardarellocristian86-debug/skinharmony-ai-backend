@@ -45,7 +45,10 @@ const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|co
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
 const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:manca|serve))/iu;
 const NEGATION = /\b(?:non|no|senza|never|do\s+not|don't)\b/iu;
-const EXPLICIT_READ_ONLY_FENCE = /\b(?:(?:in\s+)?sol[oa]\s+lettura|solo\s+(?:in\s+)?lettura|read[\s-]?only)\b/iu;
+// A user can express the read boundary either directly ("sola lettura") or
+// by explicitly excluding every effect ("senza fare nulla").  Both forms
+// must keep an otherwise global status question out of the Work/Ticket path.
+const EXPLICIT_READ_ONLY_FENCE = /\b(?:(?:in\s+)?sol[oa]\s+lettura|solo\s+(?:in\s+)?lettura|read[\s-]?only|(?:non|senza)\s+(?:fare|eseguire|avviare|creare|aprire)\s+(?:nulla|niente|azioni?|work|lavori))\b/iu;
 const CONDITION = /\b(?:se|if|unless|quando|when|solo\s+se|only\s+if)\b/iu;
 const HYPOTHETICAL = /\b(?:dicessi|direi|sarebbe|would|hypothetical|ipotetic\w*|esempio|example)\b/iu;
 // A prose question about Work must never be promoted to a Work-create turn.

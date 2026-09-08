@@ -780,6 +780,28 @@ test("answers bounded Nyra information questions without entering Work continuit
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
+test("keeps unbound canonical read questions in the read plane despite effect nouns", async () => {
+  for (const message of [
+    "Perché una richiesta di lettura non deve aprire ticket?",
+    "Posso aggiungere un'implementazione a un Work esistente senza duplicarlo?",
+    "Quali dati usi per dire che un Work è chiuso?",
+    "Non avviare azioni esterne: quali gate proteggono il deploy?",
+    "Riassumi i limiti operativi di Nyra in modo semplice.",
+  ]) {
+    const { handler, calls } = harness();
+    const response = await handler({ message, locale: "it" }, identity());
+    const payload = response.structuredContent;
+    assert.equal(payload.intent_routing.route.canonical_intent.operation_class, "READ_ONLY", message);
+    assert.equal(payload.action_policy.action_class, "NONE", message);
+    assert.equal(payload.action_policy.consequential_request_detected, false, message);
+    assert.equal(payload.orchestration_directive.ticket_request.required, false, message);
+    assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY", message);
+    assert.equal(calls.preflight.length, 1, message);
+    assert.equal(calls.preflight[0].args.read_only, true, message);
+    assert.doesNotMatch(payload.host_response_contract.reply_seed, /mi serve un solo Work canonico/i, message);
+  }
+});
+
 test("reads Nyra's persistent self-model without opening or binding a Work", async () => {
   const selfModel = {
     schema_version: "nyra_persistent_self_model_v1",
