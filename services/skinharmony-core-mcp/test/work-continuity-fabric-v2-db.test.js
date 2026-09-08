@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAcceptanceContract,
+  buildNativeV2TaskBinding,
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
   digest,
@@ -3314,6 +3315,157 @@ test("only a bound independent verifier can read redacted persisted acceptance c
     runtime.readNativeAgentAcceptanceContract(verifierIdentity, verifierInput),
     /native_agent_acceptance_contract_invalid/,
   );
+});
+
+test("legacy-null revalidation survives runtime acceptance-contract validation", async () => {
+  const clock = () => new Date("2026-09-08T18:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const v2TaskId = "11111111-1111-4111-8111-111111111111";
+  const sourcePlanId = "22222222-2222-4222-8222-222222222222";
+  const sourceEvidenceId = "33333333-3333-4333-8333-333333333333";
+  const v2Task = {
+    tenant_id: "tenant-a",
+    task_id: v2TaskId,
+    title: "Revalidate the frozen legacy task",
+    weight: 1,
+    required: true,
+    status: "completed",
+    acceptance_verified: true,
+    revision: 1,
+  };
+  let canonicalWorkId = null;
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "a".repeat(32),
+  }, {
+    pool,
+    now: clock,
+    nativeV2TaskBindingResolver: async (_client, source) => {
+      const binding = buildNativeV2TaskBinding({
+        ...v2Task,
+        work_id: canonicalWorkId,
+      });
+      const resolved = {
+        ...binding,
+        status: v2Task.status,
+        acceptance_verified: true,
+        revision: v2Task.revision,
+      };
+      if (source.closure_revalidation === true) {
+        return { ...resolved, work_task_bindings: [resolved] };
+      }
+      const material = {
+        schema_version: "native_v2_precommit_task_revalidation_v1",
+        tenant_id: "tenant-a",
+        work_id: canonicalWorkId,
+        task_id: v2TaskId,
+        v2_task_digest: binding.v2_task_digest,
+        task_revision: 1,
+        plan_id: source.precommit_revalidation_plan_id,
+        stale_gate_projection_digest: "4".repeat(64),
+        source_plan_id: sourcePlanId,
+        source_evidence_id: sourceEvidenceId,
+        source_evidence_digest: "5".repeat(64),
+        source_v2_task_digest_state: "legacy_null",
+        legacy_task_frozen_by: "release_join",
+      };
+      return {
+        ...resolved,
+        precommit_revalidation: { ...material, revalidation_digest: digest(material) },
+      };
+    },
+  });
+  const coordinator = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+      host_transport_session_fingerprint: "b".repeat(64),
+      transport_bound: true,
+      signature: `ags_${"a".repeat(32)}`,
+    },
+  };
+  const work = await runtime.ensure(coordinator, initialInput, { creationAuthorized: true });
+  canonicalWorkId = work.work_id;
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Build only." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify independently.",
+        dependencies: ["build"] },
+    ],
+    max_parallel: 2,
+    idempotency_key: "legacy-null-acceptance-contract",
+  };
+  const planned = await runtime.planNativeAgents(coordinator, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const childIdentity = (agentId, fingerprint) => ({
+    ...coordinator,
+    agentPresence: {
+      agent_id: agentId,
+      client_type: "codex",
+      host_kind: "codex_native",
+      session_fingerprint: fingerprint,
+      host_transport_session_fingerprint: fingerprint,
+      transport_bound: true,
+      signature: `ags_${fingerprint.slice(0, 32)}`,
+    },
+  });
+  const builderBinding = await runtime.bindNativeAgent(coordinator, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "build",
+    native_agent_id: "codex-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/legacy-build",
+  });
+  await runtime.reportNativeAgent(childIdentity("codex-builder", "1".repeat(64)), {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/legacy-build",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Builder complete.",
+      commit_sha: "a".repeat(40),
+      tests: [{ name: "focused", passed: true }],
+      evidence_refs: ["commit:a"],
+    },
+  });
+  const verifierBinding = await runtime.bindNativeAgent(coordinator, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "verify",
+    native_agent_id: "codex-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/legacy-verify",
+    v2_task_id: v2TaskId,
+  });
+  const read = await runtime.readNativeAgentAcceptanceContract(
+    childIdentity("codex-verifier", "2".repeat(64)),
+    {
+      work_id: work.work_id,
+      plan_id: planned.plan.plan_id,
+      native_agent_id: "codex-verifier",
+      host_task_id: "/root/legacy-verify",
+      assignment_capability: verifierBinding.assignment_capability,
+    },
+  );
+  assert.equal(read.schema_version, "native_agent_acceptance_contract_read_v1");
+  assert.equal(read.execution_authorized, false);
 });
 
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {

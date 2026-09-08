@@ -2843,8 +2843,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           persisted.revalidation_digest !== row.v2_precommit_revalidation_digest ||
           !SHA256_DIGEST.test(String(persisted.stale_gate_projection_digest || "")) ||
           (legacySourceFields.some(Boolean) && !legacySourceBound) ||
-          (legacySourceBound && (!UUID.test(String(persisted.source_plan_id || "")) ||
-            !UUID.test(String(persisted.source_evidence_id || "")) ||
+          (legacySourceBound && (!UUID_PATTERN.test(String(persisted.source_plan_id || "")) ||
+            !UUID_PATTERN.test(String(persisted.source_evidence_id || "")) ||
               !SHA256_DIGEST.test(String(persisted.source_evidence_digest || "")) ||
               !["exact", "legacy_null"].includes(persisted.source_v2_task_digest_state))) ||
           (persisted?.source_v2_task_digest_state === "legacy_null" &&
