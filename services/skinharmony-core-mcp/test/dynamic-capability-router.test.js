@@ -1836,7 +1836,12 @@ test("Nyra intent bridge executes only an authorized read in the exact catalog s
   const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
 
   const result = await router.nyra_intent_bridge(
-    nyraIntentBridgeArgs(tool.name, revision),
+    nyraIntentBridgeArgs(tool.name, revision, {
+      agent_id: "connected_ai_1",
+      client_type: "codex",
+      session_id: "intent_bridge_session_1",
+      environment: "production",
+    }),
     identity,
   );
 
