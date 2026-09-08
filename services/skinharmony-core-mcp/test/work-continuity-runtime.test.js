@@ -5,8 +5,10 @@ import {
   WORK_EVENT_TYPES,
   buildIntentAnchor,
   buildImpactMap,
+  bindNativeV2TaskSnapshotToEvaluation,
   createWorkContinuityRuntime,
   digest,
+  nativeV2PrecommitPendingTaskAllowed,
   normalizeNativePrecommitEvidence,
   normalizeSurfaces,
   stable,
@@ -108,6 +110,84 @@ test("native report schema admits exact server-digested precommit evidence", () 
   assert.deepEqual(closure.inputSchema.required, ["work_id", "plan_id", "idempotency_key"]);
   assert.deepEqual(persistedRejoin.inputSchema.required, ["work_id", "plan_id", "idempotency_key"]);
   assert.equal(Object.hasOwn(persistedRejoin.inputSchema.properties, "release"), false);
+});
+
+test("native V2 precommit permits only the server-recognized ticket task to remain pending", () => {
+  const ticketTaskId = "78022faf-df6d-4978-8969-8d8132592289";
+  const otherTaskId = "90f5af84-0dea-4afd-82dd-e4a0d010e36b";
+  const base = {
+    scope_valid: true,
+    precommit_ticket_task_id: ticketTaskId,
+    precommit_ticket_task_server_recognized: true,
+  };
+
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    pending_required_task_ids: [],
+  }), true);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    pending_required_task_ids: [ticketTaskId],
+  }), true);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    pending_required_task_ids: [ticketTaskId, otherTaskId],
+  }), false);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    pending_required_task_ids: [otherTaskId],
+  }), false);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    precommit_ticket_task_server_recognized: false,
+    pending_required_task_ids: [ticketTaskId],
+  }), false);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    scope_valid: false,
+    pending_required_task_ids: [ticketTaskId],
+  }), false);
+
+  const evaluation = {
+    closed: false,
+    missing: ["builder_target_commit_missing"],
+    precommit_verification: { ready: true, workspace_digest: "a".repeat(64) },
+    commit_ticket_ready: true,
+  };
+  const taskBinding = (taskId) => ({
+    task_id: taskId,
+    v2_task_digest: "b".repeat(64),
+    revision: 1,
+    required: true,
+    native_bindings: taskId === otherTaskId ? [{ native_task_id: "build" }] : [],
+  });
+  const snapshot = {
+    ...base,
+    work_valid: false,
+    missing: [`native_v2_task_acceptance_not_current:${ticketTaskId}`],
+    pending_required_task_ids: [ticketTaskId],
+    v2_task_governed: true,
+    scope_snapshot_digest: "c".repeat(64),
+    work_snapshot_digest: "d".repeat(64),
+    task_bindings: [taskBinding(ticketTaskId), taskBinding(otherTaskId)],
+  };
+  const ticketReady = bindNativeV2TaskSnapshotToEvaluation(evaluation, snapshot);
+  assert.equal(ticketReady.closed, false);
+  assert.equal(ticketReady.commit_ticket_ready, true);
+  assert.equal(ticketReady.precommit_verification.ready, true);
+  assert(ticketReady.missing.includes(
+    `native_v2_task_acceptance_not_current:${ticketTaskId}`));
+
+  const unrelatedPending = bindNativeV2TaskSnapshotToEvaluation(evaluation, {
+    ...snapshot,
+    pending_required_task_ids: [ticketTaskId, otherTaskId],
+    missing: [
+      `native_v2_task_acceptance_not_current:${ticketTaskId}`,
+      `native_v2_task_acceptance_not_current:${otherTaskId}`,
+    ],
+  });
+  assert.equal(unrelatedPending.commit_ticket_ready, false);
+  assert.equal(unrelatedPending.precommit_verification.ready, false);
 });
 
 test("precommit evidence is deterministic, ordered and rejects extra authority-shaped fields", () => {
