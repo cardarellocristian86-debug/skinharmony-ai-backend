@@ -630,6 +630,29 @@ test("uses the explicit Work selection mode as the same read-only path", async (
   assert.equal(response.structuredContent.orchestration_directive.source, "WORK_GALLERY");
 });
 
+test("answers a Gallery cleanliness question through the read-only selector", async () => {
+  const { handler, calls } = harness({
+    listWorkChoices: [{
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+      work_name: "Canonical Nyra Work",
+      status: "BLOCKED",
+    }],
+  });
+  const response = await handler({
+    message: "Non creare Work: dimmi solo se la Gallery è pulita.",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.listWorkChoices.length, 1);
+  assert.equal(payload.work_selection.total_count, 1);
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.orchestration_directive.ticket_request.required, false);
+  assert.match(payload.host_response_contract.reply_seed, /Gallery non è pulita/);
+});
+
 test("routes fresh advisory chat through the global read plane without Work or Core", async () => {
   let continuationCalls = 0;
   const { handler, calls } = harness({
