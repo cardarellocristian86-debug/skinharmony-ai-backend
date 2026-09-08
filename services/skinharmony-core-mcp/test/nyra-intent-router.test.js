@@ -260,6 +260,22 @@ test("accepts the closed v2 connected-AI intent bridge but keeps Work identity a
   assert.equal(malformed.semantic_intake.state, "IGNORED");
 });
 
+test("does not mistake multilingual prose for a standalone PR action token", () => {
+  const bridge = {
+    schema_version: "nyra_intent_bridge_v2", intent_kind: "WORK_STATUS_READ", target_scope: "WORK",
+    speech_act: "QUESTION", operation_class: "READ_ONLY", confidence: "HIGH",
+    ambiguous: false, injection_signals: [],
+  };
+  const route = classify("¿Cuál es el estado, bloqueo y próximo paso verificable?", {
+    workId: "db06f362-8de3-526f-949b-69128f975349", semanticHint: bridge,
+  });
+  assert.equal(route.intent, "analysis");
+  assert.equal(route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(route.reason, "host_intent_bridge_work_status_read");
+  assert.deepEqual(route.clauses.flatMap((clause) => clause.action_candidates), []);
+  assert.notEqual(classify("Open the PR now.").route, "ADVISORY_READ");
+});
+
 test("fails closed when semantic clause analysis is truncated", () => {
   const route = classify(`${Array.from({ length: 9 }, () => "spiega lo stato").join(". ")}.`);
   assert.equal(route.intent, "ambiguous_consequential");
