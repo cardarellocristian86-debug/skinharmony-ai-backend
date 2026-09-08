@@ -54,7 +54,8 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
   function clientFor({ activeClaim = false, fulfilled = false,
     scopeTasks = [], ticketTaskState = "planned", candidate = taskId,
     freshGate = false, priorEvidence = true, competingPlanned = false,
-    evidenceRows = null, missingAncestor = false, cyclicAncestor = false } = {}) {
+    evidenceRows = null, missingAncestor = false, cyclicAncestor = false,
+    releaseJoin = true } = {}) {
     const scoped = { ...emptyScope, tasks: scopeTasks };
     const evaluated = { ...evaluation, native_v2_precommit_scope: scoped };
     const plans = [
@@ -128,14 +129,17 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
           return fulfilled ? { rows: [{ ticket_id: "hnt_existing" }], rowCount: 1 }
             : { rows: [], rowCount: 0 };
         }
-        if (q.startsWith("SELECT n.plan_id,n.evidence_id,n.evidence_digest FROM tenant_work_native_verifier_evidence")) {
+        if (q.startsWith("SELECT n.plan_id,n.evidence_id,n.evidence_digest,n.v2_task_digest FROM tenant_work_native_verifier_evidence")) {
           assert.match(q, /e\.kind='native_verifier_terminal_report'/);
           assert.match(q, /e\.digest=n\.evidence_digest/);
-          assert.deepEqual(parameters[4], [oldPlanId, ancestorPlanId],
+          assert.doesNotMatch(q, /n\.v2_task_digest=\$\d/,
+            "digest-mismatched lineage evidence must remain visible to fail closed");
+          assert.deepEqual(parameters[3], [oldPlanId, ancestorPlanId],
             "legacy evidence search must contain only the stale gate and its ancestors");
           const rows = evidenceRows || (priorEvidence ? [{ plan_id: ancestorPlanId,
-            evidence_id: evidenceId, evidence_digest: evidenceDigest }] : []);
-          const filtered = rows.filter((row) => parameters[4].includes(row.plan_id));
+            evidence_id: evidenceId, evidence_digest: evidenceDigest,
+            v2_task_digest: null }] : []);
+          const filtered = rows.filter((row) => parameters[3].includes(row.plan_id));
           return { rows: filtered, rowCount: filtered.length };
         }
         if (q.startsWith("SELECT c.claim_id,")) {
@@ -145,13 +149,19 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
                 reconciled_ticket_present: false }], rowCount: 1 }
             : { rows: [], rowCount: 0 };
         }
+        if (q.startsWith("SELECT EXISTS( SELECT 1 FROM core_continuity_release_joins")) {
+          assert.deepEqual(parameters, [tenantId, workId]);
+          return { rows: [{ release_join_present: releaseJoin }], rowCount: 1 };
+        }
         throw new Error(`revalidation_test_query_unhandled:${q.slice(0, 120)}`);
       },
     };
   }
   const store = createWorkContinuityV2Store({ pool: { query: async () => ({ rows: [] }) } });
   const source = { server_owned: true, tenant_id: tenantId, work_id: workId,
-    task_id: taskId, precommit_revalidation_plan_id: newPlanId };
+    task_id: taskId, precommit_revalidation_plan_id: newPlanId,
+    legacy_task_frozen_by: "caller_claim",
+    source_evidence_id: "99999999-9999-4999-8999-999999999999" };
   const allowed = await store.resolveNativeTaskBindingWithClient(clientFor(), source);
   assert.equal(allowed.precommit_revalidation.plan_id, newPlanId);
   assert.equal(allowed.precommit_revalidation.task_id, taskId);
@@ -159,6 +169,8 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
   assert.equal(allowed.precommit_revalidation.source_plan_id, ancestorPlanId);
   assert.equal(allowed.precommit_revalidation.source_evidence_id, evidenceId);
   assert.equal(allowed.precommit_revalidation.source_evidence_digest, evidenceDigest);
+  assert.equal(allowed.precommit_revalidation.source_v2_task_digest_state, "legacy_null");
+  assert.equal(allowed.precommit_revalidation.legacy_task_frozen_by, "release_join");
   assert.match(allowed.precommit_revalidation.revalidation_digest, /^[a-f0-9]{64}$/);
   const { revalidation_digest: allowedDigest, ...allowedMaterial } =
     allowed.precommit_revalidation;
@@ -167,27 +179,55 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
     ...allowedMaterial,
     source_evidence_digest: "9".repeat(64),
   }), "source evidence substitution must invalidate exact replay");
+  assert.notEqual(allowedDigest, stableDigest({
+    ...allowedMaterial,
+    source_v2_task_digest_state: "exact",
+  }), "legacy-null state substitution must invalidate exact replay");
+  assert.notEqual(allowedDigest, stableDigest({
+    ...allowedMaterial,
+    legacy_task_frozen_by: "caller_claim",
+  }), "freeze authority substitution must invalidate exact replay");
 
   const nearerEvidenceId = "88888888-8888-4888-8888-888888888887";
   const nearest = await store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [
-    { plan_id: ancestorPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest },
-    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64) },
+    { plan_id: ancestorPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest,
+      v2_task_digest: null },
+    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64),
+      v2_task_digest: taskBinding.v2_task_digest },
   ] }), source);
   assert.equal(nearest.precommit_revalidation.source_plan_id, oldPlanId);
   assert.equal(nearest.precommit_revalidation.source_evidence_id, nearerEvidenceId);
+  assert.equal(nearest.precommit_revalidation.source_v2_task_digest_state, "exact");
+  assert.equal(nearest.precommit_revalidation.legacy_task_frozen_by, undefined);
 
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ activeClaim: true }), source), /native_v2_task_revalidation_claim_invalid/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ priorEvidence: false }), source),
   /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(
+    clientFor({ releaseJoin: false }), source),
+  /native_v2_task_revalidation_evidence_required/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [{
     plan_id: "99999999-9999-4999-8999-999999999999",
-    evidence_id: evidenceId, evidence_digest: evidenceDigest,
+    evidence_id: evidenceId, evidence_digest: evidenceDigest, v2_task_digest: null,
+  }] }), source), /native_v2_task_revalidation_evidence_required/);
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [{
+    plan_id: ancestorPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest,
+    v2_task_digest: "9".repeat(64),
   }] }), source), /native_v2_task_revalidation_evidence_required/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [
-    { plan_id: oldPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest },
-    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64) },
+    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64),
+      v2_task_digest: "9".repeat(64) },
+    { plan_id: ancestorPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest,
+      v2_task_digest: null },
+  ] }), source), /native_v2_task_revalidation_evidence_required/,
+  "a newer mismatched digest must not downgrade to an older legacy-null proof");
+  await assert.rejects(store.resolveNativeTaskBindingWithClient(clientFor({ evidenceRows: [
+    { plan_id: oldPlanId, evidence_id: evidenceId, evidence_digest: evidenceDigest,
+      v2_task_digest: null },
+    { plan_id: oldPlanId, evidence_id: nearerEvidenceId, evidence_digest: "8".repeat(64),
+      v2_task_digest: null },
   ] }), source), /native_v2_task_revalidation_evidence_required/);
   await assert.rejects(store.resolveNativeTaskBindingWithClient(
     clientFor({ missingAncestor: true }), source),

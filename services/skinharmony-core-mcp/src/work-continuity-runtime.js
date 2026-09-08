@@ -2829,7 +2829,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       const material = persisted && { ...persisted };
       if (material) delete material.revalidation_digest;
       const legacySourceFields = [persisted?.source_plan_id,
-        persisted?.source_evidence_id, persisted?.source_evidence_digest];
+        persisted?.source_evidence_id, persisted?.source_evidence_digest,
+        persisted?.source_v2_task_digest_state];
       const legacySourceBound = legacySourceFields.every(Boolean);
       if (!persisted || persisted.schema_version !==
             "native_v2_precommit_task_revalidation_v1" ||
@@ -2844,7 +2845,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
           (legacySourceFields.some(Boolean) && !legacySourceBound) ||
           (legacySourceBound && (!UUID.test(String(persisted.source_plan_id || "")) ||
             !UUID.test(String(persisted.source_evidence_id || "")) ||
-            !SHA256_DIGEST.test(String(persisted.source_evidence_digest || "")))) ||
+              !SHA256_DIGEST.test(String(persisted.source_evidence_digest || "")) ||
+              !["exact", "legacy_null"].includes(persisted.source_v2_task_digest_state))) ||
+          (persisted?.source_v2_task_digest_state === "legacy_null" &&
+            persisted?.legacy_task_frozen_by !== "release_join") ||
+          (persisted?.legacy_task_frozen_by !== undefined &&
+            persisted?.source_v2_task_digest_state !== "legacy_null") ||
           digest(material) !== persisted.revalidation_digest) {
         throw new Error("native_agent_acceptance_contract_binding_changed");
       }
