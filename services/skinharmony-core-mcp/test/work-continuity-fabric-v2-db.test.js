@@ -966,8 +966,9 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_native_agents")) {
       const [tenantId, workId, planId, taskId, agentId, hostType, hostTaskId,
-        taskKind, taskDigest, v2TaskId, v2TaskDigest, coordinatorFingerprint,
-        assignmentCapabilityDigest, boundBy, leaseExpiresAt] = parameters;
+        taskKind, taskDigest, v2TaskId, v2TaskDigest, v2PrecommitRevalidationDigest,
+        coordinatorFingerprint, v2PrecommitRevalidationJson, assignmentCapabilityDigest,
+        boundBy, leaseExpiresAt] = parameters;
       this.nativeAgents.set(key(tenantId, planId, taskId), {
         tenant_id: tenantId,
         work_id: workId,
@@ -980,6 +981,9 @@ class ContinuityPool {
         task_digest: taskDigest,
         v2_task_id: v2TaskId,
         v2_task_digest: v2TaskDigest,
+        v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
+        v2_precommit_revalidation: v2PrecommitRevalidationJson
+          ? JSON.parse(v2PrecommitRevalidationJson) : null,
         coordinator_session_fingerprint: coordinatorFingerprint,
         assignment_capability_digest: assignmentCapabilityDigest,
         native_session_fingerprint: null,
@@ -992,7 +996,7 @@ class ContinuityPool {
       });
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,a.host_type,a.host_task_id,")) {
+    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.v2_task_digest,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
         candidate.tenant_id === tenantId &&
@@ -1006,6 +1010,7 @@ class ContinuityPool {
           task_digest: row.task_digest,
           v2_task_id: row.v2_task_id,
           v2_task_digest: row.v2_task_digest,
+          v2_precommit_revalidation_digest: row.v2_precommit_revalidation_digest,
           host_type: row.host_type,
           host_task_id: row.host_task_id,
           coordinator_session_fingerprint: row.coordinator_session_fingerprint,
