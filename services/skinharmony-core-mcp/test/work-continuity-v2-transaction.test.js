@@ -728,6 +728,10 @@ class AtomicWorkPool {
     }
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_participants")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) return { rows: [], rowCount: 0 };
+    if (q.startsWith("SELECT b.*,") &&
+        q.includes("FROM tenant_work_generic_evidence_reconciliation_batch_v3 b")) {
+      return { rows: [], rowCount: 0 };
+    }
     throw new Error(`fake_query_unhandled:${q}`);
   }
 }

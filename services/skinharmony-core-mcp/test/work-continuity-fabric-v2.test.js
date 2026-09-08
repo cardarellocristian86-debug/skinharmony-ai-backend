@@ -16,6 +16,7 @@ import {
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import { validateToolArguments } from "../src/schema-validation.js";
 
 const COMMIT = "c".repeat(40);
 const COORDINATOR_SESSION = "a".repeat(64);
@@ -306,8 +307,34 @@ test("owner-recorded architecture amendments replace only exact stale acceptance
 
 test("bootstrap text limits are equivalent across direct V2, legacy Intent Anchor and Nyra contracts", () => {
   const direct = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_v2_create");
+  const queued = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "tenant_work_queue_create_v3");
   const legacy = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_start_or_resume");
   assert.equal(direct.inputSchema.additionalProperties, false);
+  assert.deepEqual(direct.inputSchema.properties.parent_work_id, {
+    type: "string",
+    format: "uuid",
+  });
+  assert.deepEqual(queued.inputSchema.properties.parent_work_id,
+    direct.inputSchema.properties.parent_work_id);
+  const childWorkId = "11111111-1111-4111-8111-111111111111";
+  assert.doesNotThrow(() => validateToolArguments(direct, {
+    intent_type: "CREATE_WORK",
+    request_id: "child-work-request",
+    review_id: "22222222-2222-4222-8222-222222222222",
+    review_digest: "a".repeat(64),
+    review_decision: "CREATE_CHILD_WORK",
+    project_id: "nyra-core",
+    parent_work_id: childWorkId,
+    session_id: "child-work-session",
+    work_name: "Bounded child implementation",
+    work_type: "software_git",
+    idea: "Implement one additional bounded correction",
+    objective: "Preserve the reviewed parent-child relationship",
+    architecture: {},
+    next_action: "Verify the bounded correction",
+    acceptance_criteria: ["The child remains linked to its reviewed parent"],
+    tasks: [{ title: "Implement and verify the bounded correction" }],
+  }));
   assert.deepEqual(direct.inputSchema.properties.acceptance_criteria, {
     type: "array",
     minItems: 1,
