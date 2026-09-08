@@ -1968,6 +1968,7 @@ function workSelectionRequested(args, message, intentRoute = null) {
   if (boundedWorkId(args?.work_id) || args?.work_bootstrap !== undefined ||
       args?.continuation_operation !== undefined) return false;
   if (args?.work_selection_mode === "list") return true;
+  if (intentRoute?.reason === "blocked_work_gallery_discovery_read") return true;
   // An attached v2 bridge can make a multilingual Gallery question precise
   // without an ever-growing phrase dictionary. It remains only a proposal:
   // the router must have accepted its strict read-only envelope and the
@@ -2169,16 +2170,20 @@ function controlRoomReplySeed(locale, controlRoom) {
     : `Stato attuale Control Room: ${statuses}. Richieste governate: ${requests}. Questa è una lettura: non ho aperto, selezionato, ripreso o creato alcun Work, ticket o azione.`;
 }
 
-function workSelectionReplySeed(locale, selection, message = "") {
+function workSelectionReplySeed(locale, selection, message = "", selectionIntent = null) {
   const english = locale === "en";
   if (!selection.available) return english
     ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
     : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
   if (selection.total_count === 0) return english
-    ? (GALLERY_CLEANLINESS_PATTERN.test(message)
+    ? (selectionIntent === "blocked_work_next_step_read"
+      ? "There are no blocked Works in the visible Gallery. No Work was resumed or changed."
+      : GALLERY_CLEANLINESS_PATTERN.test(message)
       ? "The Gallery is clean: there are no active Works. No Work was resumed or changed."
       : "There are no active Works available to select. No Work was resumed or changed.")
-    : (GALLERY_CLEANLINESS_PATTERN.test(message)
+    : (selectionIntent === "blocked_work_next_step_read"
+      ? "Non risultano Work bloccati nella Gallery visibile. Non ho ripreso né modificato alcun Work."
+      : GALLERY_CLEANLINESS_PATTERN.test(message)
       ? "The Gallery is not clean: the visible active Works are shown in the read-only selector. No Work was resumed or changed."
       : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.");
   if (!selection.choices.length) return english
@@ -2198,6 +2203,9 @@ function workSelectionReplySeed(locale, selection, message = "") {
   const continuation = selection.has_more
     ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")
     : "";
+  if (selectionIntent === "blocked_work_next_step_read") return english
+    ? `Blocked Works found: ${visible}. Choose one in the selector so I can read its verified next step from that Work; I did not resume or change any Work.${continuation}`
+    : `Work bloccati trovati: ${visible}. Scegline uno nel selettore per leggere da quel Work il prossimo passo verificabile; non ho ripreso né modificato alcun Work.${continuation}`;
   return english
     ? (GALLERY_CLEANLINESS_PATTERN.test(message)
       ? `The Gallery is not clean: ${selection.total_count} active Work${selection.total_count === 1 ? " is" : "s are"} visible in the read-only selector. No Work was resumed or changed.${continuation}`
@@ -2207,7 +2215,7 @@ function workSelectionReplySeed(locale, selection, message = "") {
       : `Work aperti: ${visible}. Non ho ripreso né modificato alcun Work.${continuation}`);
 }
 
-async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {
+async function readWorkSelection(listWorkChoices, identity, projectId, cursor, statusFilter = null) {
   if (typeof listWorkChoices !== "function") {
     return Object.freeze({
       available: false,
@@ -2219,7 +2227,11 @@ async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {
   }
   try {
     const value = await listWorkChoices(identity, projectId ? { project_id: projectId } : {});
-    const allChoices = normalizeWorkSelectionChoices(value, projectId);
+    const normalizedChoices = normalizeWorkSelectionChoices(value, projectId);
+    const allChoices = statusFilter
+      ? Object.freeze(normalizedChoices.filter((choice) =>
+        String(choice.status || "").toUpperCase() === statusFilter))
+      : normalizedChoices;
     const offset = Math.min(cursor, allChoices.length);
     const page = allChoices.slice(offset, offset + MAX_WORK_SELECTION_PAGE_SIZE)
       .map((choice, index) => Object.freeze({
@@ -2257,12 +2269,14 @@ async function workSelectionResult({
   projectId,
   workSelectionCursor,
   listWorkChoices,
+  selectionIntent = null,
 }) {
   const selection = await readWorkSelection(
     listWorkChoices,
     identity,
     projectId,
     parseWorkSelectionCursor(workSelectionCursor),
+    selectionIntent === "blocked_work_next_step_read" ? "BLOCKED" : null,
   );
   const selectionRequired = selection.available && selection.choices.length > 0;
   const work = Object.freeze({
@@ -2307,7 +2321,7 @@ async function workSelectionResult({
       }),
     }),
   });
-  const replySeed = workSelectionReplySeed(locale, selection, message);
+  const replySeed = workSelectionReplySeed(locale, selection, message, selectionIntent);
   const nextAction = selectionRequired
     ? (locale === "en" ? "Choose one Work in the selector." : "Scegli un Work nel selettore.")
     : null;
@@ -2429,8 +2443,8 @@ function introspectionReplySeed(language, intent, selfModel, readback) {
       : `To work better I need: ${missing.join(", ") || "no verified gap"}. Next recommended capability: ${selfModel.next_recommended_capability || "unavailable"}.`;
   }
   return italian
-    ? `Sono Nyra: coordino in modo governato, mentre Universal Core è l'autorità finale. Capacità verificate disponibili: ${available.join(", ") || "nessuna"}. Limite: non autorizzo né eseguo effetti esterni; ${missing.length ? `mi mancano ${missing.join(", ")}.` : "non risultano gap verificati."}`
-    : `I am Nyra: I coordinate under governance while Universal Core is the final authority. Verified available capabilities: ${available.join(", ") || "none"}. Limit: I neither authorize nor execute external effects; ${missing.length ? `I still need ${missing.join(", ")}.` : "no verified gaps are recorded."}`;
+    ? `Sono Nyra: raccolgo il contesto e coordino il prossimo passo governato, mentre Universal Core verifica policy ed evidenze ed è l'autorità finale. Capacità verificate disponibili: ${available.join(", ") || "nessuna"}; non autorizzo né eseguo effetti esterni e ${missing.length ? `mi mancano ${missing.join(", ")}.` : "non risultano gap verificati."}`
+    : `I am Nyra: I collect context and coordinate the next governed step, while Universal Core verifies policy and evidence and is the final authority. Verified available capabilities: ${available.join(", ") || "none"}; I neither authorize nor execute external effects and ${missing.length ? `I still need ${missing.join(", ")}.` : "no verified gaps are recorded."}`;
 }
 
 async function advisoryConversationResult({
@@ -2872,6 +2886,8 @@ export function createNyraConverseHandler({
         projectId: boundedProjectId(args.project_id),
         workSelectionCursor: args.work_selection_cursor,
         listWorkChoices,
+        selectionIntent: intentRoute.reason === "blocked_work_gallery_discovery_read"
+          ? "blocked_work_next_step_read" : intentRoute.intent,
       });
     }
     if (["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(intentRoute.route)) {

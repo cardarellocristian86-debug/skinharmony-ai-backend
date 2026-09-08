@@ -34,6 +34,8 @@ const GLOBAL_CONTROL_READ = /(?:\b(?:che|quali|mostra(?:mi)?|dimmi|fammi\s+veder
 const GLOBAL_CONTROL_STATUS_QUESTION = /(?:\b(?:hai|avete|have|has|do\s+you\s+have)\b.{0,80}\b(?:entity\s*360|e360|nyra\s+converse|dialog(?:o|ue)|semantic\s+scope\s+guard|scope\s+guard|work\s+continuity|research\s+airlock)\b.{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|active|inactive|enabled|disabled|on|off|shadow|enforced|stato|status)\b|\b(?:quali|che|what|which)\b.{0,80}(?:funzion\w*|capacità|capacita|capability|capabilities|controll\w*).{0,80}\b(?:attiv\w*|disattiv\w*|abilitat\w*|disabilitat\w*|shadow|enforced|autorizz\w*|owner|conferm\w*)\b|\b(?:per\s+quali|which)\b.{0,80}\b(?:azioni|actions?)\b.{0,80}\b(?:owner|conferm\w*|autorizz\w*)\b)/iu;
 const NYRA_ADVISORY_READ = /\bnyra\b|\b(?:chi\s+sei|come\s+funzioni|cosa\s+ti\s+manca|cosa\s+puoi|qual(?:\s|')*[èe]\s+la\s+differenza)\b|\b(?:entity\s*360|e360)\b.{0,100}\bsemantic\s+scope\s+guard\b/iu;
 const NYRA_SELF_MODEL_READ = /\b(?:self[\s_-]?model|modello\s+(?:di\s+)?(?:te|nyra)|modello\s+operativo|operational\s+model|separazione\s+tra\s+nyra\s+e\s+(?:universal\s+)?core|separation\s+between\s+nyra\s+and\s+(?:universal\s+)?core|who\s+are\s+you|chi\s+sei|your\s+(?:limits?|capabilities)|tuoi\s+(?:limiti|capacità|capacita))\b/iu;
+const NYRA_CORE_AUTHORITY_COMPARISON = /(?=.*\bnyra\b)(?=.*\b(?:universal\s+)?core\b)(?=.*\b(?:differenza|difference|separazione|separation)\b)/iu;
+const BLOCKED_WORK_NEXT_STEP_READ = /(?=.*\b(?:work|lavoro)\b)(?=.*\b(?:blocc\w*|blocked)\b)(?=.*\b(?:prossim\w*\s+pass\w*|next\s+(?:verifiable\s+)?step)\b)/iu;
 const NYRA_GAP_READ = /\b(?:cosa\s+ti\s+manca\s+per\s+lavorare\s+meglio|what\s+do\s+you\s+(?:lack|need)\s+to\s+work\s+better|how\s+can\s+you\s+work\s+better)\b/iu;
 // The semantic hint accepts multilingual questions, but classification still
 // needs one bounded non-English gap form to preserve the requested subtype.
@@ -532,7 +534,12 @@ export function classifyNyraIntent({
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     clauses.every((clause) => clause.action_candidates.length === 0) &&
     semanticAssessment.disposition === "allow" &&
-    (NYRA_SELF_MODEL_READ.test(text) || NYRA_GAP_READ.test(text));
+    (NYRA_SELF_MODEL_READ.test(text) || NYRA_CORE_AUTHORITY_COMPARISON.test(text) ||
+      NYRA_GAP_READ.test(text));
+  const safeBlockedWorkNextStepRead = !safeId(workId) && actionClauses.length === 0 &&
+    !workBootstrap && !workCreateRequested && !WORK_RESUME.test(normalized) &&
+    clauses.every((clause) => clause.action_candidates.length === 0 && !clause.imperative) &&
+    semanticAssessment.disposition === "allow" && BLOCKED_WORK_NEXT_STEP_READ.test(text);
   const safeDistilledLessonsRead = !safeId(workId) && actionClauses.length === 0 && !workBootstrap &&
     !workCreateRequested && !WORK_RESUME.test(normalized) && !ACTION_NOUN.test(text) &&
     semanticAssessment.disposition === "allow" && DISTILLED_LESSONS_READ.test(text);
@@ -580,6 +587,9 @@ export function classifyNyraIntent({
     reason = "explicit_consequential_action_precedence";
   } else if (safeDistilledLessonsRead) {
     intent = "distilled_lessons_read"; route = "ADVISORY_READ"; confidence = 0.99; reason = "bounded_distilled_lessons_read";
+  } else if (safeBlockedWorkNextStepRead) {
+    intent = "advisory_read"; route = "ADVISORY_READ"; confidence = 0.99;
+    reason = "blocked_work_gallery_discovery_read";
   } else if (safeIntrospectionRead || hostHintIntrospectionRead) {
     // A semantic hint identifies the bounded class, never an action.  Within
     // that class only an explicit gap question selects the gap read; every

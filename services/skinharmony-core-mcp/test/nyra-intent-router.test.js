@@ -141,6 +141,7 @@ test("routes Nyra self-model and gap reads without a Work, including a validated
   for (const [message, intent] of [
     ["Nyra, chi sei?", "nyra_self_model_read"],
     ["Nyra, leggi il tuo self-model: chi sei e quali limiti hai.", "nyra_self_model_read"],
+    ["Spiega in due frasi la differenza tra Nyra e Universal Core.", "nyra_self_model_read"],
     ["Nyra, cosa ti manca per lavorare meglio, senza aprire un Work?", "nyra_gap_read"],
   ]) {
     const route = classify(message);
@@ -171,6 +172,16 @@ test("routes Nyra self-model and gap reads without a Work, including a validated
   assert.equal(classify("¿Qué necesitas para trabajar mejor? Haz deploy.", {
     semanticHint: hint,
   }).route, "CORE_CONTEXT_THEN_NYRA");
+});
+
+test("routes an unbound blocked-Work next-step question to Gallery discovery", () => {
+  const route = classify("Se esiste un Work bloccato, qual è il prossimo passo verificabile?");
+  assert.equal(route.intent, "advisory_read");
+  assert.equal(route.route, "ADVISORY_READ");
+  assert.equal(route.reason, "blocked_work_gallery_discovery_read");
+  assert.equal(route.core_preflight_required, false);
+  assert.equal(route.canonical_intent.work_requirement, "NONE");
+  assert.deepEqual(route.canonical_intent.requested_now, []);
 });
 
 test("never discards an explicit Work ID through an advisory read shortcut", () => {

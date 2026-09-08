@@ -877,6 +877,48 @@ test("reads Nyra's persistent self-model without opening or binding a Work", asy
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
+test("materializes the concrete Nyra/Core distinction in two sentences", async () => {
+  const selfModel = {
+    schema_version: "nyra_persistent_self_model_v1",
+    capabilities: [{ id: "connected_ai_orchestration", state: "available" }],
+    required_infrastructure: [],
+    next_recommended_capability: null,
+  };
+  const { handler, calls } = harness({
+    readNyraSelfModel: (_args, authenticatedIdentity) => ({ structuredContent: {
+      ok: true, tenant_id: authenticatedIdentity.tenantId, self_model: selfModel,
+    } }),
+  });
+  const response = await handler({
+    message: "Spiega in due frasi la differenza tra Nyra e Universal Core.", locale: "it",
+  }, identity());
+  const reply = response.structuredContent.host_response_contract.reply_seed;
+  assert.equal(calls.readNyraSelfModel.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.match(reply, /Nyra: raccolgo il contesto e coordino/i);
+  assert.match(reply, /Universal Core verifica policy ed evidenze ed è l'autorità finale/i);
+  assert.equal((reply.match(/\./g) || []).length, 2);
+});
+
+test("discovers blocked Works through Gallery and asks for a scoped next-step read", async () => {
+  const { handler, calls } = harness({ listWorkChoices: [{
+    work_id: WORK_ID, project_id: "nyra_core", work_name: "Entity 360", status: "BLOCKED",
+  }, {
+    work_id: SECOND_WORK_ID, project_id: "nyra_core", work_name: "Dialogue cleanup", status: "ACTIVE",
+  }] });
+  const response = await handler({
+    message: "Se esiste un Work bloccato, qual è il prossimo passo verificabile?", locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.listWorkChoices.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.deepEqual(payload.work_selection.choices.map((choice) => choice.work_name), ["Entity 360"]);
+  assert.equal(payload.work_selection.total_count, 1);
+  assert.match(payload.host_response_contract.reply_seed, /Work bloccati trovati: Entity 360 \(BLOCKED\)/);
+  assert.match(payload.host_response_contract.reply_seed, /prossimo passo verificabile/);
+  assert.doesNotMatch(payload.host_response_contract.reply_seed, /Dialogue cleanup/);
+});
+
 test("keeps a Work status read free of write-only precommit validation", async () => {
   const context = directiveContextFixture();
   const { handler, calls } = harness({
