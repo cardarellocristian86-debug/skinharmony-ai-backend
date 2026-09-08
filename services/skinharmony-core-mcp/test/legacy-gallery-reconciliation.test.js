@@ -209,6 +209,18 @@ class ReconciliationPool {
         q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) {
       return { rows: params[1] === SOURCE ? this.leases.map((row) => ({ ...row })) : [] };
     }
+    if (q.startsWith("SELECT r.status AS run_status,r.plan, a.status AS assignment_status,a.task_contract FROM core_nyra_autopilot_runs r")) {
+      if (params[1] !== SOURCE) return { rows: [] };
+      return { rows: this.autopilotAssignments.map((assignment) => {
+        const run = this.autopilotRuns.find((item) => item.run_id === assignment.run_id) || {};
+        return {
+          run_status: run.status || null,
+          plan: run.plan || null,
+          assignment_status: assignment.status,
+          task_contract: assignment.task_contract || null,
+        };
+      }) };
+    }
     if (q.startsWith("SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches") ||
         q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
       return { rows: params[1] === SOURCE ? this.branches.map((row) => ({ ...row })) : [] };
