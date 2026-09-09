@@ -96,7 +96,9 @@ export function applyPlatformOwner(identity, config = {}) {
     identity?.oauthOwnerBound !== true ||
     config.platformOwnerAdminEnforced !== true ||
     config.platformOwnerEmergencyStop === true ||
-    !(config.platformOwnerSubjects || []).includes(identity.subject)
+    !(config.platformOwnerSubjects || []).includes(identity.subject) ||
+    String(config.oauthOwnerTenantBindings?.[identity.subject] || "") !==
+      String(identity.tenantId || "")
   ) return identity;
   return { ...identity, platformOwner: true };
 }

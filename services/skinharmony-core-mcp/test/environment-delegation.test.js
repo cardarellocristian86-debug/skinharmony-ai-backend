@@ -178,12 +178,20 @@ test("staging re-derives platform administration from its own allowlist after a 
     platformOwnerAdminEnforced: true,
     platformOwnerEmergencyStop: false,
     platformOwnerSubjects: ["google-oauth2|owner"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": TENANT_ID },
   });
   assert.equal(stagingIdentity.platformOwner, true);
   assert.equal(applyPlatformOwner(verified.identity, {
     platformOwnerAdminEnforced: true,
     platformOwnerEmergencyStop: false,
     platformOwnerSubjects: ["google-oauth2|someone-else"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": TENANT_ID },
+  }).platformOwner, undefined);
+  assert.equal(applyPlatformOwner(verified.identity, {
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+    platformOwnerSubjects: ["google-oauth2|owner"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": "another-tenant" },
   }).platformOwner, undefined);
 });
 

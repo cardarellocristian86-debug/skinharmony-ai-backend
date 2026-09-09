@@ -1621,6 +1621,11 @@ export function buildReadiness(config = {}, options = {}) {
     config.nyraGovernedContinueConfigurationValid === true &&
     governedMultiHostRegistryConfigured &&
     governedMultiHostSigningConfigured;
+  const platformAdministrationRequired =
+    Array.isArray(config.platformOwnerSubjects) &&
+    config.platformOwnerSubjects.length > 0;
+  const platformAdministrationConfigurationValid =
+    config.platformOwnerAdminConfigurationValid !== false;
   // A governed conversational continuation is meaningful only when its
   // server-side reference store is durable and initialized.  Do not report a
   // production service ready when `nyra_continue` would immediately fail.
@@ -1696,6 +1701,14 @@ export function buildReadiness(config = {}, options = {}) {
       ready: !governedMultiHostRequired || (
         governedMultiHostConfigured && governedMultiHostProtocolEnabled
       ),
+    },
+    platform_administration: {
+      required: platformAdministrationRequired,
+      configured: platformAdministrationConfigurationValid,
+      ready: !platformAdministrationRequired ||
+        platformAdministrationConfigurationValid,
+      enforced: config.platformOwnerAdminEnforced === true,
+      emergency_stop: config.platformOwnerEmergencyStop === true,
     },
     nyra_continuation_store: {
       required: nyraContinuationStoreRequired,
@@ -1793,6 +1806,9 @@ export function buildReadiness(config = {}, options = {}) {
   }
   if (governedMultiHostRequired && !governedMultiHostProtocolEnabled) {
     reasons.push("governed_multi_host_protocol_disabled");
+  }
+  if (platformAdministrationRequired && !platformAdministrationConfigurationValid) {
+    reasons.push("platform_owner_admin_configuration_invalid");
   }
   if (nyraContinuationStoreRequired && !nyraContinuationStoreConfigured) {
     reasons.push("nyra_continuation_store_not_configured");
