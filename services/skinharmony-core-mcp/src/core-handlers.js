@@ -2661,6 +2661,12 @@ export function createCoreHandlers(config, options = {}) {
         coreRequest("/v1/entity-360/tenant-status", identity.tenantId, {
           method: "POST",
           body: {},
+          // Tenant keys used by older connectors are intentionally narrower
+          // than read:snapshot.  This is a Core-to-Core tenant-scoped status
+          // lookup, so bind the dedicated gateway credential to the signed
+          // tenant context instead of silently degrading Control Room to
+          // UNKNOWN on a legitimate scope denial.
+          useTenantGateway: true,
           strictTransport: true,
           timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS,
           maxResponseBytes: 8 * 1024,
