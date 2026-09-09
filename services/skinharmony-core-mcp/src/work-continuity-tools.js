@@ -405,6 +405,7 @@ export const WORK_CONTINUITY_TOOLS = [
       revoke_unattested_read_only_bindings: { type: "boolean" },
       repair_unattested_historical_timestamp: { type: "boolean" },
       retire_empty_bootstrap_branches: { type: "boolean" },
+      retire_inactive_empty_branches: { type: "boolean" },
       idempotency_key: coordinationIdempotencyKey },
     ["work_id", "expected_classification", "reason", "idempotency_key"]), false,
     { dedicatedCoreGate: true, serverOwnedGovernance: true }),

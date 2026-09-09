@@ -3160,6 +3160,12 @@ export function createWorkContinuityV2Store({
     // archive forever.  This is intentionally an explicit owner action and
     // has a much narrower predicate than a normal branch closure.
     const retireEmptyBootstrapBranches = input.retire_empty_bootstrap_branches === true;
+    // A manually opened historical branch may also be retired, but only when
+    // a closed same-project successor is cryptographically evidenced, every
+    // participant and lease on the branch is expired, and no message was ever
+    // posted to it.  This closes an abandoned coordination shell, never an
+    // active or content-bearing branch.
+    const retireInactiveEmptyBranches = input.retire_inactive_empty_branches === true;
     const idempotencyKey = galleryIdempotencyKey(
       input.idempotency_key,
       "historical_bridge_archive_idempotency_key_required",
@@ -3181,6 +3187,9 @@ export function createWorkContinuityV2Store({
         : {}),
       ...(retireEmptyBootstrapBranches
         ? { retire_empty_bootstrap_branches: true }
+        : {}),
+      ...(retireInactiveEmptyBranches
+        ? { retire_inactive_empty_branches: true }
         : {}),
     });
     const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
@@ -3223,10 +3232,14 @@ export function createWorkContinuityV2Store({
           retired_empty_bootstrap_branch_count: Number(
             payload.retired_empty_bootstrap_branch_count || 0,
           ),
+          retired_inactive_empty_branch_count: Number(
+            payload.retired_inactive_empty_branch_count || 0,
+          ),
           cancelled_empty_bootstrap_assignment_count: Number(
             payload.cancelled_empty_bootstrap_assignment_count || 0,
           ),
           bootstrap_branch_audit_event_hash: payload.bootstrap_branch_audit_event_hash || null,
+          inactive_branch_audit_event_hash: payload.inactive_branch_audit_event_hash || null,
           event_hash: replay.rows[0].event_hash,
           idempotent_replay: true,
         };
@@ -3331,8 +3344,69 @@ export function createWorkContinuityV2Store({
           WHERE tenant_id=$1 AND work_id=$2 AND status='active'`, [actor.tenant_id, work.legacy_work_id]),
       ]);
       let retiredEmptyBootstrapBranches = [];
+      let retiredInactiveEmptyBranches = [];
       let cancelledEmptyBootstrapAssignmentCount = 0;
       let bootstrapBranchAuditEventHash = null;
+      let inactiveBranchAuditEventHash = null;
+      if (branches.rows.length && retireInactiveEmptyBranches) {
+        if (!successorClosureEvidence) {
+          fail("historical_bridge_archive_inactive_branch_successor_required");
+        }
+        const branchIds = branches.rows.map((row) => row.branch_id);
+        const currentTime = now().getTime();
+        const activeBranchParticipant = participants.rows.some((row) =>
+          branchIds.includes(row.branch_id) && row.status === "active" &&
+          new Date(row.expires_at).getTime() > currentTime);
+        const activeBranchLease = leases.rows.some((row) =>
+          branchIds.includes(row.branch_id) && row.status === "active" &&
+          new Date(row.expires_at).getTime() > currentTime);
+        const branchMessages = await client.query(`SELECT branch_id FROM core_continuity_messages
+          WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) FOR UPDATE`,
+        [actor.tenant_id, work.legacy_work_id, branchIds]);
+        if (activeBranchParticipant || activeBranchLease || branchMessages.rows.length) {
+          fail("historical_bridge_archive_inactive_branch_activity_denied");
+        }
+        const lockedBranches = await client.query(`SELECT branch_id,branch_key,title,objective,created_by FROM core_continuity_branches
+          WHERE tenant_id=$1 AND work_id=$2 AND status='active' FOR UPDATE`,
+        [actor.tenant_id, work.legacy_work_id]);
+        if (lockedBranches.rows.length !== branches.rows.length ||
+            lockedBranches.rows.some((row) => !branchIds.includes(row.branch_id))) {
+          fail("historical_bridge_archive_inactive_branch_conflict");
+        }
+        const retired = await client.query(`UPDATE core_continuity_branches
+          SET status='retired',updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND branch_id=ANY($3::uuid[]) AND status='active'
+          RETURNING branch_id,branch_key`, [actor.tenant_id, work.legacy_work_id, branchIds]);
+        if (retired.rows.length !== branchIds.length) {
+          fail("historical_bridge_archive_inactive_branch_conflict");
+        }
+        retiredInactiveEmptyBranches = retired.rows;
+        const previousLegacyEvent = await client.query(`SELECT sequence_number,event_hash FROM core_continuity_events
+          WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
+        [actor.tenant_id, work.legacy_work_id]);
+        const legacySequence = Number(previousLegacyEvent.rows[0]?.sequence_number || 0) + 1;
+        const inactivePayload = {
+          schema_version: "historical_inactive_empty_branch_retirement_v1",
+          branch_keys: retiredInactiveEmptyBranches.map((row) => row.branch_key).sort(),
+          successor_work_id: successorWorkId,
+          successor_evidence_digest: successorClosureEvidence.evidence_digest,
+          reason_digest: objectDigest(reason),
+        };
+        const inactiveEvent = {
+          tenant_id: actor.tenant_id, work_id: work.legacy_work_id,
+          sequence_number: legacySequence,
+          event_type: "historical_inactive_empty_branches_retired",
+          payload: inactivePayload,
+          previous_event_hash: previousLegacyEvent.rows[0]?.event_hash || null,
+        };
+        inactiveBranchAuditEventHash = objectDigest(inactiveEvent);
+        await client.query(`INSERT INTO core_continuity_events
+          (tenant_id,work_id,event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_by)
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`, [actor.tenant_id, work.legacy_work_id,
+          crypto.randomUUID(), legacySequence, inactiveEvent.event_type, JSON.stringify(inactivePayload),
+          inactiveEvent.previous_event_hash, inactiveBranchAuditEventHash, actor.agent_id || actor.user_id]);
+        branches.rows = [];
+      }
       if (branches.rows.length && retireEmptyBootstrapBranches) {
         // Every active branch must be an exact, untouched materialization of
         // one persisted Core verdict.  A manually opened branch, a partial
@@ -3582,8 +3656,10 @@ export function createWorkContinuityV2Store({
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         retired_empty_bootstrap_branch_count: retiredEmptyBootstrapBranches.length,
+        retired_inactive_empty_branch_count: retiredInactiveEmptyBranches.length,
         cancelled_empty_bootstrap_assignment_count: cancelledEmptyBootstrapAssignmentCount,
         bootstrap_branch_audit_event_hash: bootstrapBranchAuditEventHash,
+        inactive_branch_audit_event_hash: inactiveBranchAuditEventHash,
         closure_claimed: false,
         work: normalized,
       });
@@ -3600,8 +3676,10 @@ export function createWorkContinuityV2Store({
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         retired_empty_bootstrap_branch_count: retiredEmptyBootstrapBranches.length,
+        retired_inactive_empty_branch_count: retiredInactiveEmptyBranches.length,
         cancelled_empty_bootstrap_assignment_count: cancelledEmptyBootstrapAssignmentCount,
         bootstrap_branch_audit_event_hash: bootstrapBranchAuditEventHash,
+        inactive_branch_audit_event_hash: inactiveBranchAuditEventHash,
         event_hash: event.event_hash,
         idempotent_replay: false,
       };
