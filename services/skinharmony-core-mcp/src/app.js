@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { isIP } from "node:net";
 import express from "express";
 import {
+  applyPlatformOwner,
   createAuthenticator,
   isCodexGoodModeDelegation,
   oauthReconnectErrorDetails,
@@ -2809,7 +2810,11 @@ export function createApp(config, options = {}) {
         if (verified.toolName !== delegatedToolName || verified.exactTarget !== exactTarget) {
           throw new Error("environment_delegation_invalid");
         }
-        identity = verified.identity;
+        // The signed delegation proves the source identity, but platform
+        // administration remains a target-environment policy. Re-derive the
+        // marker from the receiving server configuration instead of trusting
+        // a serialized privilege bit from production.
+        identity = applyPlatformOwner(verified.identity, config);
       } else identity = await authenticate(req.headers.authorization);
     } catch (error) {
       if (error?.code === "environment_delegation_nonce_store_unavailable") {

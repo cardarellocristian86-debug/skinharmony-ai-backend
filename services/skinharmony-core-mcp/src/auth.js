@@ -86,7 +86,7 @@ function applyOwnerRoot(identity, config) {
   };
 }
 
-function applyPlatformOwner(identity, config) {
+export function applyPlatformOwner(identity, config = {}) {
   // A platform owner is not a superior tenant role. It is a separate,
   // server-derived marker used only by the Core administration boundary. In
   // particular, a tenant owner, an OAuth client id, a bearer app, or an

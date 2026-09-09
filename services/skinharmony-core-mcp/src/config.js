@@ -557,10 +557,17 @@ export function loadConfig(env = process.env) {
   // can qualify for the narrow Core administration boundary only after its
   // JWT and server-side owner-to-tenant binding have both been verified.
   const platformOwnerSubjects = csv(env.NYRA_PLATFORM_OWNER_SUBJECTS);
-  const platformOwnerAdminEnforced = platformOwnerSubjects.length > 0 && flag(
+  const platformOwnerAdminEnforcedFlag = strictFlag(
     env.NYRA_PLATFORM_OWNER_ADMIN_ENFORCED,
     true,
+    "NYRA_PLATFORM_OWNER_ADMIN_ENFORCED",
   );
+  // A malformed value must never turn an enabled administration boundary off.
+  // Readiness can surface the typo, but authorization continues fail-closed.
+  const platformOwnerAdminEnforced = platformOwnerSubjects.length > 0 &&
+    (platformOwnerAdminEnforcedFlag.valid
+      ? platformOwnerAdminEnforcedFlag.value
+      : true);
   const platformOwnerEmergencyStop = flag(env.NYRA_PLATFORM_OWNER_EMERGENCY_STOP, false);
   // Owner elevation is only the short bootstrap for a bounded Core
   // delegation. Long-running work continues through signed, expiring action
@@ -720,6 +727,8 @@ export function loadConfig(env = process.env) {
     platformOwnerSubjects,
     platformOwnerAdminEnforced,
     platformOwnerEmergencyStop,
+    platformOwnerAdminConfigurationValid: platformOwnerAdminEnforcedFlag.valid,
+    platformOwnerAdminConfigurationError: platformOwnerAdminEnforcedFlag.error,
     memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
     personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365),
     researchRetentionDays: integer(env.RESEARCH_RETENTION_DAYS, 365, 1, 3_650),
