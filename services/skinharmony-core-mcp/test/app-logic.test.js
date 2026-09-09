@@ -44,9 +44,10 @@ test("publishes a flat connector-compatible Nyra continuation contract", () => {
   ).inputSchema;
   assert.equal(published.anyOf, undefined);
   assert.deepEqual(published.required, ["operation", "idempotency_key"]);
-  for (const field of ["continuation_ref", "work_id", "work_bootstrap", "owner_confirmed", "confirmation_reference"]) {
+  for (const field of ["continuation_ref", "work_id", "owner_confirmed", "confirmation_reference"]) {
     assert.ok(published.properties[field], field);
   }
+  assert.equal(Object.hasOwn(published.properties, "work_bootstrap"), false);
 });
 
 test("compact Nyra continuation descriptor remains explicitly typable by Apps clients", () => {
