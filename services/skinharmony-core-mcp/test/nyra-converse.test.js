@@ -3426,6 +3426,26 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
 });
 
+test("describes an archived Work as immutable history without a resumable next action", async () => {
+  const payload = (await harness({
+    directiveContext: directiveContextFixture({ status: "ARCHIVED" }),
+  }).handler({
+    message: "Leggi lo stato del Work senza modificarlo.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+    read_only: true,
+  }, identity())).structuredContent;
+
+  assert.equal(payload.orchestration_directive.work_context.status, "ARCHIVED");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.deepEqual(payload.orchestration_directive.next_actions, []);
+  assert.match(payload.host_response_contract.reply_seed,
+    /^Il Work è archiviato: lo storico resta leggibile, ma non può essere ripreso né modificato\./);
+  assert.doesNotMatch(payload.host_response_contract.reply_seed,
+    /può continuare|può proseguire|Adesso:/);
+});
+
 test("consumes the real Universal Core read-only preflight through the production MCP envelope", async () => {
   const preflightResult = realCorePreflightFixture();
   assert.equal(preflightResult.structuredContent.work_preflight.state, "ready_read_only");
