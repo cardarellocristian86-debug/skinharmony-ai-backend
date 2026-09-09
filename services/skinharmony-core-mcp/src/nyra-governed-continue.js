@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 import { HOST_APP_CAPABILITIES, authenticatedHostKind, hostPrincipalAllows } from "./host-app-registry.js";
 import { SUPPORTED_HOST_NATIVE_KINDS } from "./host-app-authorization.js";
-import { governedWorkBootstrapDigest, materializeGovernedWorkBootstrapRequest } from "./work-bootstrap-contract.js";
+import { governedWorkBootstrapDigest } from "./work-bootstrap-contract.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const ACTION_TICKET_ID = /^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/;
@@ -74,7 +74,7 @@ function candidateKind(directive) {
 // AI boundary: persist and return only a server-side reference.  No signed
 // Core candidate is exposed to the model or accepted back from it.
 export function createNyraContinuationOpener({ store } = {}) {
-  return async function openNyraContinuation({ identity, directive } = {}) {
+  return async function openNyraContinuation({ identity, directive, workBootstrapRequest = null } = {}) {
     if (!store || typeof store.open !== "function") return unavailable("continuation_store_unavailable");
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) {
       return unavailable("registered_host_capability_required");
@@ -88,7 +88,7 @@ export function createNyraContinuationOpener({ store } = {}) {
       return unavailable("host_native_host_kind_not_supported");
     }
     try {
-      return await store.open({ identity, directive });
+      return await store.open({ identity, directive, work_bootstrap_request: workBootstrapRequest });
     } catch (error) {
       return unavailable(/^nyra_continuation_[a-z0-9_]+$/.test(String(error?.code || ""))
         ? error.code : "continuation_open_failed");
@@ -689,20 +689,15 @@ export function createNyraGovernedContinueHandler({
     const validateBeforeClaim = async (payload) => {
       const bootstrapOperation = ["review_work_bootstrap", "create_work"].includes(args.operation);
       if (payload.candidate_kind === "work_bootstrap") {
-        if (!bootstrapOperation || !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) || !args.work_bootstrap ||
+        if (!bootstrapOperation || !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) || args.work_bootstrap !== undefined ||
             args.delegation_request !== undefined || args.action_request !== undefined ||
             args.pull_request_materialization !== undefined) {
           fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
         }
-        const request = materializeGovernedWorkBootstrapRequest({
-          spec: args.work_bootstrap,
-          identity,
-          projectId: payload.project_id,
-          canonicalIntentDigest: payload.intent_digest,
-          coreOrchestrationVerdictDigest: payload.context_digest,
-          coreOrchestrationVerdict: payload.core_orchestration_verdict,
-        });
-        if (governedWorkBootstrapDigest(request) !== payload.work_bootstrap_request_digest) {
+        const request = payload.work_bootstrap_request;
+        if (!request || governedWorkBootstrapDigest(request) !== payload.work_bootstrap_request_digest ||
+            request.project_id !== payload.project_id || request.session_id !== identity.agentPresence?.session_id ||
+            request.host_type !== payload.host_kind) {
           fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
         }
         if (args.operation === "review_work_bootstrap") {
@@ -819,18 +814,13 @@ export function createNyraGovernedContinueHandler({
     let terminal = true;
     const bootstrapOperation = ["review_work_bootstrap", "create_work"].includes(args.operation);
     if (payload.candidate_kind === "work_bootstrap") {
-      if (!bootstrapOperation || !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) || !args.work_bootstrap ||
+      if (!bootstrapOperation || !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) || args.work_bootstrap !== undefined ||
           args.delegation_request !== undefined || args.action_request !== undefined ||
           args.pull_request_materialization !== undefined) fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
-      const request = materializeGovernedWorkBootstrapRequest({
-        spec: args.work_bootstrap,
-        identity,
-        projectId: payload.project_id,
-        canonicalIntentDigest: payload.intent_digest,
-        coreOrchestrationVerdictDigest: payload.context_digest,
-        coreOrchestrationVerdict: payload.core_orchestration_verdict,
-      });
-      if (governedWorkBootstrapDigest(request) !== payload.work_bootstrap_request_digest) fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
+      const request = payload.work_bootstrap_request;
+      if (!request || governedWorkBootstrapDigest(request) !== payload.work_bootstrap_request_digest ||
+          request.project_id !== payload.project_id || request.session_id !== identity.agentPresence?.session_id ||
+          request.host_type !== payload.host_kind) fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
       if (args.operation === "review_work_bootstrap") {
         if (args.review_id !== undefined || args.review_digest !== undefined || args.review_decision !== undefined) {
           fail("nyra_continue_work_bootstrap_review_mismatch", 409);

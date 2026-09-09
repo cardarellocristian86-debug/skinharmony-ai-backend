@@ -1576,7 +1576,6 @@ const nyraContinueProperties = Object.freeze({
   operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
   continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
   work_id: { type: "string", format: "uuid" },
-  work_bootstrap: nyraWorkBootstrapSpec,
   review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"] },
   delegation_request: nyraContinueDelegationRequest,
   action_request: nyraContinueActionRequest,

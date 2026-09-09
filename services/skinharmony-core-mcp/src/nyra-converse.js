@@ -3098,8 +3098,12 @@ export function createNyraConverseHandler({
       );
     }
     let workBootstrapRequestDigest = null;
+    // This is deliberately retained only inside the server call path.  The
+    // public directive exposes its digest and opaque continuation, never the
+    // client-replayable canonical request.
+    let workBootstrapRequest = null;
     if (args.work_bootstrap !== undefined) {
-      const workBootstrapRequest = materializeGovernedWorkBootstrapRequest({
+      workBootstrapRequest = materializeGovernedWorkBootstrapRequest({
         spec: args.work_bootstrap,
         identity,
         projectId: boundedPreflight.work.project_id,
@@ -3199,7 +3203,11 @@ export function createNyraConverseHandler({
           workContext.precommit_unverified_required_evidence_count > 0));
     if (continuationEligible && typeof openContinuation === "function") {
       try {
-        const reference = await boundedContinuationOpen(openContinuation({ identity, directive: baseDirective }));
+        const reference = await boundedContinuationOpen(openContinuation({
+          identity,
+          directive: baseDirective,
+          workBootstrapRequest,
+        }));
         if (reference?.schema_version === "nyra_continuation_ref_v1") {
           continuation = reference;
         }
