@@ -36,6 +36,8 @@ test("Control Room handler derives Work status from the server V2 reader without
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "tenant-gateway-key-at-least-32-bytes-long",
+    tenantContextSigningSecret: "tenant-context-secret-at-least-32-bytes-long",
     nyraDialogueEnabled: false,
   }, {
     fetchImpl: async (url, init) => {

@@ -8,7 +8,7 @@ const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
 
 test("Control Room reads the effective Entity360 tenant mode without a Work binding", async () => {
-  const paths = [];
+  const calls = [];
   let malformed = false;
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
@@ -17,9 +17,9 @@ test("Control Room reads the effective Entity360 tenant mode without a Work bind
     tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
     nyraDialogueEnabled: true,
   }, {
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, init) => {
       const pathname = new URL(url).pathname;
-      paths.push(pathname);
+      calls.push({ pathname, init });
       if (pathname === "/healthz") return new Response(JSON.stringify({ ok: true,
         entity_360: { mode: "ENFORCE", deployment_mode_ceiling: "ENFORCE",
           ready: true, tenant_shadow_disable_available: true } }), {
@@ -41,7 +41,15 @@ test("Control Room reads the effective Entity360 tenant mode without a Work bind
     .find((domain) => domain.id === "entity_360");
   assert.equal(entity360.state, "ENFORCED");
   assert.equal(entity360.detail.deployment_ceiling, "ENFORCE");
-  assert.deepEqual(paths.sort(), ["/healthz", "/v1/entity-360/tenant-status"].sort());
+  assert.deepEqual(calls.map(({ pathname }) => pathname).sort(),
+    ["/healthz", "/v1/entity-360/tenant-status"].sort());
+  const tenantRead = calls.find(({ pathname }) => pathname === "/v1/entity-360/tenant-status");
+  assert.equal(tenantRead.init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+  assert.equal(tenantRead.init.headers["x-sh-tenant-id"], "tenant-a");
+  const tenantContext = JSON.parse(Buffer.from(
+    tenantRead.init.headers["x-sh-tenant-context"], "base64url").toString("utf8"));
+  assert.equal(tenantContext.version, "mcp_tenant_context_v1");
+  assert.equal(tenantContext.tenant_id, "tenant-a");
 
   malformed = true;
   const second = await handlers.nyra_control_room_status({}, { tenantId: "tenant-a" });
