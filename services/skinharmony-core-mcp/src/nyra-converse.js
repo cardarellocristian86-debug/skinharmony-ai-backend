@@ -1103,6 +1103,18 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     closure_verified: closureVerified,
     closure_verification_digest: closureVerified ? closureProjection.verification_digest : null,
   };
+  // A Work's final outcome is not a second client-authored objective.  It is
+  // the immutable canonical objective projected with its measurable closure
+  // state, so Nyra can maintain one outcome across chat, local and host turns.
+  const finalOutcome = Object.freeze({
+    // Keep the immutable outcome addressable without turning private Work
+    // objective text into a model-facing continuation payload.
+    target_digest: deterministicDigest(compact.objective),
+    acceptance_criteria_count: acceptanceCriteria.length,
+    closure_verified: closureVerified,
+    state: closureVerified ? "VERIFIED" : status,
+    next_action_available: Boolean(compact.work_next_action),
+  });
   const normalized = {
     available: true,
     work_id: bindingWorkId,
@@ -1131,6 +1143,7 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
       })
       : null,
     closure_verified: closureVerified,
+    final_outcome: finalOutcome,
   };
   // This internal, non-enumerable proof reconstructs the exact prior Work
   // context by undoing only a validated native precommit fulfillment. It lets
@@ -3172,7 +3185,8 @@ export function createNyraConverseHandler({
     const baseDirective = orchestrationDirective({
       tenantId,
       message,
-      work: boundedPreflight.work,
+      work: Object.freeze({ ...boundedPreflight.work,
+        ...(workContext.final_outcome ? { final_outcome: workContext.final_outcome } : {}) }),
       dialogue: boundedPreflight.dialogue,
       workContext,
       interpretation: directiveInterpretation,

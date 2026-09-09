@@ -305,6 +305,36 @@ test("owner-recorded architecture amendments replace only exact stale acceptance
   }), /intent_acceptance_amendment_invalid/);
 });
 
+test("a v2 reconciliation can expand the persistent final objective without losing lineage", () => {
+  const intent = buildIntentAnchor({
+    project_id: "nyra_core", session_id: "final-outcome-amendment",
+    initial_message: "Create the horizontal Nyra runtime.", idea: "Horizontal orchestration",
+    objective: "Create and resume canonical Work.",
+    acceptance_criteria: ["Every registered host uses the same Work identity."],
+    constraints: ["Universal Core remains final authority."], host_type: "codex_native",
+  });
+  const base = buildAcceptanceContract(intent.anchor, intent.intent_digest);
+  const objective = base.criteria.find((criterion) => criterion.criterion_id === "objective");
+  const architecture = { components: [], acceptance_contract_amendment: {
+    schema_version: "intent_acceptance_contract_amendment_v2",
+    base_criteria_digest: base.criteria_digest,
+    reason: "The owner expanded the same Work to include Gallery handoff and local hosts.",
+    superseded_criteria: [{ criterion_id: "objective", criterion_digest: objective.criterion_digest,
+      reason: "The original outcome covered only creation and resume." }],
+    replacement_criteria: [{ criterion_id: "objective", criterion_kind: "objective",
+      text: "Create, resume, reconcile and hand off canonical Work across registered cloud and local hosts." }],
+  } };
+  const contract = buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 2, architecture, architecture_digest: digest(architecture),
+  });
+  assert.equal(contract.schema_version, "intent_acceptance_contract_v2");
+  assert.equal(contract.base_criteria.find((item) => item.criterion_id === "objective").text,
+    "Create and resume canonical Work.");
+  assert.equal(contract.criteria.find((item) => item.criterion_id === "objective").text,
+    "Create, resume, reconcile and hand off canonical Work across registered cloud and local hosts.");
+  assert.match(contract.amendment_digest, /^[a-f0-9]{64}$/);
+});
+
 test("bootstrap text limits are equivalent across direct V2, legacy Intent Anchor and Nyra contracts", () => {
   const direct = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_v2_create");
   const queued = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "tenant_work_queue_create_v3");

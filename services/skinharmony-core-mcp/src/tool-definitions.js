@@ -1151,6 +1151,13 @@ const nyraOrchestrationDirectiveSchema = object({
       ],
     },
     closure_verified: { type: "boolean" },
+    final_outcome: object({
+      target_digest: nyraDirectiveDigest,
+      acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
+      closure_verified: { type: "boolean" },
+      state: { type: "string", maxLength: 40 },
+      next_action_available: { type: "boolean" },
+    }, ["target_digest", "acceptance_criteria_count", "closure_verified", "state", "next_action_available"]),
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
     "status", "progress_bp", "checkpoint_available", "acceptance_criteria_count",
@@ -1282,6 +1289,13 @@ const nyraConverseOutputSchema = object({
     next_action: nyraConverseNullableText(500),
     next_action_available: { type: "boolean" },
     selection_required: { type: "boolean" },
+    final_outcome: object({
+      target_digest: nyraDirectiveDigest,
+      acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
+      closure_verified: { type: "boolean" },
+      state: { type: "string", maxLength: 40 },
+      next_action_available: { type: "boolean" },
+    }, ["target_digest", "acceptance_criteria_count", "closure_verified", "state", "next_action_available"]),
   }, ["preflight_bound", "work_bound", "work_id", "project_id", "state", "next_action", "next_action_available", "selection_required"]),
   memory: object({
     loaded: { type: "boolean" },
