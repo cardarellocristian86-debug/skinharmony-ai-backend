@@ -2813,10 +2813,13 @@ export function createNyraConversePreflight({
     // Its immutable project binding comes from that same row; requiring a
     // legacy Intent anchor here would make V2-native and terminal Work
     // unreadable even though no continuity lease or mutation is requested.
-    const verifiedProjectId = resumeArgs.read_only === true && verifiedRequestedWork
+    const verifiedWorkStatus = String(verifiedRequestedWork?.work?.status || "").toUpperCase();
+    const verifiedTerminalWork = new Set(["ARCHIVED", "SUPERSEDED", "CANCELLED"])
+      .has(verifiedWorkStatus);
+    const verifiedProjectId = (resumeArgs.read_only === true || verifiedTerminalWork) && verifiedRequestedWork
       ? boundedProjectId(verifiedRequestedWork.work?.project_id)
       : null;
-    if (resumeArgs.read_only === true && verifiedRequestedWork && !verifiedProjectId) {
+    if ((resumeArgs.read_only === true || verifiedTerminalWork) && verifiedRequestedWork && !verifiedProjectId) {
       throw fail("continuity_project_binding_invalid", 409);
     }
     const continuityBinding = verifiedProjectId
@@ -2849,7 +2852,7 @@ export function createNyraConversePreflight({
         continuityBinding.continuityArgs,
         "nyra_converse",
         result,
-        resumeArgs.read_only === true
+        resumeArgs.read_only === true || verifiedTerminalWork
           ? { resumeExisting: true, readOnly: true, verifiedWork: verifiedRequestedWork }
           : { resumeExisting: true },
       );

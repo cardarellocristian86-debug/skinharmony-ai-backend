@@ -1158,6 +1158,36 @@ test("passes a verified Work into the state-pure read-only continuity path", asy
   assert.equal(calls.preflight[0].project_id, "nyra_core");
 });
 
+test("never acquires a continuity lease when a consequential phrase targets a terminal Work", async () => {
+  const calls = { continuity: [], legacyIntent: 0 };
+  const verifiedWork = directiveContextFixture({ status: "ARCHIVED" });
+  const preflight = createNyraConversePreflight({
+    workPreflight: async () => preflightFixture(),
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: { readIntent: async () => {
+      calls.legacyIntent += 1;
+      throw new Error("terminal_work_must_not_resume_legacy_continuity");
+    } },
+    hostType: () => "chatgpt_native",
+    verifyRequestedWork: async () => verifiedWork,
+  });
+
+  await preflight({
+    message: "Riprendi questo Work e fai il deploy.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+
+  assert.equal(calls.legacyIntent, 0);
+  assert.equal(calls.continuity.length, 1);
+  assert.deepEqual(calls.continuity[0][4], {
+    resumeExisting: true,
+    readOnly: true,
+    verifiedWork,
+  });
+});
+
 test("keeps an unbound read-only fence in selection flow without a false missing-Work error", async () => {
   const calls = { preflight: 0, continuity: 0, verified: 0 };
   const preflight = createNyraConversePreflight({
