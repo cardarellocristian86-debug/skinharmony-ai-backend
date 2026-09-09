@@ -151,8 +151,6 @@ services:
         value: /v1/policy-registry/nyra/sign
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE
         value: nyra-policy-registry-signer
-      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
-        sync: false
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PURPOSE
         value: nyra.policy_registry.attestation
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID
