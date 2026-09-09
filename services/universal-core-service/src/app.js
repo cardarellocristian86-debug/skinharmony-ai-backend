@@ -12233,6 +12233,18 @@ export function createUniversalCoreService(options = {}) {
     });
   };
 
+  // Software Cognition is authoritative for software-bearing closure only.
+  // Applying it to a genuinely generic Work creates an impossible cycle:
+  // Generic Work materialization has no software_contract/change binding, so
+  // it cannot produce the Software Reality Graph that the closure requires.
+  // Those Works remain governed by their persisted tasks, independent
+  // verifier receipt and Generic Core Join signature.
+  const softwareCognitionGenericJoinAdapters = new Set([
+    "software_git",
+    "software_non_git",
+    "deployment",
+  ]);
+
   const withEnforcedSoftwareCoreJoin = async (tenantId, workId, verdictId, operation) => {
     const wrapped = await withSoftwareCognitionClosure(tenantId, workId, async (softwareClosure) => {
       const record = await hostNativeGovernance.readCoreJoinVerdict({ tenant_id: tenantId, verdict_id: verdictId });
@@ -12453,7 +12465,10 @@ export function createUniversalCoreService(options = {}) {
         }
         issueSequence = ++genericWorkCoreJoinIssueSequence;
         const { tenant_id: _tenantId, work_id: _callerWorkId, ...input } = req.body || {};
-        const issuance = await withSoftwareCognitionClosure(req.tenantId, req.genericWorkCoreJoinWorkId, async (softwareClosure) => {
+        if (softwareCognitionMode === "INVALID") {
+          throw new Error("software_cognition_mode_invalid");
+        }
+        const issueWithOptionalSoftwareClosure = async (softwareClosure = null) => {
           if (softwareClosure && (!Array.isArray(input.evidence_digests) || !input.evidence_digests.includes(softwareClosure.payload.closure_digest))) {
             throw new Error("software_cognition_closure_digest_mismatch");
           }
@@ -12462,7 +12477,14 @@ export function createUniversalCoreService(options = {}) {
             softwareClosure ? { softwareClosure: { digest: softwareClosure.payload.closure_digest,
               fresh_until: softwareClosure.payload.evidence_fresh_until } } : {},
           );
-        });
+        };
+        const issuance = softwareCognitionGenericJoinAdapters.has(input.adapter)
+          ? await withSoftwareCognitionClosure(
+            req.tenantId,
+            req.genericWorkCoreJoinWorkId,
+            issueWithOptionalSoftwareClosure,
+          )
+          : await issueWithOptionalSoftwareClosure();
         const verdict = issuance.verdict;
         const precoreAlignment = await evaluateNyraPrecoreAlignment(req.tenantId, verdict.work_id, true);
         genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
