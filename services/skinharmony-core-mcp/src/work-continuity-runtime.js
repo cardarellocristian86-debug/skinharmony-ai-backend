@@ -5,6 +5,8 @@ import { assertTransitionAllowed } from "../../shared/core-block-remediation.js"
 import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 import { postgresPoolConfig } from "./postgres-pool-config.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
+import { acceptanceContractIntegrityValid as sharedAcceptanceContractIntegrityValid }
+  from "../../shared/intent-acceptance-contract.mjs";
 
 // Existing MCP create/read/capsule responses retain their v1 contract. New
 // fabric methods advertise WORK_CONTINUITY_FABRIC_SCHEMA_VERSION; the storage
@@ -763,67 +765,8 @@ export function buildAcceptanceContract(anchor, intentDigest, architectureRecord
   };
 }
 
-function acceptanceContractIntegrityValid(contract) {
-  try {
-    requireObject(contract, "intent_acceptance_contract");
-    if (!/^[a-f0-9]{64}$/.test(String(contract.intent_digest || "")) ||
-        !Array.isArray(contract.criteria) || !contract.criteria.length) return false;
-    const criterionKeys = new Set([
-      "criterion_id", "criterion_kind", "text", "criterion_digest",
-    ]);
-    const validateCriteria = (criteria) => criteria.every((criterion) => {
-      if (!criterion || Object.keys(criterion).some((key) => !criterionKeys.has(key)) ||
-          Object.keys(criterion).length !== criterionKeys.size ||
-          !ACCEPTANCE_CRITERION_KINDS.has(criterion.criterion_kind)) return false;
-      try {
-        identifier(criterion.criterion_id, "intent_acceptance_criterion_id", 160);
-        amendmentText(criterion.text, "intent_acceptance_criterion_text", 8_000);
-      } catch {
-        return false;
-      }
-      return acceptanceCriterionDigest(criterion, contract.intent_digest) === criterion.criterion_digest;
-    });
-    if (!validateCriteria(contract.criteria) || digest(contract.criteria) !== contract.criteria_digest) return false;
-    if (contract.criteria.filter((criterion) => criterion.criterion_kind === "objective").length !== 1 ||
-        contract.evidence_required !== true || contract.independent_verifier_required !== true) return false;
-    if (contract.schema_version === "intent_acceptance_contract_v1") {
-      const v1Keys = new Set([
-        "schema_version", "intent_digest", "criteria", "criteria_digest",
-        "evidence_required", "independent_verifier_required",
-      ]);
-      return Object.keys(contract).every((key) => v1Keys.has(key)) &&
-        Object.keys(contract).length === v1Keys.size;
-    }
-    if (contract.schema_version !== "intent_acceptance_contract_v2" ||
-        !Array.isArray(contract.base_criteria) || !validateCriteria(contract.base_criteria) ||
-        digest(contract.base_criteria) !== contract.base_criteria_digest ||
-        !Number.isInteger(contract.architecture_version) || contract.architecture_version < 1 ||
-        !/^[a-f0-9]{64}$/.test(String(contract.architecture_digest || ""))) return false;
-    const v2Keys = new Set([
-      "schema_version", "intent_digest", "base_criteria", "base_criteria_digest",
-      "amendment", "amendment_digest", "architecture_version", "architecture_digest",
-      "criteria", "criteria_digest", "evidence_required", "independent_verifier_required",
-    ]);
-    if (Object.keys(contract).some((key) => !v2Keys.has(key)) ||
-        Object.keys(contract).length !== v2Keys.size) return false;
-    const baseContract = {
-      criteria: contract.base_criteria,
-      criteria_digest: contract.base_criteria_digest,
-    };
-    const amendment = normalizeAcceptanceAmendment(contract.amendment, baseContract);
-    if (digest(amendment) !== contract.amendment_digest) return false;
-    const supersededIds = new Set(amendment.superseded_criteria.map((item) => item.criterion_id));
-    const expected = [
-      ...contract.base_criteria.filter((criterion) => !supersededIds.has(criterion.criterion_id)),
-      ...amendment.replacement_criteria.map((criterion) => ({
-        ...criterion,
-        criterion_digest: acceptanceCriterionDigest(criterion, contract.intent_digest),
-      })),
-    ];
-    return digest(expected) === digest(contract.criteria);
-  } catch {
-    return false;
-  }
+export function acceptanceContractIntegrityValid(contract) {
+  return sharedAcceptanceContractIntegrityValid(contract, digest);
 }
 
 export function buildPrecommitAcceptancePolicy(acceptanceContract) {
@@ -2639,6 +2582,73 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ...context,
       workId: canonicalNativeUuid(context.workId, "native_agent_work_id_invalid"),
     };
+  }
+
+  async function galleryOutcomeBinding(client, context, input = {}, branch = null) {
+    const result = await client.query(`SELECT w.current_version,w.objective,w.status,i.intent_digest
+      FROM core_continuity_works w
+      LEFT JOIN core_continuity_intent_anchors i
+        ON i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+      WHERE w.tenant_id=$1 AND w.work_id=$2`, [context.tenantId, context.workId]);
+    const work = result.rows[0];
+    if (!work) throw new Error("continuity_work_not_found");
+    const nativePlanResult = await client.query(`SELECT plan_version,plan,plan_digest
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2 AND status <> 'cancelled'
+      ORDER BY plan_version DESC,created_at DESC LIMIT 1`, [context.tenantId, context.workId]);
+    const nativePlan = nativePlanResult.rows[0] || null;
+    const acceptanceContract = nativePlan?.plan?.acceptance_contract;
+    const nativePlanIntegrityValid = nativePlan &&
+      digest(nativePlan.plan) === nativePlan.plan_digest &&
+      acceptanceContractIntegrityValid(acceptanceContract);
+    // Once a native plan exists it is the authoritative outcome source.  A
+    // corrupt latest revision must never silently revive the older Work
+    // objective, otherwise Gallery participants can act against an outcome
+    // that Nyra/Core have already superseded.
+    if (nativePlan && !nativePlanIntegrityValid) {
+      throw new Error("continuity_outcome_native_plan_invalid");
+    }
+    if (nativePlanIntegrityValid && acceptanceContract.intent_digest !== work.intent_digest) {
+      throw new Error("continuity_outcome_intent_binding_mismatch");
+    }
+    const effectiveContract = nativePlanIntegrityValid ? acceptanceContract : null;
+    const effectiveObjective = effectiveContract?.criteria.find((criterion) =>
+      criterion.criterion_kind === "objective")?.text || work.objective;
+    const revision = effectiveContract ? Number(nativePlan.plan_version) : Number(work.current_version);
+    if (!Number.isInteger(revision) || revision < 1) throw new Error("continuity_outcome_revision_invalid");
+    const material = {
+      schema_version: "tenant_work_outcome_binding_v1",
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      outcome_revision: revision,
+      intent_digest: /^[a-f0-9]{64}$/.test(String(work.intent_digest || "")) ? work.intent_digest : null,
+      objective_digest: digest(safeText(effectiveObjective, 8_000)),
+      criteria_digest: effectiveContract?.criteria_digest || null,
+      outcome_source: effectiveContract ? "native_acceptance_contract" : "legacy_work_projection",
+      work_status: String(work.status || "active"),
+    };
+    const outcomeBinding = Object.freeze({ ...material, outcome_digest: digest(material) });
+    if (input.expected_outcome_revision !== undefined &&
+        Number(input.expected_outcome_revision) !== outcomeBinding.outcome_revision) {
+      throw new Error("continuity_outcome_binding_stale");
+    }
+    if (input.expected_outcome_digest !== undefined &&
+        String(input.expected_outcome_digest).toLowerCase() !== outcomeBinding.outcome_digest) {
+      throw new Error("continuity_outcome_binding_stale");
+    }
+    if (!branch) return Object.freeze({ outcome: outcomeBinding, milestone: null });
+    const milestoneMaterial = {
+      schema_version: "tenant_work_milestone_binding_v1",
+      outcome_digest: outcomeBinding.outcome_digest,
+      outcome_revision: outcomeBinding.outcome_revision,
+      branch_id: branch.branch_id,
+      parent_branch_id: branch.parent_branch_id || null,
+      branch_key: branch.branch_key,
+      objective_digest: digest(safeText(branch.objective, 4_000)),
+      status: String(branch.status || "active"),
+    };
+    return Object.freeze({ outcome: outcomeBinding,
+      milestone: Object.freeze({ ...milestoneMaterial, milestone_digest: digest(milestoneMaterial) }) });
   }
 
   function assignmentCapability(binding) {
@@ -5235,8 +5245,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
           branch_id: branch.rows[0].branch_id, parent_branch_id: parentBranchId,
           branch_key: branchKey, session_id: sessionId,
         });
+        const outcome_chain = await galleryOutcomeBinding(client, context, input, branch.rows[0]);
         return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
           work_id: context.workId, branch: branch.rows[0],
+          outcome_chain,
           rebound_leases_expired: reboundLeases.rows.length,
           lease_rebind_event: leaseRebindEvent, event };
       }));
@@ -5446,8 +5458,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           [context.tenantId, context.workId, branchId]);
           if (!branch.rows[0]) throw new Error("continuity_branch_not_found");
         }
+        const boundBranch = branchId ? (await client.query(`SELECT branch_id,parent_branch_id,branch_key,objective,status
+          FROM core_continuity_branches WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3`,
+        [context.tenantId, context.workId, branchId])).rows[0] : null;
+        const outcomeChain = await galleryOutcomeBinding(client, context, input, boundBranch);
         const messageId = crypto.randomUUID();
-        const payload = cleanJson(input.payload || {}, 40_000);
+        const clientPayload = cleanJson(input.payload || {}, 40_000);
+        if (Object.prototype.hasOwnProperty.call(clientPayload, "_nyra_outcome_chain")) {
+          throw new Error("continuity_message_outcome_binding_client_forbidden");
+        }
+        // Preserve the historical 40 KiB client payload budget. The extra
+        // bounded space is reserved exclusively for the server-authored
+        // outcome envelope and cannot be populated by the caller.
+        const payload = cleanJson({ ...clientPayload, _nyra_outcome_chain: outcomeChain }, 48_000);
         const message = await client.query(`INSERT INTO core_continuity_messages
           (tenant_id,work_id,message_id,branch_id,from_session_id,to_session_id,to_actor_subject,
            message_type,subject,payload,created_by)
@@ -5461,7 +5484,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           to_session_id: toSessionId, message_type: input.message_type || "update",
         });
         return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
-          work_id: context.workId, message: message.rows[0], event };
+          work_id: context.workId, outcome_chain: outcomeChain, message: message.rows[0], event };
       }));
   }
 
@@ -5478,6 +5501,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
       transportSessionFingerprint,
     });
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
+    const boundBranch = branchId ? (await pool.query(`SELECT branch_id,parent_branch_id,branch_key,objective,status
+      FROM core_continuity_branches WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3`,
+    [context.tenantId, context.workId, branchId])).rows[0] : null;
+    if (branchId && !boundBranch) throw new Error("continuity_branch_not_found");
+    const outcomeChain = await galleryOutcomeBinding(pool, context, input, boundBranch);
     const messages = await pool.query(`SELECT message_id,branch_id,from_session_id,to_session_id,
         message_type,subject,payload,created_at
       FROM core_continuity_messages
@@ -5488,7 +5516,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ORDER BY created_at DESC LIMIT $7`,
     [context.tenantId, context.workId, sessionId, participant.actor_subject, branchId, input.since || null, limit]);
     return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
-      work_id: context.workId, session_id: sessionId, messages: messages.rows };
+      work_id: context.workId, session_id: sessionId, outcome_chain: outcomeChain,
+      messages: messages.rows };
   }
 
   async function insertNativeReceipt(client, context, input) {

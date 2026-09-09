@@ -9,6 +9,7 @@ import {
   dynamicCapabilityCatalogSnapshot,
 } from "../src/dynamic-capability-router.js";
 import {
+  buildNyraIntermediateGoalProjection,
   createNyraConverseHandler,
   createNyraConversePreflight,
   MAX_MESSAGE_LENGTH,
@@ -714,9 +715,38 @@ test("routes fresh advisory chat through the global read plane without Work or C
   assert.equal(payload.intent_routing.route.canonical_intent.work_requirement, "NONE");
   assert.equal(payload.intent_routing.structured_context.ramy_state,
     "unavailable_no_verified_adapter");
+  assert.equal(payload.intent_routing.structured_context.icf_state,
+    "UNAVAILABLE_NO_VERIFIED_READBACK");
+  assert.equal(payload.intent_routing.structured_context.outcome_projection_available, false);
+  assert.equal(payload.intent_routing.structured_context.intermediate_goals_available, false);
+  assert.equal(payload.intent_routing.structured_context.outcome_chain_digest, null);
   assert.equal(payload.execution_authorized, false);
   assert.deepEqual(validateToolArguments(
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("projects verified Work outcome separately without overclaiming subsystem readbacks", async () => {
+  const { handler } = harness({ directiveContext: directiveContextFixture() });
+  const response = await handler({
+    message: "Leggi soltanto lo stato del Work.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  const context = response.structuredContent.intent_routing.structured_context;
+  assert.equal(context.intent_available, true);
+  assert.equal(context.icf_available, false);
+  assert.equal(context.icf_state, "UNAVAILABLE_NO_VERIFIED_READBACK");
+  assert.equal(context.entity_360_available, false);
+  assert.equal(context.entity_360_state, "UNAVAILABLE_NO_VERIFIED_READBACK");
+  assert.equal(context.ramy_state, "unavailable_no_verified_adapter");
+  assert.equal(context.outcome_projection_available, true);
+  assert.equal(context.intermediate_goals_available, true);
+  assert.match(context.outcome_chain_digest, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(context).includes("Ship"), false);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    response.structuredContent,
+  ), []);
 });
 
 test("reads tenant lessons and bounded anonymized platform blocks without Work", async () => {
@@ -1221,6 +1251,134 @@ test("normalizes terminal Work readbacks against the canonical read binding", ()
   assert.equal(normalized.project_id, "canonical-project");
   assert.equal(normalized.work_revision, 9);
   assert.equal(normalized.status, "COMPLETED");
+});
+
+test("projects the amended effective objective and deterministic intermediate goals", () => {
+  const raw = directiveContextFixture();
+  const criterion = (criterion_id, criterion_kind, text) => {
+    const material = { schema_version: "intent_acceptance_criterion_v1",
+      intent_digest: INTENT_DIGEST, criterion_id, criterion_kind, text };
+    return { criterion_id, criterion_kind, text, criterion_digest: canonicalDigest(material) };
+  };
+  const baseCriteria = [criterion("objective", "objective", "Operate the original bounded outcome.")];
+  const amendment = {
+    schema_version: "intent_acceptance_contract_amendment_v2",
+    base_criteria_digest: canonicalDigest(baseCriteria),
+    reason: "The owner expanded the persistent final outcome.",
+    superseded_criteria: [{ criterion_id: "objective",
+      criterion_digest: baseCriteria[0].criterion_digest,
+      reason: "Replace the original final objective." }],
+    replacement_criteria: [
+      { criterion_id: "acceptance_horizontal", criterion_kind: "acceptance",
+        text: "ChatGPT and Codex observe the same outcome." },
+      { criterion_id: "objective", criterion_kind: "objective",
+        text: "Operate every registered host through one reconciled Work." },
+    ],
+  };
+  const criteria = amendment.replacement_criteria.map((item) => criterion(
+    item.criterion_id, item.criterion_kind, item.text,
+  ));
+  const acceptanceContract = {
+    schema_version: "intent_acceptance_contract_v2",
+    intent_digest: INTENT_DIGEST,
+    base_criteria: baseCriteria,
+    base_criteria_digest: canonicalDigest(baseCriteria),
+    amendment,
+    amendment_digest: canonicalDigest(amendment),
+    architecture_version: 2,
+    architecture_digest: "a".repeat(64),
+    criteria,
+    criteria_digest: canonicalDigest(criteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
+  raw.effective_acceptance_contract = {
+    schema_version: "tenant_work_effective_acceptance_contract_v1",
+    plan_id: PRECOMMIT_PLAN_ID,
+    plan_version: 7,
+    plan_digest: "8".repeat(64),
+    acceptance_contract: acceptanceContract,
+    acceptance_contract_digest: canonicalDigest(acceptanceContract),
+  };
+  const normalized = normalizeNyraDirectiveContext(raw, identity(), {
+    work_id: WORK_ID, project_id: "nyra_core",
+  });
+
+  assert.equal(normalized.final_outcome.schema_version, "nyra_final_outcome_projection_v2");
+  assert.equal(normalized.final_outcome.target_digest,
+    canonicalDigest("Operate every registered host through one reconciled Work."));
+  assert.equal(normalized.final_outcome.objective_criterion_digest,
+    criteria.find((item) => item.criterion_kind === "objective").criterion_digest);
+  assert.equal(normalized.final_outcome.criteria_digest, acceptanceContract.criteria_digest);
+  assert.equal(normalized.final_outcome.outcome_revision, 7);
+  assert.equal(normalized.final_outcome.intermediate_goals.goal_count, 3);
+  assert.equal(normalized.final_outcome.intermediate_goals.pending_goal_count, 3);
+  assert.equal(JSON.stringify(normalized).includes("Operate every registered host"), false);
+});
+
+test("intermediate goal projection is order-stable and fails closed on tampered effective criteria", () => {
+  const input = {
+    workId: WORK_ID, workRevision: 4, intentDigest: INTENT_DIGEST,
+    criteriaDigest: "4".repeat(64),
+    criteria: [{ criterion_id: "acceptance_1", criterion_kind: "acceptance",
+      criterion_digest: "5".repeat(64) }],
+    tasks: [{ task_id: TASK_ID, title: "Verify", required: true, status: "planned",
+      acceptance_verified: false }],
+    evidence: [{ evidence_id: EVIDENCE_ID, digest: "6".repeat(64), required: true,
+      independently_verified: false }],
+  };
+  const first = buildNyraIntermediateGoalProjection(input);
+  const second = buildNyraIntermediateGoalProjection({ ...input,
+    evidence: [...input.evidence], tasks: [...input.tasks], criteria: [...input.criteria] });
+  assert.equal(first.projection_digest, second.projection_digest);
+
+  const raw = directiveContextFixture();
+  raw.effective_acceptance_contract = {
+    schema_version: "tenant_work_effective_acceptance_contract_v1",
+    plan_id: PRECOMMIT_PLAN_ID, plan_version: 2, plan_digest: "7".repeat(64),
+    acceptance_contract: { schema_version: "intent_acceptance_contract_v2",
+      intent_digest: INTENT_DIGEST, criteria: [{ criterion_id: "objective",
+        criterion_kind: "objective", text: "Tampered", criterion_digest: "0".repeat(64) }],
+      criteria_digest: "0".repeat(64) },
+    acceptance_contract_digest: "0".repeat(64),
+  };
+  assert.throws(() => normalizeNyraDirectiveContext(raw, identity(), {
+    work_id: WORK_ID, project_id: "nyra_core",
+  }), /nyra_converse_effective_acceptance_contract_invalid/);
+
+  const validCriterion = { criterion_id: "objective", criterion_kind: "objective",
+    text: "A fully bound outcome" };
+  validCriterion.criterion_digest = canonicalDigest({
+    schema_version: "intent_acceptance_criterion_v1", intent_digest: INTENT_DIGEST,
+    ...validCriterion,
+  });
+  const extraFieldContract = { schema_version: "intent_acceptance_contract_v1",
+    intent_digest: INTENT_DIGEST, criteria: [validCriterion],
+    criteria_digest: canonicalDigest([validCriterion]), evidence_required: true,
+    independent_verifier_required: true, unexpected: "re-digested" };
+  raw.effective_acceptance_contract = {
+    schema_version: "tenant_work_effective_acceptance_contract_v1",
+    plan_id: PRECOMMIT_PLAN_ID, plan_version: 3, plan_digest: "7".repeat(64),
+    acceptance_contract: extraFieldContract,
+    acceptance_contract_digest: canonicalDigest(extraFieldContract),
+  };
+  assert.throws(() => normalizeNyraDirectiveContext(raw, identity(), {
+    work_id: WORK_ID, project_id: "nyra_core",
+  }), /nyra_converse_effective_acceptance_contract_invalid/);
+
+  const incompleteV2 = { schema_version: "intent_acceptance_contract_v2",
+    intent_digest: INTENT_DIGEST, criteria: [validCriterion],
+    criteria_digest: canonicalDigest([validCriterion]), evidence_required: true,
+    independent_verifier_required: true };
+  raw.effective_acceptance_contract = {
+    schema_version: "tenant_work_effective_acceptance_contract_v1",
+    plan_id: PRECOMMIT_PLAN_ID, plan_version: 4, plan_digest: "7".repeat(64),
+    acceptance_contract: incompleteV2,
+    acceptance_contract_digest: canonicalDigest(incompleteV2),
+  };
+  assert.throws(() => normalizeNyraDirectiveContext(raw, identity(), {
+    work_id: WORK_ID, project_id: "nyra_core",
+  }), /nyra_converse_effective_acceptance_contract_invalid/);
 });
 
 test("read-only normalization never falls back to a caller project when V2 binding is absent", () => {

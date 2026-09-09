@@ -65,6 +65,17 @@
       "authoritative_fact_prefixes": ["work"]
     },
     {
+      "source_id": "outcome_projection",
+      "source_class": "governance",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "core_internal",
+      "independence_group": "entity360_derived_projection",
+      "adapter_versions": ["final_outcome_governance_projection_v1"],
+      "allowed_fact_prefixes": ["work.final_outcome_governance_binding"],
+      "authoritative": false,
+      "derived": true
+    },
+    {
       "source_id": "architecture_map",
       "source_class": "architecture",
       "trust_class": "tenant_verified",

@@ -77,7 +77,13 @@ export function createPolicyRegistrySigner({
     if (env[`${prefix}_ENABLED`] !== "true") throw new Error("policy_registry_signer_disabled");
     service = String(env[`${prefix}_SERVICE`] || "");
     keyId = String(env[`${prefix}_KEY_ID`] || "");
-    targetCommit = String(env[`${prefix}_TARGET_COMMIT`] || "").toLowerCase();
+    const buildCommit = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().toLowerCase();
+    const configuredTargetCommit = String(env[`${prefix}_TARGET_COMMIT`] || "").trim().toLowerCase();
+    if (!COMMIT.test(buildCommit)) throw new Error("policy_registry_signer_target_commit_invalid");
+    if (configuredTargetCommit && configuredTargetCommit !== buildCommit) {
+      throw new Error("policy_registry_signer_target_commit_mismatch");
+    }
+    targetCommit = buildCommit;
     token = String(env[`${prefix}_SERVICE_TOKEN`] || "");
     if (!SERVICE.test(service)) throw new Error("policy_registry_signer_service_invalid");
     if (!ID.test(keyId)) throw new Error("policy_registry_signer_key_id_invalid");

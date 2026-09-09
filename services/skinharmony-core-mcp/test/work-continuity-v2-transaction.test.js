@@ -1168,8 +1168,8 @@ function legacyRuntimeWithConcurrentProjection(pool) {
   } };
 }
 
-async function reviewed(store, input) {
-  const review = await store.openWorkReview(identity(), { intent_type: "CREATE_WORK",
+async function reviewed(store, input, actor = identity()) {
+  const review = await store.openWorkReview(actor, { intent_type: "CREATE_WORK",
     request: `${input.work_name} ${input.objective}`, create_request: input });
   return { ...input, review_id: review.review_id, review_digest: review.review_digest };
 }
@@ -2006,6 +2006,39 @@ test("a private Gallery assignment loses agent read access on archive, reopen, a
   assert.deepEqual(await store.listWorks(codex, { view: "operational" }), []);
   assert.deepEqual((await store.listWorks(other, { view: "my" })).map((work) => work.work_id), [workId]);
   assert.deepEqual((await store.listWorks(identity(), { view: "my" })).map((work) => work.work_id), [workId]);
+});
+
+test("private Gallery Work is horizontally visible to the same tenant owner across registered host subjects", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z"),
+  });
+  // Codex and ChatGPT intentionally have different authenticated subjects.
+  // Their common, server-derived tenant_owner membership is the only safe
+  // cross-host owner boundary; the Work remains private to ordinary members.
+  const codexOwner = identity("codex", "tenant_owner");
+  codexOwner.agentPresence.client_type = "codex";
+  const chatgptOwner = identity("oauth-owner", "tenant_owner");
+  chatgptOwner.agentPresence.client_type = "chatgpt";
+  const unrelatedMember = identity("oauth-member", "member");
+  unrelatedMember.agentPresence.client_type = "chatgpt";
+
+  const reviewedInput = await reviewed(store, createInput(), codexOwner);
+  const created = await store.createNewWork(codexOwner, reviewedInput);
+
+  assert.equal(created.work.visibility_scope, "private");
+  assert.equal(created.work.owner_user_id, "codex");
+  assert.deepEqual(
+    (await store.listWorks(chatgptOwner, { view: "operational" }))
+      .map((work) => work.work_id),
+    [created.work.work_id],
+  );
+  assert.deepEqual(
+    await store.listWorks(unrelatedMember, { view: "operational" }),
+    [],
+  );
 });
 
 test("Gallery V3 rejects a queue whose reviewed idea or architecture changed", async () => {

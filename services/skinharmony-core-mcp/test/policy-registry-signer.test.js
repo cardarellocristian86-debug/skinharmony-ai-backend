@@ -13,6 +13,7 @@ const COMMIT = "a".repeat(40);
 const TOKEN = "t".repeat(48);
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const env = {
+  RENDER_GIT_COMMIT: COMMIT,
   POLICY_REGISTRY_CORE_SIGNER_ENABLED: "true",
   POLICY_REGISTRY_CORE_SIGNER_SERVICE: "universal-core-policy-registry-signer",
   POLICY_REGISTRY_CORE_SIGNER_KEY_ID: "universal-core-policy-registry-v1",
@@ -58,6 +59,7 @@ test("core signer derives stable public metadata and signs only exact bound payl
 
 test("Nyra signer uses an isolated route, purpose, key, and derivation domain", () => {
   const nyraEnv = {
+    RENDER_GIT_COMMIT: COMMIT,
     POLICY_REGISTRY_NYRA_SIGNER_ENABLED: "true",
     POLICY_REGISTRY_NYRA_SIGNER_SERVICE: "nyra-policy-registry-signer",
     POLICY_REGISTRY_NYRA_SIGNER_KEY_ID: "nyra-policy-registry-v1",
@@ -102,6 +104,25 @@ test("Nyra signer uses an isolated route, purpose, key, and derivation domain", 
   const wrongPurpose = response();
   signer.handle({ ...request, body: { ...request.body, purpose: "nyra-policy-registry-core-signer-probe-v1" } }, wrongPurpose);
   assert.equal(wrongPurpose.statusCode, 400);
+});
+
+test("signer derives target commit from the verified build and only accepts an identical legacy pin", () => {
+  const withoutLegacyPin = { ...env };
+  delete withoutLegacyPin.POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
+  assert.equal(createPolicyRegistrySigner({ env: withoutLegacyPin }).health().target_commit, COMMIT);
+
+  const mismatched = createPolicyRegistrySigner({ env: {
+    ...env,
+    POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT: "b".repeat(40),
+  } });
+  assert.equal(mismatched.health().ready, false);
+  assert.equal(mismatched.health().error, "policy_registry_signer_target_commit_mismatch");
+
+  const missingBuild = { ...env };
+  delete missingBuild.RENDER_GIT_COMMIT;
+  const unavailable = createPolicyRegistrySigner({ env: missingBuild });
+  assert.equal(unavailable.health().ready, false);
+  assert.equal(unavailable.health().error, "policy_registry_signer_target_commit_invalid");
 });
 
 test("Nyra Blueprint binds the client to the isolated Nyra signer route", () => {

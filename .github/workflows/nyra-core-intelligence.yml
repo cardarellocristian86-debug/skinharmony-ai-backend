@@ -434,15 +434,20 @@ jobs:
               mcp_env.dig(key, "value") == expected
           end
           %w[
-            POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
             POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
             POLICY_REGISTRY_CORE_SIGNER_SEED
-            POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
             POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
             POLICY_REGISTRY_NYRA_SIGNER_SEED
           ].each do |key|
             abort("#{key}: signer custody must remain manually provisioned") unless
               mcp_env[key] == { "key" => key, "sync" => false }
+          end
+          %w[
+            POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+            POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+          ].each do |key|
+            abort("#{key}: signer target must derive from Render build identity") if
+              mcp_env.key?(key)
           end
           policy_registry_core_values = {
             "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "enforced",
@@ -514,7 +519,6 @@ jobs:
           end
           %w[
             CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN
-            CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
             CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
             CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY
             CORE_NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY_FINGERPRINT
@@ -522,13 +526,13 @@ jobs:
             abort("#{key}: must remain manually provisioned") unless
               core_env[key] == { "key" => key, "sync" => false }
           end
+          abort("CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT: target must derive from Render build identity") if
+            core_env.key?("CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT")
           {
             "CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY" =>
               "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY",
             "CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT" =>
               "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT",
-            "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT" =>
-              "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT",
             "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY" =>
               "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY",
           }.each do |key, producer_key|
@@ -542,6 +546,8 @@ jobs:
                 },
               }
           end
+          abort("CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT: target must derive from Render build identity") if
+            core_env.key?("CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT")
           abort("Nyra pre-Core signer origin must stay on Core MCP") unless
             core_env.dig("CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN", "value") ==
               "https://skinharmony-core-mcp.onrender.com"

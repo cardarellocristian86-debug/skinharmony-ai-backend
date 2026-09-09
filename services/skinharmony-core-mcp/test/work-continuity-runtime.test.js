@@ -229,7 +229,7 @@ function galleryIdentity(subject, sessionId, agentId) {
   };
 }
 
-function galleryMessagePool({ participantSubject, recipientSubject, messages = [] } = {}) {
+function galleryMessagePool({ participantSubject, recipientSubject, messages = [], nativePlan = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -241,6 +241,13 @@ function galleryMessagePool({ participantSubject, recipientSubject, messages = [
       }
       if (/SELECT status FROM core_continuity_works/.test(sql)) {
         return { rows: [{ status: "active" }] };
+      }
+      if (/SELECT w\.current_version,w\.objective,w\.status,i\.intent_digest/.test(sql)) {
+        return { rows: [{ current_version: 3, objective: "Ship the governed outcome",
+          status: "active", intent_digest: "d".repeat(64) }] };
+      }
+      if (/SELECT plan_version,plan,plan_digest/.test(sql) && /FROM core_continuity_native_plans/.test(sql)) {
+        return { rows: nativePlan ? [nativePlan] : [] };
       }
       if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) {
         if (params[3] !== participantSubject) return { rows: [] };
@@ -258,6 +265,15 @@ function galleryMessagePool({ participantSubject, recipientSubject, messages = [
       }
       if (/SELECT session_id,actor_subject FROM core_continuity_participants/.test(sql)) {
         return { rows: recipientSubject ? [{ session_id: params[2], actor_subject: recipientSubject }] : [] };
+      }
+      if (/INSERT INTO core_continuity_branches/.test(sql)) {
+        return { rows: [{ branch_id: params[2], parent_branch_id: params[3], branch_key: params[4],
+          title: params[5], objective: params[6], status: "active",
+          created_at: "2030-01-01T00:00:00.000Z", updated_at: "2030-01-01T00:00:00.000Z" }] };
+      }
+      if (/UPDATE core_continuity_leases/.test(sql)) return { rows: [] };
+      if (/UPDATE core_continuity_participants SET branch_id/.test(sql)) {
+        return { rows: [{ branch_id: params[3] }] };
       }
       if (/SELECT message_id,branch_id,from_session_id,to_session_id/.test(sql) && /FROM core_continuity_messages/.test(sql)) {
         assert.match(sql, /\(to_session_id=\$3 AND to_actor_subject=\$4\)/);
@@ -983,6 +999,140 @@ test("Gallery inbox excludes legacy and prior-subject direct messages after sess
   assert.equal(inboxQuery.params[2], "reused-session");
   assert.equal(inboxQuery.params[3], "oauth|replacement-recipient");
   assert.doesNotMatch(inboxQuery.sql, /to_actor_subject\s+IS\s+NULL/);
+});
+
+test("Gallery messages carry a server-derived outcome binding across Codex and ChatGPT hosts", async () => {
+  const pool = galleryMessagePool({
+    participantSubject: "oauth|codex-sender",
+    recipientSubject: "oauth|chatgpt-recipient",
+  });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const posted = await runtime.postMessage(
+    galleryIdentity("oauth|codex-sender", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex", to_session_id: "chatgpt-session", message_type: "handoff",
+      subject: "Continue milestone", payload: { checkpoint_ref: "checkpoint:7" },
+      idempotency_key: "outcome-bound-handoff" },
+  );
+  assert.equal(posted.outcome_chain.outcome.outcome_revision, 3);
+  assert.match(posted.outcome_chain.outcome.outcome_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(posted.message.payload._nyra_outcome_chain, posted.outcome_chain);
+  assert.equal(posted.message.payload.checkpoint_ref, "checkpoint:7");
+});
+
+test("Gallery branches materialize a milestone bound to the current final outcome", async () => {
+  const pool = galleryMessagePool({ participantSubject: "oauth|codex-builder" });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const opened = await runtime.openBranch(
+    galleryIdentity("oauth|codex-builder", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex", branch_key: "bounded-builder", title: "Bounded builder",
+      objective: "Produce the evidence required by the final outcome",
+      expected_outcome_revision: 3, idempotency_key: "outcome-bound-branch" },
+  );
+  assert.equal(opened.outcome_chain.milestone.branch_id, opened.branch.branch_id);
+  assert.equal(opened.outcome_chain.milestone.outcome_digest,
+    opened.outcome_chain.outcome.outcome_digest);
+  assert.match(opened.outcome_chain.milestone.milestone_digest, /^[a-f0-9]{64}$/);
+});
+
+test("Gallery follows the same amended effective objective revision exposed by Nyra", async () => {
+  const intentDigest = "d".repeat(64);
+  const objective = { criterion_id: "objective", criterion_kind: "objective",
+    text: "Operate the expanded reconciled outcome" };
+  objective.criterion_digest = digest({ schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: intentDigest, ...objective });
+  const acceptanceContract = {
+    schema_version: "intent_acceptance_contract_v1", intent_digest: intentDigest,
+    criteria: [objective], criteria_digest: digest([objective]), evidence_required: true,
+    independent_verifier_required: true,
+  };
+  const plan = { acceptance_contract: acceptanceContract };
+  const pool = galleryMessagePool({ participantSubject: "oauth|codex-builder",
+    nativePlan: { plan_version: 7, plan, plan_digest: digest(plan) } });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const inbox = await runtime.inbox(
+    galleryIdentity("oauth|codex-builder", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex", expected_outcome_revision: 7 },
+  );
+  assert.equal(inbox.outcome_chain.outcome.outcome_revision, 7);
+  assert.equal(inbox.outcome_chain.outcome.objective_digest,
+    digest("Operate the expanded reconciled outcome"));
+  assert.equal(inbox.outcome_chain.outcome.criteria_digest, acceptanceContract.criteria_digest);
+  assert.equal(inbox.outcome_chain.outcome.outcome_source, "native_acceptance_contract");
+});
+
+test("Gallery rejects a valid acceptance contract bound to another Intent", async () => {
+  const foreignIntent = "e".repeat(64);
+  const objective = { criterion_id: "objective", criterion_kind: "objective",
+    text: "Foreign outcome" };
+  objective.criterion_digest = digest({ schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: foreignIntent, ...objective });
+  const acceptanceContract = { schema_version: "intent_acceptance_contract_v1",
+    intent_digest: foreignIntent, criteria: [objective], criteria_digest: digest([objective]),
+    evidence_required: true, independent_verifier_required: true };
+  const plan = { acceptance_contract: acceptanceContract };
+  const pool = galleryMessagePool({ participantSubject: "oauth|codex-builder",
+    nativePlan: { plan_version: 7, plan, plan_digest: digest(plan) } });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.inbox(
+    galleryIdentity("oauth|codex-builder", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex" },
+  ), /continuity_outcome_intent_binding_mismatch/);
+});
+
+test("Gallery fails closed when the latest native outcome plan is tampered", async () => {
+  const intentDigest = "d".repeat(64);
+  const objective = { criterion_id: "objective", criterion_kind: "objective",
+    text: "Tampered outcome must not fall back" };
+  objective.criterion_digest = digest({ schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: intentDigest, ...objective });
+  const acceptanceContract = { schema_version: "intent_acceptance_contract_v1",
+    intent_digest: intentDigest, criteria: [objective], criteria_digest: digest([objective]),
+    evidence_required: true, independent_verifier_required: true };
+  const plan = { acceptance_contract: acceptanceContract };
+  const pool = galleryMessagePool({ participantSubject: "oauth|codex-builder",
+    nativePlan: { plan_version: 8, plan, plan_digest: "0".repeat(64) } });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.inbox(
+    galleryIdentity("oauth|codex-builder", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex" },
+  ), /continuity_outcome_native_plan_invalid/);
+});
+
+test("Gallery preserves the historical client message budget after adding its outcome envelope", async () => {
+  const pool = galleryMessagePool({ participantSubject: "oauth|sender" });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const payload = { body: "x".repeat(39_980) };
+  assert(Buffer.byteLength(JSON.stringify(payload)) <= 40_000);
+  const posted = await runtime.postMessage(
+    galleryIdentity("oauth|sender", "gallery-session", "gallery-agent"),
+    { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+      client_type: "codex", message_type: "update", subject: "Boundary payload",
+      payload, idempotency_key: "outcome-envelope-boundary" },
+  );
+  assert.equal(posted.message.payload.body.length, 39_980);
+  assert.equal(posted.message.payload._nyra_outcome_chain.outcome.outcome_revision, 3);
+});
+
+test("Gallery rejects stale or client-authored outcome authority", async () => {
+  const pool = galleryMessagePool({ participantSubject: "oauth|sender" });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const base = { work_id: WORK_ID, session_id: "gallery-session", agent_id: "gallery-agent",
+    client_type: "codex", message_type: "update", subject: "bounded update",
+    idempotency_key: "stale-outcome-binding" };
+  await assert.rejects(runtime.postMessage(
+    galleryIdentity("oauth|sender", "gallery-session", "gallery-agent"),
+    { ...base, expected_outcome_revision: 2, payload: {} },
+  ), /continuity_outcome_binding_stale/);
+  await assert.rejects(runtime.postMessage(
+    galleryIdentity("oauth|sender", "gallery-session", "gallery-agent"),
+    { ...base, idempotency_key: "forged-outcome-binding",
+      payload: { _nyra_outcome_chain: { outcome_digest: "a".repeat(64) } } },
+  ), /continuity_message_outcome_binding_client_forbidden/);
 });
 
 test("work gallery tools preserve read/write and bounded tenant-collaboration boundaries", () => {

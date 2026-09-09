@@ -4,6 +4,8 @@ import {
   validateNyraCanonicalIntent,
 } from "../../shared/nyra-canonical-intent.mjs";
 import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
+import { acceptanceContractIntegrityValid as sharedAcceptanceContractIntegrityValid }
+  from "../../shared/intent-acceptance-contract.mjs";
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
 import {
   governedWorkBootstrapDigest,
@@ -782,6 +784,135 @@ function unavailableWorkDirectiveContext(work, dialogue) {
   });
 }
 
+function effectiveOutcomeCriteria(value, intentDigest, objective, acceptanceCriteria) {
+  if (value === undefined || value === null) {
+    const criteria = [
+      { criterion_id: "objective", criterion_kind: "objective", text: objective },
+      ...acceptanceCriteria.map((text, index) => ({
+        criterion_id: `acceptance_${index + 1}`, criterion_kind: "acceptance", text,
+      })),
+    ].filter((criterion) => criterion.text).map((criterion) => Object.freeze({
+      ...criterion,
+      criterion_digest: deterministicDigest({
+        schema_version: "intent_acceptance_criterion_v1",
+        intent_digest: intentDigest,
+        ...criterion,
+      }),
+    }));
+    return Object.freeze({
+      source: "work_projection_v1",
+      outcome_revision: null,
+      criteria_digest: deterministicDigest(criteria),
+      criteria: Object.freeze(criteria),
+    });
+  }
+  const envelope = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const contract = envelope?.acceptance_contract;
+  const criteria = Array.isArray(contract?.criteria) ? contract.criteria : [];
+  if (envelope?.schema_version !== "tenant_work_effective_acceptance_contract_v1" ||
+      !boundedWorkId(envelope.plan_id) || !Number.isSafeInteger(Number(envelope.plan_version)) ||
+      Number(envelope.plan_version) < 1 ||
+      !/^[a-f0-9]{64}$/.test(String(envelope.plan_digest || "")) ||
+      !/^[a-f0-9]{64}$/.test(String(envelope.acceptance_contract_digest || "")) ||
+      deterministicDigest(contract) !== envelope.acceptance_contract_digest ||
+      !sharedAcceptanceContractIntegrityValid(contract, deterministicDigest) ||
+      contract.intent_digest !== intentDigest || criteria.length > 351) {
+    throw fail("nyra_converse_effective_acceptance_contract_invalid", 409);
+  }
+  const normalized = criteria.map((criterion) => {
+    const criterionId = boundedPublicText(criterion?.criterion_id, 160);
+    const criterionKind = String(criterion?.criterion_kind || "");
+    const text = boundedPublicText(criterion?.text, 8_000);
+    const criterionDigest = String(criterion?.criterion_digest || "");
+    const material = { schema_version: "intent_acceptance_criterion_v1", intent_digest: intentDigest,
+      criterion_id: criterionId, criterion_kind: criterionKind, text };
+    if (!criterionId || !text || !new Set(["objective", "acceptance", "constraint"]).has(criterionKind) ||
+        deterministicDigest(material) !== criterionDigest) {
+      throw fail("nyra_converse_effective_acceptance_contract_invalid", 409);
+    }
+    return Object.freeze({ ...material, criterion_digest: criterionDigest });
+  });
+  if (normalized.filter((criterion) => criterion.criterion_kind === "objective").length !== 1) {
+    throw fail("nyra_converse_effective_acceptance_contract_invalid", 409);
+  }
+  return Object.freeze({
+    source: "native_acceptance_contract",
+    outcome_revision: Number(envelope.plan_version),
+    criteria_digest: contract.criteria_digest,
+    criteria: Object.freeze(normalized),
+  });
+}
+
+export function buildNyraIntermediateGoalProjection({
+  workId, workRevision, intentDigest, criteriaDigest, criteria = [], tasks = [], evidence = [],
+  closureVerified = false,
+} = {}) {
+  const goals = [
+    ...criteria.filter((criterion) => criterion.criterion_kind !== "objective").map((criterion) => ({
+      source_kind: "criterion",
+      source_id: criterion.criterion_id,
+      source_digest: criterion.criterion_digest,
+      state: closureVerified ? "VERIFIED" : "PENDING",
+    })),
+    ...tasks.filter((task) => task.required).map((task) => ({
+      source_kind: "task",
+      source_id: task.task_id,
+      source_digest: deterministicDigest({ title: task.title, required: true }),
+      state: task.status === "completed" && task.acceptance_verified ? "VERIFIED" : "PENDING",
+    })),
+    ...evidence.filter((item) => item.required).map((item) => ({
+      source_kind: "evidence",
+      source_id: item.evidence_id,
+      source_digest: item.digest,
+      state: item.independently_verified ? "VERIFIED" : "PENDING",
+    })),
+  ].map((goal) => Object.freeze({
+    goal_id: deterministicDigest({ schema_version: "nyra_intermediate_goal_id_v1", work_id: workId,
+      intent_digest: intentDigest, source_kind: goal.source_kind, source_id: goal.source_id,
+      source_digest: goal.source_digest }),
+    ...goal,
+  })).sort((left, right) => left.goal_id.localeCompare(right.goal_id));
+  const material = {
+    schema_version: "nyra_intermediate_goal_projection_v1",
+    work_revision: workRevision,
+    intent_digest: intentDigest,
+    criteria_digest: criteriaDigest,
+    goals,
+    goal_count: goals.length,
+    verified_goal_count: goals.filter((goal) => goal.state === "VERIFIED").length,
+    pending_goal_count: goals.filter((goal) => goal.state === "PENDING").length,
+  };
+  return Object.freeze({ ...material, projection_digest: deterministicDigest(material) });
+}
+
+function nyraStructuredOutcomeContext(workContext = null) {
+  const outcome = workContext?.available === true ? workContext.final_outcome : null;
+  const intermediate = outcome?.intermediate_goals;
+  const verifiedChain = Boolean(
+    outcome?.schema_version === "nyra_final_outcome_projection_v2" &&
+    /^[a-f0-9]{64}$/.test(String(outcome.intent_digest || "")) &&
+    /^[a-f0-9]{64}$/.test(String(outcome.target_digest || "")) &&
+    /^[a-f0-9]{64}$/.test(String(outcome.criteria_digest || "")) &&
+    Number.isSafeInteger(Number(outcome.outcome_revision)) && Number(outcome.outcome_revision) >= 1 &&
+    intermediate?.schema_version === "nyra_intermediate_goal_projection_v1" &&
+    /^[a-f0-9]{64}$/.test(String(intermediate.projection_digest || "")),
+  );
+  return Object.freeze({
+    intent_available: workContext === null || verifiedChain || Boolean(workContext?.intent_digest),
+    // An outcome projection is not proof that an ICF, Entity360 or Ramy
+    // adapter was actually read. Keep subsystem availability honest and
+    // expose the verified outcome/goal projections on their own axes.
+    icf_available: false,
+    icf_state: "UNAVAILABLE_NO_VERIFIED_READBACK",
+    entity_360_available: false,
+    entity_360_state: "UNAVAILABLE_NO_VERIFIED_READBACK",
+    ramy_state: "unavailable_no_verified_adapter",
+    outcome_projection_available: verifiedChain,
+    intermediate_goals_available: verifiedChain,
+    outcome_chain_digest: verifiedChain ? deterministicDigest(outcome) : null,
+  });
+}
+
 function normalizePrecommitTicketGate(value, tenantId, workId) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -877,9 +1008,26 @@ function fulfilledPrecommitPredecessorContextDigest(compact, gate) {
   const predecessorTasks = compact.tasks.map((task) => task.task_id === gate.task_id
     ? Object.freeze({ ...task, status: "planned", acceptance_verified: false })
     : task);
+  const predecessorIntermediateGoals = compact.intermediate_goals
+    ? (() => {
+        const goals = compact.intermediate_goals.goals.map((goal) =>
+          goal.source_kind === "task" && goal.source_id === gate.task_id
+            ? { ...goal, state: "PENDING" }
+            : goal);
+        const material = {
+          ...compact.intermediate_goals,
+          goals,
+          verified_goal_count: goals.filter((goal) => goal.state === "VERIFIED").length,
+          pending_goal_count: goals.filter((goal) => goal.state === "PENDING").length,
+        };
+        delete material.projection_digest;
+        return { ...material, projection_digest: deterministicDigest(material) };
+      })()
+    : null;
   return deterministicDigest({
     ...compact,
     tasks: predecessorTasks,
+    ...(predecessorIntermediateGoals ? { intermediate_goals: predecessorIntermediateGoals } : {}),
     precommit_ticket_gate_projection_digest: predecessorProjectionDigest,
     precommit_ticket_gate_applicable: true,
   });
@@ -1079,6 +1227,26 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     closureProjection.failure_codes.length === 0 &&
     deterministicDigest(closureProjectionUnsigned) === closureProjection.verification_digest,
   );
+  const publicObjective = boundedPublicText(work.objective, 500);
+  const effectiveCriteria = effectiveOutcomeCriteria(
+    value.effective_acceptance_contract,
+    intentDigest,
+    publicObjective,
+    acceptanceCriteria,
+  );
+  const effectiveObjective = effectiveCriteria.criteria.find((criterion) =>
+    criterion.criterion_kind === "objective");
+  if (!effectiveObjective) throw fail("nyra_converse_final_outcome_objective_missing", 409);
+  const intermediateGoals = buildNyraIntermediateGoalProjection({
+    workId: bindingWorkId,
+    workRevision,
+    intentDigest,
+    criteriaDigest: effectiveCriteria.criteria_digest,
+    criteria: effectiveCriteria.criteria,
+    tasks,
+    evidence,
+    closureVerified,
+  });
   const compact = {
     schema_version: "nyra_work_directive_context_v1",
     tenant_id: tenantId,
@@ -1093,9 +1261,12 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     // and therefore cannot reconstruct that transport-local bit. Keep it in
     // the public context below, but never let it create false Work drift in
     // the integrity digest.
-    objective: boundedPublicText(work.objective, 500),
+    objective: publicObjective,
     work_next_action: boundedPublicText(work.next_action, 500),
     acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),
+    effective_outcome_revision: effectiveCriteria.outcome_revision,
+    effective_acceptance_criteria_digest: effectiveCriteria.criteria_digest,
+    intermediate_goals: intermediateGoals,
     tasks,
     evidence,
     precommit_ticket_gate_projection_digest: precommitTicketGate?.projection_digest || null,
@@ -1107,13 +1278,27 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   // the immutable canonical objective projected with its measurable closure
   // state, so Nyra can maintain one outcome across chat, local and host turns.
   const finalOutcome = Object.freeze({
+    schema_version: "nyra_final_outcome_projection_v2",
     // Keep the immutable outcome addressable without turning private Work
     // objective text into a model-facing continuation payload.
-    target_digest: deterministicDigest(compact.objective),
-    acceptance_criteria_count: acceptanceCriteria.length,
+    target_digest: deterministicDigest(effectiveObjective.text),
+    objective_criterion_digest: effectiveObjective.criterion_digest,
+    intent_digest: intentDigest,
+    outcome_revision: effectiveCriteria.outcome_revision || workRevision,
+    criteria_digest: effectiveCriteria.criteria_digest,
+    acceptance_criteria_count: effectiveCriteria.criteria.filter((criterion) =>
+      criterion.criterion_kind === "acceptance").length,
     closure_verified: closureVerified,
     state: closureVerified ? "VERIFIED" : status,
     next_action_available: Boolean(compact.work_next_action),
+    intermediate_goals: Object.freeze({
+      schema_version: intermediateGoals.schema_version,
+      goal_count: intermediateGoals.goal_count,
+      verified_goal_count: intermediateGoals.verified_goal_count,
+      pending_goal_count: intermediateGoals.pending_goal_count,
+      next_pending_goal_id: intermediateGoals.goals.find((goal) => goal.state === "PENDING")?.goal_id || null,
+      projection_digest: intermediateGoals.projection_digest,
+    }),
   });
   const normalized = {
     available: true,
@@ -2653,12 +2838,7 @@ async function advisoryConversationResult({
     orchestration_directive: directive,
     intent_routing: Object.freeze({
       route: publicNyraIntentRoute(route),
-      structured_context: Object.freeze({
-        intent_available: true,
-        icf_available: false,
-        entity_360_available: false,
-        ramy_state: "unavailable_no_verified_adapter",
-      }),
+      structured_context: nyraStructuredOutcomeContext(),
       self_model_readback: Object.freeze({
         state: selfModelReadback,
         materialized: selfModel !== null,
@@ -3185,8 +3365,7 @@ export function createNyraConverseHandler({
     const baseDirective = orchestrationDirective({
       tenantId,
       message,
-      work: Object.freeze({ ...boundedPreflight.work,
-        ...(workContext.final_outcome ? { final_outcome: workContext.final_outcome } : {}) }),
+      work: boundedPreflight.work,
       dialogue: boundedPreflight.dialogue,
       workContext,
       interpretation: directiveInterpretation,
@@ -3268,12 +3447,7 @@ export function createNyraConverseHandler({
     ];
     const localRouting = Object.freeze({
       route: publicNyraIntentRoute(intentRoute),
-      structured_context: Object.freeze({
-        intent_available: true,
-        icf_available: false,
-        entity_360_available: false,
-        ramy_state: "unavailable_no_verified_adapter",
-      }),
+      structured_context: nyraStructuredOutcomeContext(workContext),
       command_catalog: Object.freeze({ state: "NOT_REQUESTED", catalog_revision: null,
         commands: Object.freeze([]), identity_filtered: false, truncated: false }),
       command_proposal: null,

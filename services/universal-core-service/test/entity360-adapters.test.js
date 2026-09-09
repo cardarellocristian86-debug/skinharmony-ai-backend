@@ -100,6 +100,83 @@ const DIGESTS = Object.freeze({
     sequence_number: 9, event_type: "WORK_UPDATED", payload: WORK_EVENT_PAYLOAD,
     previous_event_hash: null }),
 });
+const NATIVE_PLAN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+function acceptanceCriterion(criterion_id, criterion_kind, text) {
+  const value = { criterion_id, criterion_kind, text };
+  return { ...value, criterion_digest: entity360Digest({
+    schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: DIGESTS.intent,
+    ...value,
+  }) };
+}
+
+function nativePlanRow() {
+  const criteria = [
+    acceptanceCriterion("objective", "objective", "Effective final outcome"),
+    acceptanceCriterion("acceptance_1", "acceptance", "Verified readback"),
+  ];
+  const contract = {
+    schema_version: "intent_acceptance_contract_v1",
+    intent_digest: DIGESTS.intent,
+    criteria,
+    criteria_digest: entity360Digest(criteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
+  const precommit = {
+    schema_version: "native_precommit_acceptance_policy_v1",
+    acceptance_contract_digest: entity360Digest(contract),
+    required_criterion_digests: [],
+    deferred_criterion_digests: criteria.map((item) => item.criterion_digest).sort(),
+  };
+  precommit.policy_digest = entity360Digest(precommit);
+  const plan = { schema_version: "native_agent_plan_v1", acceptance_contract: contract,
+    precommit_acceptance_policy: precommit };
+  return { tenant_id: TENANT, plan_id: NATIVE_PLAN_ID, plan_version: 2,
+    plan, plan_digest: entity360Digest(plan), created_at: AT };
+}
+
+function nativePlanV2Row() {
+  const baseCriteria = nativePlanRow().plan.acceptance_contract.criteria;
+  const amendment = {
+    schema_version: "intent_acceptance_contract_amendment_v2",
+    base_criteria_digest: entity360Digest(baseCriteria),
+    reason: "Owner expanded the final outcome",
+    superseded_criteria: [{ criterion_id: "objective",
+      criterion_digest: baseCriteria[0].criterion_digest, reason: "Objective expanded" }],
+    replacement_criteria: [{ criterion_id: "objective", criterion_kind: "objective",
+      text: "Expanded effective final outcome" }],
+  };
+  const replacement = acceptanceCriterion("objective", "objective",
+    "Expanded effective final outcome");
+  const effectiveCriteria = [baseCriteria[1], replacement];
+  const contract = {
+    schema_version: "intent_acceptance_contract_v2",
+    intent_digest: DIGESTS.intent,
+    base_criteria: baseCriteria,
+    base_criteria_digest: entity360Digest(baseCriteria),
+    amendment,
+    amendment_digest: entity360Digest(amendment),
+    architecture_version: 4,
+    architecture_digest: DIGESTS.architecture,
+    criteria: effectiveCriteria,
+    criteria_digest: entity360Digest(effectiveCriteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
+  const precommit = {
+    schema_version: "native_precommit_acceptance_policy_v1",
+    acceptance_contract_digest: entity360Digest(contract),
+    required_criterion_digests: [],
+    deferred_criterion_digests: effectiveCriteria.map((item) => item.criterion_digest).sort(),
+  };
+  precommit.policy_digest = entity360Digest(precommit);
+  const plan = { schema_version: "native_agent_plan_v1", acceptance_contract: contract,
+    precommit_acceptance_policy: precommit };
+  return { tenant_id: TENANT, plan_id: NATIVE_PLAN_ID, plan_version: 3,
+    plan, plan_digest: entity360Digest(plan), created_at: AT };
+}
 const { policy: POLICY, ontology: ONTOLOGY } = loadEntity360Configuration();
 
 function qualificationSignature(payload, purpose) {
@@ -289,6 +366,7 @@ function workRows(sql) {
     anchor: structuredClone(INTENT_ANCHOR),
     created_at: AT,
   }]);
+  if (/FROM core_continuity_native_plans/u.test(sql)) return result([nativePlanRow()]);
   if (/FROM core_work_causal_bindings/u.test(sql)) return result([{
     tenant_id: TENANT,
     project_uuid: PROJECT_UUID,
@@ -461,7 +539,7 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
   });
   assert.deepEqual([...new Set(discovery.source_contributions.map((item) => item.source_id))].sort(), [
     "architecture_map", "event_ledger", "genesis", "icf", "impact_map", "intent",
-    "security_intelligence", "work_continuity",
+    "outcome_projection", "security_intelligence", "work_continuity",
   ]);
   assert.deepEqual(discovery.source_discovery.filter((item) =>
     ["nsct", "shared_memory", "runtime_state", "universal_core"].includes(item.source_id))
@@ -1093,6 +1171,7 @@ test("partial composite-source outage quarantines its whole batch and remains as
 test("Work acceptance criteria are represented only by digest and count", async () => {
   const assembled = await assembleWork((sql, values) => {
     const value = workRows(sql, values);
+    if (/FROM core_continuity_native_plans/u.test(sql)) return result();
     if (/FROM tenant_work/u.test(sql) && value.rows[0]) {
       value.rows[0].acceptance_criteria = [{ allow: true, core_verdict: "ALLOW",
         authority: "universal_core", note: "tenant-controlled" }];
@@ -1109,6 +1188,155 @@ test("Work acceptance criteria are represented only by digest and count", async 
   });
   assert.equal(JSON.stringify(fact.value).includes("core_verdict"), false);
   assert.doesNotThrow(() => snapshotFor(assembled));
+});
+
+test("effective final outcome is a provenance-explicit Work and Intent projection", async () => {
+  const assembled = await assembleWork();
+  const acceptance = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "work_continuity")?.facts
+    .find((item) => item.fact_id === "work.acceptance_criteria")?.value;
+  const icf = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "icf")?.facts
+    .find((item) => item.fact_id === "governance.icf.binding")?.value;
+  const expected = nativePlanRow();
+  assert.equal(acceptance.criteria_digest,
+    expected.plan.acceptance_contract.criteria_digest);
+  assert.equal(acceptance.item_count, 2);
+  assert.equal(acceptance.final_outcome_binding.plan_version, 2);
+  assert.equal(acceptance.final_outcome_binding.intent_digest, DIGESTS.intent);
+  assert.deepEqual(acceptance.final_outcome_binding.provenance, {
+    derivation: "verified_multi_source_projection_v1",
+    sources: [
+      { source_id: "intent", evidence_digest: DIGESTS.intent },
+      { source_id: "work_continuity", evidence_digest: expected.plan_digest },
+    ],
+  });
+  assert.equal(icf.final_outcome_digest, undefined);
+  const projection = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "outcome_projection")?.facts
+    .find((item) => item.fact_id === "work.final_outcome_governance_binding")?.value;
+  assert.equal(projection.final_outcome_digest,
+    acceptance.final_outcome_binding.final_outcome_digest);
+  assert.equal(projection.icf_ledger_head_digest, DIGESTS.icf);
+  assert.equal(projection.intent_anchor_digest, DIGESTS.intent);
+  assert.deepEqual(projection.provenance.sources.map((item) => item.source_id),
+    ["intent", "work_continuity", "icf"]);
+  assert.equal(JSON.stringify(acceptance).includes("Effective final outcome"), false);
+  assert.doesNotThrow(() => snapshotFor(assembled));
+});
+
+test("tampered native final outcome is rejected and cannot bind into ICF", async () => {
+  const assembled = await assembleWork((sql, values) => {
+    const response = workRows(sql, values);
+    if (/FROM core_continuity_native_plans/u.test(sql)) {
+      const row = nativePlanRow();
+      row.plan.acceptance_contract.criteria[0].text = "tampered objective";
+      return result([row]);
+    }
+    return response;
+  });
+  const acceptance = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "work_continuity")?.facts
+    .find((item) => item.fact_id === "work.acceptance_criteria")?.value;
+  assert.equal(acceptance.final_outcome_binding, undefined);
+  assert.ok(assembled.discovery.source_discovery.some((item) =>
+    item.source_id === "work_continuity" && item.state === "rejected"
+      && item.reason_code === "FINAL_OUTCOME_BINDING_INVALID"));
+  const icf = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "icf")?.facts
+    .find((item) => item.fact_id === "governance.icf.binding")?.value;
+  assert.equal(icf?.final_outcome_digest, undefined);
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    item.source_id === "outcome_projection"), false);
+});
+
+test("final outcome governance projection is absent when the ICF head is tampered", async () => {
+  const assembled = await assembleWork((sql, values) => {
+    const response = workRows(sql, values);
+    if (/FROM core_icf_event/u.test(sql)) return result(response.rows.map((row) => ({
+      ...row, digest: "e".repeat(64),
+    })));
+    return response;
+  });
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    item.source_id === "outcome_projection"), false);
+  assert.ok(assembled.discovery.source_discovery.some((item) =>
+    item.source_id === "icf" && item.state === "rejected"));
+});
+
+test("final outcome governance projection is absent when the ICF head is missing", async () => {
+  const assembled = await assembleWork((sql, values) => {
+    if (/FROM core_icf_work|FROM core_icf_event/u.test(sql)) return result();
+    return workRows(sql, values);
+  });
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    item.source_id === "outcome_projection"), false);
+  assert.ok(assembled.discovery.source_discovery.some((item) =>
+    item.source_id === "icf" && ["missing", "unavailable"].includes(item.state)));
+});
+
+test("final outcome governance projection requires authoritative causal Intent and Genesis", async () => {
+  const assembled = await assembleWork((sql, values) => {
+    if (/FROM core_work_causal_bindings/u.test(sql)) return result();
+    return workRows(sql, values);
+  });
+  const acceptance = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "work_continuity")?.facts
+    .find((item) => item.fact_id === "work.acceptance_criteria")?.value;
+  assert.ok(acceptance.final_outcome_binding);
+  assert.ok(assembled.discovery.source_contributions.some((item) => item.source_id === "icf"));
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    item.source_id === "outcome_projection"), false);
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    ["intent", "genesis"].includes(item.source_id)), false);
+});
+
+test("v2 final outcome requires exact amendment and effective-criteria semantics", async () => {
+  const assembled = await assembleWork((sql, values) => {
+    const response = workRows(sql, values);
+    if (/FROM core_continuity_native_plans/u.test(sql)) return result([nativePlanV2Row()]);
+    return response;
+  });
+  const acceptance = assembled.discovery.source_contributions
+    .find((item) => item.source_id === "work_continuity")?.facts
+    .find((item) => item.fact_id === "work.acceptance_criteria")?.value;
+  assert.equal(acceptance.final_outcome_binding.plan_version, 3);
+  assert.equal(acceptance.criteria_digest,
+    nativePlanV2Row().plan.acceptance_contract.criteria_digest);
+
+  for (const mutate of [
+    (contract) => { contract.amendment.replacement_criteria[0].text = "semantic tamper"; },
+    (contract) => { contract.criteria.reverse(); },
+    (contract) => { contract.base_criteria[0].text = "base semantic tamper"; },
+    (contract) => { contract.architecture_digest = "f".repeat(64); },
+    (contract) => { contract.unexpected = true; },
+  ]) {
+    const rejected = await assembleWork((sql, values) => {
+      const response = workRows(sql, values);
+      if (/FROM core_continuity_native_plans/u.test(sql)) {
+        const row = nativePlanV2Row();
+        mutate(row.plan.acceptance_contract);
+        row.plan.acceptance_contract.criteria_digest =
+          entity360Digest(row.plan.acceptance_contract.criteria);
+        row.plan.acceptance_contract.amendment_digest =
+          entity360Digest(row.plan.acceptance_contract.amendment);
+        row.plan.precommit_acceptance_policy.acceptance_contract_digest =
+          entity360Digest(row.plan.acceptance_contract);
+        row.plan.precommit_acceptance_policy.policy_digest =
+          entity360Digest({ ...row.plan.precommit_acceptance_policy,
+            policy_digest: undefined });
+        row.plan_digest = entity360Digest(row.plan);
+        return result([row]);
+      }
+      return response;
+    });
+    const value = rejected.discovery.source_contributions
+      .find((item) => item.source_id === "work_continuity")?.facts
+      .find((item) => item.fact_id === "work.acceptance_criteria")?.value;
+    assert.equal(value.final_outcome_binding, undefined);
+    assert.ok(rejected.discovery.source_discovery.some((item) =>
+      item.reason_code === "FINAL_OUTCOME_BINDING_INVALID"));
+  }
 });
 
 test("raw Gallery and Architecture payloads are rejected at the policy-bound SQL retrieval guard", async () => {

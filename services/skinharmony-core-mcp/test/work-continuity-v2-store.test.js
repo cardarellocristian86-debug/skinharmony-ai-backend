@@ -536,8 +536,21 @@ test("initialization sends one additive schema statement to the injected pool", 
   assert.equal(calls[0], ADDITIVE_SCHEMA_SQL.trim());
 });
 
-test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {
+test("exact Work ACL reads accept RFC UUIDv8 identifiers and reject malformed effective contracts", async () => {
   const workId = "11111111-1111-8111-8111-111111111111";
+  const intentDigest = "a".repeat(64);
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]))
+      : value;
+  const objectDigest = (value) => crypto.createHash("sha256")
+    .update(JSON.stringify(canonical(value))).digest("hex");
+  const malformedContract = { schema_version: "intent_acceptance_contract_v1",
+    intent_digest: intentDigest, criteria: [{ criterion_id: "objective",
+      criterion_kind: "objective", text: "Outcome", criterion_digest: "0".repeat(64),
+      injected_authority: true }], evidence_required: true, independent_verifier_required: true };
+  malformedContract.criteria_digest = objectDigest(malformedContract.criteria);
+  const malformedPlan = { acceptance_contract: malformedContract };
   const pool = {
     async query(sql) {
       if (sql === ADDITIVE_SCHEMA_SQL) return { rows: [] };
@@ -551,7 +564,12 @@ test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {
           supervising_user_ids: [],
           agent_ids: [],
           visibility_scope: "private",
+          intent_digest: intentDigest,
         }] };
+      }
+      if (/SELECT plan_id,plan_version,plan,plan_digest/.test(sql)) {
+        return { rows: [{ plan_id: "22222222-2222-4222-8222-222222222222",
+          plan_version: 2, plan: malformedPlan, plan_digest: objectDigest(malformedPlan) }] };
       }
       return { rows: [] };
     },
@@ -563,6 +581,7 @@ test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {
     tenant_work_acl: acl(),
   }, { work_id: workId });
   assert.equal(result.work.work_id, workId);
+  assert.equal(result.effective_acceptance_contract, null);
 });
 
 test("Generic Core Join requires the exact v1 contract, canonical signature and request binding", () => {

@@ -618,28 +618,34 @@ export function createNyraGovernedContinueHandler({
         work_id: workId,
         idempotency_key: String(args.idempotency_key).trim(),
       }, identity);
-      if (bindingBlockedByClaim) {
-        if (typeof readActivePrecommitTicketGateClaimForReconciliation !== "function" ||
-            typeof abandonInactivePrecommitTicketGateClaim !== "function") {
-          fail("nyra_continue_precommit_claim_recovery_unavailable", 503);
-        }
-        const gateClaim = await readActivePrecommitTicketGateClaimForReconciliation({
-          server_owned: true,
+      // A transport may already hold a valid logical read lease even though a
+      // stale native precommit claim still blocks closure evaluation. Inspect
+      // the authoritative claim ledger on every explicitly authorized recovery
+      // instead of relying on the lease acquisition error as its proxy.
+      if (typeof readActivePrecommitTicketGateClaimForReconciliation !== "function" ||
+          typeof abandonInactivePrecommitTicketGateClaim !== "function") {
+        fail("nyra_continue_precommit_claim_recovery_unavailable", 503);
+      }
+      const gateClaim = await readActivePrecommitTicketGateClaimForReconciliation({
+        server_owned: true,
+        work_id: workId,
+      }, identity);
+      let claimAbandoned = false;
+      if (gateClaim) {
+        const abandonment = await abandonInactivePrecommitTicketGateClaim({
           work_id: workId,
+          gate_claim: gateClaim,
         }, identity);
-        if (gateClaim) {
-          const abandonment = await abandonInactivePrecommitTicketGateClaim({
+        if (!abandonment) {
+          return persistedPrecommitReconciliationResult({
             work_id: workId,
-            gate_claim: gateClaim,
-          }, identity);
-          if (!abandonment) {
-            return persistedPrecommitReconciliationResult({
-              work_id: workId,
-              outcome: "BLOCKED",
-              reason_codes: ["precommit_claim_delegation_active"],
-            });
-          }
+            outcome: "BLOCKED",
+            reason_codes: ["precommit_claim_delegation_active"],
+          });
         }
+        claimAbandoned = true;
+      }
+      if (bindingBlockedByClaim || claimAbandoned) {
         // Prove that the circular claim was actually removed before reporting
         // a reconciled gate. This retains the normal ACL and logical-session
         // binding as the final authority boundary.

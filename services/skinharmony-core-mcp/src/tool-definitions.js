@@ -813,6 +813,31 @@ const nyraConverseActionCategory = {
 };
 const nyraDirectiveCode = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$" };
 const nyraDirectiveDigest = { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" };
+const nyraIntermediateGoalProjection = object({
+  schema_version: { const: "nyra_intermediate_goal_projection_v1" },
+  goal_count: { type: "integer", minimum: 0, maximum: 543 },
+  verified_goal_count: { type: "integer", minimum: 0, maximum: 543 },
+  pending_goal_count: { type: "integer", minimum: 0, maximum: 543 },
+  next_pending_goal_id: nyraDirectiveDigest,
+  projection_digest: nyraDirectiveDigest,
+}, ["schema_version", "goal_count", "verified_goal_count", "pending_goal_count",
+  "next_pending_goal_id", "projection_digest"]);
+
+const nyraFinalOutcomeProjection = object({
+  schema_version: { const: "nyra_final_outcome_projection_v2" },
+  target_digest: nyraDirectiveDigest,
+  objective_criterion_digest: nyraDirectiveDigest,
+  intent_digest: nyraDirectiveDigest,
+  outcome_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
+  criteria_digest: nyraDirectiveDigest,
+  acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
+  closure_verified: { type: "boolean" },
+  state: { type: "string", maxLength: 40 },
+  next_action_available: { type: "boolean" },
+  intermediate_goals: nyraIntermediateGoalProjection,
+}, ["schema_version", "target_digest", "objective_criterion_digest", "intent_digest",
+  "outcome_revision", "criteria_digest", "acceptance_criteria_count", "closure_verified",
+  "state", "next_action_available", "intermediate_goals"]);
 const nyraDirectiveActionClass = {
   type: "string",
   enum: [
@@ -1151,13 +1176,7 @@ const nyraOrchestrationDirectiveSchema = object({
       ],
     },
     closure_verified: { type: "boolean" },
-    final_outcome: object({
-      target_digest: nyraDirectiveDigest,
-      acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
-      closure_verified: { type: "boolean" },
-      state: { type: "string", maxLength: 40 },
-      next_action_available: { type: "boolean" },
-    }, ["target_digest", "acceptance_criteria_count", "closure_verified", "state", "next_action_available"]),
+    final_outcome: nyraFinalOutcomeProjection,
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
     "status", "progress_bp", "checkpoint_available", "acceptance_criteria_count",
@@ -1289,13 +1308,6 @@ const nyraConverseOutputSchema = object({
     next_action: nyraConverseNullableText(500),
     next_action_available: { type: "boolean" },
     selection_required: { type: "boolean" },
-    final_outcome: object({
-      target_digest: nyraDirectiveDigest,
-      acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
-      closure_verified: { type: "boolean" },
-      state: { type: "string", maxLength: 40 },
-      next_action_available: { type: "boolean" },
-    }, ["target_digest", "acceptance_criteria_count", "closure_verified", "state", "next_action_available"]),
   }, ["preflight_bound", "work_bound", "work_id", "project_id", "state", "next_action", "next_action_available", "selection_required"]),
   memory: object({
     loaded: { type: "boolean" },
@@ -1458,10 +1470,17 @@ const nyraConverseOutputSchema = object({
       execution_authorized: { const: false },
     }, ["schema_version", "intent", "route", "clauses", "input_digest", "semantic_intake", "canonical_intent", "execution_authorized"]),
     structured_context: object({
-      intent_available: { type: "boolean" }, icf_available: { const: false },
-      entity_360_available: { const: false },
+      intent_available: { type: "boolean" }, icf_available: { type: "boolean" },
+      icf_state: { const: "UNAVAILABLE_NO_VERIFIED_READBACK" },
+      entity_360_available: { type: "boolean" },
+      entity_360_state: { const: "UNAVAILABLE_NO_VERIFIED_READBACK" },
       ramy_state: { const: "unavailable_no_verified_adapter" },
-    }, ["intent_available", "icf_available", "entity_360_available", "ramy_state"]),
+      outcome_projection_available: { type: "boolean" },
+      intermediate_goals_available: { type: "boolean" },
+      outcome_chain_digest: nyraDirectiveDigest,
+    }, ["intent_available", "icf_available", "icf_state", "entity_360_available",
+      "entity_360_state", "ramy_state", "outcome_projection_available",
+      "intermediate_goals_available", "outcome_chain_digest"]),
     command_catalog: object({
       state: { type: "string", enum: ["AVAILABLE", "UNAVAILABLE", "NOT_REQUESTED"] },
       catalog_revision: nyraDirectiveDigest,
