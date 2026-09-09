@@ -751,6 +751,10 @@ test("coordination overview deduplicates one physical session and derives workin
   assert.equal("opaque_agent_id" in result.sessions[0], false);
   assert.equal("transport_session_fingerprint" in result.sessions[0], false);
   assert.match(runtime.coordinationOverviewAuthorized.toString(), /sum\(active_lease_count\) OVER/);
+  assert.match(runtime.coordinationOverviewAuthorized.toString(),
+    /LEFT JOIN tenant_work tw ON tw\.tenant_id=p\.tenant_id AND tw\.legacy_work_id=p\.work_id/);
+  assert.match(runtime.coordinationOverviewAuthorized.toString(),
+    /tw\.status IN \('PLANNED','ACTIVE','PAUSED','BLOCKED','HANDOFF'\)/);
   assert.doesNotMatch(runtime.coordinationOverviewAuthorized.toString(), /OR EXISTS \(/);
   await assert.rejects(runtime.coordinationOverviewAuthorized({ tenantId: "tenant-b" }, {}, {
     schema_version: "legacy_work_read_authorization_v1", server_derived: true,
