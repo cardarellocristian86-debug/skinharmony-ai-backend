@@ -3133,6 +3133,10 @@ export function createWorkContinuityV2Store({
       fail("historical_bridge_archive_owner_confirmation_required");
     }
     const workId = uuid(input.work_id);
+    const successorWorkId = input.successor_work_id
+      ? uuid(input.successor_work_id, "historical_bridge_archive_successor_invalid")
+      : null;
+    if (successorWorkId === workId) fail("historical_bridge_archive_successor_invalid");
     const expectedClassification = String(input.expected_classification || "").trim().toUpperCase();
     if (!['STALE', 'ABANDONED', 'BLOCKED_VALID'].includes(expectedClassification)) {
       fail("historical_bridge_archive_expected_classification_invalid");
@@ -3166,6 +3170,7 @@ export function createWorkContinuityV2Store({
       work_id: workId,
       expected_classification: expectedClassification,
       reason,
+      ...(successorWorkId ? { successor_work_id: successorWorkId } : {}),
       // Preserve the v1 digest byte-for-byte when this new, opt-in action is
       // absent.  Existing archived Work retries must remain replayable.
       ...(revokeUnattestedReadOnlyBindings
@@ -3207,6 +3212,8 @@ export function createWorkContinuityV2Store({
           closure_claimed: false,
           blocked_read_audit_event_hash: payload.blocked_read_audit_event_hash || null,
           blocked_timestamp_repair: payload.blocked_timestamp_repair || null,
+          successor_work_id: payload.successor_work_id || null,
+          successor_closure_evidence: payload.successor_closure_evidence || null,
           revoked_unattested_read_only_binding_count: Number(
             payload.revoked_unattested_read_only_binding_count || 0,
           ),
@@ -3230,6 +3237,32 @@ export function createWorkContinuityV2Store({
       [actor.tenant_id, work.legacy_work_id]);
       const legacy = legacyResult.rows[0];
       if (!legacy) fail("historical_bridge_archive_legacy_work_not_found");
+      let successorClosureEvidence = null;
+      if (successorWorkId) {
+        const successor = await client.query(`SELECT
+            tw.work_id,tw.project_id,tw.status,r.receipt_digest,f.report_digest
+          FROM tenant_work tw
+          JOIN tenant_work_closure_receipt r
+            ON r.tenant_id=tw.tenant_id AND r.work_id=tw.work_id
+          JOIN tenant_work_final_report f
+            ON f.tenant_id=tw.tenant_id AND f.work_id=tw.work_id
+          WHERE tw.tenant_id=$1 AND tw.work_id=$2
+            AND tw.status IN ('COMPLETED','ARCHIVED')`,
+        [actor.tenant_id, successorWorkId]);
+        const closedSuccessor = successor.rows[0];
+        if (!closedSuccessor) fail("historical_bridge_archive_successor_evidence_required");
+        if (closedSuccessor.project_id !== work.project_id) {
+          fail("historical_bridge_archive_successor_project_mismatch");
+        }
+        successorClosureEvidence = {
+          source: "tenant_work_closure_receipt",
+          successor_work_id: successorWorkId,
+          evidence_digest: objectDigest({
+            receipt_digest: closedSuccessor.receipt_digest,
+            report_digest: closedSuccessor.report_digest,
+          }),
+        };
+      }
       // BLOCKED_VALID is eligible only when the recent legacy timestamp is
       // explained by the server-owned Nyra read-binding audit.  A normally
       // progressing or newly blocked Work must still age into STALE/ABANDONED.
@@ -3251,7 +3284,7 @@ export function createWorkContinuityV2Store({
         if (candidate && Number.isFinite(legacyUpdatedAt) && Number.isFinite(auditAt) &&
             Math.abs(legacyUpdatedAt - auditAt) <= 5 * 60 * 1000) {
           blockedReadAuditEvent = candidate;
-        } else {
+        } else if (!successorClosureEvidence) {
           if (!repairUnattestedHistoricalTimestamp) {
             fail("historical_bridge_archive_blocked_audit_required");
           }
@@ -3525,9 +3558,11 @@ export function createWorkContinuityV2Store({
       }
       const archived = await client.query(`UPDATE tenant_work SET
           status='ARCHIVED',archived_at=now(),archived_from_status=$3::varchar,archived_reason=$4,
-          closure_type='historical_bridge_archive',closure_reason=$4,assignment_status='REVOKED',updated_at=now()
+          closure_type='historical_bridge_archive',closure_reason=$4,assignment_status='REVOKED',
+          successor_work_id=$6,superseded_by_work_id=$6,updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
-        RETURNING *`, [actor.tenant_id, workId, work.status, reason, work.status]);
+        RETURNING *`, [actor.tenant_id, workId, work.status, reason, work.status,
+        successorWorkId]);
       if (!archived.rows[0]) fail("historical_bridge_archive_status_conflict");
       const normalized = normalizeWork(archived.rows[0]);
       const event = await appendV2Event(client, actor, workId, "historical_bridge_archived_v1", {
@@ -3540,6 +3575,8 @@ export function createWorkContinuityV2Store({
         legacy_status: String(legacy.status || "").toLowerCase(),
         blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
         blocked_timestamp_repair: blockedTimestampRepair,
+        successor_work_id: successorWorkId,
+        successor_closure_evidence: successorClosureEvidence,
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
@@ -3558,6 +3595,8 @@ export function createWorkContinuityV2Store({
         closure_claimed: false,
         blocked_read_audit_event_hash: blockedReadAuditEvent?.event_hash || null,
         blocked_timestamp_repair: blockedTimestampRepair,
+        successor_work_id: successorWorkId,
+        successor_closure_evidence: successorClosureEvidence,
         revoked_unattested_read_only_binding_count: revokedReadOnlyBindingCount,
         revoked_unattested_read_only_session_count: revokedReadOnlySessionCount,
         retired_empty_bootstrap_branch_count: retiredEmptyBootstrapBranches.length,

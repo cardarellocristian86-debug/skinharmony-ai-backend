@@ -267,6 +267,14 @@ class ReconciliationPool {
       return { rows: work && ["COMPLETED", "ARCHIVED"].includes(work.status) && receipt && report
         ? [{ ...receipt, ...report, status: work.status }] : [] };
     }
+    if (q.startsWith("SELECT tw.work_id,tw.project_id,tw.status,r.receipt_digest,f.report_digest FROM tenant_work tw")) {
+      const work = this.works.get(`${params[0]}:${params[1]}`);
+      const receipt = this.receipts.get(`${params[0]}:${params[1]}`);
+      const report = this.reports.get(`${params[0]}:${params[1]}`);
+      return { rows: work && ["COMPLETED", "ARCHIVED"].includes(work.status) && receipt && report
+        ? [{ work_id: work.work_id, project_id: work.project_id, status: work.status,
+          ...receipt, ...report }] : [] };
+    }
     if (q.startsWith("SELECT event_type,event_hash,created_at FROM core_continuity_events")) {
       const eventTypes = Array.isArray(params[2]) ? params[2] :
         q.includes("event_type='nyra_read_binding_attested'") ? ["nyra_read_binding_attested"] : [];
@@ -318,7 +326,9 @@ class ReconciliationPool {
       Object.assign(work, {
         status: "ARCHIVED", archived_at: NOW.toISOString(), archived_from_status: params[2],
         archived_reason: params[3], closure_type: "historical_bridge_archive",
-        closure_reason: params[3], assignment_status: "REVOKED", updated_at: NOW.toISOString(),
+        closure_reason: params[3], assignment_status: "REVOKED",
+        successor_work_id: params[5] || null, superseded_by_work_id: params[5] || null,
+        updated_at: NOW.toISOString(),
       });
       return { rows: [{ ...work }], rowCount: 1 };
     }
@@ -419,6 +429,7 @@ test("historical bridged archive is owner-confirmed and never claims a closure",
   assert.equal(tool.inputSchema.properties.revoke_unattested_read_only_bindings.type, "boolean");
   assert.equal(tool.inputSchema.properties.repair_unattested_historical_timestamp.type, "boolean");
   assert.equal(tool.inputSchema.properties.retire_empty_bootstrap_branches.type, "boolean");
+  assert.equal(tool.inputSchema.properties.successor_work_id.format, "uuid");
 });
 
 test("historical bridged archive retains the legacy record, requires stale inactivity, and replays exactly", async () => {
@@ -539,6 +550,49 @@ test("historical bridged archive retains the legacy record, requires stale inact
   assert.equal(blockedValidArchive.classification, "BLOCKED_VALID");
   assert.equal(blockedValidArchive.closure_claimed, false);
   assert.equal(blockedValidArchive.blocked_read_audit_event_hash, "a".repeat(64));
+
+  const successorBoundPool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", successor: true, successorEvidence: true,
+  });
+  successorBoundPool.works.get(`tenant-a:${SOURCE}`).work_type = "generic";
+  successorBoundPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+  const successorBoundArchive = await store(successorBoundPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    successor_work_id: SUCCESSOR,
+    idempotency_key: "archive-historical-bridge-verified-successor-0001",
+  });
+  assert.equal(successorBoundArchive.work.status, "ARCHIVED");
+  assert.equal(successorBoundArchive.closure_claimed, false);
+  assert.equal(successorBoundArchive.successor_work_id, SUCCESSOR);
+  assert.equal(successorBoundArchive.successor_closure_evidence.source,
+    "tenant_work_closure_receipt");
+  assert.equal(successorBoundPool.works.get(`tenant-a:${SOURCE}`).superseded_by_work_id,
+    SUCCESSOR);
+
+  const crossProjectSuccessorPool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", successor: true, successorEvidence: true,
+  });
+  crossProjectSuccessorPool.works.get(`tenant-a:${SOURCE}`).work_type = "generic";
+  crossProjectSuccessorPool.works.get(`tenant-a:${SUCCESSOR}`).project_id = "other-project";
+  await assert.rejects(store(crossProjectSuccessorPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    successor_work_id: SUCCESSOR,
+    idempotency_key: "archive-historical-bridge-cross-project-denied-0001",
+  }), /historical_bridge_archive_successor_project_mismatch/);
+
+  const activeSuccessorPool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", activePresence: true,
+    successor: true, successorEvidence: true,
+  });
+  activeSuccessorPool.works.get(`tenant-a:${SOURCE}`).work_type = "generic";
+  await assert.rejects(store(activeSuccessorPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    successor_work_id: SUCCESSOR,
+    idempotency_key: "archive-historical-bridge-active-successor-denied-0001",
+  }), /historical_bridge_archive_active_work_denied/);
 
   const repairedBlockedPool = new ReconciliationPool({ sourceStatus: "release_ready", sourceV2Status: "BLOCKED" });
   const repairedBlockedWork = repairedBlockedPool.works.get(`tenant-a:${SOURCE}`);
