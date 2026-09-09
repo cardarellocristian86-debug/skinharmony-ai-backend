@@ -128,12 +128,13 @@ function joinContext(pathname, payload, {
     ttl_ms: 10_000,
   });
 }
-function body({ idempotency = "idem-001", nonce = "nonce-001", evidenceDigests } = {}) {
+function body({ idempotency = "idem-001", nonce = "nonce-001", evidenceDigests,
+  adapter = "research" } = {}) {
   const acceptance_criteria = [{ criterion_id: "criterion-001", criterion_digest: digest("criterion"), evidence_digest: digest("criterion-evidence"), verification_digest: digest("criterion-verification") }];
   const task_state = [{ task_id: "task-001", completion_evidence_digest: digest("task-evidence"), task_state_digest: digest("task-state"), verification_digest: digest("task-verification") }];
   const evidence_digests = evidenceDigests || [digest("evidence-001")];
-  const unsigned = { schema_version: "generic_work_independent_verifier_receipt_v1", tenant_id: TENANT, work_id: WORK_ID, adapter: "research", acceptance_criteria_digest: genericWorkCoreJoinDigest(acceptance_criteria), task_state_digest: genericWorkCoreJoinDigest(task_state), evidence_digest: genericWorkCoreJoinDigest([...evidence_digests].sort()), verification_digest: digest("verification"), verifier_identity: "verifier-001", session_id: "verifier-session-001", nonce, issued_at: "2026-08-08T09:59:00.000Z", expires_at: "2099-08-08T10:05:00.000Z" };
-  return { work_id: WORK_ID, adapter: "research", requester_identity: "builder-001", requester_session_id: "builder-session-001", idempotency_digest: digest(idempotency), acceptance_criteria, task_state, evidence_digests, independent_verifier_receipt: { ...unsigned, signature: crypto.createHmac("sha256", DTT_SECRET).update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url") } };
+  const unsigned = { schema_version: "generic_work_independent_verifier_receipt_v1", tenant_id: TENANT, work_id: WORK_ID, adapter, acceptance_criteria_digest: genericWorkCoreJoinDigest(acceptance_criteria), task_state_digest: genericWorkCoreJoinDigest(task_state), evidence_digest: genericWorkCoreJoinDigest([...evidence_digests].sort()), verification_digest: digest("verification"), verifier_identity: "verifier-001", session_id: "verifier-session-001", nonce, issued_at: "2026-08-08T09:59:00.000Z", expires_at: "2099-08-08T10:05:00.000Z" };
+  return { work_id: WORK_ID, adapter, requester_identity: "builder-001", requester_session_id: "builder-session-001", idempotency_digest: digest(idempotency), acceptance_criteria, task_state, evidence_digests, independent_verifier_receipt: { ...unsigned, signature: crypto.createHmac("sha256", DTT_SECRET).update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url") } };
 }
 async function withService(options, run) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "generic-work-join-api-"));
@@ -599,10 +600,15 @@ test("ENFORCED Generic Join binds the fresh software closure digest in independe
   await withService({ genericWorkCoreJoinStore: joinStore, softwareCognitionMode: "ENFORCED",
     softwareCognitionStore: softwareStore, softwareCognitionRuntime: softwareRuntime }, async (request, health) => {
     for (let attempt = 0; attempt < 5 && (await health()).software_cognition.state !== "ready"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
-    const missing = await request("/v1/work-continuity/generic-core-join", body({ idempotency: "software-missing", nonce: "software-missing" }));
+    const generic = await request("/v1/work-continuity/generic-core-join", body({
+      idempotency: "generic-without-software", nonce: "generic-without-software", adapter: "generic",
+    }));
+    assert.equal(generic.status, 201, JSON.stringify(generic.json));
+    assert.equal(freshnessChecks, 0);
+    const missing = await request("/v1/work-continuity/generic-core-join", body({ idempotency: "software-missing", nonce: "software-missing", adapter: "software_non_git" }));
     assert.equal(missing.status, 409, JSON.stringify(missing.json));
     assert.equal(missing.json.error, "software_cognition_closure_digest_mismatch");
-    const boundBody = body({ idempotency: "software-bound", nonce: "software-bound", evidenceDigests: [digest("evidence-001"), closureDigest] });
+    const boundBody = body({ idempotency: "software-bound", nonce: "software-bound", adapter: "software_non_git", evidenceDigests: [digest("evidence-001"), closureDigest] });
     const issued = await request("/v1/work-continuity/generic-core-join", boundBody);
     assert.equal(issued.status, 201, JSON.stringify(issued.json));
     assert.equal(issued.json.verdict.evidence_digest, genericWorkCoreJoinDigest([...boundBody.evidence_digests].sort()));
