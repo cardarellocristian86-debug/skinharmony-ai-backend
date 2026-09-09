@@ -621,13 +621,17 @@ function bootstrapSpec() {
   };
 }
 
-function bootstrapDirective(caller = identity()) {
-  const request = materializeGovernedWorkBootstrapRequest({
+function bootstrapCanonicalRequest(caller = identity()) {
+  return materializeGovernedWorkBootstrapRequest({
     spec: bootstrapSpec(), identity: caller, projectId: "nyra_core",
     canonicalIntentDigest: CANONICAL_INTENT_DIGEST,
     coreOrchestrationVerdictDigest: CORE_ORCHESTRATION_VERDICT_DIGEST,
     coreOrchestrationVerdict: CORE_ORCHESTRATION_VERDICT,
   });
+}
+
+function bootstrapDirective(caller = identity()) {
+  const request = bootstrapCanonicalRequest(caller);
   return {
     directive_id: "nyra_dir_1234567890abcdef12345678",
     request_digest: CONTEXT_DIGEST,
@@ -901,9 +905,13 @@ function commitHandler({ ticketOverrides = {}, includeReadback = true } = {}) {
   return { handler, request, gate, record, fulfillments };
 }
 
-function bootstrapRecord() {
-  const directive = bootstrapDirective();
+function bootstrapRecord(caller = identity()) {
+  const directive = bootstrapDirective(caller);
+  const request = bootstrapCanonicalRequest(caller);
   return actionRecord({
+    tenant_id: caller.tenantId,
+    app_id: caller.authenticatedHostPrincipal.app_id,
+    host_kind: caller.authenticatedHostPrincipal.host_kind,
     candidate_kind: "work_bootstrap",
     action_class: "WORK_BOOTSTRAP",
     work_id: null,
@@ -911,6 +919,7 @@ function bootstrapRecord() {
     intent_digest: CANONICAL_INTENT_DIGEST,
     context_digest: CORE_ORCHESTRATION_VERDICT_DIGEST,
     work_bootstrap_request_digest: directive.ticket_request.work_bootstrap_request_digest,
+    work_bootstrap_request: request,
     core_orchestration_verdict: CORE_ORCHESTRATION_VERDICT,
   });
 }
@@ -988,7 +997,8 @@ test("the public continuation contract is opaque and the schema contains no bear
 
   const store = fakeStore(bootstrapRecord());
   const opener = createNyraContinuationOpener({ store });
-  const opened = await opener({ identity: identity(), directive: bootstrapDirective() });
+  const opened = await opener({ identity: identity(), directive: bootstrapDirective(),
+    workBootstrapRequest: bootstrapCanonicalRequest() });
   assert.equal(opened.available, true);
   assert.equal(opened.continuation_ref, CONTINUATION_REF);
   assert.equal(Object.hasOwn(opened, "candidate_attestation"), false);
@@ -1004,6 +1014,7 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert(definition.inputSchema.properties.continuation_ref);
   assert(definition.inputSchema.properties.owner_confirmed);
   assert(definition.inputSchema.properties.confirmation_reference);
+  assert.equal(Object.hasOwn(definition.inputSchema.properties, "work_bootstrap"), false);
 });
 
 test("runtime rejects missing continuation bindings before any governed operation", async () => {
@@ -1028,6 +1039,7 @@ test("the durable continuation store fails closed until PostgreSQL schema readin
           open_index: true,
           operation_index: true,
           core_verdict_column: true,
+          bootstrap_request_column: true,
         }] };
       }
       return { rows: [] };
@@ -1038,7 +1050,8 @@ test("the durable continuation store fails closed until PostgreSQL schema readin
     signingSecret: "continuation-store-test-secret-0123456789abcdef",
   });
   await assert.rejects(
-    store.open({ identity: identity(), directive: bootstrapDirective() }),
+    store.open({ identity: identity(), directive: bootstrapDirective(),
+      work_bootstrap_request: bootstrapCanonicalRequest() }),
     /nyra_continuation_store_unavailable/,
   );
   assert.deepEqual(await store.initialize(), {
@@ -1060,6 +1073,7 @@ test("the durable continuation store rejects a drifted Core verdict column", asy
           open_index: true,
           operation_index: true,
           core_verdict_column: false,
+          bootstrap_request_column: true,
         }] };
       }
       return { rows: [] };
@@ -1092,8 +1106,8 @@ test("an expired open reference is atomically retired before the same Nyra bindi
       if (sql.includes("INSERT INTO nyra_governed_continuation")) {
         return { rows: [{
           continuation_ref: parameters[1],
-          expires_at: parameters[24],
-          state: parameters[21],
+          expires_at: parameters[25],
+          state: parameters[22],
         }] };
       }
       throw new Error(`unexpected_sql:${sql.slice(0, 48)}`);
@@ -1111,6 +1125,7 @@ test("an expired open reference is atomically retired before the same Nyra bindi
           open_index: true,
           operation_index: true,
           core_verdict_column: true,
+          bootstrap_request_column: true,
         }] };
       }
       return { rows: [] };
@@ -1123,7 +1138,12 @@ test("an expired open reference is atomically retired before the same Nyra bindi
     now: () => Date.parse("2026-08-28T21:00:00.000Z"),
   });
   await store.initialize();
-  const reopened = await store.open({ identity: identity(), directive: bootstrapDirective() });
+  const caller = identity();
+  const directive = bootstrapDirective(caller);
+  const request = bootstrapCanonicalRequest(caller);
+  assert.equal(governedWorkBootstrapDigest(request), directive.ticket_request.work_bootstrap_request_digest);
+  const reopened = await store.open({ identity: caller, directive,
+    work_bootstrap_request: request });
   assert.match(reopened.continuation_ref, /^nyc1_/);
   assert.equal(reopened.state, "READY");
   const expiry = statements.findIndex((sql) => sql.includes("SET state='EXPIRED'"));
@@ -1139,7 +1159,6 @@ test("Nyra performs the Core bootstrap review then creates one Work using the pe
   const args = {
     operation: "review_work_bootstrap",
     continuation_ref: CONTINUATION_REF,
-    work_bootstrap: bootstrapSpec(),
     idempotency_key: "caller-review-key",
   };
   const review = await handler(args, identity());
@@ -1160,6 +1179,29 @@ test("Nyra performs the Core bootstrap review then creates one Work using the pe
   assert.equal(created.structuredContent.core_authority, "UNIVERSAL_CORE");
 });
 
+test("ChatGPT and Codex replay the same typed bootstrap through their bound canonical records", async () => {
+  for (const host of [
+    { app_id: "chatgpt_prod", host_kind: "chatgpt_native", client_type: "chatgpt", session_id: "chatgpt-session" },
+    { app_id: "codex_prod", host_kind: "codex_native", client_type: "codex", session_id: "codex-session" },
+  ]) {
+    const caller = identity({
+      authenticatedHostPrincipal: { ...identity().authenticatedHostPrincipal, ...host },
+      agentPresence: { ...identity().agentPresence, client_type: host.client_type, session_id: host.session_id },
+    });
+    const store = fakeStore(bootstrapRecord(caller));
+    const calls = [];
+    const handler = bootstrapHandler(store, calls);
+    await handler({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+      idempotency_key: `review-${host.client_type}` }, caller);
+    const created = await handler({ operation: "create_work", continuation_ref: CONTINUATION_REF,
+      idempotency_key: `create-${host.client_type}`, owner_confirmed: true,
+      review_decision: "CONTINUE_NEW_WORK" }, caller);
+    assert.equal(created.structuredContent.work_created, true, host.client_type);
+    assert.equal(created.structuredContent.work_id, WORK_ID, host.client_type);
+    assert.deepEqual(calls.map(([kind]) => kind), ["review", "create"], host.client_type);
+  }
+});
+
 test("a completed continuation replays a stored Nyra result without calling Core again", async () => {
   const store = fakeStore(bootstrapRecord());
   const coreCalls = [];
@@ -1167,7 +1209,6 @@ test("a completed continuation replays a stored Nyra result without calling Core
   const args = {
     operation: "review_work_bootstrap",
     continuation_ref: CONTINUATION_REF,
-    work_bootstrap: bootstrapSpec(),
     idempotency_key: "caller-review-key",
   };
   await handler(args, identity());
@@ -1196,6 +1237,16 @@ test("Nyra validates a continuation before it can consume the durable reference"
     work_bootstrap: { ...bootstrapSpec(), objective: "A different Work" },
     idempotency_key: "caller-preclaim-validation-key",
   }, identity()), /nyra_continue_work_bootstrap_binding_mismatch/);
+  assert.equal(store.calls.some(([kind]) => kind === "claim"), false);
+});
+
+test("Nyra rejects a tampered server record before review or create", async () => {
+  const record = bootstrapRecord();
+  record.work_bootstrap_request = { ...record.work_bootstrap_request, objective: "tampered" };
+  const store = fakeStore(record);
+  const handler = bootstrapHandler(store, []);
+  await assert.rejects(handler({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "tampered-record" }, identity()), /nyra_continue_work_bootstrap_binding_mismatch/);
   assert.equal(store.calls.some(([kind]) => kind === "claim"), false);
 });
 
