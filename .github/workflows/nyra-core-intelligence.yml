@@ -375,12 +375,13 @@ jobs:
             NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT
             NYRA_POLICY_REGISTRY_DATABASE_URL
             NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
-            NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
             NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN
           ].each do |key|
             abort("#{key}: must remain manually provisioned") unless
               nyra_env[key] == { "key" => key, "sync" => false }
           end
+          abort("NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT: signer target must derive from Render build identity") if
+            nyra_env.key?("NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT")
           abort("Nyra Policy Registry S2S secret must remain generated") unless
             nyra_env["NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY"] == {
               "key" => "NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY", "generateValue" => true,
