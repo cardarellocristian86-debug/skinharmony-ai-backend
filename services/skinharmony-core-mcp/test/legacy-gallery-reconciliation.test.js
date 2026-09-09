@@ -81,7 +81,7 @@ function v2Row(workId, status, projectId = "skinharmony-ai-backend") {
 class ReconciliationPool {
   constructor({ sourceStatus = "active", sourceV2Status = "ACTIVE", activePresence = false,
     readOnlyPresence = false, spoofedReadOnlyPresence = false, branchedReadOnlyParticipant = false, activeBranch = false,
-    emptyBootstrapBranches = false, bootstrapBranchHistory = false,
+    emptyBootstrapBranches = false, bootstrapBranchHistory = false, branchMessage = false,
     successor = false, successorEvidence = false, sourceClosureEvidence = false } = {}) {
     this.legacy = new Map([[`tenant-a:${SOURCE}`, legacyRow(SOURCE, sourceStatus)]]);
     this.works = new Map([[`tenant-a:${SOURCE}`, v2Row(SOURCE, sourceV2Status)]]);
@@ -111,9 +111,19 @@ class ReconciliationPool {
         nyra_read_binding_attested: readOnlyPresence,
         status: "active", expires_at: "2026-08-12T00:00:00.000Z" }]
       : [];
-    this.branches = activeBranch ? [{ branch_id: "33333333-3333-4333-8333-333333333333" }] : [];
+    this.branches = activeBranch ? [{
+      branch_id: "33333333-3333-4333-8333-333333333333",
+      branch_key: "historical-manual-branch",
+      title: "Historical manual branch",
+      objective: "Historical bounded work",
+      created_by: "historical-agent",
+      status: "active",
+    }] : [];
     this.autopilotRuns = [];
     this.autopilotAssignments = [];
+    this.branchMessages = branchMessage
+      ? [{ branch_id: "33333333-3333-4333-8333-333333333333" }]
+      : [];
     if (emptyBootstrapBranches) {
       this.branches = [{
         branch_id: "33333333-3333-4333-8333-333333333333", branch_key: "execution_planning",
@@ -232,7 +242,7 @@ class ReconciliationPool {
       return { rows: this.autopilotAssignments.map((row) => ({ ...row })) };
     }
     if (q.startsWith("SELECT branch_id FROM core_continuity_messages")) {
-      return { rows: [] };
+      return { rows: this.branchMessages.filter((row) => params[2].includes(row.branch_id)) };
     }
     if (q.startsWith("SELECT branch_id FROM core_continuity_participants") && q.includes("ANY($3::uuid[])")) {
       return { rows: this.participants.filter((row) => params[2].includes(row.branch_id))
@@ -429,6 +439,7 @@ test("historical bridged archive is owner-confirmed and never claims a closure",
   assert.equal(tool.inputSchema.properties.revoke_unattested_read_only_bindings.type, "boolean");
   assert.equal(tool.inputSchema.properties.repair_unattested_historical_timestamp.type, "boolean");
   assert.equal(tool.inputSchema.properties.retire_empty_bootstrap_branches.type, "boolean");
+  assert.equal(tool.inputSchema.properties.retire_inactive_empty_branches.type, "boolean");
   assert.equal(tool.inputSchema.properties.successor_work_id.format, "uuid");
 });
 
@@ -569,6 +580,38 @@ test("historical bridged archive retains the legacy record, requires stale inact
     "tenant_work_closure_receipt");
   assert.equal(successorBoundPool.works.get(`tenant-a:${SOURCE}`).superseded_by_work_id,
     SUCCESSOR);
+
+  const inactiveBranchSuccessorPool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", activeBranch: true,
+    successor: true, successorEvidence: true,
+  });
+  inactiveBranchSuccessorPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  inactiveBranchSuccessorPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = NOW.toISOString();
+  const inactiveBranchArchive = await store(inactiveBranchSuccessorPool)
+    .archiveHistoricalBridgedWork(identity(), {
+      ...args,
+      expected_classification: "BLOCKED_VALID",
+      successor_work_id: SUCCESSOR,
+      retire_inactive_empty_branches: true,
+      idempotency_key: "archive-historical-inactive-branch-successor-0001",
+    });
+  assert.equal(inactiveBranchArchive.work.status, "ARCHIVED");
+  assert.equal(inactiveBranchArchive.retired_inactive_empty_branch_count, 1);
+  assert.equal(typeof inactiveBranchArchive.inactive_branch_audit_event_hash, "string");
+  assert.equal(inactiveBranchSuccessorPool.branches[0].status, "retired");
+
+  const contentBranchSuccessorPool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", activeBranch: true,
+    branchMessage: true, successor: true, successorEvidence: true,
+  });
+  contentBranchSuccessorPool.works.get(`tenant-a:${SOURCE}`).work_type = "software_git";
+  await assert.rejects(store(contentBranchSuccessorPool).archiveHistoricalBridgedWork(identity(), {
+    ...args,
+    expected_classification: "BLOCKED_VALID",
+    successor_work_id: SUCCESSOR,
+    retire_inactive_empty_branches: true,
+    idempotency_key: "archive-historical-content-branch-successor-denied-0001",
+  }), /historical_bridge_archive_inactive_branch_activity_denied/);
 
   const crossProjectSuccessorPool = new ReconciliationPool({
     sourceStatus: "blocked", sourceV2Status: "BLOCKED", successor: true, successorEvidence: true,
