@@ -13830,8 +13830,25 @@ export function createUniversalCoreService(options = {}) {
     // is not an authorization bypass: the closed Core authorization check
     // remains mandatory and no action is executed by this evaluator.
     const boundedInternalCoordination = isBoundedInternalCoordinationWrite(evaluatedActionBody);
+    // Canonical Work bootstrap is control-plane identity materialization, not
+    // a tenant business capability. It already requires an independently
+    // successful Core owner authorization plus a request-bound signed owner
+    // context. Requiring the active tenant policy to allow creation of the
+    // very Work needed to govern a policy change creates an unrecoverable
+    // default-deny cycle. Exclude only that exact, already-authorized envelope;
+    // every Work action after bootstrap remains policy-scoped.
+    const canonicalWorkBootstrapControlPlane = canonicalWorkBootstrap &&
+      coreAuthorization.allowed === true &&
+      trustedRequestBoundOwnerContext === true;
     const policyRegistryDenied = policyRegistryEnforcementActive &&
-      !boundedInternalCoordination && policyRegistryEvaluation.verdict !== "ALLOW";
+      !boundedInternalCoordination &&
+      !canonicalWorkBootstrapControlPlane &&
+      policyRegistryEvaluation.verdict !== "ALLOW";
+    const policyRegistryControlPlaneScope = boundedInternalCoordination
+      ? "not_applicable_bounded_internal_coordination"
+      : canonicalWorkBootstrapControlPlane
+        ? "not_applicable_canonical_work_bootstrap"
+        : null;
     const authorization = policyRegistryDenied
       ? {
           ...coreAuthorization,
@@ -13858,8 +13875,8 @@ export function createUniversalCoreService(options = {}) {
       preflight_id: workPreflight.preflight_id,
       authorization_state: authorization.state,
       policy_registry_evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-      policy_registry_enforcement: boundedInternalCoordination
-        ? "not_applicable_bounded_internal_coordination"
+      policy_registry_enforcement: policyRegistryControlPlaneScope
+        ? policyRegistryControlPlaneScope
         : policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
       policy_registry_verdict: policyRegistryEvaluation.verdict,
       policy_registry_snapshot_digest: policyRegistryEvaluation.snapshot_digest,
@@ -13905,11 +13922,11 @@ export function createUniversalCoreService(options = {}) {
       authorization,
       policy_registry: {
         evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-        enforcement: boundedInternalCoordination
-          ? "not_applicable_bounded_internal_coordination"
+        enforcement: policyRegistryControlPlaneScope
+          ? policyRegistryControlPlaneScope
           : policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
-        scope: boundedInternalCoordination
-          ? "not_applicable_bounded_internal_coordination"
+        scope: policyRegistryControlPlaneScope
+          ? policyRegistryControlPlaneScope
           : "policy_scoped_action",
         verdict: policyRegistryEvaluation.verdict,
         reasons: policyRegistryEvaluation.reasons,

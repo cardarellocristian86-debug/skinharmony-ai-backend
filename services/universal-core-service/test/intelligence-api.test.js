@@ -64,11 +64,11 @@ function signedOwnerContext(
   };
 }
 
-async function fixture(run) {
+async function fixture(run, serviceOptions = {}) {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
   process.env.CORE_SERVICE_ADMIN_KEY = "intel-test-admin";
   const storageRoot = path.join(os.tmpdir(), `core-intel-${Date.now()}-${Math.random()}`);
-  const { app } = createUniversalCoreService({ storageRoot });
+  const { app } = createUniversalCoreService({ storageRoot, ...serviceOptions });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -542,6 +542,82 @@ test("Codex automation can bind owner confirmation only to canonical Work bootst
   assert.equal(missingScope.status, 200);
   assert.equal(missingScope.json.authorization.allowed, false);
 }));
+
+test("enforced tenant policy cannot deadlock an already owner-authorized canonical Work bootstrap", async () => {
+  const policyRegistry = {
+    evaluate: async () => ({
+      verdict: "DENY",
+      reasons: ["default_deny"],
+      snapshot_digest: "a".repeat(64),
+      snapshot_present: true,
+      snapshot_verified: true,
+      fail_closed: true,
+    }),
+    status: async () => ({
+      configured: true,
+      backend: "injected",
+      restart_durable: true,
+      distributed: true,
+      state: "ready",
+      ready: true,
+    }),
+  };
+  await fixture(async (request) => {
+    const automation = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-policy-bootstrap",
+      key_type: "automation",
+      allowed_scopes: ["read:decision", "automation:codex", "owner:assertion"],
+    });
+    const body = {
+      action_label: "Govern work.continuity.v2.create",
+      action_type: "work.continuity.v2.create",
+      target: "work_bootstrap:create:codex:policy-deadlock-recovery",
+      operation_class: "owner_confirmed_governed_action",
+      idempotency_key: "codex_policy_bootstrap_control_plane_001",
+      owner_confirmed: true,
+      confirmation_reference: "Owner confirmed the exact canonical Work bootstrap",
+      external_side_effect: false,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      destructive: false,
+      bypass_orchestrator: false,
+      configuration_changes: false,
+      bounded_scope: true,
+      idempotent_or_compensable: true,
+      rollback_ready: true,
+      audit_ready: true,
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      provider_execution: false,
+    };
+    const result = await request("POST", "/v1/action-evaluator", {
+      ...body,
+      owner_context: signedOwnerContext(
+        automation.json.key,
+        "tenant-policy-bootstrap",
+        body,
+        "core_action_evaluator",
+        new Date().toISOString(),
+        "codex",
+      ),
+    }, automation.json.key);
+    assert.equal(result.status, 200);
+    assert.equal(result.json.policy_registry.verdict, "DENY");
+    assert.equal(result.json.policy_registry.enforcement, "not_applicable_canonical_work_bootstrap");
+    assert.equal(result.json.authorization.allowed, true);
+    assert.equal(result.json.authorization.policy_registry_denied, undefined);
+  }, {
+    nyraPolicyRegistryStore: policyRegistry,
+    nyraPolicyRegistryEnforcementMode: "enforced",
+    nyraPolicyRegistryProofEnabled: false,
+    nyraPolicyRegistryProofRequired: false,
+    nyraPolicyRegistryCompilerProvenanceEnabled: false,
+    nyraPolicyRegistryCompilerProvenanceRequired: false,
+    nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+  });
+});
 
 test("Core admin bootstrap configuration requires an exact signed owner envelope and emits safe audit fields", async () => fixture(async (request, { storageRoot }) => {
   const environmentVariables = [
