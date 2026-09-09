@@ -1206,6 +1206,8 @@ function orchestrationDirective({
   // question without a Work id.
   const standaloneRead = ["control_room", "advisory_read"].includes(interpretation.source);
   const releaseReady = workContext.status === "RELEASE_READY";
+  const terminalHistorical = new Set(["ARCHIVED", "SUPERSEDED", "CANCELLED"])
+    .has(workContext.status);
   const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
     interpretation.risk_band === "blocked" ||
     interpretation.core_state === "blocked" || interpretation.core_control === "blocked" ||
@@ -1217,11 +1219,11 @@ function orchestrationDirective({
   // A request to create a Work never creates a duplicate over an already
   // bound identity. In that case Nyra resumes the canonical Work and does not
   // issue a bootstrap candidate.
-  const ticketRequired = readOnly ? false : workBootstrapRequested
+  const ticketRequired = readOnly || terminalHistorical ? false : workBootstrapRequested
     ? workBootstrapCandidate
     : action.consequential_request_detected || interpretation.owner_confirmation_required;
-  const mergeManual = action.action_class === "GIT_MERGE" ||
-    action.manual_owner_execution_requested === true;
+  const mergeManual = !terminalHistorical && (action.action_class === "GIT_MERGE" ||
+    action.manual_owner_execution_requested === true);
   const commitPreflightGate = action.action_class === "GIT_COMMIT" &&
     workContext.precommit_ticket_gate_applicable === true
     ? workContext.precommit_ticket_gate
@@ -1305,7 +1307,17 @@ function orchestrationDirective({
 
   let disposition = interpretation.source === "persisted_work_context" ? "RESUME" : "PROCEED_READ_ONLY";
   let problem = null;
-  if ((standaloneRead || readOnly) && work.state === "completed" && workContext.closure_verified) {
+  if (terminalHistorical && (standaloneRead || readOnly)) {
+    disposition = "PROCEED_READ_ONLY";
+  } else if (terminalHistorical) {
+    disposition = "BLOCK";
+    problem = Object.freeze({
+      kind: "TERMINAL_WORK",
+      code: "terminal_work_immutable",
+      summary: "Il Work è terminale e resta disponibile soltanto come storico in sola lettura",
+      capability_hint: action.capability_hint,
+    });
+  } else if ((standaloneRead || readOnly) && work.state === "completed" && workContext.closure_verified) {
     disposition = "COMPLETE";
   } else if (standaloneRead || readOnly) {
     disposition = "PROCEED_READ_ONLY";
@@ -1526,7 +1538,7 @@ function orchestrationDirective({
     coreBlocked || coreMissingContext || ticketRequired ||
     interpretation.allowed_alternatives.length > 0
   ) ? interpretedAction : null;
-  let recommendedAction = standaloneRead || readOnly
+  let recommendedAction = standaloneRead || readOnly || terminalHistorical
     ? null
     : workContext.next_required_task
       ? `Completare il task canonico: ${workContext.next_required_task.title}`
@@ -1534,7 +1546,7 @@ function orchestrationDirective({
         ? releaseReadyInterpretedAction ||
           "Preparare il prossimo gate dal Core Join persistito senza ripetere task o evidenze già verificate"
         : interpretedAction || work.next_action;
-  if (!readOnly && !recommendedAction && disposition !== "COMPLETE") {
+  if (!readOnly && !terminalHistorical && !recommendedAction && disposition !== "COMPLETE") {
     recommendedAction = "Diagnosticare lo stato corrente e preparare una proposta verificabile";
   }
 
@@ -1582,7 +1594,7 @@ function orchestrationDirective({
   const effectiveUnverifiedEvidenceCount = commitPreflightGate
     ? workContext.precommit_unverified_required_evidence_count
     : workContext.unverified_required_evidence_count;
-  if (!readOnly && (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
+  if (!readOnly && !terminalHistorical && (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
       prerequisiteCodes.includes("required_evidence_missing"))) {
     appendAction("HOST", "EVIDENCE", "collect_missing_evidence",
       "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
@@ -1792,6 +1804,15 @@ function directiveStateSummary({ directive, workBound, focus, english, message =
   if (disposition === "COMPLETE") return english
     ? "The Work has a verified closure."
     : "Il Work ha una chiusura verificata.";
+  if (directive.work_context?.status === "ARCHIVED") return english
+    ? "The Work is archived: its historical record remains readable, but it cannot be resumed or modified."
+    : "Il Work è archiviato: lo storico resta leggibile, ma non può essere ripreso né modificato.";
+  if (directive.work_context?.status === "SUPERSEDED") return english
+    ? "The Work was superseded: its historical record remains readable, but execution continues only in its canonical successor."
+    : "Il Work è stato sostituito: lo storico resta leggibile, ma l'esecuzione continua solo nel successore canonico.";
+  if (directive.work_context?.status === "CANCELLED") return english
+    ? "The Work is cancelled: its historical record remains readable, but it cannot be resumed."
+    : "Il Work è annullato: lo storico resta leggibile, ma non può essere ripreso.";
   if (disposition === "PROCEED_READ_ONLY" && directive.work_context?.status === "BLOCKED") {
     return english
       ? "The Work is blocked; this status read remains available and does not request an action or ticket."
