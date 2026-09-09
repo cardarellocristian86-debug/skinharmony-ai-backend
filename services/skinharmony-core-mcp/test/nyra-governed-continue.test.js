@@ -236,6 +236,11 @@ test("reconciles a historical precommit gate only from server-derived bindings",
     authorizePersistedPrecommitReconciliation: async (args) => {
       sequence.push(["core_gate", args]);
     },
+    readActivePrecommitTicketGateClaimForReconciliation: async (args) => {
+      sequence.push(["claim_read", args]);
+      return null;
+    },
+    abandonInactivePrecommitTicketGateClaim: unused,
     reconcilePersistedPrecommit: async (args) => {
       sequence.push(["reconcile", args]);
       return {
@@ -270,8 +275,49 @@ test("reconciles a historical precommit gate only from server-derived bindings",
   assert.deepEqual(sequence, [
     ["binding", WORK_ID],
     ["core_gate", { work_id: WORK_ID, idempotency_key: "server-derived-reconciliation" }],
+    ["claim_read", { server_owned: true, work_id: WORK_ID }],
     ["reconcile", { work_id: WORK_ID, idempotency_key: "server-derived-reconciliation" }],
   ]);
+});
+
+test("reconciles an inactive persisted claim even when the current read lease remains valid", async () => {
+  const sequence = [];
+  const unused = async () => ({ structuredContent: {} });
+  const gateClaim = { schema_version: "precommit_ticket_gate_claim_v1", claim_id: "claim-a" };
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => sequence.push("binding"),
+    authorizePersistedPrecommitReconciliation: async () => sequence.push("core_gate"),
+    readActivePrecommitTicketGateClaimForReconciliation: async () => {
+      sequence.push("claim_read");
+      return gateClaim;
+    },
+    abandonInactivePrecommitTicketGateClaim: async () => {
+      sequence.push("abandon");
+      return { abandonment_digest: "a".repeat(64) };
+    },
+    reconcilePersistedPrecommit: async () => {
+      sequence.push("reconcile");
+      return { work_id: WORK_ID, outcome: "RECONCILED" };
+    },
+  });
+
+  const result = await handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "valid-lease-stale-claim-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.outcome, "RECONCILED");
+  assert.deepEqual(sequence, ["binding", "core_gate", "claim_read", "abandon", "binding", "reconcile"]);
 });
 
 test("reconciles the precise persisted claim that prevents acquiring a new read lease", async () => {
@@ -356,6 +402,44 @@ test("keeps persisted precommit reconciliation blocked while its delegation is a
   assert.deepEqual(result.structuredContent.result.reason_codes,
     ["precommit_claim_delegation_active"]);
   assert.deepEqual(calls, ["core_gate"]);
+});
+
+test("keeps reconciliation blocked for an active claim hidden by a valid read lease", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => calls.push("binding"),
+    authorizePersistedPrecommitReconciliation: async () => calls.push("core_gate"),
+    readActivePrecommitTicketGateClaimForReconciliation: async () => {
+      calls.push("claim_read");
+      return { claim_id: "claim-a" };
+    },
+    abandonInactivePrecommitTicketGateClaim: async () => {
+      calls.push("abandon");
+      return null;
+    },
+    reconcilePersistedPrecommit: async () => calls.push("reconcile"),
+  });
+
+  const result = await handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "valid-lease-active-claim-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.outcome, "BLOCKED");
+  assert.deepEqual(result.structuredContent.result.reason_codes,
+    ["precommit_claim_delegation_active"]);
+  assert.deepEqual(calls, ["binding", "core_gate", "claim_read", "abandon"]);
 });
 
 test("persisted precommit reconciliation keeps unrelated lease failures fail-closed", async () => {

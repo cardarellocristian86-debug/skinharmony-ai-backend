@@ -9,6 +9,7 @@ import {
   icfEventPayloadDigestV2,
 } from "./icfEventDigest.js";
 import { projectScopeObservationDigest } from "./projectScopeRenderOriginResolver.js";
+import { acceptanceContractIntegrityValid } from "../../shared/intent-acceptance-contract.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const RETRIEVAL_BUDGETS = new WeakMap();
@@ -174,6 +175,73 @@ function optionalDigest(value) {
   const normalized = String(value).toLowerCase();
   if (!/^[a-f0-9]{64}$/u.test(normalized)) fail("entity360_adapter_digest_invalid");
   return normalized;
+}
+
+function verifiedFinalOutcomeBinding(row, intentDigest, architectureRow = null) {
+  try {
+    const plan = row?.plan;
+    const contract = plan?.acceptance_contract;
+    const policy = plan?.precommit_acceptance_policy;
+    const planDigest = optionalDigest(row?.plan_digest);
+    const anchoredIntentDigest = optionalDigest(intentDigest);
+    const criteria = contract?.criteria;
+    const objective = Array.isArray(criteria)
+      ? criteria.filter((item) => item?.criterion_kind === "objective") : [];
+    const architectureBound = contract?.schema_version !== "intent_acceptance_contract_v2"
+      || Boolean(architectureRow
+        && Number(architectureRow.version) === Number(contract.architecture_version)
+        && optionalDigest(architectureRow.architecture_digest) === contract.architecture_digest
+        && entity360Digest(architectureRow.architecture) === contract.architecture_digest);
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)
+      || entity360Digest(plan) !== planDigest
+      || !acceptanceContractIntegrityValid(contract, entity360Digest)
+      || !architectureBound
+      || contract.intent_digest !== anchoredIntentDigest
+      || objective.length !== 1
+      || policy?.schema_version !== "native_precommit_acceptance_policy_v1"
+      || optionalDigest(policy.acceptance_contract_digest) !== entity360Digest(contract)) return null;
+    const policyMaterial = {
+      schema_version: "native_precommit_acceptance_policy_v1",
+      acceptance_contract_digest: policy.acceptance_contract_digest,
+      required_criterion_digests: criteria.filter((criterion) =>
+        criterion.criterion_kind === "constraint")
+        .map((criterion) => criterion.criterion_digest).sort(),
+      deferred_criterion_digests: criteria.filter((criterion) =>
+        ["objective", "acceptance"].includes(criterion.criterion_kind))
+        .map((criterion) => criterion.criterion_digest).sort(),
+    };
+    if (entity360Digest(policyMaterial) !== optionalDigest(policy.policy_digest)
+      || entity360Digest(policyMaterial.required_criterion_digests)
+        !== entity360Digest(policy.required_criterion_digests)
+      || entity360Digest(policyMaterial.deferred_criterion_digests)
+        !== entity360Digest(policy.deferred_criterion_digests)) return null;
+    const planVersion = Number(row.plan_version);
+    if (!Number.isSafeInteger(planVersion) || planVersion < 1) return null;
+    const binding = {
+      schema_version: "entity360_final_outcome_binding_v1",
+      plan_id: requiredUuid(row.plan_id, "entity360_final_outcome_plan_id_invalid"),
+      plan_version: planVersion,
+      plan_digest: planDigest,
+      intent_digest: anchoredIntentDigest,
+      acceptance_contract_digest: entity360Digest(contract),
+      criteria_digest: contract.criteria_digest,
+      objective_criterion_digest: objective[0].criterion_digest,
+      criterion_count: criteria.length,
+      provenance: {
+        derivation: "verified_multi_source_projection_v1",
+        sources: [
+          { source_id: "intent", evidence_digest: anchoredIntentDigest },
+          { source_id: "work_continuity", evidence_digest: planDigest },
+          ...(contract.schema_version === "intent_acceptance_contract_v2" ? [{
+            source_id: "architecture_map", evidence_digest: contract.architecture_digest,
+          }] : []),
+        ],
+      },
+    };
+    return Object.freeze({ ...binding, final_outcome_digest: entity360Digest(binding) });
+  } catch {
+    return null;
+  }
 }
 
 function verifyIcfEventDigestV2({ event, tenantId, workId }) {
@@ -1110,6 +1178,34 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
   const anchorDigestValid = /^[a-f0-9]{64}$/u.test(anchoredIntentDigest)
     && intentAnchorPayloadVerified
     && (!galleryIntentDigest || galleryIntentDigest === anchoredIntentDigest);
+  const architectureResult = assertTenantRows(await optionalQuery(client, `SELECT tenant_id,version, architecture_digest, architecture,
+      impact_map, created_at FROM core_continuity_architecture_versions
+    WHERE tenant_id = $1 AND work_id = $2::uuid AND created_at <= $3::timestamptz
+    ORDER BY version DESC LIMIT 1`,
+  [scope.tenant_id, gallery?.legacy_work_id || legacyWorkId, scope.as_of], "architecture_map", report), scope.tenant_id);
+  const architecture = architectureResult.rows[0] || null;
+  const nativePlanResult = assertTenantRows(await optionalQuery(client, `SELECT tenant_id,plan_id::text,
+      plan_version,plan,plan_digest,created_at
+    FROM core_continuity_native_plans
+    WHERE tenant_id=$1 AND work_id=$2::uuid AND status <> 'cancelled'
+      AND created_at <= $3::timestamptz
+    ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1`,
+  [scope.tenant_id, causalWorkId, scope.as_of], "work_continuity", report), scope.tenant_id);
+  const nativePlan = nativePlanResult.rows[0] || null;
+  const finalOutcomeBinding = anchorDigestValid
+    ? verifiedFinalOutcomeBinding(nativePlan, anchoredIntentDigest, architecture) : null;
+  const acceptanceFact = workContribution.facts.find((item) =>
+    item.fact_id === "work.acceptance_criteria");
+  if (finalOutcomeBinding && acceptanceFact) {
+    acceptanceFact.value = {
+      criteria_digest: finalOutcomeBinding.criteria_digest,
+      item_count: finalOutcomeBinding.criterion_count,
+      final_outcome_binding: finalOutcomeBinding,
+    };
+  } else if (anchorDigestValid && nativePlan) {
+    report.push({ source_id: "work_continuity", state: "rejected",
+      reason_code: "FINAL_OUTCOME_BINDING_INVALID" });
+  }
   const causalIntentDigestValid = /^[a-f0-9]{64}$/u.test(causalIntentDigest);
   if (anchor && !anchorProjectValid && !report.some((item) =>
     item.reason_code === "INTENT_ANCHOR_PROJECT_SLUG_MISMATCH")) {
@@ -1218,6 +1314,40 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       criticality: "high_impact", valid_from: iso(icfEvent.created_at) }] }));
     report.push({ source_id: "icf", state: "accepted", evidence_digest: icfDigest,
       evidence_ref: icfEvidenceRef });
+    // This is a derived cross-source projection, not an ICF attestation. Emit
+    // it only when both the ICF head and the authoritative causal
+    // Genesis/Intent binding have been independently verified.
+    if (finalOutcomeBinding && governanceBindingVerified) {
+      const projection = {
+        schema_version: "entity360_final_outcome_governance_binding_v1",
+        final_outcome_digest: finalOutcomeBinding.final_outcome_digest,
+        intent_anchor_digest: anchoredIntentDigest,
+        icf_ledger_head_digest: icfDigest,
+        icf_version: icfEventSequence,
+        provenance: {
+          derivation: "verified_multi_source_projection_v1",
+          sources: [
+            { source_id: "intent", evidence_digest: anchoredIntentDigest },
+            { source_id: "work_continuity", evidence_digest: finalOutcomeBinding.plan_digest },
+            ...(finalOutcomeBinding.provenance.sources
+              .filter((item) => item.source_id === "architecture_map")),
+            { source_id: "icf", evidence_digest: icfDigest },
+          ],
+        },
+      };
+      const projectionDigest = entity360Digest(projection);
+      const projectionRef = `outcome_projection:${causalWorkId}:${projectionDigest}`;
+      contributions.push(contribution({ scope, sourceId: "outcome_projection",
+        adapterVersion: "final_outcome_governance_projection_v1",
+        observedAt: icfEvent.created_at, recordedAt: icfEvent.created_at,
+        watermark: `outcome:${projectionDigest}`,
+        evidenceClass: "verified_observation", evidenceDigest: projectionDigest,
+        evidenceRef: projectionRef,
+        facts: [{ fact_id: "work.final_outcome_governance_binding", value: projection,
+          criticality: "high_impact", valid_from: iso(icfEvent.created_at) }] }));
+      report.push({ source_id: "outcome_projection", state: "accepted",
+        evidence_digest: projectionDigest, evidence_ref: projectionRef });
+    }
   } else {
     const icfUnavailable = report.some((item) => item.source_id === "icf"
       && item.state === "unavailable");
@@ -1318,12 +1448,6 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       reason_code: "SECURITY_OBSERVATION_MISSING" });
   }
 
-  const architectureResult = assertTenantRows(await optionalQuery(client, `SELECT tenant_id,version, architecture_digest, architecture,
-      impact_map, created_at FROM core_continuity_architecture_versions
-    WHERE tenant_id = $1 AND work_id = $2::uuid AND created_at <= $3::timestamptz
-    ORDER BY version DESC LIMIT 1`,
-  [scope.tenant_id, gallery?.legacy_work_id || legacyWorkId, scope.as_of], "architecture_map", report), scope.tenant_id);
-  const architecture = architectureResult.rows[0] || null;
   const architectureDigest = String(architecture?.architecture_digest || "").toLowerCase();
   let architectureDigestVerified = false;
   try {

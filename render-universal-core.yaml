@@ -276,8 +276,6 @@ services:
         value: /v1/policy-registry/sign
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE
         value: universal-core-policy-registry-signer
-      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
-        sync: false
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY
@@ -325,11 +323,6 @@ services:
         value: https://skinharmony-core-mcp.onrender.com
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH
         value: /v1/policy-registry/nyra/sign
-      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
-        fromService:
-          type: web
-          name: skinharmony-nyra-core
-          envVarKey: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
         fromService:
           type: web

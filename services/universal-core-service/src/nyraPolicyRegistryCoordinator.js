@@ -146,6 +146,16 @@ function clientConfiguration(env) {
     60_000,
   );
   const required = strictBoolean(env.CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED ?? "false");
+  const configuredSignerTarget = String(
+    env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT || "",
+  ).trim().toLowerCase();
+  const verifiedBuildCommit = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().toLowerCase();
+  // Production derives the pin exclusively from immutable build metadata. The
+  // legacy value remains a non-production test seam and, when build metadata
+  // exists, is accepted only as an identical compatibility assertion.
+  const buildCommit = TARGET_COMMIT.test(verifiedBuildCommit)
+    ? verifiedBuildCommit
+    : String(env.NODE_ENV || "").toLowerCase() === "production" ? "" : configuredSignerTarget;
   const expected = Object.freeze({
     service: String(env.CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE || "nyra-horizontal-runtime"),
     core_key_id: String(env.CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID || ""),
@@ -157,7 +167,7 @@ function clientConfiguration(env) {
       env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT || "",
     ),
     signer_service: String(env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE || ""),
-    signer_target_commit: String(env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT || ""),
+    signer_target_commit: buildCommit,
     signer_purpose: String(env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PURPOSE || ""),
   });
   let origin = null;
@@ -180,6 +190,7 @@ function clientConfiguration(env) {
       expected.core_public_key_fingerprint === expected.nyra_public_key_fingerprint ||
       !/^[a-z][a-z0-9._-]{2,63}$/.test(expected.signer_service) ||
       !TARGET_COMMIT.test(expected.signer_target_commit) ||
+      (configuredSignerTarget && configuredSignerTarget !== expected.signer_target_commit) ||
       !/^[a-z][a-z0-9._-]{2,127}$/.test(expected.signer_purpose)) {
       throw new Error("policy_registry_nyra_client_configuration_invalid");
     }

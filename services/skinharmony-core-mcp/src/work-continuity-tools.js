@@ -28,6 +28,10 @@ const coordinationIdempotencyKey = {
   pattern: "^[^\\u0000-\\u001f\\u007f]+$",
 };
 const gitSha = { type: "string", pattern: "^[a-f0-9]{40}$" };
+const outcomeExpectation = {
+  expected_outcome_revision: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
+  expected_outcome_digest: hash,
+};
 const exactBranch = {
   type: "string",
   minLength: 1,
@@ -260,7 +264,8 @@ export const WORK_CONTINUITY_TOOLS = [
     "Create or join a named branch inside one work and correlate it to the active participant session.",
     object({
       work_id: uuid, branch_key: identifier, parent_branch_id: uuid,
-      title: text(240), objective: text(4_000), idempotency_key: coordinationIdempotencyKey,
+      title: text(240), objective: text(4_000), ...outcomeExpectation,
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_acquire", "Acquire bounded work lease",
     "Acquire a temporary lease over legacy work surfaces or an exact causal project/change/obligation set after transactional overlap detection. Causal authority is assigned only by server policy.",
@@ -286,14 +291,14 @@ export const WORK_CONTINUITY_TOOLS = [
     object({
       work_id: uuid, branch_id: uuid, to_session_id: identifier,
       message_type: { type: "string", enum: ["update", "handoff", "conflict", "decision", "test", "blocker"] },
-      subject: text(240), payload: { type: "object", additionalProperties: true },
+      subject: text(240), payload: { type: "object", additionalProperties: true }, ...outcomeExpectation,
       idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "message_type", "subject", "payload", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_inbox", "Read structured work inbox",
     "Read direct and broadcast structured messages visible to an authenticated participant within one work.",
     object({
       work_id: uuid, branch_id: uuid, since: { type: "string", format: "date-time" },
-      limit: { type: "integer", minimum: 1, maximum: 200 },
+      limit: { type: "integer", minimum: 1, maximum: 200 }, ...outcomeExpectation,
     }, ["work_id", "session_id", "agent_id"]), true),
   tool("work_continuity_start_or_resume", "Anchor or resume governed work",
     "Resume an existing tenant-scoped Work Identity only. It never creates; absence requires Nyra's duplicate-reviewed canonical V2 bootstrap.",

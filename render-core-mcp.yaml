@@ -188,8 +188,8 @@ services:
         value: "true"
       - key: NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED
         value: "true"
-      # Core MCP is the existing isolated signer custody boundary. Target
-      # commits are operator-rotated atomically with Universal Core; signing
+      # Core MCP is the existing isolated signer custody boundary. Signer
+      # targets are derived from Render's immutable build commit; signing
       # material remains provisioned only in Render and is never generated or
       # replaced by a source deployment.
       - key: POLICY_REGISTRY_CORE_SIGNER_ENABLED
@@ -198,8 +198,6 @@ services:
         value: universal-core-policy-registry-signer
       - key: POLICY_REGISTRY_CORE_SIGNER_KEY_ID
         value: universal-core-policy-registry-v1
-      - key: POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
-        sync: false
       - key: POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: POLICY_REGISTRY_CORE_SIGNER_SEED
@@ -210,8 +208,6 @@ services:
         value: nyra-policy-registry-signer
       - key: POLICY_REGISTRY_NYRA_SIGNER_KEY_ID
         value: nyra-policy-registry-v1
-      - key: POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
-        sync: false
       - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
         sync: false
       - key: POLICY_REGISTRY_NYRA_SIGNER_SEED

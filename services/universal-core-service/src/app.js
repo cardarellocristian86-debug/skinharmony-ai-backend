@@ -5356,11 +5356,16 @@ export function createUniversalCoreService(options = {}) {
   if (nyraPolicyRegistryPrivateMaterialPresent) {
     nyraPolicyRegistryProofConfigurationError ||= "policy_registry_core_private_key_forbidden";
   }
-  const nyraPolicyRegistryCoreSignerTargetCommit =
-    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
+  const configuredNyraPolicyRegistryCoreSignerTargetCommit = String(
+    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT || "",
+  ).trim().toLowerCase();
+  const nyraPolicyRegistryCoreSignerTargetCommit = BUILD_COMMIT_VERIFIABLE
+    ? BUILD_COMMIT_SHA
+    : nyraPolicyRegistryProofProduction ? null : configuredNyraPolicyRegistryCoreSignerTargetCommit;
   if (nyraPolicyRegistryProofProduction && nyraPolicyRegistryProofEnabled &&
     (!BUILD_COMMIT_VERIFIABLE ||
-      nyraPolicyRegistryCoreSignerTargetCommit !== BUILD_COMMIT_SHA)) {
+      (configuredNyraPolicyRegistryCoreSignerTargetCommit &&
+        configuredNyraPolicyRegistryCoreSignerTargetCommit !== BUILD_COMMIT_SHA))) {
     nyraPolicyRegistryProofConfigurationError ||=
       "policy_registry_core_signer_target_commit_mismatch";
   }
@@ -7169,11 +7174,22 @@ export function createUniversalCoreService(options = {}) {
   let nyraPrecoreDecisionState = nyraPrecoreMode === "INVALID" ? "configuration_invalid" : "disabled";
   if (softwareCognitionEnabled && nyraPrecoreMode === "ADVISORY" && nyraPolicyRegistryPostgresPool) {
     try {
+      const configuredNyraSignerTargetCommit = String(
+        process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT || "",
+      ).trim().toLowerCase();
+      const nyraSignerTargetCommit = BUILD_COMMIT_VERIFIABLE
+        ? BUILD_COMMIT_SHA
+        : nyraPolicyRegistryProofProduction ? null : configuredNyraSignerTargetCommit;
+      if (!nyraSignerTargetCommit ||
+        (BUILD_COMMIT_VERIFIABLE && configuredNyraSignerTargetCommit &&
+          configuredNyraSignerTargetCommit !== BUILD_COMMIT_SHA)) {
+        throw new Error("policy_registry_core_signer_target_commit_mismatch");
+      }
       nyraPrecoreDecisionSigner = options.nyraPrecoreDecisionSigner || createNyraPolicyRegistryCoreRemoteSigner({
         origin: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN,
         path: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH,
         service: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE,
-        targetCommit: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT,
+        targetCommit: nyraSignerTargetCommit,
         keyId: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID,
         serviceToken: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN,
         publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY,

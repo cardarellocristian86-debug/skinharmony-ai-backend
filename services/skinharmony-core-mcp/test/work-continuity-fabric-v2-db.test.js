@@ -253,6 +253,13 @@ class ContinuityPool {
       const row = this.anchors.get(key(parameters[0], parameters[1]));
       return { rows: row ? [{ intent_digest: row.intent_digest }] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT w.current_version,w.objective,w.status,i.intent_digest")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{ current_version: work.current_version,
+        objective: work.objective, status: work.status,
+        intent_digest: anchor?.intent_digest || null }] : [], rowCount: work ? 1 : 0 };
+    }
     if (q.startsWith("SELECT project_id,session_id,anchor,intent_digest,created_by,created_at")) {
       const row = this.anchors.get(key(parameters[0], parameters[1]));
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
@@ -881,6 +888,17 @@ class ContinuityPool {
         })),
         rowCount: rows.length ? 1 : 0,
       };
+    }
+    if (q.startsWith("SELECT plan_version,plan,plan_digest") &&
+        q.includes("FROM core_continuity_native_plans")) {
+      const rows = [...this.plans.values()]
+        .filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1] &&
+          row.status !== "cancelled")
+        .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
+          String(right.created_at).localeCompare(String(left.created_at)));
+      return { rows: rows[0] ? [{ plan_version: rows[0].plan_version || 1,
+        plan: rows[0].plan, plan_digest: rows[0].plan_digest }] : [],
+      rowCount: rows[0] ? 1 : 0 };
     }
     if (q.startsWith("SELECT plan_id FROM core_continuity_native_plans") &&
         q.includes("status='verified'")) {

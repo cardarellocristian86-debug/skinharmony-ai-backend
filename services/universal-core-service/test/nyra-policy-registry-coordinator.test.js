@@ -45,6 +45,7 @@ function jsonResponse(url, value, { status = 200, bodyDelayMs = 0 } = {}) {
 
 function clientEnv(overrides = {}) {
   return {
+    RENDER_GIT_COMMIT: "c".repeat(40),
     CORE_NYRA_POLICY_REGISTRY_NYRA_ORIGIN: ORIGIN,
     CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE_KEY: "n".repeat(64),
     CORE_NYRA_POLICY_REGISTRY_NYRA_TIMEOUT_MS: "100",
@@ -62,6 +63,27 @@ function clientEnv(overrides = {}) {
     ...overrides,
   };
 }
+
+test("production Nyra client derives signer target from build metadata and rejects a divergent legacy pin", async () => {
+  const derivedEnv = clientEnv({ NODE_ENV: "production" });
+  delete derivedEnv.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT;
+  const derived = createNyraPolicyRegistryClient({
+    env: derivedEnv,
+    fetchImpl: async (url) => jsonResponse(url, healthBody()),
+  });
+  assert.equal(await derived.probe(), true);
+  assert.equal(derived.status().ready, true);
+
+  const divergent = createNyraPolicyRegistryClient({
+    env: clientEnv({
+      NODE_ENV: "production",
+      CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT: "d".repeat(40),
+    }),
+    fetchImpl: async () => { throw new Error("must_not_fetch"); },
+  });
+  assert.equal(await divergent.probe(), false);
+  assert.equal(divergent.status().last_failure, "policy_registry_nyra_client_configuration_invalid");
+});
 
 function healthBody(overrides = {}) {
   return {

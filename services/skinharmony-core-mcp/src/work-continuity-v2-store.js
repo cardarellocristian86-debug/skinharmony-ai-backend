@@ -11,6 +11,7 @@ import {
   resolveWorkRequest,
 } from "./work-continuity-v2.js";
 import {
+  acceptanceContractIntegrityValid,
   buildNativeV2TaskBinding,
   evaluateTaskScopedNativeVerifierEvidence,
   verifiedNativePrecommitWorkspaceDigest,
@@ -2809,10 +2810,30 @@ export function createWorkContinuityV2Store({
       const trajectory = await client.query(`SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at
         FROM tenant_work_trajectory_state WHERE tenant_id=$1 AND work_id=$2`,
       [actor.tenant_id, work.work_id]);
+      const nativePlan = await client.query(`SELECT plan_id,plan_version,plan,plan_digest
+        FROM core_continuity_native_plans
+        WHERE tenant_id=$1 AND work_id=$2 AND status <> 'cancelled'
+        ORDER BY plan_version DESC,created_at DESC LIMIT 1`, [actor.tenant_id, work.work_id]);
+      const latestPlan = nativePlan.rows[0] || null;
+      const candidateAcceptanceContract = latestPlan?.plan?.acceptance_contract;
+      const effectiveAcceptanceContract = latestPlan &&
+        objectDigest(latestPlan.plan) === latestPlan.plan_digest &&
+        acceptanceContractIntegrityValid(candidateAcceptanceContract) &&
+        candidateAcceptanceContract.intent_digest === work.intent_digest
+        ? {
+            schema_version: "tenant_work_effective_acceptance_contract_v1",
+            plan_id: latestPlan.plan_id,
+            plan_version: Number(latestPlan.plan_version),
+            plan_digest: latestPlan.plan_digest,
+            acceptance_contract: candidateAcceptanceContract,
+            acceptance_contract_digest: objectDigest(candidateAcceptanceContract),
+          }
+        : null;
       const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
       return { schema_version: "work_continuity_v2", work, tasks: tasks.rows, evidence: evidence.rows,
         task_contracts: contracts.rows, committed_task_states: commits.rows,
         dependency_manifests: manifests.rows,
+        effective_acceptance_contract: effectiveAcceptanceContract,
         work_trajectory: trajectory.rows[0] || null,
         work_state_projection: projection,
         closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null };
