@@ -9343,7 +9343,30 @@ export function createUniversalCoreService(options = {}) {
     // public /healthz and never bypasses the probe for a join issuance route.
     const genericWorkCoreJoinBuildRead = req.path === "/healthz"
       && req.get(GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER) === GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE;
-    if (!genericWorkCoreJoinBuildRead) await ensureGenericWorkCoreJoinSignerReady();
+    if (genericWorkCoreJoinBuildRead) {
+      // This response is deliberately narrower than operational health.  The
+      // external signer needs only the immutable, Render-verified build
+      // identity in order to bind a signature to this exact release.  Making
+      // that read depend on normal readiness creates a cycle: Core waits for
+      // the signer while the signer waits for Core to report ready.
+      return res.status(200).json({
+        ok: true,
+        service: SERVICE_NAME,
+        version: SERVICE_VERSION,
+        build: {
+          build_id: BUILD_ID,
+          commit_sha: BUILD_COMMIT_SHA,
+          commit_verifiable: BUILD_COMMIT_VERIFIABLE,
+        },
+        health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        mode: process.env.NODE_ENV || "development",
+        read_scope: "immutable_build_identity_only",
+        readiness_authoritative: false,
+        execution_authorized: false,
+      });
+    }
+    await ensureGenericWorkCoreJoinSignerReady();
     const genericWorkCoreJoinCurrentSignerHealth = genericWorkCoreJoinSignerFailureLatched
       ? {
           signer_state: genericWorkCoreJoinSignerState,

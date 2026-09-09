@@ -171,8 +171,12 @@ async function withService(options, run) {
     });
     return { status: response.status, json: await response.json() };
   };
-  const health = async (headers = {}) => (await fetch(`http://127.0.0.1:${server.address().port}/healthz`, { headers })).json();
-  try { await run(request, health); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
+  const healthResponse = async (headers = {}) => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`, { headers });
+    return { status: response.status, json: await response.json() };
+  };
+  const health = async (headers = {}) => (await healthResponse(headers)).json;
+  try { await run(request, health, healthResponse); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 test("Generic Core Join defaults code-dark without verifier material and does not initialize, read, sign, or record", async () => {
@@ -487,11 +491,18 @@ test("signer build reads do not recursively probe Core health", async () => {
   await withService({
     genericWorkCoreJoinStore: store,
     genericWorkCoreJoinRemoteSignerConfig: remote,
-  }, async (_request, health) => {
-    const buildRead = await health({
+  }, async (_request, health, healthResponse) => {
+    const response = await healthResponse({
       [GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER]: GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
     });
+    assert.equal(response.status, 200);
+    const buildRead = response.json;
+    assert.equal(buildRead.ok, true);
+    assert.equal(buildRead.read_scope, "immutable_build_identity_only");
+    assert.equal(buildRead.readiness_authoritative, false);
+    assert.equal(buildRead.execution_authorized, false);
     assert.ok(buildRead.build);
+    assert.equal(buildRead.generic_work_core_join, undefined);
     assert.equal(calls, 0);
     const normal = await health();
     assert.equal(normal.generic_work_core_join.ready, true);
