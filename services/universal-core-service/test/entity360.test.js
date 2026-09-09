@@ -1498,6 +1498,42 @@ function memoryRuntimeDependencies() {
     setFeatureFlag(value) { featureFlag = value; } };
 }
 
+async function enforcedRuntimeFixture() {
+  const dependencies = memoryRuntimeDependencies();
+  const { store, adapterRegistry } = dependencies;
+  store.kind = "entity360_postgres_append_only_v1";
+  store.health = async () => ({
+    ok: true,
+    schema_verified: true,
+    kind: "entity360_postgres_append_only_v1",
+    backend: "entity360_postgres_append_only_v1",
+    migration: { application_state: "COMPLETED", checkpoint: "READBACK_VERIFIED" },
+    migrations: [{ migration_id: ENTITY_360_ENFORCEMENT_MIGRATION_ID,
+      application_state: "COMPLETED", checkpoint: "READBACK_VERIFIED" }],
+    feature_v2_mode_guard: true,
+  });
+  adapterRegistry.schema_version = "entity_360_adapter_registry_v1";
+  adapterRegistry.health = async () => ({
+    schema_version: "entity_360_adapter_registry_health_v1",
+    state: "ready",
+    ready: true,
+    registry_schema_version: "entity_360_adapter_registry_v1",
+    adapter_versions: adapterRegistry.adapter_versions,
+    consistent_cut: "postgres_repeatable_read",
+    read_only: true,
+    provider_mutation: false,
+    execution_authorized: false,
+  });
+  const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
+    ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
+    bitemporalMode: "ENFORCE", now: () => Date.parse(AT) });
+  await runtime.initialize();
+  const feature = await runtime.invoke("entity_360_feature_flag_write",
+    CORE_OPERATOR_IDENTITY, { mode: "ENFORCE", enabled: true, expected_revision: 1,
+      idempotency_key: "entity360-bootstrap-enforce" });
+  return { ...dependencies, runtime, feature };
+}
+
 const DTT_IDENTITY = Object.freeze({ tenant_id: TENANT, work_id: WORK_ID, actor_id: "agent:test",
   provenance: { session_fingerprint: "f".repeat(64), actor_provenance: "test" } });
 const CORE_OPERATOR_IDENTITY = Object.freeze({ tenant_id: TENANT,
@@ -1682,6 +1718,118 @@ test("runtime assembles and persists only server-discovered context in SHADOW mo
   assert.equal(verification.valid, true);
 });
 
+test("ENFORCED first Work snapshot bootstrap is READY, replay-stable and context-only", async () => {
+  const { runtime, feature } = await enforcedRuntimeFixture();
+  const input = { work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "entity360-first-work-bootstrap" };
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  const replay = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  assert.equal(first.snapshot.snapshot_version, 1);
+  assert.equal(first.snapshot.previous_snapshot_digest, null);
+  assert.equal(first.snapshot.context_status, "READY");
+  assert.equal(first.persistence.replayed, false);
+  assert.equal(replay.persistence.replayed, true);
+  assert.equal(replay.snapshot.deterministic_immutable_digest,
+    first.snapshot.deterministic_immutable_digest);
+  assert.deepEqual(replay.dedicated_core_gate, first.dedicated_core_gate);
+  assert.deepEqual(first.dedicated_core_gate, {
+    schema_version: "entity_360_snapshot_bootstrap_gate_v1",
+    authorized: true,
+    authority: "universal_core",
+    route: "entity_360_work_snapshot_bootstrap",
+    action: "entity360.snapshot.persist",
+    tenant_id: TENANT,
+    work_id: WORK_ID,
+    entity_id: first.snapshot.entity_id,
+    snapshot_version: 1,
+    snapshot_digest: first.snapshot.deterministic_immutable_digest,
+    request_digest: first.dedicated_core_gate.request_digest,
+    idempotency_digest: first.dedicated_core_gate.idempotency_digest,
+    tenant_feature_revision: feature.revision,
+    policy_digest: feature.policy_digest,
+    enforcement_authority_digest: feature.enforcement_authority_digest,
+    context_only: true,
+    execution_authorized: false,
+    provider_execution: false,
+    host_policy_override: false,
+    production_decision_changed: false,
+    gate_digest: first.dedicated_core_gate.gate_digest,
+  });
+  assert.match(first.dedicated_core_gate.request_digest, /^[a-f0-9]{64}$/u);
+  assert.match(first.dedicated_core_gate.idempotency_digest, /^[a-f0-9]{64}$/u);
+  assert.match(first.dedicated_core_gate.gate_digest, /^[a-f0-9]{64}$/u);
+});
+
+test("Work snapshot bootstrap rejects non-initial, caller-expanded and cross-Work requests", async () => {
+  const { runtime } = await enforcedRuntimeFixture();
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 1, idempotency_key: "bootstrap-rev-1",
+  }), (error) => error.code === "entity360_bootstrap_revision_invalid" && error.status === 409);
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-expanded",
+    entity_type: "agent",
+  }), (error) => error.code === "entity360_bootstrap_input_not_allowed" && error.status === 403);
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: UNRELATED_WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "bootstrap-cross-work",
+  }), (error) => error.code === "entity360_dtt_work_binding_mismatch" && error.status === 403);
+});
+
+test("Work snapshot bootstrap rejects SHADOW mode and never persists incomplete context", async () => {
+  const shadow = memoryRuntimeDependencies();
+  const shadowRuntime = createEntity360Runtime({ store: shadow.store,
+    adapterRegistry: shadow.adapterRegistry, policy: POLICY, ontology: ONTOLOGY,
+    mode: "SHADOW", now: () => Date.parse(AT) });
+  await shadowRuntime.initialize();
+  await assert.rejects(() => shadowRuntime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-shadow",
+  }), (error) => error.code === "entity360_enforcement_runtime_not_ready" && error.status === 503);
+
+  const enforced = await enforcedRuntimeFixture();
+  let writes = 0;
+  const writeSnapshot = enforced.store.writeSnapshot;
+  enforced.store.writeSnapshot = async (input) => { writes += 1; return writeSnapshot(input); };
+  enforced.adapterRegistry.assembleContext = async ({ tenant_id, entity_type, identity }) => ({
+    candidates: [{ tenant_id, entity_type, identity }],
+    source_contributions: [],
+    source_discovery: [],
+    project_work_linkage: { work_id: WORK_ID },
+    consistent_cut: "postgres_repeatable_read",
+    execution_authorized: false,
+  });
+  await assert.rejects(() => enforced.runtime.invoke(
+    "entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+      work_id: WORK_ID, as_of: AT, expected_revision: 0,
+      idempotency_key: "bootstrap-incomplete",
+    }), (error) => error.code === "entity360_bootstrap_context_not_ready" && error.status === 409);
+  assert.equal(writes, 0);
+});
+
+test("Work snapshot bootstrap rejects an occupied head with a different idempotency key", async () => {
+  const { runtime } = await enforcedRuntimeFixture();
+  await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-head-first",
+  });
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-head-second",
+  }), (error) => String(error?.message || "").includes("entity360_head_revision_conflict"));
+});
+
+test("Work snapshot bootstrap emits no gate when the ENFORCED feature binding drifts", async () => {
+  const { runtime, store, feature } = await enforcedRuntimeFixture();
+  const readFeatureFlag = store.readFeatureFlag;
+  let reads = 0;
+  store.readFeatureFlag = async (...args) => {
+    reads += 1;
+    const current = await readFeatureFlag(...args);
+    return reads >= 3 ? { ...current, revision: feature.revision + 1 } : current;
+  };
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "bootstrap-feature-drift",
+  }), (error) => error.code === "entity360_bootstrap_feature_drift" && error.status === 409);
+});
+
 test("runtime exposes bitemporal shadow projections without changing Entity 360 authority", async () => {
   const { store, adapterRegistry, entityId } = memoryRuntimeDependencies();
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY, ontology: ONTOLOGY,
@@ -1834,6 +1982,13 @@ test("tenant without an explicit feature flag remains OFF under the SHADOW deplo
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY, ontology: ONTOLOGY,
     mode: "SHADOW", now: () => Date.parse(AT) });
   await runtime.initialize();
+  const tenantStatus = await runtime.invoke("entity_360_tenant_status_read", {
+    tenant_id: TENANT, actor_id: "core-tenant-reader:default-off",
+    provenance: { session_fingerprint: "tenant-reader-default-off",
+      actor_provenance: "universal_core_platform_auth" },
+  }, {});
+  assert.deepEqual(tenantStatus, { schema_version: "entity_360_tenant_status_v1",
+    mode: "OFF", enabled: false, execution_authorized: false });
   const policy = await runtime.invoke("entity_360_policy_read", DTT_IDENTITY, { work_id: WORK_ID });
   assert.deepEqual(policy.feature_flag, { mode: "OFF", enabled: false, revision: 0,
     source: "tenant_feature_flag_default_off" });
@@ -1841,6 +1996,28 @@ test("tenant without an explicit feature flag remains OFF under the SHADOW deplo
     work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY, expected_revision: 0,
     idempotency_key: "default-off", as_of: AT,
   }), (error) => error.code === "entity360_shadow_mode_required" && error.status === 503);
+});
+
+test("tenant status read needs no Work and exposes only effective mode and enabled state", async () => {
+  const { store, adapterRegistry, setFeatureFlag } = memoryRuntimeDependencies();
+  setFeatureFlag({ tenant_id: TENANT, flag_id: "entity360", mode: "SHADOW", enabled: true,
+    revision: 9, policy_digest: POLICY.policy_digest, enforcement_authority_digest: null,
+    config: { internal: "must-not-leak" }, config_digest: entity360Digest({ internal: "must-not-leak" }) });
+  const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY, ontology: ONTOLOGY,
+    mode: "SHADOW", now: () => Date.parse(AT) });
+  await runtime.initialize();
+  const tenantReader = { tenant_id: TENANT, actor_id: "core-tenant-reader:test",
+    actor_role: "universal_core_tenant_reader", authority_scope: [],
+    provenance: { session_fingerprint: "tenant-reader-test",
+      actor_provenance: "universal_core_platform_auth" } };
+  const status = await runtime.invoke("entity_360_tenant_status_read", tenantReader, {});
+  assert.deepEqual(status, { schema_version: "entity_360_tenant_status_v1",
+    mode: "SHADOW", enabled: true, execution_authorized: false });
+  assert.deepEqual(Object.keys(status).sort(),
+    ["enabled", "execution_authorized", "mode", "schema_version"]);
+  await assert.rejects(() => runtime.invoke("entity_360_tenant_status_read", tenantReader,
+    { project_id: "caller-controlled" }),
+  (error) => error.code === "entity360_tenant_status_input_invalid" && error.status === 422);
 });
 
 test("tenant OFF kill-switch prevents public resolve and automatic observer adapter reads", async () => {

@@ -909,12 +909,25 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       }
     }
   }
-  const operational = typeof workContinuityRuntime.readNyraOperationalState === "function"
+  let operational = typeof workContinuityRuntime.readNyraOperationalState === "function"
     ? await workContinuityRuntime.readNyraOperationalState(identity, {
       work_id: continuity.work_id,
       ...(projectId ? { project_id: projectId } : {}),
     })
     : null;
+  if (operational) {
+    const visibleWorks = typeof workContinuityV2Store?.listWorks === "function"
+      ? await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), {
+        view: "operational",
+      })
+      : null;
+    operational = {
+      ...operational,
+      gallery: visibleWorks
+        ? { state: "available", work_count: visibleWorks.length }
+        : { state: "unavailable", work_count: 0 },
+    };
+  }
   projectId = projectId || operational?.project_id || null;
   if (!projectId) return null;
   // A material change (claim, submit, incident or Atlas update) must expose
@@ -1948,6 +1961,10 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         workContinuityV2Store.readPrecommitTicketGateClaimRecovery(
           withTenantWorkAcl(identity), request,
         ),
+      readActivePrecommitTicketGateClaimForReconciliation: (request, identity) =>
+        workContinuityV2Store.readActivePrecommitTicketGateClaimForReconciliation(
+          withTenantWorkAcl(identity), request,
+        ),
       fulfillPrecommitTicketTask: (request, identity) =>
         workContinuityV2Store.fulfillPrecommitTicketTask(
           withTenantWorkAcl(identity), request,
@@ -1965,11 +1982,18 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
             work_id: request.work_id,
           })))
           .digest("hex");
+        // The public nyra_continue operation and this nested Core decision are
+        // distinct idempotent operations. Reusing the caller key for both
+        // makes the decision ledger reject the nested authorization as a
+        // conflicting replay before reconciliation can release the claim.
+        const coreIdempotencyKey = `precommit_reconcile_core_${crypto.createHash("sha256")
+          .update(`${request.idempotency_key}:${requestDigest}`)
+          .digest("hex")}`;
         return requireBoundedTenantCoordination(
           identity,
           "work.continuity.precommit.reconcile.persisted",
           `precommit_reconcile_persisted:${request.work_id}:${requestDigest}`,
-          request.idempotency_key,
+          coreIdempotencyKey,
         );
       },
       reconcilePersistedPrecommit: (request, identity) =>

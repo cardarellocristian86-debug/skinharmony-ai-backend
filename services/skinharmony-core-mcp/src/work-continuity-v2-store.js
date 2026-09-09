@@ -6337,6 +6337,41 @@ export function createWorkContinuityV2Store({
       recovery_source: recoverySource,
       gate_claim: gateClaim });
   }
+  async function readActivePrecommitTicketGateClaimForReconciliation(identity, input = {}) {
+    await initialize();
+    if (!exactObjectKeys(input, ["server_owned", "work_id"]) || input.server_owned !== true) {
+      fail("precommit_claim_reconciliation_reader_server_owned_required");
+    }
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id, "precommit_claim_reconciliation_reader_work_invalid");
+    const work = await loadWork(pool, actor, workId, false);
+    assertPermission(canAdminister, work, actor);
+    // Read at most two rows: zero is a valid no-op, one is the only safe
+    // recovery target, and two proves the persisted invariant is ambiguous.
+    // The later abandonment transaction locks and revalidates the selected
+    // claim, including any fulfillment that races this read.
+    const active = await pool.query(`SELECT c.*
+      FROM tenant_work_precommit_ticket_gate_claim c
+      LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
+        ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
+          AND f.gate_projection_digest=c.gate_projection_digest
+          AND f.claim_id=c.claim_id
+      LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+        ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+          AND a.gate_projection_digest=c.gate_projection_digest
+          AND a.claim_id=c.claim_id
+      WHERE c.tenant_id=$1 AND c.work_id=$2
+        AND f.claim_id IS NULL AND a.claim_id IS NULL
+      ORDER BY c.created_at,c.claim_id
+      LIMIT 2`, [actor.tenant_id, workId]);
+    if (active.rows.length === 0) return null;
+    if (active.rows.length > 1) fail("precommit_claim_reconciliation_reader_ambiguous");
+    const row = active.rows[0];
+    if (row.claim_digest !== precommitClaimProjection(row, false).claim_digest) {
+      fail("precommit_claim_reconciliation_reader_integrity_failed");
+    }
+    return precommitClaimProjection(row, true);
+  }
   async function reconcilePrecommitTicketGateClaim(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -8402,6 +8437,7 @@ export function createWorkContinuityV2Store({
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     reconcilePersistedPrecommitTicketGate,
     claimPrecommitTicketGate, reconcilePrecommitTicketGateClaim, readPrecommitTicketGateClaimRecovery,
+    readActivePrecommitTicketGateClaimForReconciliation,
     abandonInactivePrecommitTicketGateClaim,
     materializeNativePrecommitTicketGateWithClient,
     fulfillPrecommitTicketTask,

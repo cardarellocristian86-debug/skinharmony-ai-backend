@@ -39,8 +39,13 @@ test("Control Room handler derives Work status from the server V2 reader without
     nyraDialogueEnabled: false,
   }, {
     fetchImpl: async (url, init) => {
-      requests.push({ pathname: new URL(url).pathname, method: init.method });
-      return new Response(JSON.stringify(health()), {
+      const pathname = new URL(url).pathname;
+      requests.push({ pathname, method: init.method });
+      const payload = pathname === "/v1/entity-360/tenant-status"
+        ? { ok: true, result: { schema_version: "entity_360_tenant_status_v1",
+          mode: "SHADOW", enabled: true, execution_authorized: false } }
+        : health();
+      return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -56,7 +61,10 @@ test("Control Room handler derives Work status from the server V2 reader without
     project_id: "nyra_conversational_runtime",
   }, { tenantId: "tenant-a" });
 
-  assert.deepEqual(requests, [{ pathname: "/healthz", method: "GET" }]);
+  assert.deepEqual(requests.sort((left, right) => left.pathname.localeCompare(right.pathname)), [
+    { pathname: "/healthz", method: "GET" },
+    { pathname: "/v1/entity-360/tenant-status", method: "POST" },
+  ]);
   assert.equal(reads.length, 1);
   assert.equal(reads[0].identity.tenantId, "tenant-a");
   assert.deepEqual(reads[0].args, {
@@ -64,6 +72,8 @@ test("Control Room handler derives Work status from the server V2 reader without
     project_id: "nyra_conversational_runtime",
   });
   assert.equal(result.structuredContent.control_room.work_progress.percent, 62);
+  assert.equal(result.structuredContent.control_room.domains
+    .find((domain) => domain.id === "entity_360").state, "SHADOW");
   assert.equal(result.structuredContent.control_room.work_progress.next_action.title, "Independent verification");
 });
 

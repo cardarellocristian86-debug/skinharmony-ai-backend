@@ -769,7 +769,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     } : null });
   }
 
-  async function assemble(identity, input) {
+  async function assemble(identity, input, { requireReadyBeforePersist = false } = {}) {
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
     requireCanonicalWorkBinding(workId, input.identity);
@@ -880,6 +880,13 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
         reasons: selfVerification.reasons,
       });
     }
+    // The dedicated first-snapshot bootstrap is allowed to persist context,
+    // never to authorize an effect.  Do not let an incomplete initial record
+    // consume revision 1 and leave an ENFORCED tenant unable to establish the
+    // verified context required by the normal Semantic Scope gate.
+    if (requireReadyBeforePersist === true && snapshot.context_status !== "READY") {
+      fail("entity360_bootstrap_context_not_ready", 409);
+    }
     const persisted = await store.writeSnapshot({ snapshot, idempotency_key: idempotencyKey,
       request_digest: requestDigest, actor_id: identity.actor_id, expected_head_version: expectedRevision,
       expected_revision: expectedRevision });
@@ -920,6 +927,83 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       shadow_mode: feature.mode === "SHADOW",
       enforcement_mode: feature.mode === "ENFORCED",
       production_decision_changed: false, execution_authorized: false });
+  }
+
+  async function bootstrapInitialWorkSnapshot(identity, input = {}) {
+    const allowedInput = new Set([
+      "tenant_id", "work_id", "as_of", "expected_revision", "idempotency_key",
+    ]);
+    if (Object.keys(input).some((field) => !allowedInput.has(field))) {
+      fail("entity360_bootstrap_input_not_allowed", 403);
+    }
+    const workId = requireWorkBinding(identity, input);
+    const expectedRevision = integer(input.expected_revision,
+      "entity360_expected_revision_required");
+    if (expectedRevision !== 0) fail("entity360_bootstrap_revision_invalid", 409);
+    const asOf = timestamp(input.as_of, null, "entity360_as_of_invalid");
+    const idempotencyKey = text(input.idempotency_key,
+      "entity360_idempotency_key_required", 240);
+    const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
+    const assemblyInput = {
+      work_id: workId,
+      entity_type: "work",
+      identity: { work_id: workId },
+      as_of: asOf,
+      expected_revision: 0,
+      idempotency_key: idempotencyKey,
+    };
+    const requestDigest = entity360Digest({
+      schema_version: "entity_360_snapshot_assemble_request_v1",
+      tenant_id: identity.tenant_id,
+      actor_id: identity.actor_id,
+      input: assemblyInput,
+    });
+    const assembled = await assemble(identity, assemblyInput,
+      { requireReadyBeforePersist: true });
+    const snapshot = assembled?.snapshot;
+    if (!snapshot || snapshot.tenant_scope !== identity.tenant_id
+      || snapshot.entity_type !== "work"
+      || snapshot.snapshot_version !== 1
+      || snapshot.previous_snapshot_digest !== null
+      || snapshot.context_status !== "READY"
+      || snapshot.execution_authorized !== false
+      || snapshot.production_decision_mutation !== false) {
+      fail("entity360_bootstrap_snapshot_readback_invalid", 503);
+    }
+    requireSnapshotWorkBinding(snapshot, workId);
+    const featureAfter = await requireTenantEnforcedMode(identity.tenant_id);
+    if (featureAfter.mode !== featureBefore.mode
+      || featureAfter.enabled !== featureBefore.enabled
+      || Number(featureAfter.revision) !== Number(featureBefore.revision)
+      || featureAfter.policy_digest !== featureBefore.policy_digest
+      || featureAfter.enforcement_authority_digest !== featureBefore.enforcement_authority_digest) {
+      fail("entity360_bootstrap_feature_drift", 409);
+    }
+    const gateUnsigned = Object.freeze({
+      schema_version: "entity_360_snapshot_bootstrap_gate_v1",
+      authorized: true,
+      authority: "universal_core",
+      route: "entity_360_work_snapshot_bootstrap",
+      action: "entity360.snapshot.persist",
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      entity_id: snapshot.entity_id,
+      snapshot_version: 1,
+      snapshot_digest: snapshot.deterministic_immutable_digest,
+      request_digest: requestDigest,
+      idempotency_digest: entity360Digest({ idempotency_key: idempotencyKey }),
+      tenant_feature_revision: Number(featureAfter.revision),
+      policy_digest: featureAfter.policy_digest,
+      enforcement_authority_digest: featureAfter.enforcement_authority_digest,
+      context_only: true,
+      execution_authorized: false,
+      provider_execution: false,
+      host_policy_override: false,
+      production_decision_changed: false,
+    });
+    const dedicatedCoreGate = Object.freeze({ ...gateUnsigned,
+      gate_digest: entity360Digest(gateUnsigned) });
+    return Object.freeze({ ...assembled, dedicated_core_gate: dedicatedCoreGate });
   }
 
   async function readStored(identity, input) {
@@ -1205,11 +1289,27 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const identity = requireIdentity(rawIdentity);
     requireInputTenant(identity, input);
     await requireOperationalStore();
+    if (capability === "entity_360_tenant_status_read") {
+      if (!input || typeof input !== "object" || Array.isArray(input)
+        || Object.keys(input).length !== 0) {
+        fail("entity360_tenant_status_input_invalid");
+      }
+      const feature = await tenantMode(identity.tenant_id);
+      return Object.freeze({
+        schema_version: "entity_360_tenant_status_v1",
+        mode: feature.mode,
+        enabled: feature.enabled === true,
+        execution_authorized: false,
+      });
+    }
     if (capability === "entity_360_resolve") return resolve(identity, input);
     if (capability === "entity_360_enforcement_context_receipt_read") {
       return readEnforcementContextReceipt(identity, input);
     }
     if (capability === "entity_360_snapshot_assemble") return assemble(identity, input);
+    if (capability === "entity_360_work_snapshot_bootstrap") {
+      return bootstrapInitialWorkSnapshot(identity, input);
+    }
     if (capability === "entity_360_snapshot_latest") {
       const workId = requireWorkBinding(identity, input);
       const entityId = text(input.entity_id, "entity360_entity_id_required", 160);

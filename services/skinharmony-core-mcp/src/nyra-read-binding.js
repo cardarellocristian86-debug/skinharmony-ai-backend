@@ -126,13 +126,14 @@ export async function ensureNyraReadBinding({
     await runtime.heartbeat(identity, {
       ...common,
       idempotency_key: boundedKey("read_heartbeat", [identity.tenantId, continuity.work_id,
-        presence.session_fingerprint], nowMs),
+        presence.session_fingerprint, presence.host_transport_session_fingerprint], nowMs),
     });
     await runtime.renewLease(identity, {
       ...common,
       lease_id: binding.lease_id,
       idempotency_key: boundedKey("read_renew", [identity.tenantId, continuity.work_id,
-        presence.session_fingerprint, binding.lease_id], nowMs),
+        presence.session_fingerprint, presence.host_transport_session_fingerprint,
+        binding.lease_id], nowMs),
     });
     const renewed = await runtime.resolveDttWorkLeaseBinding(identity, resolveInput);
     return bindingSummary(renewed, "renewed");
@@ -153,7 +154,7 @@ export async function ensureNyraReadBinding({
         execution_authorized: false,
       },
       idempotency_key: boundedKey("read_join", [identity.tenantId, continuity.work_id,
-        presence.session_fingerprint], nowMs),
+        presence.session_fingerprint, presence.host_transport_session_fingerprint], nowMs),
     });
   }
   const acquired = await runtime.acquireLease(identity, {
@@ -161,7 +162,7 @@ export async function ensureNyraReadBinding({
     purpose: READ_LEASE_PURPOSE,
     surfaces: [surface],
     idempotency_key: boundedKey("read_lease", [identity.tenantId, continuity.work_id,
-      presence.session_fingerprint], nowMs),
+      presence.session_fingerprint, presence.host_transport_session_fingerprint], nowMs),
   });
   if (acquired?.acquired !== true && !acquired?.lease?.lease_id) {
     throw new Error("nyra_read_binding_lease_not_acquired");

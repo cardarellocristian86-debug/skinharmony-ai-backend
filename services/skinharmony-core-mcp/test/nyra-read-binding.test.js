@@ -235,3 +235,54 @@ test("a verified transport rotation expires stale leases before creating a new r
   assert.match(calls[1][1].idempotency_key, /^nyra_read_transport_[a-f0-9]{48}$/);
   assert.equal(calls[2], "acquire");
 });
+
+test("read-binding idempotency keys rotate with the authenticated MCP transport", async () => {
+  async function keysFor(hostTransportFingerprint) {
+    const keys = {};
+    let resolved = false;
+    const rotatedIdentity = {
+      ...identity,
+      agentPresence: {
+        ...identity.agentPresence,
+        host_transport_session_fingerprint: hostTransportFingerprint,
+      },
+    };
+    await ensureNyraReadBinding({
+      runtime: {
+        resolveDttWorkLeaseBinding: async () => {
+          if (!resolved) {
+            const error = new Error("dtt_work_active_lease_required");
+            error.code = "dtt_work_active_lease_required";
+            throw error;
+          }
+          return lease();
+        },
+        rotateNyraReadParticipant: async (_identity, args) => {
+          keys.rotate = args.idempotency_key;
+          return { state: "missing_or_expired" };
+        },
+        join: async (_identity, args) => {
+          keys.join = args.idempotency_key;
+          return { participant: { session_id: args.session_id } };
+        },
+        acquireLease: async (_identity, args) => {
+          keys.lease = args.idempotency_key;
+          resolved = true;
+          return { acquired: true, lease: { lease_id: lease().lease_id } };
+        },
+        attestNyraReadLease: async () => {},
+      },
+      identity: rotatedIdentity,
+      continuity: { work_id: WORK_ID },
+      now: () => Date.parse("2026-08-26T21:00:00.000Z"),
+    });
+    return keys;
+  }
+
+  const first = await keysFor("b".repeat(24));
+  const second = await keysFor("d".repeat(24));
+  for (const operation of ["rotate", "join", "lease"]) {
+    assert.notEqual(first[operation], second[operation], operation);
+    assert.match(first[operation], /^nyra_read_[a-z]+_[a-f0-9]{48}$/);
+  }
+});

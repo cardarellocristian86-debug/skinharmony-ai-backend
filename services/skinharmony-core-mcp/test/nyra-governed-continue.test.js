@@ -274,6 +274,116 @@ test("reconciles a historical precommit gate only from server-derived bindings",
   ]);
 });
 
+test("reconciles the precise persisted claim that prevents acquiring a new read lease", async () => {
+  const sequence = [];
+  let bindingAttempts = 0;
+  const unused = async () => ({ structuredContent: {} });
+  const gateClaim = { schema_version: "precommit_ticket_gate_claim_v1", claim_id: "claim-a" };
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => {
+      bindingAttempts += 1;
+      sequence.push(`binding_${bindingAttempts}`);
+      if (bindingAttempts === 1) throw new Error("native_agent_precommit_claim_active");
+    },
+    authorizePersistedPrecommitReconciliation: async () => sequence.push("core_gate"),
+    readActivePrecommitTicketGateClaimForReconciliation: async (args) => {
+      sequence.push(["claim_read", args]);
+      return gateClaim;
+    },
+    abandonInactivePrecommitTicketGateClaim: async (args) => {
+      sequence.push(["abandon", args]);
+      return { abandonment_digest: "a".repeat(64) };
+    },
+    reconcilePersistedPrecommit: async () => {
+      sequence.push("reconcile");
+      return { work_id: WORK_ID, outcome: "RECONCILED" };
+    },
+  });
+
+  const result = await handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "claim-deadlock-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.outcome, "RECONCILED");
+  assert.deepEqual(sequence, [
+    "binding_1",
+    "core_gate",
+    ["claim_read", { server_owned: true, work_id: WORK_ID }],
+    ["abandon", { work_id: WORK_ID, gate_claim: gateClaim }],
+    "binding_2",
+    "reconcile",
+  ]);
+});
+
+test("keeps persisted precommit reconciliation blocked while its delegation is active", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => { throw new Error("native_agent_precommit_claim_active"); },
+    authorizePersistedPrecommitReconciliation: async () => calls.push("core_gate"),
+    readActivePrecommitTicketGateClaimForReconciliation: async () => ({ claim_id: "claim-a" }),
+    abandonInactivePrecommitTicketGateClaim: async () => null,
+    reconcilePersistedPrecommit: async () => calls.push("reconcile"),
+  });
+
+  const result = await handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "active-delegation-reconciliation",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity());
+
+  assert.equal(result.structuredContent.result.outcome, "BLOCKED");
+  assert.deepEqual(result.structuredContent.result.reason_codes,
+    ["precommit_claim_delegation_active"]);
+  assert.deepEqual(calls, ["core_gate"]);
+});
+
+test("persisted precommit reconciliation keeps unrelated lease failures fail-closed", async () => {
+  const calls = [];
+  const unused = async () => ({ structuredContent: {} });
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: unused, complete: unused, readCompletedOperation: unused },
+    readDirectiveContext: unused,
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: unused,
+    authorizeAction: unused,
+    reviewWorkBootstrap: unused,
+    createWorkBootstrap: unused,
+    ensureFinalizeWorkBinding: async () => { throw new Error("continuity_actor_binding_mismatch"); },
+    authorizePersistedPrecommitReconciliation: async () => calls.push("core_gate"),
+    reconcilePersistedPrecommit: async () => calls.push("reconcile"),
+  });
+
+  await assert.rejects(handler({
+    operation: "reconcile_persisted_precommit",
+    work_id: WORK_ID,
+    idempotency_key: "unrelated-binding-failure",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-reconciliation",
+  }, identity()), /continuity_actor_binding_mismatch/);
+  assert.deepEqual(calls, []);
+});
+
 test("previews a native-plan merge from the Work id without continuation or write authority", async () => {
   const calls = [];
   const unused = async () => ({ structuredContent: {} });
@@ -1212,6 +1322,43 @@ test("native precommit gate is CAS-claimed before authorization and fulfilled fr
   assert.equal(response.structuredContent.ticket_id, record.ticket.ticket_id);
   assert.deepEqual(order, ["claim", "authorize", "readback", "fulfill"]);
   assert.equal(recoveryLookups, 1, "the post-claim path must not recover a newly created claim");
+});
+
+test("native precommit reconciliation preserves an allowlisted PostgreSQL trigger cause", async () => {
+  const gate = nativePrecommitGate();
+  const request = commitRequest(gate);
+  const record = commitTicket(request, gate);
+  let reconciliation;
+  const handler = createNyraGovernedContinueHandler({
+    store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+    readDirectiveContext: async () => commitContext(gate),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+    claimPrecommitTicketGate: async (binding) => {
+      const material = { schema_version: "precommit_ticket_gate_claim_v1",
+        claim_id: "11111111-1111-4111-8111-111111111111", ...binding, replay: false };
+      return { ...material, claim_digest: deterministicDigest(material) };
+    },
+    readPrecommitTicketGateClaimRecovery: async () => null,
+    authorizeAction: async () => ({ structuredContent: { action_ticket: record } }),
+    readActionTicket: async () => ({
+      structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record },
+    }),
+    fulfillPrecommitTicketTask: async () => {
+      const error = new Error("tenant_work_task_release_frozen");
+      error.code = "P0001";
+      throw error;
+    },
+    releaseOrReconcilePrecommitTicketGateClaim: async (input) => { reconciliation = input; },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-trigger-cause", action_request: request,
+  }, identity()), /tenant_work_task_release_frozen/);
+  assert.equal(reconciliation.stage, "ticket_locator_received");
+  assert.equal(reconciliation.ticket_id, record.ticket.ticket_id);
+  assert.equal(reconciliation.error_code, "tenant_work_task_release_frozen");
 });
 
 test("native precommit retry after fulfilled replays the prior ticket through Core without fulfill", async () => {
