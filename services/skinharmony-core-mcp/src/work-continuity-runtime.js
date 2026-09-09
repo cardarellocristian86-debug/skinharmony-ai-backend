@@ -623,8 +623,9 @@ function normalizeAcceptanceAmendment(value, baseContract) {
     "schema_version", "base_criteria_digest", "reason",
     "superseded_criteria", "replacement_criteria",
   ]), "intent_acceptance_amendment");
+  const schemaVersion = String(amendment.schema_version || "");
   if (
-    amendment.schema_version !== "intent_acceptance_contract_amendment_v1" ||
+    !["intent_acceptance_contract_amendment_v1", "intent_acceptance_contract_amendment_v2"].includes(schemaVersion) ||
     String(amendment.base_criteria_digest || "").toLowerCase() !== baseContract.criteria_digest
   ) {
     throw new Error("intent_acceptance_amendment_base_mismatch");
@@ -642,7 +643,8 @@ function normalizeAcceptanceAmendment(value, baseContract) {
       "intent_acceptance_amendment_criterion_id", 160);
     const expected = baseById.get(criterionId);
     const criterionDigest = String(item.criterion_digest || "").toLowerCase();
-    if (!expected || expected.criterion_kind === "objective" ||
+    if (!expected || (expected.criterion_kind === "objective" &&
+        schemaVersion !== "intent_acceptance_contract_amendment_v2") ||
         criterionDigest !== expected.criterion_digest || seenSuperseded.has(criterionId)) {
       throw new Error("intent_acceptance_amendment_superseded_invalid");
     }
@@ -665,8 +667,12 @@ function normalizeAcceptanceAmendment(value, baseContract) {
     const criterionId = identifier(item.criterion_id,
       "intent_acceptance_amendment_replacement_id", 160);
     const criterionKind = String(item.criterion_kind || "");
-    if (!ACCEPTANCE_CRITERION_KINDS.has(criterionKind) || criterionKind === "objective" ||
-        reservedIds.has(criterionId) || seenReplacements.has(criterionId)) {
+    const replacesObjective = criterionKind === "objective" &&
+      schemaVersion === "intent_acceptance_contract_amendment_v2" &&
+      criterionId === "objective" && seenSuperseded.has("objective");
+    if (!ACCEPTANCE_CRITERION_KINDS.has(criterionKind) ||
+        (criterionKind === "objective" && !replacesObjective) ||
+        (reservedIds.has(criterionId) && !replacesObjective) || seenReplacements.has(criterionId)) {
       throw new Error("intent_acceptance_amendment_replacements_invalid");
     }
     seenReplacements.add(criterionId);
@@ -677,7 +683,7 @@ function normalizeAcceptanceAmendment(value, baseContract) {
     };
   }).sort((left, right) => left.criterion_id.localeCompare(right.criterion_id));
   return {
-    schema_version: "intent_acceptance_contract_amendment_v1",
+    schema_version: schemaVersion,
     base_criteria_digest: baseContract.criteria_digest,
     reason: amendmentText(amendment.reason, "intent_acceptance_amendment_reason", 2_000),
     superseded_criteria: supersededCriteria,
