@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import test from "node:test";
 
 import { createApp } from "../src/app.js";
-import { createAuthenticator } from "../src/auth.js";
+import { applyPlatformOwner, createAuthenticator } from "../src/auth.js";
 import {
   createMemoryEnvironmentDelegationNonceStore,
   createPostgresEnvironmentDelegationNonceStore,
@@ -151,6 +151,48 @@ test("v3 environment delegation binds the exact request and preserves membership
   assert.throws(() => signEnvironmentDelegation({
     identity: expired, ...request, key: KEY, now: () => now,
   }), /environment_delegation_invalid/);
+});
+
+test("staging re-derives platform administration from its own allowlist after a signed delegation", async () => {
+  const now = Date.parse("2026-08-25T12:00:00.000Z");
+  const request = {
+    method: "tools/call",
+    toolName: "nyra_converse",
+    exactTarget: "nyra_converse",
+    args: { message: "Continua" },
+    requestId: "platform-owner-delegation",
+    transportSessionId: "platform-owner-session",
+  };
+  const sourceIdentity = { ...delegatedOwner(now), platformOwner: true };
+  const token = signEnvironmentDelegation({
+    identity: sourceIdentity, ...request, key: KEY, now: () => now,
+  });
+  const verified = await verifyEnvironmentDelegation(token, {
+    key: KEY,
+    nonceStore: createMemoryEnvironmentDelegationNonceStore({ now: () => now }),
+    request,
+    now: () => now,
+  });
+  assert.equal(verified.identity.platformOwner, undefined);
+  const stagingIdentity = applyPlatformOwner(verified.identity, {
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+    platformOwnerSubjects: ["google-oauth2|owner"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": TENANT_ID },
+  });
+  assert.equal(stagingIdentity.platformOwner, true);
+  assert.equal(applyPlatformOwner(verified.identity, {
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+    platformOwnerSubjects: ["google-oauth2|someone-else"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": TENANT_ID },
+  }).platformOwner, undefined);
+  assert.equal(applyPlatformOwner(verified.identity, {
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+    platformOwnerSubjects: ["google-oauth2|owner"],
+    oauthOwnerTenantBindings: { "google-oauth2|owner": "another-tenant" },
+  }).platformOwner, undefined);
 });
 
 test("PostgreSQL nonce claim is distributed and single-use", async () => {
@@ -361,6 +403,9 @@ test("an OAuth owner confirmation is verified once in production and delegated t
     hostAppRegistry,
     oauthOwnerTenantBindings: { [subject]: TENANT_ID },
     oauthOwnerConfirmationMaxAgeSeconds: 300,
+    platformOwnerSubjects: [subject],
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
   };
   let stagingIdentity;
   let stagingCalls = 0;
@@ -451,6 +496,7 @@ test("an OAuth owner confirmation is verified once in production and delegated t
     assert.equal(stagingIdentity.environmentDelegationVersion, 3);
     assert.equal(stagingIdentity.environmentDelegatedOwnerConfirmation.verified, true);
     assert.equal(stagingIdentity.ownerConfirmed, true);
+    assert.equal(stagingIdentity.platformOwner, true);
     assert.match(stagingIdentity.confirmationReference, /^environment_delegation:[a-f0-9]{64}$/);
   } finally {
     await new Promise((resolve) => productionServer.close(resolve));

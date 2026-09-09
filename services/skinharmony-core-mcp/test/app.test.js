@@ -2096,6 +2096,35 @@ test("production MCP readiness rejects PostgreSQL 15 and probe errors", async ()
   }
 });
 
+test("platform administration configuration fails readiness closed when its allowlist is enabled", () => {
+  const base = {
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    platformOwnerSubjects: ["auth0|owner"],
+    platformOwnerAdminEnforced: true,
+    platformOwnerEmergencyStop: false,
+  };
+  const malformed = buildReadiness({
+    ...base,
+    platformOwnerAdminConfigurationValid: false,
+    platformOwnerAdminConfigurationError: "nyra_platform_owner_admin_enforced_flag_invalid",
+  });
+  assert.equal(malformed.ready, false);
+  assert.equal(malformed.components.platform_administration.required, true);
+  assert.equal(malformed.components.platform_administration.configured, false);
+  assert.deepEqual(malformed.reasons, ["platform_owner_admin_configuration_invalid"]);
+
+  const valid = buildReadiness({
+    ...base,
+    platformOwnerAdminConfigurationValid: true,
+  });
+  assert.equal(valid.components.platform_administration.ready, true);
+  assert.deepEqual(valid.reasons, []);
+});
+
 test("host-native security prerequisites are production-and-feature scoped", () => {
   const productionBase = {
     environment: "production",

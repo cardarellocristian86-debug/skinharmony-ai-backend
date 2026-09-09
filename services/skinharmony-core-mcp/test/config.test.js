@@ -60,6 +60,14 @@ test("enforces the platform administration boundary only when a server allowlist
     NYRA_PLATFORM_OWNER_SUBJECTS: "auth0|cristian",
     NYRA_PLATFORM_OWNER_EMERGENCY_STOP: "true",
   }).platformOwnerEmergencyStop, true);
+  const malformed = loadConfig({
+    NYRA_PLATFORM_OWNER_SUBJECTS: "auth0|cristian",
+    NYRA_PLATFORM_OWNER_ADMIN_ENFORCED: "ture",
+  });
+  assert.equal(malformed.platformOwnerAdminEnforced, true);
+  assert.equal(malformed.platformOwnerAdminConfigurationValid, false);
+  assert.equal(malformed.platformOwnerAdminConfigurationError,
+    "nyra_platform_owner_admin_enforced_flag_invalid");
 });
 
 test("keeps Nyra Dialogue disabled unless the deployment explicitly enables it", () => {
