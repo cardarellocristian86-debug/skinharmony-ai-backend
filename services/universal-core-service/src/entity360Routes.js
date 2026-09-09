@@ -1,6 +1,8 @@
 const ROUTES = Object.freeze([
+  ["post", "/v1/entity-360/tenant-status", "entity_360_tenant_status_read", "tenant_read"],
   ["post", "/v1/entity-360/resolve", "entity_360_resolve", "read"],
   ["post", "/v1/entity-360/snapshots/assemble", "entity_360_snapshot_assemble", "write"],
+  ["post", "/v1/entity-360/snapshots/bootstrap", "entity_360_work_snapshot_bootstrap", "write"],
   ["post", "/v1/entity-360/snapshots/latest", "entity_360_snapshot_latest", "read"],
   ["post", "/v1/entity-360/snapshots/read", "entity_360_snapshot_read", "read"],
   ["post", "/v1/entity-360/snapshots/verify", "entity_360_snapshot_verify", "read"],
@@ -22,6 +24,19 @@ function statusFor(error) {
 }
 
 async function identityFrom(req, res, resolveAgentContext, access) {
+  if (access === "tenant_read") {
+    const reader = res.locals?.entity360TenantReadIdentity;
+    if (!reader || reader.tenant_id !== req.tenantId || !reader.actor_id
+      || reader.actor_role !== "universal_core_tenant_reader"
+      || !reader.provenance?.session_fingerprint
+      || reader.provenance?.actor_provenance !== "universal_core_platform_auth"
+      || !Array.isArray(reader.authority_scope) || reader.authority_scope.length !== 0) {
+      const error = new Error("entity360_tenant_reader_identity_required");
+      error.status = 403;
+      throw error;
+    }
+    return reader;
+  }
   if (access === "configure") {
     const operator = res.locals?.entity360OperatorIdentity;
     if (!operator || operator.tenant_id !== req.tenantId
@@ -90,15 +105,36 @@ export function registerEntity360Routes({ app, authFor, runtime, resolveAgentCon
       const startedAt = Date.now();
       try {
         const identity = await identityFrom(req, res, resolveAgentContext, access);
+        if (capability === "entity_360_tenant_status_read"
+          && (req.body !== undefined && (!req.body || typeof req.body !== "object"
+            || Array.isArray(req.body) || Object.keys(req.body).length !== 0))) {
+          const error = new Error("entity360_tenant_status_input_invalid");
+          error.status = 422;
+          throw error;
+        }
         const raw = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
         const { tenant_id: _ignoredTenant, tenantId: _ignoredAlias,
           execution_authorized: _ignoredAuthority, authority: _ignoredAuthorityName,
           owner_context: _ignoredOwnerContext, owner_confirmed: _ignoredOwnerConfirmation,
           confirmation_reference: _ignoredConfirmationReference, ...input } = raw;
         const result = await runtime.invoke(capability, identity, input);
+        if (capability === "entity_360_tenant_status_read") {
+          const keys = result && typeof result === "object" && !Array.isArray(result)
+            ? Object.keys(result).sort() : [];
+          const expectedKeys = ["enabled", "execution_authorized", "mode", "schema_version"];
+          if (JSON.stringify(keys) !== JSON.stringify(expectedKeys)
+            || result.schema_version !== "entity_360_tenant_status_v1"
+            || !["OFF", "SHADOW", "ENFORCED"].includes(result.mode)
+            || typeof result.enabled !== "boolean" || result.execution_authorized !== false) {
+            const error = new Error("entity360_tenant_status_readback_invalid");
+            error.status = 503;
+            throw error;
+          }
+        }
         await audit?.({ capability, tenant_id: identity.tenant_id, actor_id: identity.actor_id,
           ok: true, duration_ms: Date.now() - startedAt, execution_authorized: false });
-        res.status(access === "read" ? 200 : 201).json({ ok: true, result });
+        res.status(access === "read" || access === "tenant_read" ? 200 : 201)
+          .json({ ok: true, result });
       } catch (error) {
         const candidateCode = String(error?.code || error?.message || "");
         const code = /^entity360_[a-z0-9_]{1,148}$/u.test(candidateCode)

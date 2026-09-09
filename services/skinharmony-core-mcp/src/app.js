@@ -3356,7 +3356,10 @@ export function createApp(config, options = {}) {
       if (reconnectResult) {
         const authChallenge = reconnectResult._meta["mcp/www_authenticate"][0];
         res.set("WWW-Authenticate", authChallenge);
-        const status = reconnectDetails.reason === "insufficient_scope" ? 403 : 200;
+        // A bearer-host owner upgrade is intentionally synthesized below the
+        // authentication layer, so it has no branded OAuth reconnect details.
+        // Do not mask the governed owner challenge with a null dereference.
+        const status = reconnectDetails?.reason === "insufficient_scope" ? 403 : 200;
         return res.status(status).json({ jsonrpc: "2.0", id, result: reconnectResult });
       }
       if (reconnectDetails?.reason === "insufficient_scope") {

@@ -280,6 +280,21 @@ function textResult(payload) {
   };
 }
 
+function entity360TenantStatusReadback(value) {
+  const raw = value?.result;
+  const expectedKeys = ["enabled", "execution_authorized", "mode", "schema_version"];
+  if (value?.ok !== true || !raw || typeof raw !== "object" || Array.isArray(raw)
+    || Object.keys(raw).sort().some((key, index) => key !== expectedKeys[index])
+    || Object.keys(raw).length !== expectedKeys.length
+    || raw.schema_version !== "entity_360_tenant_status_v1"
+    || !["OFF", "SHADOW", "ENFORCED"].includes(raw.mode)
+    || typeof raw.enabled !== "boolean" || raw.execution_authorized !== false
+    || (raw.mode === "OFF") !== (raw.enabled === false)) {
+    throw new Error("entity360_tenant_status_readback_invalid");
+  }
+  return Object.freeze({ ...raw });
+}
+
 function unavailableIcfGenericWorkCoreJoin(reason) {
   return Object.freeze({
     enabled: false,
@@ -2641,7 +2656,16 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     nyra_control_room_status: async (args, identity) => {
-      const health = await coreRequest("/healthz", identity.tenantId);
+      const [health, entity360TenantStatus] = await Promise.all([
+        coreRequest("/healthz", identity.tenantId),
+        coreRequest("/v1/entity-360/tenant-status", identity.tenantId, {
+          method: "POST",
+          body: {},
+          strictTransport: true,
+          timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS,
+          maxResponseBytes: 8 * 1024,
+        }).then(entity360TenantStatusReadback).catch(() => null),
+      ]);
       const work = args.work_id && typeof readControlRoomWorkContext === "function"
         ? await readControlRoomWorkContext(identity, {
             work_id: args.work_id,
@@ -2671,6 +2695,7 @@ export function createCoreHandlers(config, options = {}) {
           health,
           work,
           coordination,
+          entity360TenantStatus,
           nyraDialogueEnabled: config.nyraDialogueEnabled === true,
         }),
       });

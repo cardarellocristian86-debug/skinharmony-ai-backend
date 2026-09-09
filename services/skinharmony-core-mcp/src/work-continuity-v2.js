@@ -72,6 +72,7 @@ BEGIN
 END $$;
 CREATE OR REPLACE FUNCTION tenant_work_task_advance_revision() RETURNS trigger AS $$
 DECLARE release_frozen boolean := false;
+DECLARE precommit_completion_authorized boolean := false;
 DECLARE material_change boolean := true;
 DECLARE target_tenant varchar(64);
 DECLARE target_work uuid;
@@ -94,12 +95,135 @@ BEGIN
       target_tenant := OLD.tenant_id;
       target_work := OLD.work_id;
     END IF;
+    -- Historical release joins freeze arbitrary changes, but a later release
+    -- cycle may append one server-owned ticket-acquisition task. Permit only
+    -- its exact planned -> verified completion after the matching immutable
+    -- precommit claim fulfillment has been inserted in the same transaction.
+    IF TG_OP = 'UPDATE' AND
+       ROW(NEW.title,NEW.weight,NEW.required) IS NOT DISTINCT FROM
+         ROW(OLD.title,OLD.weight,OLD.required) AND
+       OLD.status='planned' AND OLD.acceptance_verified=false AND OLD.completed_at IS NULL AND
+       NEW.status='completed' AND NEW.acceptance_verified=true AND NEW.completed_at IS NOT NULL AND
+       OLD.revision=1 AND
+       to_regclass('public.tenant_work_precommit_ticket_gate') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_fulfillment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_scope_freeze') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_supersession') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_fulfillment') IS NOT NULL THEN
+      EXECUTE 'SELECT EXISTS (
+        SELECT 1 FROM public.tenant_work_precommit_ticket_fulfillment f
+        JOIN public.tenant_work_precommit_ticket_gate g
+          ON g.tenant_id=f.tenant_id AND g.work_id=f.work_id AND g.task_id=f.task_id
+        JOIN public.tenant_work_precommit_ticket_gate_claim_fulfillment u
+          ON u.tenant_id=f.tenant_id AND u.work_id=f.work_id
+            AND u.gate_projection_digest=f.gate_projection_digest AND u.ticket_id=f.ticket_id
+        JOIN public.tenant_work_precommit_ticket_gate_claim c
+          ON c.tenant_id=u.tenant_id AND c.work_id=u.work_id
+            AND c.gate_projection_digest=u.gate_projection_digest
+            AND c.claim_id=u.claim_id AND c.claim_digest=u.claim_digest
+        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        WHERE f.tenant_id=$1 AND f.work_id=$2 AND f.task_id=$3
+          AND g.gate_source=''native_closure_evaluation''
+          AND g.action_kind=''git.commit'' AND g.gate_kind=''ticket_acquisition''
+          AND g.v2_scope_snapshot_digest IS NOT NULL
+          AND jsonb_array_length(g.v2_scope_tasks)>0
+          AND c.state=''CLAIMED'' AND c.ticket_id IS NULL AND a.claim_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM public.tenant_work_precommit_ticket_gate_supersession newer
+            WHERE newer.tenant_id=g.tenant_id AND newer.work_id=g.work_id
+          )
+          AND (SELECT count(*) FROM public.tenant_work_precommit_scope_freeze s
+            WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
+              AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest)
+            = jsonb_array_length(g.v2_scope_tasks)
+          AND NOT EXISTS (
+            SELECT 1 FROM public.tenant_work_precommit_scope_freeze s
+            LEFT JOIN public.tenant_work_task st
+              ON st.tenant_id=s.tenant_id AND st.work_id=s.work_id AND st.task_id=s.task_id
+            WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
+              AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND (s.scope_snapshot_digest<>g.v2_scope_snapshot_digest
+                OR st.task_id IS NULL OR st.revision<>s.revision
+                OR NOT EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                  WHERE q->>''task_id''=s.task_id::text
+                    AND (q->>''revision'')::bigint=s.revision
+                    AND q->>''v2_task_digest''=s.v2_task_digest
+                ))
+          )
+      )' INTO precommit_completion_authorized USING target_tenant,target_work,
+        OLD.task_id;
+    END IF;
+    IF NOT precommit_completion_authorized AND TG_OP = 'UPDATE' AND
+       ROW(NEW.title,NEW.weight,NEW.required) IS NOT DISTINCT FROM
+         ROW(OLD.title,OLD.weight,OLD.required) AND
+       OLD.status='planned' AND OLD.acceptance_verified=false AND OLD.completed_at IS NULL AND
+       NEW.status='completed' AND NEW.acceptance_verified=true AND NEW.completed_at IS NOT NULL AND
+       OLD.revision=1 AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_supersession') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_fulfillment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_scope_freeze') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_fulfillment_supersession') IS NOT NULL THEN
+      EXECUTE 'SELECT EXISTS (
+        SELECT 1 FROM public.tenant_work_precommit_ticket_fulfillment_supersession f
+        JOIN public.tenant_work_precommit_ticket_gate_supersession g
+          ON g.tenant_id=f.tenant_id AND g.work_id=f.work_id
+            AND g.gate_version=f.gate_version AND g.task_id=f.task_id
+        JOIN public.tenant_work_precommit_ticket_gate_claim_fulfillment u
+          ON u.tenant_id=f.tenant_id AND u.work_id=f.work_id
+            AND u.gate_projection_digest=f.gate_projection_digest AND u.ticket_id=f.ticket_id
+        JOIN public.tenant_work_precommit_ticket_gate_claim c
+          ON c.tenant_id=u.tenant_id AND c.work_id=u.work_id
+            AND c.gate_projection_digest=u.gate_projection_digest
+            AND c.claim_id=u.claim_id AND c.claim_digest=u.claim_digest
+        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
+            AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        WHERE f.tenant_id=$1 AND f.work_id=$2 AND f.task_id=$3
+          AND g.gate_source=''native_closure_evaluation''
+          AND g.action_kind=''git.commit'' AND g.gate_kind=''ticket_acquisition''
+          AND g.v2_scope_snapshot_digest IS NOT NULL
+          AND jsonb_array_length(g.v2_scope_tasks)>0
+          AND c.state=''CLAIMED'' AND c.ticket_id IS NULL AND a.claim_id IS NULL
+          AND g.gate_version=(SELECT max(latest.gate_version)
+            FROM public.tenant_work_precommit_ticket_gate_supersession latest
+            WHERE latest.tenant_id=g.tenant_id AND latest.work_id=g.work_id)
+          AND (SELECT count(*) FROM public.tenant_work_precommit_scope_freeze s
+            WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
+              AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest)
+            = jsonb_array_length(g.v2_scope_tasks)
+          AND NOT EXISTS (
+            SELECT 1 FROM public.tenant_work_precommit_scope_freeze s
+            LEFT JOIN public.tenant_work_task st
+              ON st.tenant_id=s.tenant_id AND st.work_id=s.work_id AND st.task_id=s.task_id
+            WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
+              AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND (s.scope_snapshot_digest<>g.v2_scope_snapshot_digest
+                OR st.task_id IS NULL OR st.revision<>s.revision
+                OR NOT EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                  WHERE q->>''task_id''=s.task_id::text
+                    AND (q->>''revision'')::bigint=s.revision
+                    AND q->>''v2_task_digest''=s.v2_task_digest
+                ))
+          )
+      )' INTO precommit_completion_authorized USING target_tenant,target_work,
+        OLD.task_id;
+    END IF;
     IF to_regclass('public.core_continuity_release_joins') IS NOT NULL THEN
       EXECUTE 'SELECT EXISTS (
         SELECT 1 FROM public.core_continuity_release_joins
         WHERE tenant_id=$1 AND work_id=$2
       )' INTO release_frozen USING target_tenant,target_work;
-      IF release_frozen THEN
+      IF release_frozen AND NOT precommit_completion_authorized THEN
         RAISE EXCEPTION 'tenant_work_task_release_frozen';
       END IF;
     END IF;

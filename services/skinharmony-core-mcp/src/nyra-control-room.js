@@ -162,7 +162,7 @@ function normalizeReadbackDetail(domainId, value) {
     }
     case "entity_360": {
       const detail = requireExactObject(raw, [
-        "bitemporal_mode", "deployment_ceiling", "ready", "shadow_transition_available",
+        "bitemporal_mode", "deployment_ceiling", "tenant_mode", "tenant_enabled", "ready", "shadow_transition_available",
         "shadow_transition_blocker", "shadow_disable_available", "shadow_disable_blocker",
       ]);
       const transitionBlocker = detail.shadow_transition_blocker === null ? null : readbackCode(detail.shadow_transition_blocker);
@@ -172,6 +172,8 @@ function normalizeReadbackDetail(domainId, value) {
       return Object.freeze({
         bitemporal_mode: readbackMode(detail.bitemporal_mode),
         deployment_ceiling: readbackMode(detail.deployment_ceiling),
+        tenant_mode: readbackMode(detail.tenant_mode),
+        tenant_enabled: readbackBooleanOrNull(detail.tenant_enabled),
         ready: readbackBooleanOrNull(detail.ready),
         shadow_transition_available: detail.shadow_transition_available,
         shadow_transition_blocker: transitionBlocker,
@@ -410,35 +412,51 @@ export function projectWorkClosureProgress(work = null) {
   });
 }
 
-export function projectNyraControlRoomStatus({ health = {}, work = null, coordination = null, nyraDialogueEnabled } = {}) {
+export function projectNyraControlRoomStatus({ health = {}, work = null, coordination = null,
+  entity360TenantStatus = null, nyraDialogueEnabled } = {}) {
   const host = health.host_native_governance || {};
   const entity360 = health.entity_360 || {};
   const causalContinuity = health.causal_continuity || {};
   const researchAirlock = health.research_airlock || {};
   const scopeMode = mode(host.semantic_scope_guard_mode, "UNKNOWN");
   const entity360DeploymentCeiling = mode(entity360.deployment_mode_ceiling, "UNKNOWN");
+  const entity360TenantMode = mode(entity360TenantStatus?.mode, "UNKNOWN");
+  const entity360TenantEnabled = knownBoolean(entity360TenantStatus?.enabled);
   const entity360Ready = knownBoolean(entity360.ready);
-  const entity360EnableBlocker = entity360DeploymentCeiling === "UNKNOWN"
-    ? "entity_360_shadow_deployment_ceiling_unknown"
-    : entity360DeploymentCeiling !== "SHADOW"
-      ? "entity_360_shadow_deployment_ceiling_required"
-      : entity360Ready === true
-        ? null
-        : entity360Ready === false
-          ? "entity_360_shadow_runtime_not_ready"
-          : "entity_360_shadow_runtime_readback_unknown";
+  const entity360ShadowCeilingAvailable = ["SHADOW", "ENFORCE"].includes(
+    entity360DeploymentCeiling,
+  );
+  let entity360EnableBlocker = null;
+  if (entity360DeploymentCeiling === "UNKNOWN") {
+    entity360EnableBlocker = "entity_360_shadow_deployment_ceiling_unknown";
+  } else if (!entity360ShadowCeilingAvailable) {
+    entity360EnableBlocker = "entity_360_shadow_deployment_ceiling_required";
+  } else if (entity360TenantMode === "UNKNOWN" || entity360TenantEnabled === null) {
+    entity360EnableBlocker = "entity_360_tenant_mode_readback_unknown";
+  } else if (entity360TenantMode !== "OFF" || entity360TenantEnabled !== false) {
+    entity360EnableBlocker = "entity_360_tenant_already_active";
+  } else if (entity360Ready !== true) {
+    entity360EnableBlocker = entity360Ready === false
+      ? "entity_360_shadow_runtime_not_ready"
+      : "entity_360_shadow_runtime_readback_unknown";
+  }
   const entity360DisableRuntimeAvailable = knownBoolean(
     entity360.tenant_shadow_disable_available,
   );
-  const entity360DisableBlocker = entity360DeploymentCeiling === "UNKNOWN"
-    ? "entity_360_shadow_deployment_ceiling_unknown"
-    : entity360DeploymentCeiling !== "SHADOW"
-      ? "entity_360_shadow_deployment_ceiling_required"
-      : entity360DisableRuntimeAvailable === true
-        ? null
-        : entity360DisableRuntimeAvailable === false
-          ? "entity_360_shadow_disable_runtime_unavailable"
-          : "entity_360_shadow_disable_readback_unknown";
+  let entity360DisableBlocker = null;
+  if (entity360DeploymentCeiling === "UNKNOWN") {
+    entity360DisableBlocker = "entity_360_shadow_deployment_ceiling_unknown";
+  } else if (!entity360ShadowCeilingAvailable) {
+    entity360DisableBlocker = "entity_360_shadow_deployment_ceiling_required";
+  } else if (entity360TenantMode === "UNKNOWN" || entity360TenantEnabled === null) {
+    entity360DisableBlocker = "entity_360_tenant_mode_readback_unknown";
+  } else if (entity360TenantMode === "OFF" || entity360TenantEnabled !== true) {
+    entity360DisableBlocker = "entity_360_tenant_already_off";
+  } else if (entity360DisableRuntimeAvailable !== true) {
+    entity360DisableBlocker = entity360DisableRuntimeAvailable === false
+      ? "entity_360_shadow_disable_runtime_unavailable"
+      : "entity_360_shadow_disable_readback_unknown";
+  }
   const entity360Transition = (id, handler, blocker) => action(id, {
     availability: blocker === null
       ? "EXISTING_GOVERNED_HANDLER"
@@ -473,9 +491,11 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, coordin
         restartRequired: true,
       }),
     ]),
-    domain("entity_360", mode(entity360.mode, "UNKNOWN"), {
+    domain("entity_360", entity360TenantMode, {
       bitemporal_mode: mode(entity360.bitemporal_mode, "UNKNOWN"),
       deployment_ceiling: entity360DeploymentCeiling,
+      tenant_mode: entity360TenantMode,
+      tenant_enabled: entity360TenantEnabled,
       ready: entity360Ready,
       shadow_transition_available: entity360EnableBlocker === null,
       shadow_transition_blocker: entity360EnableBlocker,

@@ -7,6 +7,48 @@ const OWNER_CONTEXT_SECRET = "test-owner-context-signing-secret-0123456789";
 const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
 
+test("Control Room reads the effective Entity360 tenant mode without a Work binding", async () => {
+  const paths = [];
+  let malformed = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+    nyraDialogueEnabled: true,
+  }, {
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      paths.push(pathname);
+      if (pathname === "/healthz") return new Response(JSON.stringify({ ok: true,
+        entity_360: { mode: "ENFORCE", deployment_mode_ceiling: "ENFORCE",
+          ready: true, tenant_shadow_disable_available: true } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+      assert.equal(pathname, "/v1/entity-360/tenant-status");
+      const result = malformed
+        ? { schema_version: "entity_360_tenant_status_v1", mode: "ENFORCED",
+          enabled: true, revision: 9, execution_authorized: false }
+        : { schema_version: "entity_360_tenant_status_v1", mode: "ENFORCED",
+          enabled: true, execution_authorized: false };
+      return new Response(JSON.stringify({ ok: true, result }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const first = await handlers.nyra_control_room_status({}, { tenantId: "tenant-a" });
+  const entity360 = first.structuredContent.control_room.domains
+    .find((domain) => domain.id === "entity_360");
+  assert.equal(entity360.state, "ENFORCED");
+  assert.equal(entity360.detail.deployment_ceiling, "ENFORCE");
+  assert.deepEqual(paths.sort(), ["/healthz", "/v1/entity-360/tenant-status"].sort());
+
+  malformed = true;
+  const second = await handlers.nyra_control_room_status({}, { tenantId: "tenant-a" });
+  assert.equal(second.structuredContent.control_room.domains
+    .find((domain) => domain.id === "entity_360").state, "UNKNOWN");
+});
+
 test("explicit observational work preflight reads hierarchy status and never evaluates it", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

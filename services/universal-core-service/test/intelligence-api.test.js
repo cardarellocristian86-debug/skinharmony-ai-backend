@@ -27,6 +27,7 @@ function signedOwnerContext(
   body,
   purpose = "intelligence_outcome_record",
   issuedAt = new Date().toISOString(),
+  delegatedActor = "integration_test",
 ) {
   const binding = ownerRequestBinding(purpose, body);
   const context = {
@@ -35,7 +36,7 @@ function signedOwnerContext(
     tenant_id: tenantId,
     access_mode: "god_mode",
     role: "owner_root",
-    delegated_actor: "integration_test",
+    delegated_actor: delegatedActor,
     owner_verified: true,
     owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", key)
       .update(`test-owner-fingerprint\u0000${tenantId}`)
@@ -408,6 +409,138 @@ test("canonical Work authorization replays one durable Core receipt before consu
   assert.equal(forged.status, 200);
   assert.equal(forged.json.authorization.allowed, false);
   assert.equal(forged.json.authorization_receipt, undefined);
+}));
+
+test("Codex automation can bind owner confirmation only to canonical Work bootstrap", async () => fixture(async (request) => {
+  const automation = await request("POST", "/v1/keys/generate", {
+    tenant_id: "tenant-codex-work-bootstrap",
+    key_type: "automation",
+    allowed_scopes: ["read:decision", "automation:codex", "owner:assertion"],
+  });
+  const body = {
+    action_label: "Govern work.continuity.v2.create",
+    action_type: "work.continuity.v2.create",
+    target: "work_bootstrap:create:codex:bounded-request-digest",
+    operation_class: "owner_confirmed_governed_action",
+    idempotency_key: "codex_work_bootstrap_owner_binding_001",
+    owner_confirmed: true,
+    confirmation_reference: "Owner confirmed the exact linked child Work",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    configuration_changes: false,
+    bounded_scope: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    provider_execution: false,
+  };
+  const context = signedOwnerContext(
+    automation.json.key,
+    "tenant-codex-work-bootstrap",
+    body,
+    "core_action_evaluator",
+    new Date().toISOString(),
+    "codex",
+  );
+  const allowed = await request("POST", "/v1/action-evaluator", {
+    ...body,
+    owner_context: context,
+  }, automation.json.key);
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.json.authorization.allowed, true);
+  assert.equal(allowed.json.authorization.confirmation_satisfied, true);
+  assert.equal(allowed.json.authorization_receipt.authority, "universal_core");
+
+  const replay = await request("POST", "/v1/action-evaluator", {
+    ...body,
+    owner_context: signedOwnerContext(
+      automation.json.key,
+      "tenant-codex-work-bootstrap",
+      body,
+      "core_action_evaluator",
+      new Date().toISOString(),
+      "codex",
+    ),
+  }, automation.json.key);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.json.idempotent_replay, true);
+  assert.equal(replay.json.authorization_receipt.receipt_digest,
+    allowed.json.authorization_receipt.receipt_digest);
+
+  const substitutedBody = { ...body, target: "work_bootstrap:create:codex:substituted" };
+  const substitution = await request("POST", "/v1/action-evaluator", {
+    ...substitutedBody,
+    owner_context: signedOwnerContext(
+      automation.json.key,
+      "tenant-codex-work-bootstrap",
+      substitutedBody,
+      "core_action_evaluator",
+      new Date().toISOString(),
+      "codex",
+    ),
+  }, automation.json.key);
+  assert.equal(substitution.status, 409);
+  assert.equal(substitution.json.error, "core_action_idempotency_conflict");
+
+  const unrelatedBody = {
+    ...body,
+    action_type: "deployment.execute",
+    target: "deployment:production",
+    idempotency_key: "codex_unrelated_owner_binding_001",
+  };
+  const unrelated = await request("POST", "/v1/action-evaluator", {
+    ...unrelatedBody,
+    owner_context: signedOwnerContext(
+      automation.json.key,
+      "tenant-codex-work-bootstrap",
+      unrelatedBody,
+      "core_action_evaluator",
+      new Date().toISOString(),
+      "codex",
+    ),
+  }, automation.json.key);
+  assert.equal(unrelated.status, 200);
+  assert.equal(unrelated.json.authorization.allowed, false);
+
+  const wrongActorBody = { ...body, idempotency_key: "codex_wrong_actor_binding_001" };
+  const wrongActor = await request("POST", "/v1/action-evaluator", {
+    ...wrongActorBody,
+    owner_context: signedOwnerContext(
+      automation.json.key,
+      "tenant-codex-work-bootstrap",
+      wrongActorBody,
+      "core_action_evaluator",
+    ),
+  }, automation.json.key);
+  assert.equal(wrongActor.status, 200);
+  assert.equal(wrongActor.json.authorization.allowed, false);
+
+  const noOwnerScope = await request("POST", "/v1/keys/generate", {
+    tenant_id: "tenant-codex-work-bootstrap",
+    key_type: "automation",
+    allowed_scopes: ["read:decision", "automation:codex"],
+  });
+  const missingScopeBody = { ...body, idempotency_key: "codex_missing_owner_scope_001" };
+  const missingScope = await request("POST", "/v1/action-evaluator", {
+    ...missingScopeBody,
+    owner_context: signedOwnerContext(
+      noOwnerScope.json.key,
+      "tenant-codex-work-bootstrap",
+      missingScopeBody,
+      "core_action_evaluator",
+      new Date().toISOString(),
+      "codex",
+    ),
+  }, noOwnerScope.json.key);
+  assert.equal(missingScope.status, 200);
+  assert.equal(missingScope.json.authorization.allowed, false);
 }));
 
 test("Core admin bootstrap configuration requires an exact signed owner envelope and emits safe audit fields", async () => fixture(async (request, { storageRoot }) => {

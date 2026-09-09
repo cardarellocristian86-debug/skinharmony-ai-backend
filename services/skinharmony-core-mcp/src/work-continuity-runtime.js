@@ -193,6 +193,10 @@ function uuid(value, name = "id") {
   return id;
 }
 
+function canonicalNativeUuid(value, name = "id") {
+  return uuid(value, name).toLowerCase();
+}
+
 function safeText(value, max = 4_000) {
   return redactMemoryText(String(value || "").replaceAll("\u0000", "")).text.slice(0, max);
 }
@@ -2623,6 +2627,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
+  function nativeWorkContext(identity, input = {}) {
+    const context = workContext(identity, input);
+    return {
+      ...context,
+      workId: canonicalNativeUuid(context.workId, "native_agent_work_id_invalid"),
+    };
+  }
+
   function assignmentCapability(binding) {
     if (assignmentSigningSecret.length < 32) {
       throw new Error("native_agent_assignment_signing_unavailable");
@@ -2647,14 +2659,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
     v2_precommit_revalidation_digest: v2PrecommitRevalidationDigest,
     ...binding
   } = {}) {
+    const canonicalBinding = {
+      ...binding,
+      work_id: canonicalNativeUuid(binding.work_id, "native_agent_work_id_invalid"),
+      plan_id: canonicalNativeUuid(binding.plan_id, "native_agent_plan_id_invalid"),
+    };
     // Keep historical capabilities valid: a pre-v2-task binding was signed
     // without this property and must not be silently reinterpreted.  New
     // bindings include it in the signature and can therefore promote exactly
     // one V2 task through the verifier bridge.
-    if (!v2TaskId) return binding;
+    if (!v2TaskId) return canonicalBinding;
     const bound = {
-      ...binding,
-      v2_task_id: uuid(v2TaskId, "native_agent_v2_task_invalid").toLowerCase(),
+      ...canonicalBinding,
+      v2_task_id: canonicalNativeUuid(v2TaskId, "native_agent_v2_task_invalid"),
     };
     if (v2TaskDigest !== undefined && v2TaskDigest !== null) {
       const normalizedDigest = String(v2TaskDigest).trim().toLowerCase();
@@ -2712,8 +2729,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // the assignment or changes the lease.
   async function admitNativeAgentReport(identity, input) {
     assertNativePayload(input);
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
     const reporterPresence = nativeReporterPresence(identity, agentId);
@@ -2792,7 +2809,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // signed binding on every read through admitNativeAgentReport above.
   async function readNativeAgentAcceptanceContract(identity, input) {
     const admission = await admitNativeAgentReport(identity, input);
-    const context = workContext(identity, input);
+    const context = nativeWorkContext(identity, input);
     await initialize();
     const current = await pool.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.v2_task_digest,
         a.v2_precommit_revalidation_digest,a.v2_precommit_revalidation,
@@ -3832,9 +3849,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHEN 'incident_runbook_quarantined' THEN 'quarantined'
           WHEN 'synthetic_incident_reconciled' THEN 'reconciled'
           ELSE coalesce(e.payload->>'status','candidate')
-        END AS incident_status,
-        (SELECT count(*)::int FROM core_continuity_works gw
-          WHERE gw.tenant_id=w.tenant_id AND gw.project_id=w.project_id) AS gallery_work_count
+        END AS incident_status
       FROM core_continuity_works w
       JOIN core_continuity_intent_anchors i
         ON i.tenant_id=w.tenant_id AND i.work_id=w.work_id
@@ -3875,8 +3890,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         capsule_digest: row.capsule_digest || null,
       }),
       gallery: Object.freeze({
-        state: "available",
-        work_count: Number(row.gallery_work_count || 0),
+        // Only the canonical V2 Gallery can apply operational-state and ACL
+        // visibility. The legacy continuity ledger must never publish its raw
+        // project row count as a Gallery count (for example 86 versus 31).
+        state: "unavailable",
+        work_count: 0,
       }),
       software: Object.freeze({
         state: atlasRevision === null ? "not_indexed" : row.atlas_bootstrap_state === "indexing" ? "indexing" : "available",
@@ -5546,12 +5564,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // dependencies:["build"]}], max_parallel:2, closure_requirements:{tests_required:true},
   // idempotency_key:"native-plan-1"}.
   async function planNativeAgents(identity, input, options = {}) {
-    const context = workContext(identity, input);
+    const context = nativeWorkContext(identity, input);
     const idempotencyKey = safeText(input.idempotency_key, 160).trim();
     if (!idempotencyKey) throw new Error("idempotency_key_required");
     const coordinatorSessionFingerprint = nativeCoordinatorFingerprint(identity);
     const planId = input.plan_id
-      ? uuid(input.plan_id, "plan_id")
+      ? canonicalNativeUuid(input.plan_id, "plan_id")
       : deterministicUuid({
         tenant_id: context.tenantId,
         work_id: context.workId,
@@ -5777,7 +5795,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function readNativeLaunchRequest(identity, input) {
     await initialize();
-    const context = workContext(identity, input);
+    const context = nativeWorkContext(identity, input);
     const result = await pool.query(`SELECT plan_id,plan_digest,status,plan_version,created_at,plan->'launch_request' AS launch_request
       FROM core_continuity_native_plans
       WHERE tenant_id=$1 AND work_id=$2 AND plan ? 'launch_request'
@@ -5805,8 +5823,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // host_type:"codex_native", host_task_id:"/root/build", v2_task_id}.
   async function bindNativeAgent(identity, input) {
     assertNativePayload(input);
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const taskId = identifier(input.task_id, "task_id", 120);
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
@@ -6075,8 +6093,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   // tests:[{name:"npm test",passed:true}], evidence_refs:["commit:..."],live_verified:true}}.
   async function reportNativeAgent(identity, input) {
     assertNativePayload(input);
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
     const reporterPresence = nativeReporterPresence(identity, agentId);
@@ -6477,8 +6495,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function evaluateClosure(identity, input) {
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     return transaction(async (client) => withIdempotency(
       client,
       context,
@@ -6706,8 +6724,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function prepareEffectiveCoreJoinEvaluation(identity, input) {
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const evaluationId = uuid(input.evaluation_id, "evaluation_id");
     return transaction(async (client) => {
       await lockWorkRow(client, context);
@@ -6928,8 +6946,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function resolvePersistedClosureRelease(identity, input) {
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     return transaction(async (client) => {
       await lockWorkRow(client, context);
       const latest = await client.query(`SELECT p.status,j.release_intent,j.release_intent_digest,
@@ -7001,8 +7019,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function bindCoreJoinVerdict(identity, input, options = {}) {
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const evaluationId = uuid(input.evaluation_id, "evaluation_id");
     const releaseIntent = requireObject(options.releaseIntent, "core_release_intent");
     const coreJoinRecord = requireObject(options.coreJoinRecord, "core_join_record");
@@ -7245,8 +7263,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (Object.keys(input || {}).some((field) => !allowedInputFields.has(field))) {
       throw new Error("continuity_finalize_fields_invalid");
     }
-    const context = workContext(identity, input);
-    const planId = uuid(input.plan_id, "plan_id");
+    const context = nativeWorkContext(identity, input);
+    const planId = canonicalNativeUuid(input.plan_id, "plan_id");
     const actionTicketId = identifier(
       input.action_ticket_id,
       "action_ticket_id",

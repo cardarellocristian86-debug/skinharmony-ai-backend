@@ -7938,11 +7938,29 @@ export function createUniversalCoreService(options = {}) {
     registerEntity360Routes({
       app,
       authFor: (access) => {
-        const authenticate = coreAuth(access === "read" ? SCOPES.READ_SNAPSHOT
+        const authenticate = coreAuth(access === "read" || access === "tenant_read"
+          ? SCOPES.READ_SNAPSHOT
           : access === "configure" ? [SCOPES.ENTITY360_CONFIGURE, SCOPES.OWNER_ASSERTION]
             : SCOPES.WRITE_SNAPSHOT);
         return (req, res, next) => authenticate(req, res, (error) => {
           if (error) return next(error);
+          if (access === "tenant_read") {
+            const keyFingerprint = crypto.createHash("sha256")
+              .update(`${req.tenantId}\u0000${String(req.coreKey?.key_id || "")}`)
+              .digest("hex");
+            res.locals.entity360TenantReadIdentity = Object.freeze({
+              tenant_id: req.tenantId,
+              actor_id: `core-tenant-reader:${keyFingerprint}`,
+              actor_role: "universal_core_tenant_reader",
+              authority_scope: Object.freeze([]),
+              provenance: Object.freeze({
+                session_fingerprint: keyFingerprint,
+                actor_provenance: "universal_core_platform_auth",
+                client_type: "core_tenant_status_read",
+              }),
+            });
+            return next();
+          }
           if (access === "configure") {
             // Tenant configuration uses independently authenticated platform
             // authority. It must never inherit authority from a DTT token.
@@ -13578,13 +13596,35 @@ export function createUniversalCoreService(options = {}) {
     // An owner assertion is a connector capability. An automation key may keep
     // its legacy explicit-confirmation path, but it must never become an owner
     // connector merely by being issued the same named scope.
-    const trustedOwnerContext = req.coreKey?.key_type === "connector" &&
-      hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
+    const normalizedActionType = String(req.body?.action_type || "").trim().toLowerCase();
+    const actionIdempotencyKey = String(req.body?.idempotency_key || "").trim();
+    const canonicalWorkBootstrap = normalizedActionType === "work.continuity.v2.create";
+    const signedOwnerContextVerified = hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) &&
+      verifyOwnerContextAssertion(
       req.body?.owner_context,
       readSecret(req),
       req.tenantId,
       ownerRequestBinding("core_action_evaluator", req.body || {}),
     );
+    const trustedOwnerContext = req.coreKey?.key_type === "connector" &&
+      signedOwnerContextVerified;
+    // Codex Good Mode reaches Universal Core through a tenant automation key,
+    // not an OAuth connector key. Permit its exact, signed, request-bound
+    // owner context only for canonical Work bootstrap. This lets a connected
+    // AI materialize the Work the human explicitly approved without turning
+    // an automation key into general owner authority: every other action type
+    // retains the connector-only boundary below.
+    const trustedCodexWorkBootstrapContext = canonicalWorkBootstrap &&
+      req.body?.owner_confirmed === true &&
+      req.coreKey?.key_type === "automation" &&
+      hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX) &&
+      req.body?.owner_context?.access_mode === "god_mode" &&
+      req.body?.owner_context?.role === "owner_root" &&
+      req.body?.owner_context?.delegated_actor === "codex" &&
+      /^osf_[a-f0-9]{64}$/.test(String(req.body?.owner_context?.owner_subject_fingerprint || "")) &&
+      signedOwnerContextVerified;
+    const trustedRequestBoundOwnerContext = trustedOwnerContext ||
+      trustedCodexWorkBootstrapContext;
     const providerSetupLinkAttempt = isProviderSetupLinkBindingAttempt(req.body);
     // Provider setup has a second, deliberately separate assertion scheme.
     // A Core bearer key must never be enough to mint a credential-entry link:
@@ -13615,14 +13655,11 @@ export function createUniversalCoreService(options = {}) {
       "reversible_owner_confirmed_mcp_default_tenant_correction";
     const coreAdminBootstrapAttempt = req.body?.operation_class ===
       "reversible_owner_confirmed_core_admin_bootstrap_configuration";
-    const normalizedActionType = String(req.body?.action_type || "").trim().toLowerCase();
-    const actionIdempotencyKey = String(req.body?.idempotency_key || "").trim();
-    const canonicalWorkBootstrap = normalizedActionType === "work.continuity.v2.create";
     if (canonicalWorkBootstrap && !actionIdempotencyKey) {
       return publicError(res, 422, "core_action_idempotency_key_required");
     }
     let actionIdempotencySession = null;
-    if (actionIdempotencyKey && trustedOwnerContext &&
+    if (actionIdempotencyKey && trustedRequestBoundOwnerContext &&
         req.body?.owner_confirmed === true && !providerSetupLinkAttempt) {
       const ownerContext = req.body?.owner_context || {};
       const ownerSubjectFingerprint = String(ownerContext.owner_subject_fingerprint || "").toLowerCase();
@@ -13664,7 +13701,7 @@ export function createUniversalCoreService(options = {}) {
       }
     }
     let requestBoundOwnerConfirmation = false;
-    if (trustedOwnerContext && req.body?.owner_confirmed === true && !providerSetupLinkAttempt) {
+    if (trustedRequestBoundOwnerContext && req.body?.owner_confirmed === true && !providerSetupLinkAttempt) {
       const ownerAssertion = String(req.body?.owner_context?.assertion || "");
       const approvalHash = `sha256:${crypto.createHash("sha256")
         .update(`core-action-owner-approval-v1\u0000${ownerAssertion}`)
@@ -13750,7 +13787,7 @@ export function createUniversalCoreService(options = {}) {
       // separate bridge secret, bound to this exact Blueprint envelope.
       owner_context_verified: providerSetupLinkAttempt
         ? providerSetupLinkOwnerVerified
-        : trustedOwnerContext,
+        : trustedRequestBoundOwnerContext,
       owner_context_approval_bound: providerSetupLinkApprovalBound,
     };
     const coreAuthorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
@@ -13830,7 +13867,7 @@ export function createUniversalCoreService(options = {}) {
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
-      owner_identity_verified: trustedOwnerContext || providerSetupLinkOwnerVerified,
+      owner_identity_verified: trustedRequestBoundOwnerContext || providerSetupLinkOwnerVerified,
       provider_setup_link_binding_authorized: authorization.allowed === true && providerSetupLinkAttempt,
       ...providerSetupLinkBindingAuditFields(evaluatedActionBody),
       request_bound_owner_confirmation: requestBoundOwnerConfirmation,

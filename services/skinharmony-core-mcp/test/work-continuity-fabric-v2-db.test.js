@@ -10,6 +10,7 @@ import {
 import {
   createWorkContinuityClosureEvaluateHandler,
 } from "../src/work-continuity-closure-handler.js";
+import { createWorkContinuityV2Store } from "../src/work-continuity-v2-store.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   buildHostReleaseManifestV2,
@@ -23,6 +24,146 @@ import {
 function key(...parts) {
   return parts.join("\u0000");
 }
+
+function reconciliationReaderIdentity(subject = "owner-a") {
+  return {
+    tenantId: "tenant-a",
+    subject,
+    tenant_work_acl: {
+      server_derived: true,
+      version: "tenant_work_acl_v1",
+      tenant_id: "tenant-a",
+      user_id: subject,
+      role: "member",
+      team_ids: [],
+      managed_team_ids: [],
+      assigned_work_ids: [],
+      is_tenant_owner: false,
+      is_super_admin: false,
+      expires_at: "2099-01-01T00:00:00.000Z",
+    },
+  };
+}
+
+function reconciliationClaim(overrides = {}) {
+  const row = {
+    claim_id: "11111111-1111-4111-8111-111111111111",
+    work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    gate_projection_digest: "1".repeat(64),
+    continuation_ref: `nyc1_${"a".repeat(32)}`,
+    request_digest: "2".repeat(64),
+    delegation_id: "hnd_reconciliation-reader",
+    action_digest: "3".repeat(64),
+    host_session_fingerprint: "4".repeat(64),
+    idempotency_key: "reconciliation-reader-key",
+    created_at: "2026-09-09T00:00:00.000Z",
+    ...overrides,
+  };
+  row.claim_digest = digest({
+    schema_version: "precommit_ticket_gate_claim_v1",
+    claim_id: row.claim_id,
+    work_id: row.work_id,
+    gate_projection_digest: row.gate_projection_digest,
+    continuation_ref: row.continuation_ref,
+    request_digest: row.request_digest,
+    delegation_id: row.delegation_id,
+    action_digest: row.action_digest,
+    host_session_fingerprint: row.host_session_fingerprint,
+    idempotency_key: row.idempotency_key,
+    replay: false,
+  });
+  return row;
+}
+
+function reconciliationReaderStore(activeRows = [], owner = "owner-a") {
+  const queries = [];
+  const workId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const pool = {
+    async query(sql, parameters = []) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      queries.push({ sql: normalized, parameters });
+      if (normalized.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [] };
+      if (normalized.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
+        return { rows: [{
+          tenant_id: "tenant-a",
+          work_id: workId,
+          owner_user_id: owner,
+          created_by_user_id: owner,
+          visibility_scope: "private",
+          assigned_user_ids: [],
+          supervising_user_ids: [],
+          agent_ids: [],
+        }] };
+      }
+      if (normalized.startsWith("SELECT c.* FROM tenant_work_precommit_ticket_gate_claim c")) {
+        return { rows: activeRows.slice(0, 2) };
+      }
+      throw new Error(`unexpected_query:${normalized}`);
+    },
+  };
+  return { store: createWorkContinuityV2Store({ pool }), queries, workId };
+}
+
+test("server-owned reconciliation reader returns only one integrity-checked active claim", async () => {
+  const claim = reconciliationClaim();
+  const { store, queries, workId } = reconciliationReaderStore([claim]);
+  const result = await store.readActivePrecommitTicketGateClaimForReconciliation(
+    reconciliationReaderIdentity(),
+    { server_owned: true, work_id: workId },
+  );
+  assert.equal(Object.isFrozen(result), true);
+  assert.equal(result.claim_id, claim.claim_id);
+  assert.equal(result.replay, true);
+  assert.equal(result.claim_digest, digest(Object.fromEntries(
+    Object.entries(result).filter(([field]) => field !== "claim_digest"),
+  )));
+  const activeQuery = queries.find(({ sql }) =>
+    sql.startsWith("SELECT c.* FROM tenant_work_precommit_ticket_gate_claim c"));
+  assert.deepEqual(activeQuery.parameters, ["tenant-a", workId]);
+  assert.match(activeQuery.sql, /LIMIT 2$/);
+  assert.match(activeQuery.sql, /f\.claim_id IS NULL AND a\.claim_id IS NULL/);
+});
+
+test("server-owned reconciliation reader distinguishes no claim, ambiguity and corruption", async () => {
+  const workId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const empty = reconciliationReaderStore([]).store;
+  assert.equal(await empty.readActivePrecommitTicketGateClaimForReconciliation(
+    reconciliationReaderIdentity(), { server_owned: true, work_id: workId }), null);
+
+  const ambiguous = reconciliationReaderStore([
+    reconciliationClaim(),
+    reconciliationClaim({ claim_id: "22222222-2222-4222-8222-222222222222" }),
+  ]).store;
+  await assert.rejects(ambiguous.readActivePrecommitTicketGateClaimForReconciliation(
+    reconciliationReaderIdentity(), { server_owned: true, work_id: workId }),
+  /precommit_claim_reconciliation_reader_ambiguous/);
+
+  const corrupt = reconciliationReaderStore([
+    { ...reconciliationClaim(), claim_digest: "f".repeat(64) },
+  ]).store;
+  await assert.rejects(corrupt.readActivePrecommitTicketGateClaimForReconciliation(
+    reconciliationReaderIdentity(), { server_owned: true, work_id: workId }),
+  /precommit_claim_reconciliation_reader_integrity_failed/);
+});
+
+test("server-owned reconciliation reader rejects caller-shaped input and non-admin actors", async () => {
+  const { store, queries, workId } = reconciliationReaderStore([], "owner-a");
+  for (const input of [
+    { work_id: workId },
+    { server_owned: false, work_id: workId },
+    { server_owned: true, work_id: workId, claim_id: "caller-selected" },
+  ]) {
+    await assert.rejects(store.readActivePrecommitTicketGateClaimForReconciliation(
+      reconciliationReaderIdentity(), input),
+    /precommit_claim_reconciliation_reader_server_owned_required/);
+  }
+  await assert.rejects(store.readActivePrecommitTicketGateClaimForReconciliation(
+    reconciliationReaderIdentity("other-user"),
+    { server_owned: true, work_id: workId },
+  ), /work_acl_denied/);
+  assert.equal(queries.some(({ sql }) =>
+    sql.startsWith("SELECT c.* FROM tenant_work_precommit_ticket_gate_claim c")), false);
+});
 
 test("automation phases are digest-separated in the persistent fabric", () => {
   assert.notEqual(digest({ phase: "readiness", commit: "a".repeat(40) }), digest({ phase: "final_acceptance", commit: "a".repeat(40) }));
@@ -2689,7 +2830,9 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   const instant = new Date("2026-07-29T13:00:00.000Z");
   const clock = () => new Date(instant);
   const pool = new ContinuityPool(clock);
-  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "case-stable-native-assignment-secret-20260909",
+  }, { pool, now: clock });
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
@@ -2702,6 +2845,7 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   const work = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
+    plan_id: "ABCDEF12-3456-4ABC-8DEF-ABCDEF123456",
     repository: "owner/repo",
     host_type: "codex_native",
     required_checks: ["core-mcp"],
@@ -2724,6 +2868,7 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   const corePlan = corePlanFor(work, request);
   const planned = await runtime.planNativeAgents(identity, request, { corePlan });
   const replay = await runtime.planNativeAgents(identity, request, { corePlan });
+  assert.equal(planned.plan.plan_id, request.plan_id.toLowerCase());
   assert.equal(replay.plan.plan_id, planned.plan.plan_id);
   assert.equal(replay.idempotent_replay, true);
   assert.equal(planned.receipt.host_type, "codex_native");
@@ -2732,6 +2877,24 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   assert.equal(planned.receipt.host_policy_must_allow, true);
   assert.equal(planned.receipt.provider_execution, false);
   assert.deepEqual(planned.plan.launch_request, request.launch_request);
+  const uppercaseBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id.toUpperCase(),
+    plan_id: request.plan_id,
+    task_id: "build",
+    native_agent_id: "case-stable-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/case-stable-builder",
+  });
+  const lowercaseReplay = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "build",
+    native_agent_id: "case-stable-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/case-stable-builder",
+  });
+  assert.equal(uppercaseBinding.plan_id, planned.plan.plan_id);
+  assert.equal(lowercaseReplay.assignment_capability, uppercaseBinding.assignment_capability);
   const changedRequest = {
     ...request,
     tasks: [

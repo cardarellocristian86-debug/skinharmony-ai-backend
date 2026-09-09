@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 const identifier = { type: "string", minLength: 1, maxLength: 160 };
 const workId = {
   type: "string",
@@ -66,9 +68,11 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
       openWorldHint: false,
       idempotentHint: true,
     },
-    ...(options.ownerConfirmationRequired === true ? {
+    ...(options.ownerConfirmationRequired === true || options.dedicatedCoreGate === true ? {
       _meta: {
-        "skinharmony/ownerConfirmationRequired": true,
+        ...(options.ownerConfirmationRequired === true
+          ? { "skinharmony/ownerConfirmationRequired": true }
+          : {}),
         // Tenant-wide shadow transitions own distinct Universal Core routes;
         // never let the dynamic wrapper replace it with a Work-scoped gate.
         ...(options.dedicatedCoreGate === true
@@ -108,6 +112,19 @@ const definitions = [
       project_work_linkage: projectWorkLinkage,
     }, ["work_id", "entity_type", "identity", "as_of", "expected_revision", "idempotency_key"]),
     false,
+  ],
+  [
+    "entity_360_work_snapshot_bootstrap",
+    "Bootstrap first Entity 360 Work snapshot",
+    "Persist only the first READY snapshot for an already ENFORCED tenant-bound Work through a Universal Core receipt; the result is context and never execution authority.",
+    object({
+      work_id: workId,
+      as_of: dateTime,
+      expected_revision: { type: "integer", minimum: 0, maximum: 0 },
+      idempotency_key: idempotencyKey,
+    }, ["work_id", "as_of", "expected_revision", "idempotency_key"]),
+    false,
+    { dedicatedCoreGate: true },
   ],
   [
     "entity_360_snapshot_latest",
@@ -212,6 +229,7 @@ export const ENTITY_360_TOOLS = Object.freeze(definitions.map((entry) => tool(..
 const paths = Object.freeze({
   entity_360_resolve: "/v1/entity-360/resolve",
   entity_360_snapshot_assemble: "/v1/entity-360/snapshots/assemble",
+  entity_360_work_snapshot_bootstrap: "/v1/entity-360/snapshots/bootstrap",
   entity_360_snapshot_latest: "/v1/entity-360/snapshots/latest",
   entity_360_snapshot_read: "/v1/entity-360/snapshots/read",
   entity_360_snapshot_verify: "/v1/entity-360/snapshots/verify",
@@ -234,6 +252,85 @@ function withoutCallerTenant(args) {
   delete body.tenant_scope;
   delete body.tenantScope;
   return body;
+}
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort()
+    .filter((key) => value[key] !== undefined)
+    .map((key) => [key, stable(value[key])]));
+}
+
+function entity360Digest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+const BOOTSTRAP_GATE_KEYS = Object.freeze([
+  "action", "authority", "authorized", "context_only", "enforcement_authority_digest",
+  "entity_id", "execution_authorized", "gate_digest", "host_policy_override",
+  "idempotency_digest", "policy_digest", "production_decision_changed",
+  "provider_execution", "request_digest", "route", "schema_version", "snapshot_digest",
+  "snapshot_version", "tenant_feature_revision", "tenant_id", "work_id",
+]);
+
+function validateBootstrapGate(value, identityContext, args, tenantId, workId) {
+  const result = value?.result;
+  const gate = result?.dedicated_core_gate;
+  const snapshot = result?.snapshot;
+  if (!result || !gate || !snapshot) throw new Error("entity360_bootstrap_readback_invalid");
+  const gateKeys = Object.keys(gate).sort();
+  const { gate_digest: gateDigest, ...gateUnsigned } = gate;
+  const canonicalAsOf = new Date(args.as_of).toISOString();
+  const canonicalIdempotencyKey = String(args.idempotency_key || "").trim();
+  const assemblyInput = {
+    work_id: workId,
+    entity_type: "work",
+    identity: { work_id: workId },
+    as_of: canonicalAsOf,
+    expected_revision: 0,
+    idempotency_key: canonicalIdempotencyKey,
+  };
+  const requestDigest = entity360Digest({
+    schema_version: "entity_360_snapshot_assemble_request_v1",
+    tenant_id: tenantId,
+    actor_id: identityContext.agentPresence?.agent_id,
+    input: assemblyInput,
+  });
+  const snapshotWorkBindings = [snapshot.project_work_linkage?.work_id,
+    snapshot.project_work_linkage?.legacy_work_id]
+    .filter(Boolean).map((candidate) => String(candidate).trim().toLowerCase());
+  if (value.ok !== true || gateKeys.length !== BOOTSTRAP_GATE_KEYS.length
+    || gateKeys.some((key, index) => key !== BOOTSTRAP_GATE_KEYS[index])
+    || gate.schema_version !== "entity_360_snapshot_bootstrap_gate_v1"
+    || gate.authorized !== true || gate.authority !== "universal_core"
+    || gate.route !== "entity_360_work_snapshot_bootstrap"
+    || gate.action !== "entity360.snapshot.persist" || gate.tenant_id !== tenantId
+    || gate.work_id !== workId || gate.entity_id !== snapshot.entity_id
+    || gate.snapshot_version !== 1 || gate.snapshot_digest !== snapshot.deterministic_immutable_digest
+    || gate.policy_digest !== snapshot.policy_digest
+    || gate.request_digest !== requestDigest
+    || gate.idempotency_digest !== entity360Digest({ idempotency_key: canonicalIdempotencyKey })
+    || !/^[a-f0-9]{64}$/u.test(String(gate.policy_digest || ""))
+    || !/^[a-f0-9]{64}$/u.test(String(gate.enforcement_authority_digest || ""))
+    || !Number.isSafeInteger(gate.tenant_feature_revision) || gate.tenant_feature_revision < 1
+    || gate.context_only !== true || gate.execution_authorized !== false
+    || gate.provider_execution !== false || gate.host_policy_override !== false
+    || gate.production_decision_changed !== false
+    || !/^[a-f0-9]{64}$/u.test(String(gateDigest || ""))
+    || entity360Digest(gateUnsigned) !== gateDigest
+    || result.feature_flag?.mode !== "ENFORCED" || result.feature_flag?.enabled !== true
+    || Number(result.feature_flag?.revision) !== gate.tenant_feature_revision
+    || result.enforcement_mode !== true || result.shadow_mode !== false
+    || result.execution_authorized !== false || result.production_decision_changed !== false
+    || snapshot.tenant_scope !== tenantId || snapshot.entity_type !== "work"
+    || !snapshotWorkBindings.includes(workId)
+    || snapshot.snapshot_version !== 1
+    || snapshot.previous_snapshot_digest !== null || snapshot.context_status !== "READY"
+    || snapshot.execution_authorized !== false || snapshot.production_decision_mutation !== false) {
+    throw new Error("entity360_bootstrap_readback_invalid");
+  }
+  return { result, gate };
 }
 
 function transportWorkId(args) {
@@ -417,14 +514,25 @@ export function createEntity360Handlers({
         agent_presence: identityContext.agentPresence,
       });
       if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
-      const value = assertContextOnlyResponse(await coreRequest(paths[capabilityId], args,
+      const value = await coreRequest(paths[capabilityId], args,
         identityContext, {
         method: "POST",
         body: withoutCallerTenant(args),
         additionalHeaders: { "x-sh-dtt-agent-context": agentContext },
-      }));
+      });
+      if (capabilityId === "entity_360_work_snapshot_bootstrap") {
+        const { result, gate } = validateBootstrapGate(
+          value, identityContext, args, tenantId, boundWorkId,
+        );
+        const { dedicated_core_gate: _gate, ...contextOnlyResult } = result;
+        assertContextOnlyResponse(contextOnlyResult);
+        const adapted = adaptEntity360NyraContext(
+          "entity_360_snapshot_assemble", contextOnlyResult, tenantId, boundWorkId,
+        );
+        return textResult({ ok: true, result: adapted, dedicated_core_gate: gate });
+      }
       return textResult(adaptEntity360NyraContext(
-        capabilityId, value, tenantId, boundWorkId,
+        capabilityId, assertContextOnlyResponse(value), tenantId, boundWorkId,
       ));
     },
   ]));

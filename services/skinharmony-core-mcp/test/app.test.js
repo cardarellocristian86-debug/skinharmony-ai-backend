@@ -938,6 +938,28 @@ test("verified finalization refreshes its bounded logical lease before entering 
   assert.ok(finalizer > acl);
 });
 
+test("persisted precommit reconciliation separates public and nested Core idempotency", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const continuationStart = serverSource.indexOf("createNyraGovernedContinueHandler({");
+  const reconciliationStart = serverSource.indexOf(
+    "authorizePersistedPrecommitReconciliation:", continuationStart,
+  );
+  const reconciliationEnd = serverSource.indexOf(
+    "reconcilePersistedPrecommit:", reconciliationStart,
+  );
+  const reconciliation = serverSource.slice(reconciliationStart, reconciliationEnd);
+
+  assert.ok(reconciliationStart >= 0);
+  assert.ok(reconciliationEnd > reconciliationStart);
+  assert.match(reconciliation, /const coreIdempotencyKey = `precommit_reconcile_core_/);
+  assert.match(reconciliation, /\.update\(`\$\{request\.idempotency_key\}:\$\{requestDigest\}`\)/);
+  assert.match(reconciliation, /requireBoundedTenantCoordination\([\s\S]*coreIdempotencyKey/);
+  assert.doesNotMatch(
+    reconciliation.slice(reconciliation.indexOf("return requireBoundedTenantCoordination")),
+    /request\.idempotency_key/,
+  );
+});
+
 test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
@@ -2719,6 +2741,37 @@ test("handler-forged auth and policy failures never emit reconnect metadata", as
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  }
+});
+
+test("bearer owner upgrade returns a reconnect challenge without OAuth error details", async () => {
+  const ownerUpgrade = Object.assign(new Error("owner_confirmation_required"), {
+    oauthOwnerUpgradeRequired: true,
+  });
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+    throw ownerUpgrade;
+  }]));
+  const app = createApp(config, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 445, method: "tools/call",
+        params: { name: "core_health", arguments: {} },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.result.isError, true);
+    assert.match(
+      body.result._meta["mcp/www_authenticate"][0],
+      /Owner authentication is required/,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

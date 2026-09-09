@@ -116,6 +116,65 @@ test("Universal Core exposes Entity 360 SHADOW health without making it a produc
   }
 });
 
+test("tenant Entity360 status uses Core tenant auth without a DTT Work context", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-tenant-status-"));
+  const tenantId = "tenant-status-a";
+  const reader = createKeyStore(storageRoot).createKey({
+    tenant_id: tenantId, key_type: "connector", allowed_scopes: ["read:snapshot"],
+  });
+  const calls = [];
+  const entity360Runtime = {
+    async initialize() {},
+    async health() { return { ok: true, ready: true, state: "ready", mode: "ENFORCE" }; },
+    async invoke(capability, identity, input) {
+      calls.push({ capability, identity, input });
+      return { schema_version: "entity_360_tenant_status_v1", mode: "OFF", enabled: false,
+        execution_authorized: false };
+    },
+  };
+  const { app } = createUniversalCoreService({ storageRoot, entity360Mode: "ENFORCE",
+    entity360Runtime });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await waitForEntity360(base);
+    const unauthenticated = await fetch(`${base}/v1/entity-360/tenant-status`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(calls.length, 0);
+    const response = await fetch(`${base}/v1/entity-360/tenant-status`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${reader.key}`, "content-type": "application/json" },
+      body: "{}",
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(body.result, { schema_version: "entity_360_tenant_status_v1",
+      mode: "OFF", enabled: false, execution_authorized: false });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].capability, "entity_360_tenant_status_read");
+    assert.equal(calls[0].identity.tenant_id, tenantId);
+    assert.equal(calls[0].identity.work_id, undefined);
+    assert.equal(calls[0].identity.authority_scope.length, 0);
+    assert.deepEqual(calls[0].input, {});
+
+    const rejected = await fetch(`${base}/v1/entity-360/tenant-status`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${reader.key}`, "content-type": "application/json" },
+      body: JSON.stringify({ work_id: "caller-controlled" }),
+    });
+    const rejectedBody = await rejected.json();
+    assert.equal(rejected.status, 422);
+    assert.equal(rejectedBody.error.code, "entity360_tenant_status_input_invalid");
+    assert.equal(calls.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("Universal Core makes Entity360 v2 and its Semantic resolver a fail-closed readiness gate", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-app-v2-"));
   let runtimeHealthy = true;

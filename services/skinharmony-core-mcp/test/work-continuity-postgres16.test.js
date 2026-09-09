@@ -1909,6 +1909,132 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       required: true,
     }), /tenant_work_task_release_frozen/);
 
+    // A historical release join must not deadlock a later, server-owned
+    // ticket-acquisition cycle. The trigger permits only the exact frozen
+    // planned -> verified transition after its immutable claim fulfillment;
+    // the unrelated mutation above remains denied.
+    const laterGateClient = await pool.connect();
+    try {
+      await laterGateClient.query("BEGIN");
+      const scopedTask = (await laterGateClient.query(`SELECT task_id,title,weight,required,revision
+        FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+        tenantId, firstWork.work_id, unrelatedTaskId,
+      ])).rows[0];
+      const scopedBinding = buildNativeV2TaskBinding({
+        tenant_id: tenantId,
+        work_id: firstWork.work_id,
+        task_id: scopedTask.task_id,
+        title: scopedTask.title,
+        weight: Number(scopedTask.weight),
+        required: scopedTask.required,
+      });
+      const laterScopeDigest = digest({
+        schema_version: "native_v2_precommit_scope_v1",
+        tasks: [{ ...scopedBinding, revision: Number(scopedTask.revision) }],
+      });
+      const priorGate = (await laterGateClient.query(`SELECT * FROM (
+          SELECT 1 AS gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
+            workspace_digest,reconciliation_digest
+          FROM tenant_work_precommit_ticket_gate WHERE tenant_id=$1 AND work_id=$2
+          UNION ALL
+          SELECT gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
+            workspace_digest,reconciliation_digest
+          FROM tenant_work_precommit_ticket_gate_supersession
+          WHERE tenant_id=$1 AND work_id=$2
+        ) gates ORDER BY gate_version DESC LIMIT 1`, [tenantId, firstWork.work_id])).rows[0];
+      const laterGateVersion = Number(priorGate.gate_version) + 1;
+      const laterReconciliationDigest = digest({ tenantId, runId, kind: "later-reconciliation" });
+      await laterGateClient.query(`INSERT INTO tenant_work_precommit_ticket_gate_supersession
+        (tenant_id,work_id,gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
+         workspace_digest,supersession_digest,reconciliation_digest,v2_scope_snapshot_digest,
+         v2_scope_tasks,supersedes_reconciliation_digest,gate_source,action_kind,gate_kind,
+         created_by_user_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,
+          'native_closure_evaluation','git.commit','ticket_acquisition',$14)`, [
+        tenantId, firstWork.work_id, laterGateVersion, persistedGate.task_id,
+        priorGate.plan_id, priorGate.evaluation_id, priorGate.evaluation_digest,
+        priorGate.workspace_digest, digest({ tenantId, runId, kind: "later-supersession" }),
+        laterReconciliationDigest, laterScopeDigest,
+        JSON.stringify([{ ...scopedBinding, revision: Number(scopedTask.revision) }]),
+        priorGate.reconciliation_digest, bridgeOwner.subject,
+      ]);
+
+      const insertClaimChain = async ({ suffix, includeScope = true, matchingTicket = true }) => {
+        const claimId = crypto.randomUUID();
+        const gateDigest = digest({ tenantId, runId, kind: `later-ticket-gate-${suffix}` });
+        const claimDigest = digest({ tenantId, runId, kind: `later-ticket-claim-${suffix}` });
+        const ticketId = `hnt_${digest({ tenantId, runId, kind: `later-ticket-${suffix}` }).slice(0, 32)}`;
+        await laterGateClient.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim
+          (tenant_id,work_id,gate_projection_digest,claim_id,continuation_ref,request_digest,
+           delegation_id,action_digest,host_session_fingerprint,idempotency_key,claim_digest,
+           state,ticket_id,claimed_by_user_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'CLAIMED',NULL,$12)`, [
+          tenantId, firstWork.work_id, gateDigest, claimId,
+          `nyc_${runId}_${suffix}`, digest({ tenantId, runId, kind: `later-request-${suffix}` }),
+          `hnd_${runId}_${suffix}`, digest({ kind: "git.commit", runId, suffix }), "e".repeat(64),
+          `later-ticket-${runId}-${suffix}`, claimDigest, bridgeOwner.subject,
+        ]);
+        if (includeScope) {
+          await laterGateClient.query(`INSERT INTO tenant_work_precommit_scope_freeze
+            (tenant_id,work_id,gate_projection_digest,claim_id,task_id,revision,
+             v2_task_digest,scope_snapshot_digest)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [
+            tenantId, firstWork.work_id, gateDigest, claimId, scopedTask.task_id,
+            scopedTask.revision, scopedBinding.v2_task_digest, laterScopeDigest,
+          ]);
+        }
+        await laterGateClient.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim_fulfillment
+          (tenant_id,work_id,gate_projection_digest,claim_id,claim_digest,ticket_id)
+          VALUES ($1,$2,$3,$4,$5,$6)`, [
+          tenantId, firstWork.work_id, gateDigest, claimId, claimDigest,
+          matchingTicket ? ticketId : `${ticketId}_claim`,
+        ]);
+        await laterGateClient.query(`INSERT INTO tenant_work_precommit_ticket_fulfillment_supersession
+          (tenant_id,work_id,gate_version,task_id,ticket_id,ticket_digest,
+           gate_projection_digest,fulfillment_digest)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [
+          tenantId, firstWork.work_id, laterGateVersion, persistedGate.task_id, ticketId,
+          digest({ tenantId, runId, kind: `later-ticket-readback-${suffix}` }), gateDigest,
+          digest({ tenantId, runId, kind: `later-fulfillment-${suffix}` }),
+        ]);
+      };
+
+      await laterGateClient.query("SAVEPOINT missing_scope");
+      await insertClaimChain({ suffix: "missing-scope", includeScope: false });
+      await assert.rejects(laterGateClient.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+        tenantId, firstWork.work_id, persistedGate.task_id,
+      ]), /tenant_work_task_release_frozen/);
+      await laterGateClient.query("ROLLBACK TO SAVEPOINT missing_scope");
+
+      await laterGateClient.query("SAVEPOINT ticket_mismatch");
+      await insertClaimChain({ suffix: "ticket-mismatch", matchingTicket: false });
+      await assert.rejects(laterGateClient.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
+        tenantId, firstWork.work_id, persistedGate.task_id,
+      ]), /tenant_work_task_release_frozen/);
+      await laterGateClient.query("ROLLBACK TO SAVEPOINT ticket_mismatch");
+
+      await insertClaimChain({ suffix: "valid" });
+      const completedLaterGate = await laterGateClient.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND status='planned'
+          AND acceptance_verified=false RETURNING status,acceptance_verified,revision`, [
+        tenantId, firstWork.work_id, persistedGate.task_id,
+      ]);
+      assert.deepEqual(completedLaterGate.rows[0], {
+        status: "completed", acceptance_verified: true, revision: "2",
+      });
+      await laterGateClient.query("COMMIT");
+    } catch (error) {
+      await laterGateClient.query("ROLLBACK");
+      throw error;
+    } finally {
+      laterGateClient.release();
+    }
+
     const events = await pool.query(`SELECT sequence_number,event_hash,previous_event_hash,event_type
       FROM core_continuity_events
       WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number`, [tenantId, firstWork.work_id]);

@@ -25,12 +25,101 @@ function harness({ resolveAgentContext, invoke } = {}) {
 
 test("routes expose only the bounded Entity 360 surface", () => {
   const { routes, auth, registered } = harness();
-  assert.equal(routes.length, 10);
+  assert.equal(routes.length, 12);
   assert.deepEqual(registered.routes, ENTITY_360_ROUTES.map(([method, path, capability, access]) => ({
     method: method.toUpperCase(), path, capability, access,
   })));
-  assert.deepEqual([...new Set(auth)].sort(), ["configure", "read", "write"]);
+  assert.deepEqual([...new Set(auth)].sort(), ["configure", "read", "tenant_read", "write"]);
   assert.equal(routes.some((route) => /execute|authorize|merge|deploy|publish/u.test(route.path)), false);
+});
+
+test("tenant status is authenticated tenant-scoped, DTT-free, closed-input and redacted", async () => {
+  let dttResolutionCalls = 0;
+  const calls = [];
+  const result = { schema_version: "entity_360_tenant_status_v1", mode: "ENFORCED",
+    enabled: true, execution_authorized: false };
+  const { routes } = harness({
+    resolveAgentContext: async () => { dttResolutionCalls += 1; throw new Error("must_not_use_dtt"); },
+    invoke: async (capability, identity, input) => {
+      calls.push({ capability, identity, input });
+      return result;
+    },
+  });
+  const handler = routes.find((route) => route.path === "/v1/entity-360/tenant-status")
+    .handlers.at(-1);
+  const response = responseHarness();
+  response.locals = { entity360TenantReadIdentity: {
+    tenant_id: "tenant-a", actor_id: "core-tenant-reader:fingerprint",
+    actor_role: "universal_core_tenant_reader", authority_scope: [],
+    provenance: { session_fingerprint: "fingerprint",
+      actor_provenance: "universal_core_platform_auth", client_type: "core_tenant_status_read" },
+  } };
+  await handler({ tenantId: "tenant-a", headers: {}, body: {} }, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.body, { ok: true, result });
+  assert.equal(dttResolutionCalls, 0);
+  assert.equal(calls[0].capability, "entity_360_tenant_status_read");
+  assert.equal(calls[0].identity.tenant_id, "tenant-a");
+  assert.deepEqual(calls[0].input, {});
+
+  const rejected = responseHarness();
+  rejected.locals = response.locals;
+  await handler({ tenantId: "tenant-a", headers: {}, body: { tenant_id: "tenant-a" } }, rejected);
+  assert.equal(rejected.statusCode, 422);
+  assert.equal(rejected.body.error.code, "entity360_tenant_status_input_invalid");
+  assert.equal(calls.length, 1);
+});
+
+test("tenant status fails closed if runtime readback contains internal feature metadata", async () => {
+  const { routes } = harness({ invoke: async () => ({
+    schema_version: "entity_360_tenant_status_v1", mode: "SHADOW", enabled: true,
+    execution_authorized: false, revision: 7,
+  }) });
+  const handler = routes.find((route) => route.path === "/v1/entity-360/tenant-status")
+    .handlers.at(-1);
+  const response = responseHarness();
+  response.locals = { entity360TenantReadIdentity: {
+    tenant_id: "tenant-a", actor_id: "core-tenant-reader:fingerprint",
+    actor_role: "universal_core_tenant_reader", authority_scope: [],
+    provenance: { session_fingerprint: "fingerprint",
+      actor_provenance: "universal_core_platform_auth", client_type: "core_tenant_status_read" },
+  } };
+  await handler({ tenantId: "tenant-a", body: {} }, response);
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.error.code, "entity360_tenant_status_readback_invalid");
+});
+
+test("first Work snapshot bootstrap remains a DTT-bound write route", async () => {
+  const workId = "91e82640-9edc-5424-a3e8-eb7853b0d8dd";
+  const calls = [];
+  const gate = { schema_version: "entity_360_snapshot_bootstrap_gate_v1",
+    authorized: true, authority: "universal_core",
+    route: "entity_360_work_snapshot_bootstrap", tenant_id: "tenant-a",
+    work_id: workId, context_only: true, execution_authorized: false,
+    provider_execution: false, host_policy_override: false };
+  const { routes } = harness({
+    resolveAgentContext: async () => ({ tenant_id: "tenant-a", work_id: workId,
+      agent_id: "agent-a", session_fingerprint: "session-a",
+      actor_provenance: "verified", client_type: "codex" }),
+    invoke: async (capability, identity, input) => {
+      calls.push({ capability, identity, input });
+      return { snapshot: { snapshot_version: 1 }, dedicated_core_gate: gate,
+        execution_authorized: false };
+    },
+  });
+  const handler = routes.find((route) =>
+    route.path === "/v1/entity-360/snapshots/bootstrap").handlers.at(-1);
+  const response = responseHarness();
+  await handler({ tenantId: "tenant-a", headers: { "x-sh-dtt-agent-context": "signed-dtt" },
+    body: { work_id: workId, as_of: "2026-08-25T10:00:00.000Z",
+      expected_revision: 0, idempotency_key: "bootstrap-a",
+      tenant_id: "forged", execution_authorized: true } }, response);
+  assert.equal(response.statusCode, 201);
+  assert.equal(calls[0].capability, "entity_360_work_snapshot_bootstrap");
+  assert.equal(calls[0].identity.work_id, workId);
+  assert.equal(Object.hasOwn(calls[0].input, "tenant_id"), false);
+  assert.equal(Object.hasOwn(calls[0].input, "execution_authorized"), false);
+  assert.deepEqual(response.body.result.dedicated_core_gate, gate);
 });
 
 test("feature configuration uses only the independently authenticated Core operator", async () => {

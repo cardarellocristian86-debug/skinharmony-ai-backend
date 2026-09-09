@@ -9,6 +9,11 @@ const ACTION_TICKET_ID = /^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/;
 const ACTION_TICKET_SIGNATURE = /^hnt_[a-f0-9]{64}$/;
 const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
 const WORK_BOOTSTRAP_STATE = "WORK_BOOTSTRAP_READY";
+const PRECOMMIT_DATABASE_ERRORS = new Set([
+  "tenant_work_task_release_frozen",
+  "tenant_work_task_precommit_scope_frozen",
+  "tenant_work_task_identity_immutable",
+]);
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_COMMIT: new Set(["git.commit"]),
   GIT_PUSH: new Set(["git.push.branch", "git.push.protected"]),
@@ -33,6 +38,18 @@ function fail(code, status = 422) {
   error.code = code;
   error.status = status;
   throw error;
+}
+
+function precommitReconciliationErrorCode(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  // PostgreSQL uses the generic P0001 SQLSTATE for RAISE EXCEPTION. Retain
+  // only the explicit trigger codes owned by this runtime so recovery remains
+  // diagnosable without persisting arbitrary database details.
+  if (code === "P0001" && PRECOMMIT_DATABASE_ERRORS.has(message)) return message;
+  return /^[a-zA-Z0-9_-]{3,160}$/.test(code)
+    ? code
+    : "precommit_claim_operation_failed";
 }
 
 function unavailable(reason) {
@@ -466,6 +483,7 @@ export function createNyraGovernedContinueHandler({
   releaseOrReconcilePrecommitTicketGateClaim = null,
   abandonInactivePrecommitTicketGateClaim = null,
   readPrecommitTicketGateClaimRecovery = null,
+  readActivePrecommitTicketGateClaimForReconciliation = null,
   coordinatePullRequest = null, ensureFinalizeWorkBinding = null,
   previewNativePlanMerge = null,
   authorizeNativePlanStatusAlignment = null, alignNativePlanStatus = null,
@@ -581,15 +599,54 @@ export function createNyraGovernedContinueHandler({
       if (typeof authorizePersistedPrecommitReconciliation !== "function") {
         fail("nyra_continue_precommit_reconciliation_core_gate_unavailable", 503);
       }
-      await ensureFinalizeWorkBinding({
-        work_id: String(args.work_id).toLowerCase(),
-      }, identity);
+      const workId = String(args.work_id).toLowerCase();
+      let bindingBlockedByClaim = false;
+      try {
+        await ensureFinalizeWorkBinding({
+          work_id: workId,
+        }, identity);
+      } catch (error) {
+        // This recovery operation exists specifically to inspect and reconcile
+        // the persisted claim that can prevent a new logical read lease.  Only
+        // that exact circular dependency may proceed to the independently
+        // authorized Core gate and tenant/ACL-scoped store reconciliation.
+        // Every other binding failure remains fail-closed.
+        if (error?.message !== "native_agent_precommit_claim_active") throw error;
+        bindingBlockedByClaim = true;
+      }
       await authorizePersistedPrecommitReconciliation({
-        work_id: String(args.work_id).toLowerCase(),
+        work_id: workId,
         idempotency_key: String(args.idempotency_key).trim(),
       }, identity);
+      if (bindingBlockedByClaim) {
+        if (typeof readActivePrecommitTicketGateClaimForReconciliation !== "function" ||
+            typeof abandonInactivePrecommitTicketGateClaim !== "function") {
+          fail("nyra_continue_precommit_claim_recovery_unavailable", 503);
+        }
+        const gateClaim = await readActivePrecommitTicketGateClaimForReconciliation({
+          server_owned: true,
+          work_id: workId,
+        }, identity);
+        if (gateClaim) {
+          const abandonment = await abandonInactivePrecommitTicketGateClaim({
+            work_id: workId,
+            gate_claim: gateClaim,
+          }, identity);
+          if (!abandonment) {
+            return persistedPrecommitReconciliationResult({
+              work_id: workId,
+              outcome: "BLOCKED",
+              reason_codes: ["precommit_claim_delegation_active"],
+            });
+          }
+        }
+        // Prove that the circular claim was actually removed before reporting
+        // a reconciled gate. This retains the normal ACL and logical-session
+        // binding as the final authority boundary.
+        await ensureFinalizeWorkBinding({ work_id: workId }, identity);
+      }
       const result = await reconcilePersistedPrecommit({
-        work_id: String(args.work_id).toLowerCase(),
+        work_id: workId,
         idempotency_key: String(args.idempotency_key).trim(),
       }, identity);
       return persistedPrecommitReconciliationResult(result);
@@ -990,9 +1047,7 @@ export function createNyraGovernedContinueHandler({
                 idempotency_key: nativeClaim.idempotency_key,
                 stage: issuedTicketId ? "ticket_locator_received" : "before_ticket_locator",
                 ticket_id: issuedTicketId || null,
-                error_code: /^[a-zA-Z0-9_-]{3,160}$/.test(String(error?.code || ""))
-                  ? String(error.code)
-                  : "precommit_claim_operation_failed",
+                error_code: precommitReconciliationErrorCode(error),
               }, identity);
             } catch {
               fail("nyra_continue_precommit_claim_recovery_failed", 503);
