@@ -760,7 +760,9 @@ function requireTenantWorkIdentity(identity) {
   requireTenantWorkCapability(identity, "read");
 }
 
-async function requireOwnerGovernance(identity, actionType, target, idempotencyKey) {
+async function requireOwnerGovernance(identity, actionType, target, idempotencyKey, {
+  internalOwnerAssertionScope = null,
+} = {}) {
   const decision = await govern({
     action_label: `Govern ${actionType}`,
     action_type: actionType,
@@ -776,6 +778,9 @@ async function requireOwnerGovernance(identity, actionType, target, idempotencyK
     target_authority_verified: true,
     actor_authorized_for_target: true,
     ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    ...(internalOwnerAssertionScope ? {
+      internal_owner_assertion_scope: internalOwnerAssertionScope,
+    } : {}),
   }, identity);
   if (decision.allowed !== true) {
     const error = new Error("core_owner_authorization_required");
@@ -2746,6 +2751,7 @@ const baseHandlers = {
         "work.continuity.checkpoint",
         args.work_id,
         args.idempotency_key,
+        { internalOwnerAssertionScope: "verified_work_finalize" },
       );
       const aclIdentity = withTenantWorkAcl(identity);
       const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });
