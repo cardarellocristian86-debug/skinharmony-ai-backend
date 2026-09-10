@@ -2449,6 +2449,66 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
   assert.equal("internal_owner_assertion_scope" in calls[0], false);
 });
 
+test("write guard accepts OAuth owner elevation only for server-scoped verified finalization", async () => {
+  const calls = [];
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      return new Response(JSON.stringify({
+        authorization: {
+          allowed: body.owner_confirmed === true,
+          state: body.owner_confirmed === true ? "authorized_after_confirmation" : "confirmation_required",
+          mediation: body.owner_confirmed === true ? "confirmed" : "required",
+          confirmation_required: true,
+          confirmation_satisfied: body.owner_confirmed === true,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|bound-tenant-owner",
+    role: "tenant_owner",
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "finalize exact verified Work",
+  };
+  const action = {
+    action_label: "Finalize verified Work",
+    action_type: "work.continuity.checkpoint",
+    target: "11111111-1111-4111-8111-111111111111",
+    idempotency_key: "verified-finalize-core-001",
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    destructive: false,
+    bounded_scope: true,
+    low_impact: false,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  };
+  const scoped = await guard({
+    ...action,
+    internal_owner_assertion_scope: "verified_work_finalize",
+  }, identity);
+  const unscoped = await guard({ ...action, idempotency_key: "generic-checkpoint-001" }, identity);
+  assert.equal(scoped.allowed, true);
+  assert.equal(unscoped.allowed, false);
+  assert.equal(calls[0].owner_confirmed, true);
+  assert.equal(calls[0].confirmation_reference, identity.confirmationReference);
+  assert.equal(calls[1].owner_confirmed, false);
+  assert.equal(calls.every((body) => !("internal_owner_assertion_scope" in body)), true);
+});
+
 test("forwards the server-issued preflight for Core branch analysis without leaking the tenant credential", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

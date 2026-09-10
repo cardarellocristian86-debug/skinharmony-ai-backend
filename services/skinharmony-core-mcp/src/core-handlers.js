@@ -4712,7 +4712,12 @@ export function createCoreHandlers(config, options = {}) {
         ].includes(
           String(args.action_type || ""),
         );
-      const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap };
+      const verifiedWorkFinalize =
+        args.internal_owner_assertion_scope === "verified_work_finalize" &&
+        String(args.action_type || "") === "work.continuity.checkpoint";
+      const confirmationOptions = {
+        allowOAuthTenantOwner: tenantWorkBootstrap || verifiedWorkFinalize,
+      };
       const confirmed = hasExplicitVerifiedOwnerConfirmation(identity, confirmationOptions);
       const ownerMode = confirmed && isCodexGoodModeDelegation(identity, config)
         ? "codex_good_mode"
@@ -5325,6 +5330,9 @@ export function createCoreWriteGuard(config, options = {}) {
       actionType === "work.continuity.create" ||
       actionType === "work.continuity.start_or_resume" ||
       actionType === "work.continuity.v2.create";
+    const verifiedWorkFinalize =
+      action.internal_owner_assertion_scope === "verified_work_finalize" &&
+      actionType === "work.continuity.checkpoint";
     const operationClass = action.operation_class ||
       (autonomousInternalActionTypes.has(actionType)
         ? "bounded_internal_coordination_write"
@@ -5372,6 +5380,7 @@ export function createCoreWriteGuard(config, options = {}) {
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
       ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),
+      ...(verifiedWorkFinalize ? { internal_owner_assertion_scope: "verified_work_finalize" } : {}),
     }, identity);
     const payload = result.structuredContent || {};
     const authorization = payload.authorization || {};
