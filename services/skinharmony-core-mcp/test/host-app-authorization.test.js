@@ -442,6 +442,18 @@ test("governed continuation intersects wrapper, operation and supported-host cap
   }));
 });
 
+test("Core typed entry is visible through governed_continue and reauthorizes each operation", () => {
+  const workCreator = identity(["governed_continue", "work.create"], "chatgpt_native");
+  assert.doesNotThrow(() => requireHostAppToolCapability({ identity: workCreator,
+    toolName: "core_typed_request", args: { operation: "WORK_CREATE_OR_RECONCILE" }, tools: TOOLS }));
+  assert.throws(() => requireHostAppToolCapability({ identity: workCreator,
+    toolName: "core_typed_request", args: { operation: "ACTION_TICKET_REQUEST" }, tools: TOOLS }),
+  /host_app_capability_required:host_native\.authorize/);
+  const authorizer = identity(["governed_continue", "host_native.authorize"], "codex_native");
+  assert.doesNotThrow(() => requireHostAppToolCapability({ identity: authorizer,
+    toolName: "core_typed_request", args: { operation: "ACTION_TICKET_REQUEST" }, tools: TOOLS }));
+});
+
 test("keeps the conversational dynamic catalog truthful while preserving child-only report discovery", () => {
   const read = { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } };
   const plan = { name: "work_continuity_native_plan", annotations: { readOnlyHint: false } };

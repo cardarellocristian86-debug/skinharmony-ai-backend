@@ -929,6 +929,11 @@ class AtomicWorkPool {
       const rows = [...this.works.values()].filter((work) => work.tenant_id === parameters[0] && parameters[1].includes(work.status));
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
+    if (q.startsWith("SELECT causal_lineage_state FROM tenant_work")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ causal_lineage_state: row.causal_lineage_state || "READY" }] : [],
+        rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 ORDER BY") ||
         q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND project_id=")) {
       const rows = [...this.works.values()].filter((work) => work.tenant_id === parameters[0] &&
@@ -1311,7 +1316,9 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
   assert.equal(pool.legacy.size, 1);
   assert.equal(pool.works.size, 1);
   assert.equal(pool.tasks.size, 1);
-  assert.equal(pool.events.size, 2);
+  assert.equal(pool.events.size, 3);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "canonical_causal_lineage_state").length, 1);
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_work_id, first.work.work_id);
   assert.equal(pool.bootstrapRequests.get(key("tenant-a", "owner", input.request_id)).consumed_work_id,
     first.work.work_id);
@@ -1321,6 +1328,44 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
     query.startsWith("SELECT * FROM tenant_work_open_review"));
   assert.ok(bindingLock >= 0 && reviewLock > bindingLock,
     "create must lock the durable request mapping before its review");
+});
+
+test("PENDING causal lineage blocks every Work mutation family while Gallery remains readable", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const created = await store.createNewWork(identity(), input);
+  const row = pool.works.get(key("tenant-a", created.work.work_id));
+  row.causal_lineage_state = "PENDING";
+  row.causal_lineage_reason = "CAUSAL_BINDING_PENDING";
+  const guarded = [
+    "createWork", "queueNewWork", "ensureLegacyBridge", "alignNativePlanStatus", "assignQueuedWork", "acceptQueuedWorkAssignment", "archiveWork",
+    "archiveHistoricalBridgedWork", "reopenWork", "reconcilePrecommitTicketGate",
+    "reconcilePersistedPrecommitTicketGate", "claimPrecommitTicketGate",
+    "reconcilePrecommitTicketGateClaim", "abandonInactivePrecommitTicketGateClaim",
+    "fulfillPrecommitTicketTask", "recordTask",
+    "recordTaskContract", "recordDependencyManifest", "commitTaskState", "invalidateTaskState",
+    "observeEffectState", "recordEvidence", "recordOwnerManualMergeReleaseEvidence",
+    "persistCoreJoin", "refreshDerived", "reconcileLegacyClosed", "finalizeGenericClosure",
+  ];
+  for (const name of guarded) {
+    await assert.rejects(() => store[name](identity(), { work_id: created.work.work_id }),
+      /canonical_work_causal_lineage_pending/u, name);
+  }
+  const gallery = await store.preflightGallery(identity(), {});
+  assert.equal(gallery.works[0].causal_lineage_state, "PENDING");
+  assert.equal(gallery.works[0].causal_lineage_reason, "CAUSAL_BINDING_PENDING");
+  const transactionClient = { query: async () => ({
+    rows: [{ causal_lineage_state: "PENDING" }], rowCount: 1,
+  }) };
+  for (const name of ["recordNativeVerifierEvidenceWithClient",
+    "materializeGenericTerminalReconciliationV3WithClient",
+    "materializeNativePrecommitTicketGateWithClient"]) {
+    await assert.rejects(() => store[name](transactionClient, {
+      server_owned: true, tenant_id: "tenant-a", work_id: created.work.work_id,
+    }), /canonical_work_causal_lineage_pending/u, name);
+  }
 });
 
 test("owner reconstructs a missing legacy bridge from retained V2 fields exactly once", async () => {

@@ -1606,7 +1606,7 @@ const nyraControlRoomOutputSchema = object({
 }, ["ok", "tenant_id", "control_room"]);
 
 const nyraContinueProperties = Object.freeze({
-  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
+  operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action", "consume_core_typed_request", "preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"] },
   continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
   work_id: { type: "string", format: "uuid" },
   review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"] },
@@ -1632,7 +1632,46 @@ const nyraContinueInputSchema = Object.freeze({
   // or producing an effect.
 });
 
+const coreTypedRequestPayloadSchema = Object.freeze({ oneOf: [
+  object({
+    create_request: object({
+      ...nyraWorkBootstrapSpec.properties,
+      project_id: identifier,
+      idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+    }, nyraWorkBootstrapSpec.required),
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["create_request", "idempotency_key"]),
+  object({
+    work_id: { type: "string", format: "uuid" },
+    repository: nyraContinueRepository,
+    audience: { type: "array", minItems: 1, maxItems: 1, items: identifier },
+    allowed_branches: { type: "array", maxItems: 100, uniqueItems: true, items: identifier },
+    protected_branches: { type: "array", maxItems: 100, uniqueItems: true, items: identifier },
+    allowed_path_prefixes: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+    allowed_actions: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: identifier },
+    ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 },
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["work_id", "repository", "audience", "allowed_branches", "protected_branches",
+    "allowed_path_prefixes", "allowed_actions", "ttl_seconds", "idempotency_key"]),
+  object({
+    work_id: { type: "string", format: "uuid" },
+    delegation_id: { type: "string", pattern: "^hnd_[A-Za-z0-9._-]{8,160}$" },
+    repository: nyraContinueRepository,
+    action: { type: "object", minProperties: 1, maxProperties: 40, additionalProperties: true },
+    evidence_digest: nyraContinueSha256,
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["work_id", "delegation_id", "repository", "action", "evidence_digest", "idempotency_key"]),
+] });
+
 export const TOOLS = [
+  tool("core_typed_request", "Send typed request to Universal Core", "AI host → Universal Core typed entry. Core reviews and materializes WORK_CREATE_OR_RECONCILE, DELEGATION_REQUEST or ACTION_TICKET_REQUEST without Nyra lexical routing; Nyra receives only opaque orchestration references.", object({
+    schema_version: { const: "connected_ai_typed_request_v1" },
+    operation: { type: "string", enum: ["WORK_CREATE_OR_RECONCILE", "DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"] },
+    request: coreTypedRequestPayloadSchema,
+  }, ["schema_version", "operation", "request"]), ["core:govern"], false, true, {
+    meta: { "skinharmony/dedicatedCoreGate": true, "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": false },
+  }),
   tool("core_health", "Core health", "Read Core health.", object(), ["core:read"]),
   tool("nyra_control_room_status", "Nyra Control Room", "Read live Core/Work status, blockers and next action; no mutation or authority.", object({
     work_id: { type: "string", format: "uuid" },

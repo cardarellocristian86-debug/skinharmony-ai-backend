@@ -1126,6 +1126,7 @@ test("the durable continuation store fails closed until PostgreSQL schema readin
           operation_table: true,
           open_index: true,
           operation_index: true,
+          typed_request_table: true,
           core_verdict_column: true,
           bootstrap_request_column: true,
         }] };
@@ -1212,6 +1213,7 @@ test("an expired open reference is atomically retired before the same Nyra bindi
           operation_table: true,
           open_index: true,
           operation_index: true,
+          typed_request_table: true,
           core_verdict_column: true,
           bootstrap_request_column: true,
         }] };

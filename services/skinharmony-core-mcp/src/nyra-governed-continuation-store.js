@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { validateCoreOrchestrationVerdict } from "../../shared/nyra-core-orchestration-verdict.mjs";
 import { governedWorkBootstrapDigest } from "./work-bootstrap-contract.js";
+import { connectedAiTypedRequestDigest } from "../../shared/connected-ai-typed-request.mjs";
 import {
   retryableInitializer,
   runPostgresMigration,
@@ -23,6 +24,44 @@ const OPERATIONS = new Set([
 // bootstrap is valid before a canonical Work exists.  The record is an opaque
 // server-side capability, never a bearer token returned to the connected AI.
 export const NYRA_GOVERNED_CONTINUATION_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS connected_ai_typed_request (
+    tenant_id varchar(64) NOT NULL,
+    canonical_request_ref varchar(96) NOT NULL,
+    continuation_ref varchar(96) NOT NULL,
+    app_id varchar(64) NOT NULL,
+    host_kind varchar(64) NOT NULL,
+    host_registry_revision varchar(128) NOT NULL,
+    subject_digest char(64) NOT NULL,
+    session_fingerprint varchar(128) NOT NULL,
+    operation varchar(40) NOT NULL,
+    request_digest char(64) NOT NULL,
+    canonical_request jsonb NOT NULL,
+    core_result jsonb NOT NULL,
+    final_result jsonb,
+    final_result_signature char(64),
+    record_digest char(64) NOT NULL,
+    state varchar(24) NOT NULL DEFAULT 'READY',
+    claim_started_at timestamptz,
+    issued_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    PRIMARY KEY (tenant_id, canonical_request_ref),
+    UNIQUE (tenant_id, continuation_ref),
+    CHECK (operation IN ('WORK_CREATE_OR_RECONCILE','DELEGATION_REQUEST','ACTION_TICKET_REQUEST')),
+    CHECK (state IN ('READY','IN_PROGRESS','CONSUMED')),
+    CHECK (canonical_request_ref ~ '^cair1_[A-Za-z0-9_-]{32,80}$'),
+    CHECK (continuation_ref ~ '^nyc1_[A-Za-z0-9_-]{32,80}$')
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS connected_ai_typed_request_replay_idx
+    ON connected_ai_typed_request (tenant_id,app_id,session_fingerprint,request_digest);
+  ALTER TABLE connected_ai_typed_request
+    ADD COLUMN IF NOT EXISTS final_result jsonb;
+  ALTER TABLE connected_ai_typed_request
+    ADD COLUMN IF NOT EXISTS record_digest char(64);
+  ALTER TABLE connected_ai_typed_request
+    ADD COLUMN IF NOT EXISTS final_result_signature char(64);
+  ALTER TABLE connected_ai_typed_request
+    ADD COLUMN IF NOT EXISTS claim_started_at timestamptz;
   CREATE TABLE IF NOT EXISTS nyra_governed_continuation (
     tenant_id varchar(64) NOT NULL,
     continuation_ref varchar(96) NOT NULL,
@@ -198,6 +237,31 @@ function canonicalRecord(record) {
     issued_at: new Date(record.issued_at).toISOString(),
     expires_at: new Date(record.expires_at).toISOString(),
   };
+}
+
+function canonicalTypedRecord(record) {
+  return {
+    tenant_id: record.tenant_id, canonical_request_ref: record.canonical_request_ref,
+    continuation_ref: record.continuation_ref, app_id: record.app_id, host_kind: record.host_kind,
+    host_registry_revision: record.host_registry_revision, subject_digest: record.subject_digest,
+    session_fingerprint: record.session_fingerprint, operation: record.operation,
+    request_digest: record.request_digest, canonical_request: record.canonical_request,
+    core_result: record.core_result, issued_at: new Date(record.issued_at).toISOString(),
+    expires_at: new Date(record.expires_at).toISOString(),
+  };
+}
+
+function assertTypedRecord(record, binding, secret, now) {
+  if (!record || record.tenant_id !== binding.tenant_id || record.app_id !== binding.app_id ||
+      record.host_kind !== binding.host_kind || record.host_registry_revision !== binding.host_registry_revision ||
+      record.subject_digest !== binding.subject_digest || record.session_fingerprint !== binding.session_fingerprint) {
+    fail("connected_ai_continuation_binding_mismatch", 403);
+  }
+  if (!Number.isFinite(Date.parse(record.expires_at)) || Date.parse(record.expires_at) <= Number(now()) ||
+      connectedAiTypedRequestDigest(record.canonical_request) !== record.request_digest ||
+      !safeEqual(record.record_digest, hmac(secret, canonicalTypedRecord(record)))) {
+    fail("connected_ai_continuation_integrity_invalid", 409);
+  }
 }
 
 // A repeat of the same Nyra turn must reuse the durable reference.  Its
@@ -422,6 +486,7 @@ export function createNyraGovernedContinuationStore({
           to_regclass('nyra_governed_continuation_operation') IS NOT NULL AS operation_table,
           to_regclass('nyra_governed_continuation_open_binding_idx') IS NOT NULL AS open_index,
           to_regclass('nyra_governed_continuation_operation_state_idx') IS NOT NULL AS operation_index,
+          to_regclass('connected_ai_typed_request') IS NOT NULL AS typed_request_table,
           EXISTS (
             SELECT 1
             FROM pg_attribute
@@ -444,7 +509,7 @@ export function createNyraGovernedContinuationStore({
         !row?.continuation_table ||
         !row?.operation_table ||
         !row?.open_index ||
-        !row?.operation_index ||
+        !row?.operation_index || !row?.typed_request_table ||
         !row?.core_verdict_column || !row?.bootstrap_request_column
       ) {
         throw new Error("nyra_continuation_schema_unverified");
@@ -455,6 +520,117 @@ export function createNyraGovernedContinuationStore({
 
   function requireReady() {
     if (!initialized) fail("nyra_continuation_store_unavailable", 503);
+  }
+
+  async function recordConnectedAiTypedRequest({ identity, canonical_request, core_result }) {
+    requireReady();
+    const binding = identityBinding(identity);
+    const requestDigest = connectedAiTypedRequestDigest(canonical_request);
+    const issuedAtMs = Number(now());
+    const values = {
+      canonical_request_ref: `cair1_${crypto.randomBytes(30).toString("base64url")}`,
+      continuation_ref: continuationId(),
+      issued_at: new Date(issuedAtMs).toISOString(),
+      expires_at: new Date(issuedAtMs + boundedTtl).toISOString(),
+    };
+    const typedRecord = { ...binding, ...values, operation: canonical_request.operation,
+      request_digest: requestDigest, canonical_request, core_result };
+    const recordDigest = hmac(secret, canonicalTypedRecord(typedRecord));
+    const result = await pool.query(`
+      INSERT INTO connected_ai_typed_request
+        (tenant_id,canonical_request_ref,continuation_ref,app_id,host_kind,
+         host_registry_revision,subject_digest,session_fingerprint,operation,request_digest,
+         canonical_request,core_result,record_digest,issued_at,expires_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13,$14,$15)
+      ON CONFLICT (tenant_id,app_id,session_fingerprint,request_digest) DO UPDATE
+        SET request_digest=EXCLUDED.request_digest
+      RETURNING canonical_request_ref,continuation_ref,operation,request_digest,state,issued_at,expires_at`, [
+      binding.tenant_id, values.canonical_request_ref, values.continuation_ref, binding.app_id,
+      binding.host_kind, binding.host_registry_revision, binding.subject_digest,
+      binding.session_fingerprint, canonical_request.operation, requestDigest,
+      JSON.stringify(canonical_request), JSON.stringify(core_result), recordDigest,
+      values.issued_at, values.expires_at,
+    ]);
+    return Object.freeze({ schema_version: "connected_ai_core_request_ref_v1", ...result.rows[0] });
+  }
+
+  async function consumeConnectedAiTypedRequest({ identity, continuation_ref, allow_missing = false }) {
+    requireReady();
+    const binding = identityBinding(identity);
+    const ref = exactString(continuation_ref, CONTINUATION_REF, "connected_ai_continuation_ref_invalid", 96);
+    const selected = await pool.query(`SELECT * FROM connected_ai_typed_request
+      WHERE tenant_id=$1 AND continuation_ref=$2`, [binding.tenant_id, ref]);
+    if (!selected.rows[0] && allow_missing === true) return null;
+    assertTypedRecord(selected.rows[0], binding, secret, now);
+    if (selected.rows[0].state === "CONSUMED") {
+      if (!selected.rows[0].final_result) fail("connected_ai_continuation_result_missing", 503);
+      const resultSignature = hmac(secret, { continuation_ref: ref,
+        request_digest: selected.rows[0].request_digest,
+        final_result: selected.rows[0].final_result });
+      if (!safeEqual(selected.rows[0].final_result_signature, resultSignature)) {
+        fail("connected_ai_continuation_result_integrity_invalid", 503);
+      }
+      return Object.freeze({ schema_version: "connected_ai_core_continuation_v1",
+        ...selected.rows[0], replay: true });
+    }
+    if (selected.rows[0].state === "IN_PROGRESS") {
+      await pool.query(`UPDATE connected_ai_typed_request SET state='READY',claim_started_at=NULL
+        WHERE tenant_id=$1 AND continuation_ref=$2 AND state='IN_PROGRESS'
+          AND claim_started_at < clock_timestamp() - interval '30 seconds'`, [binding.tenant_id, ref]);
+    } else if (selected.rows[0].state !== "READY") {
+      fail("connected_ai_continuation_in_progress", 409);
+    }
+    const claimed = await pool.query(`UPDATE connected_ai_typed_request
+      SET state='IN_PROGRESS',claim_started_at=clock_timestamp()
+      WHERE tenant_id=$1 AND continuation_ref=$2 AND state='READY' RETURNING *`,
+    [binding.tenant_id, ref]);
+    if (!claimed.rows[0]) fail("connected_ai_continuation_in_progress", 409);
+    return Object.freeze({ schema_version: "connected_ai_core_continuation_v1",
+      ...claimed.rows[0], replay: false,
+      server_idempotency_key: `core_typed_${digest({ request_digest: claimed.rows[0].request_digest,
+        continuation_ref: ref }).slice(0, 48)}` });
+  }
+
+  async function completeConnectedAiTypedRequest({ identity, continuation_ref, final_result }) {
+    requireReady();
+    const binding = identityBinding(identity);
+    const ref = exactString(continuation_ref, CONTINUATION_REF, "connected_ai_continuation_ref_invalid", 96);
+    if (!final_result || typeof final_result !== "object" || Array.isArray(final_result)) {
+      fail("connected_ai_continuation_result_invalid", 503);
+    }
+    const finalResult = stable(final_result);
+    const selected = await pool.query(`SELECT request_digest FROM connected_ai_typed_request
+      WHERE tenant_id=$1 AND continuation_ref=$2 AND app_id=$3 AND host_kind=$4
+        AND host_registry_revision=$5 AND subject_digest=$6 AND session_fingerprint=$7
+        AND state='IN_PROGRESS'`, [binding.tenant_id, ref, binding.app_id, binding.host_kind,
+      binding.host_registry_revision, binding.subject_digest, binding.session_fingerprint]);
+    if (!selected.rows[0]) fail("connected_ai_continuation_claim_missing", 409);
+    const finalResultSignature = hmac(secret, { continuation_ref: ref,
+      request_digest: selected.rows[0].request_digest, final_result: finalResult });
+    const result = await pool.query(`UPDATE connected_ai_typed_request
+      SET state='CONSUMED',final_result=$8::jsonb,final_result_signature=$9,
+        consumed_at=clock_timestamp(),claim_started_at=NULL
+      WHERE tenant_id=$1 AND continuation_ref=$2 AND app_id=$3 AND host_kind=$4
+        AND host_registry_revision=$5 AND subject_digest=$6 AND session_fingerprint=$7
+        AND state='IN_PROGRESS' RETURNING final_result`,
+    [binding.tenant_id, ref, binding.app_id, binding.host_kind, binding.host_registry_revision,
+      binding.subject_digest, binding.session_fingerprint, JSON.stringify(finalResult),
+      finalResultSignature]);
+    if (!result.rows[0]) fail("connected_ai_continuation_claim_missing", 409);
+    return result.rows[0].final_result;
+  }
+
+  async function releaseConnectedAiTypedRequest({ identity, continuation_ref }) {
+    requireReady();
+    const binding = identityBinding(identity);
+    const ref = exactString(continuation_ref, CONTINUATION_REF, "connected_ai_continuation_ref_invalid", 96);
+    const result = await pool.query(`UPDATE connected_ai_typed_request SET state='READY',claim_started_at=NULL
+      WHERE tenant_id=$1 AND continuation_ref=$2 AND app_id=$3 AND host_kind=$4
+        AND host_registry_revision=$5 AND subject_digest=$6 AND session_fingerprint=$7
+        AND state='IN_PROGRESS'`,
+    [binding.tenant_id, ref, binding.app_id, binding.host_kind, binding.host_registry_revision,
+      binding.subject_digest, binding.session_fingerprint]);
+    if (!result.rowCount) fail("connected_ai_continuation_release_conflict", 409);
   }
 
   async function open({ identity, directive, work_bootstrap_request = null }) {
@@ -689,5 +865,9 @@ export function createNyraGovernedContinuationStore({
     claim,
     readCompletedOperation,
     complete,
+    recordConnectedAiTypedRequest,
+    consumeConnectedAiTypedRequest,
+    completeConnectedAiTypedRequest,
+    releaseConnectedAiTypedRequest,
   });
 }

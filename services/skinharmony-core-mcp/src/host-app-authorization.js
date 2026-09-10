@@ -275,6 +275,9 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   if (name === "nyra_continue") {
     return HOST_APP_CAPABILITIES.GOVERNED_CONTINUE;
   }
+  if (name === "core_typed_request") {
+    return HOST_APP_CAPABILITIES.GOVERNED_CONTINUE;
+  }
   if (name.startsWith("host_native_")) {
     if (HOST_NATIVE_DELEGATION_TOOLS.has(name)) {
       return HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE;
@@ -372,7 +375,13 @@ export function requireHostAppToolCapability({
         reconcile_persisted_precommit: HOST_APP_CAPABILITIES.WORK_OPERATE,
         finalize_verified_work: HOST_APP_CAPABILITIES.WORK_READ,
       }[String(args?.operation || "")]
-    : null;
+    : target === "core_typed_request"
+      ? {
+          WORK_CREATE_OR_RECONCILE: HOST_APP_CAPABILITIES.WORK_CREATE,
+          DELEGATION_REQUEST: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
+          ACTION_TICKET_REQUEST: HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+        }[String(args?.operation || "")]
+      : null;
   if (governedOperationCapability) requiredCapabilities.push(governedOperationCapability);
   for (const capability of [...new Set(requiredCapabilities)]) {
     // An unregistered OAuth compatibility principal is intentionally bounded

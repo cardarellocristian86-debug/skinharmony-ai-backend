@@ -662,10 +662,11 @@ function normalizeLegacyNyraContinueArguments(value) {
   return canonical;
 }
 
-// Conversational hosts receive Nyra as their sole public control plane.  Core
-// remains the decision authority behind Nyra, but generic Core tools must not
-// be part of the connected AI's tool catalog.
+// Conversational hosts retain Nyra for dialogue and orchestration, while the
+// exact typed entry lets the authenticated AI host ask Core directly. Generic
+// Core tools remain outside the connected AI's catalogue.
 const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
+  "core_typed_request",
   "nyra_converse",
   // Connected AIs perform probabilistic language interpretation outside the
   // deterministic runtime. This front door accepts only one exact catalog
@@ -770,7 +771,10 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
   });
   if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return capabilityFiltered;
   return capabilityFiltered.filter((tool) => (
-    NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
+    (tool.name === "core_typed_request"
+      ? principal?.registered === true &&
+        hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)
+      : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name)) ||
     (["nyra_continue", "nyra_governed_continue"].includes(tool.name) &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
   ));
@@ -932,6 +936,9 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // by Nyra and re-reads the Work before using dedicated Core routes.
   "nyra_continue",
   "nyra_governed_continue",
+  // Core itself resolves or reviews the typed Work binding. Preflighting this
+  // entry through Nyra would recreate the Work-required-to-create-Work cycle.
+  "core_typed_request",
   "core_health",
   // A status read is self-contained and invokes a bounded V2 Work projection
   // only when the caller supplies an exact Work id. Do not surround it with
@@ -1323,6 +1330,7 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
 }
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
+  "core_typed_request",
   "nyra_continue",
   "nyra_governed_continue",
   "host_native_delegation_issue",

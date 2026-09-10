@@ -1499,7 +1499,7 @@ function memoryRuntimeDependencies() {
     setFeatureFlag(value) { featureFlag = value; } };
 }
 
-async function enforcedRuntimeFixture() {
+async function enforcedRuntimeFixture({ now = () => Date.parse(AT) } = {}) {
   const dependencies = memoryRuntimeDependencies();
   const { store, adapterRegistry } = dependencies;
   store.kind = "entity360_postgres_append_only_v1";
@@ -1527,7 +1527,7 @@ async function enforcedRuntimeFixture() {
   });
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
     ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
-    bitemporalMode: "ENFORCE", now: () => Date.parse(AT) });
+    bitemporalMode: "ENFORCE", now });
   await runtime.initialize();
   const feature = await runtime.invoke("entity_360_feature_flag_write",
     CORE_OPERATOR_IDENTITY, { mode: "ENFORCE", enabled: true, expected_revision: 1,
@@ -1759,6 +1759,27 @@ test("ENFORCED first Work snapshot bootstrap is READY, replay-stable and context
   assert.match(first.dedicated_core_gate.request_digest, /^[a-f0-9]{64}$/u);
   assert.match(first.dedicated_core_gate.idempotency_digest, /^[a-f0-9]{64}$/u);
   assert.match(first.dedicated_core_gate.gate_digest, /^[a-f0-9]{64}$/u);
+});
+
+test("Work snapshot bootstrap uses a server-owned current cut after canonical Work commit", async () => {
+  const serverCut = AT;
+  const requestedCut = "2026-08-25T11:59:59.000Z";
+  const observedCuts = [];
+  const dependencies = await enforcedRuntimeFixture({ now: () => Date.parse(serverCut) });
+  const assembleContext = dependencies.adapterRegistry.assembleContext;
+  dependencies.adapterRegistry.assembleContext = async (input) => {
+    observedCuts.push(input.as_of);
+    return assembleContext(input);
+  };
+  const input = { work_id: WORK_ID, as_of: requestedCut, expected_revision: 0,
+    idempotency_key: "entity360-server-owned-cut" };
+  const first = await dependencies.runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  const replay = await dependencies.runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  assert.deepEqual(observedCuts, [serverCut]);
+  assert.equal(first.snapshot.as_of, serverCut);
+  assert.equal(replay.snapshot.deterministic_immutable_digest,
+    first.snapshot.deterministic_immutable_digest);
+  assert.deepEqual(replay.dedicated_core_gate, first.dedicated_core_gate);
 });
 
 test("Work snapshot bootstrap rejects non-initial, caller-expanded and cross-Work requests", async () => {

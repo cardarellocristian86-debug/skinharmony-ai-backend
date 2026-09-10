@@ -240,6 +240,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       },
     }).map((tool) => tool.name);
     assert.deepEqual(names, [
+      "core_typed_request",
       "nyra_control_room_status",
       "nyra_converse",
       "nyra_continue",
@@ -256,6 +257,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
     },
   }).map((tool) => tool.name);
   assert.deepEqual(activationNames, [
+    "core_typed_request",
     "nyra_control_room_status",
     "nyra_converse",
     "nyra_continue",
