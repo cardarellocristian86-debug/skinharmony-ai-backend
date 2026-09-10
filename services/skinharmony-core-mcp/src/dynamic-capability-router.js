@@ -5,6 +5,10 @@ import { validateToolArguments } from "./schema-validation.js";
 
 export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_health",
+  // Registered AI hosts submit only typed, operation-specific requests here;
+  // Universal Core materializes the immutable request and Nyra receives only
+  // its opaque continuation reference.
+  "core_typed_request",
   // Conversational resume is a first-class Nyra entrypoint. Hiding it behind
   // capability discovery made a new chat spend an avoidable read/tool turn
   // before it could receive its persisted Work briefing.
@@ -829,7 +833,43 @@ export function createDynamicCapabilityHandlers({
 export function compactMcpTools(tools, handlers) {
   return COMPACT_MCP_TOOL_NAMES
     .map((name) => tools.find((tool) => tool.name === name))
-    .filter((tool) => tool && typeof handlers[tool.name] === "function");
+    .filter((tool) => tool && typeof handlers[tool.name] === "function")
+    .map((tool) => tool.name === "nyra_converse" ? {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        properties: {
+          ...tool.inputSchema?.properties,
+          // The full canonical schema is enforced by the handler. Publishing
+          // this bounded object keeps the fixed MCP surface importable.
+          work_bootstrap: { type: "object", additionalProperties: true },
+        },
+      },
+    } : tool.name === "core_typed_request" ? {
+      name: tool.name,
+      title: "AI host → Core",
+      description: "Submit a typed request directly to Universal Core.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          schema_version: { const: "connected_ai_typed_request_v1" },
+          operation: {
+            type: "string",
+            enum: ["WORK_CREATE_OR_RECONCILE", "DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"],
+          },
+          request: {
+            type: "object",
+            description: "Operation payload; validated exactly server-side.",
+            additionalProperties: true,
+          },
+        },
+        required: ["schema_version", "operation", "request"],
+        additionalProperties: false,
+      },
+      scopes: tool.scopes,
+      annotations: tool.annotations,
+      ...(tool._meta ? { _meta: tool._meta } : {}),
+    } : tool);
 }
 
 export function dynamicCapabilityCatalogSnapshot(tools, handlers) {
