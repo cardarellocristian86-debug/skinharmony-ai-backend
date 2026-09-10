@@ -309,6 +309,23 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
         if (input.base_state_digest && project.active_state_digest && input.base_state_digest !== project.active_state_digest) {
           throw new CausalContinuityError("STALE_PROJECT_STATE", "Project state advanced", { current_state_digest: project.active_state_digest });
         }
+        // The canonical state digest is unique per project. A new governed
+        // operation with a different idempotency key may observe the exact
+        // same state; reuse that immutable snapshot instead of colliding on
+        // the database uniqueness constraint. runProjectOperation still
+        // appends the separately idempotent causal event for this operation.
+        const existing = (await client.query(
+          `SELECT * FROM core_project_state_snapshots
+            WHERE tenant_id=$1 AND project_id=$2 AND state_digest=$3`,
+          [input.tenant_id, input.project_id, input.state_digest],
+        )).rows[0];
+        if (existing) {
+          await client.query(
+            "UPDATE core_projects SET active_state_digest=$3 WHERE tenant_id=$1 AND project_id=$2",
+            [input.tenant_id, input.project_id, input.state_digest],
+          );
+          return existing;
+        }
         const latest = (await client.query(
           "SELECT COALESCE(MAX(sequence_number),0)::bigint AS sequence FROM core_causal_event_ledger WHERE tenant_id=$1 AND project_id=$2",
           [input.tenant_id, input.project_id],
@@ -1554,6 +1571,9 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       const project = state.projects.get(key(input.tenant_id, input.project_id));
       if (!project) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
       if (input.base_state_digest && project.active_state_digest && input.base_state_digest !== project.active_state_digest) throw new CausalContinuityError("STALE_PROJECT_STATE");
+      const existing = listFor(state.snapshots, input.tenant_id,
+        (item) => item.project_id === input.project_id && item.state_digest === input.state_digest)[0];
+      if (existing) { project.active_state_digest = input.state_digest; return existing; }
       const row = { ...input };
       state.snapshots.set(key(input.tenant_id, input.snapshot_id), row);
       project.active_state_digest = input.state_digest; project.version += 1;
