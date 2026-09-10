@@ -3484,6 +3484,20 @@ test("terminal closure entrypoints bypass only generic continuity preflight", ()
   assert.equal(requiresGenericWorkPreflight("tenant_work_task_record", { work_id: "work-active" }), true);
 });
 
+test("verified Work finalization binds Owner governance to the caller idempotency key", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const finalizerStart = serverSource.indexOf("nyra_verified_work_finalize: async");
+  const finalizerEnd = serverSource.indexOf("work_continuity_native_plan:", finalizerStart);
+  assert.ok(finalizerStart >= 0);
+  assert.ok(finalizerEnd > finalizerStart);
+  const finalizer = serverSource.slice(finalizerStart, finalizerEnd);
+
+  assert.match(
+    finalizer,
+    /requireOwnerGovernance\([\s\S]*?"work\.continuity\.checkpoint"[\s\S]*?args\.work_id,[\s\S]*?args\.idempotency_key/,
+  );
+});
+
 test("legacy reconciliation keeps exact Work ACL while bypassing continuity preflight", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const hookStart = serverSource.indexOf("requireTenantWorkRequestAuthorization(identity");
