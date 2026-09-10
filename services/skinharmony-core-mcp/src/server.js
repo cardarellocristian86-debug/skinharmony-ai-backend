@@ -1666,12 +1666,27 @@ async function readNyraDirectiveContext(identity, args) {
   if (!workContinuityV2Store) return null;
   try {
     const tenantWorkIdentity = withTenantWorkAcl(identity);
-    const context = await workContinuityV2Store.readWork(
+    let context = await workContinuityV2Store.readWork(
       tenantWorkIdentity,
       { work_id: args.work_id },
     );
     if (args.read_only !== true && context?.work?.causal_lineage_state !== "READY") {
-      throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      // A bootstrap can persist its canonical Work before a transient causal
+      // binding failure.  The next governed, mutating resume is the recovery
+      // boundary: rebuild the binding exclusively from server-owned Work and
+      // project state, then re-read the Work before permitting any mutation.
+      // Pure reads remain side-effect free and continue to expose PENDING.
+      const reconciliation = await reconcileCanonicalWorkCausalLineage(identity, context.work);
+      if (reconciliation.state !== "READY") {
+        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      }
+      context = await workContinuityV2Store.readWork(
+        tenantWorkIdentity,
+        { work_id: args.work_id },
+      );
+      if (context?.work?.causal_lineage_state !== "READY") {
+        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      }
     }
     const precommitTicketGate = args.read_only === true ? null : typeof workContinuityV2Store.readPrecommitTicketGate === "function"
       ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
