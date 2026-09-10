@@ -4573,7 +4573,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       }, async () => {
         await lockGalleryWork(client, context);
         const current = await client.query(`SELECT
-            session_id,agent_id,client_type,status,expires_at,transport_session_fingerprint,
+            session_id,agent_id,client_type,branch_id,status,expires_at,transport_session_fingerprint,
             metadata #>> '{profile,logical_session_fingerprint}' AS logical_session_fingerprint
           FROM core_continuity_participants
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
@@ -4588,11 +4588,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
             || String(participant.client_type) !== binding.clientType) {
           throw new Error("continuity_session_conflict");
         }
-        if (String(participant.transport_session_fingerprint).toLowerCase()
-            === binding.transportSessionFingerprint) {
+        const sameTransport = String(participant.transport_session_fingerprint).toLowerCase()
+          === binding.transportSessionFingerprint;
+        // Nyra's global read lease is deliberately branchless. A participant
+        // may return from bounded branch work on the same MCP transport; that
+        // participant must be normalized below instead of being reused as an
+        // apparently valid read participant whose lease would inherit the
+        // branch and then fail server-owned attestation.
+        if (sameTransport && !participant.branch_id) {
           return { schema_version: "nyra_read_transport_binding_v1", state: "active" };
         }
-        if (String(participant.logical_session_fingerprint || "").toLowerCase()
+        if (!sameTransport && String(participant.logical_session_fingerprint || "").toLowerCase()
             !== logicalSessionFingerprint) {
           throw new Error("continuity_read_transport_rotation_unverified");
         }
@@ -4602,7 +4608,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           RETURNING lease_id,session_id`, [context.tenantId, context.workId, binding.sessionId]);
         const rotated = await client.query(`UPDATE core_continuity_participants
           SET transport_session_fingerprint=$5,last_seen_at=now(),
-            expires_at=now()+($6::int*interval '1 second')
+            expires_at=now()+($6::int*interval '1 second'),branch_id=NULL
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
             AND agent_id=$7 AND client_type=$8
           RETURNING session_id,agent_id,client_type,status,last_seen_at,expires_at`,
@@ -4621,6 +4627,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const event = await appendEvent(client, context, "participant_transport_rotated", {
           session_id: binding.sessionId,
           expired_lease_count: expired.rows.length,
+          branch_binding_cleared: Boolean(participant.branch_id),
         });
         return {
           schema_version: "nyra_read_transport_binding_v1",

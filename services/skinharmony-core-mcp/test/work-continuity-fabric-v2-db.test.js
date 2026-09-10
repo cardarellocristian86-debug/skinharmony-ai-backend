@@ -636,13 +636,14 @@ class ContinuityPool {
       }] : [],
         rowCount: row ? 1 : 0 };
     }
-    if (q.startsWith("SELECT session_id,agent_id,client_type,status,expires_at,transport_session_fingerprint,")) {
+    if (q.startsWith("SELECT session_id,agent_id,client_type,branch_id,status,expires_at,transport_session_fingerprint,")) {
       const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
       const matches = row?.actor_subject === parameters[3];
       return { rows: matches ? [{
         session_id: row.session_id,
         agent_id: row.agent_id,
         client_type: row.client_type,
+        branch_id: row.branch_id,
         status: row.status,
         expires_at: row.expires_at,
         transport_session_fingerprint: row.transport_session_fingerprint,
@@ -671,12 +672,14 @@ class ContinuityPool {
         return { rows: [], rowCount: 0 };
       }
       row.transport_session_fingerprint = transportFingerprint;
+      row.branch_id = null;
       row.last_seen_at = this.clock().toISOString();
       row.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
       return { rows: [{
         session_id: row.session_id,
         agent_id: row.agent_id,
         client_type: row.client_type,
+        branch_id: row.branch_id,
         status: row.status,
         last_seen_at: row.last_seen_at,
         expires_at: row.expires_at,
@@ -2304,6 +2307,55 @@ test("Nyra read transport rotation expires old leases without transferring autho
     idempotency_key: "nyra-read-new-transport-heartbeat",
   });
   assert.equal(active.participant.session_id, common.session_id);
+});
+
+test("Nyra read binding clears a branch-bound participant on the same transport", async () => {
+  const clock = () => new Date("2026-08-27T09:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "nyra-read-branch-owner";
+  const created = await runtime.ensure({ tenantId: "tenant-a", subject }, initialInput, {
+    creationAuthorized: true,
+  });
+  const identity = galleryIdentity(subject, "nyra-read-branch-session",
+    "nyra-read-branch-agent", "codex");
+  const common = {
+    work_id: created.work_id,
+    session_id: identity.agentPresence.session_id,
+    agent_id: identity.agentPresence.agent_id,
+    client_type: identity.agentPresence.client_type,
+    ttl_seconds: 300,
+  };
+  await runtime.join(identity, {
+    ...common,
+    metadata: {
+      mode: "read_only",
+      logical_session_fingerprint: identity.agentPresence.session_fingerprint,
+      execution_authorized: false,
+    },
+    idempotency_key: "nyra-read-branch-join",
+  });
+  const participant = pool.participants.get(key("tenant-a", created.work_id, common.session_id));
+  participant.branch_id = "55555555-5555-4555-8555-555555555555";
+  pool.leases.set(key("tenant-a", created.work_id, "66666666-6666-4666-8666-666666666666"), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: "66666666-6666-4666-8666-666666666666",
+    session_id: common.session_id,
+    branch_id: participant.branch_id,
+    status: "active",
+  });
+
+  const rotation = await runtime.rotateNyraReadParticipant(identity, {
+    ...common,
+    idempotency_key: "nyra-read-same-transport-branch-reset",
+  });
+  assert.equal(rotation.state, "rotated");
+  assert.equal(rotation.expired_lease_count, 1);
+  assert.equal(pool.participants.get(key("tenant-a", created.work_id, common.session_id))
+    .branch_id, null);
+  assert.equal([...pool.leases.values()].every((candidate) => candidate.status === "expired"), true);
+  assert.equal(rotation.event.payload.branch_binding_cleared, true);
 });
 
 test("Gallery rejects every participant operation from a different signed client type", async () => {
