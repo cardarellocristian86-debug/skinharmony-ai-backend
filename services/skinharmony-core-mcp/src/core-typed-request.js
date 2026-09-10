@@ -11,12 +11,17 @@ export function createCoreTypedRequestHandler({ store, issueDelegation, authoriz
       typeof authorizeAction !== "function" || typeof reviewWorkBootstrap !== "function" ||
       typeof resolveWorkBinding !== "function") throw new Error("core_typed_request_dependencies_invalid");
   return async function coreTypedRequest(args = {}, identity = {}) {
-    if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) {
-      fail("core_typed_request_host_capability_required", 403);
-    }
     const canonical = normalizeConnectedAiTypedRequest({
       schema_version: args.schema_version, operation: args.operation, request: args.request,
     });
+    const requiredCapability = canonical.operation === "WORK_CREATE_OR_RECONCILE"
+      ? HOST_APP_CAPABILITIES.WORK_CREATE
+      : canonical.operation === "DELEGATION_REQUEST"
+        ? HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE
+        : HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE;
+    if (!hostPrincipalAllows(identity, requiredCapability)) {
+      fail("core_typed_request_host_capability_required", 403);
+    }
     let materializedRequest = canonical.request;
     let coreResponse;
     if (canonical.operation === "WORK_CREATE_OR_RECONCILE") {

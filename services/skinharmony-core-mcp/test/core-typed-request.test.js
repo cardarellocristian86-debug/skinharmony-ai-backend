@@ -7,12 +7,38 @@ import { createNyraGovernedContinueHandler } from "../src/nyra-governed-continue
 const D = "a".repeat(64);
 const identity = { tenantId: "tenant-a", subject: "owner-a", authenticatedHostPrincipal: {
   registered: true, app_id: "codex", host_kind: "codex_native", registry_revision: "r1",
-  capabilities: ["governed_continue"],
+  capabilities: ["governed_continue", "work.create", "host_native.delegate", "host_native.authorize"],
 }, agentPresence: { session_fingerprint: "b".repeat(64) } };
 
 test("shared typed contract rejects lexical and unknown operations", () => {
   assert.throws(() => normalizeConnectedAiTypedRequest({ schema_version: "connected_ai_typed_request_v1",
     operation: "CHAT", request: {} }), /connected_ai_typed_request_invalid/);
+});
+
+test("core_typed_request authorizes the exact operation capability without governed_continue", async () => {
+  const handler = createCoreTypedRequestHandler({
+    store: { recordConnectedAiTypedRequest: async () => ({
+      canonical_request_ref: `cair1_${"c".repeat(40)}`, continuation_ref: `nyc1_${"d".repeat(40)}`,
+      expires_at: "2030-01-01T00:00:00.000Z",
+    }) },
+    issueDelegation: async () => assert.fail("wrong_route"),
+    authorizeAction: async () => assert.fail("wrong_route"),
+    reviewWorkBootstrap: async () => ({ structuredContent: { ok: true, tenant_id: "tenant-a",
+      result: { review_id: "review-1" } } }),
+    resolveWorkBinding: async () => assert.fail("wrong_route"),
+  });
+  const workCreateOnly = { ...identity, authenticatedHostPrincipal: {
+    ...identity.authenticatedHostPrincipal, capabilities: ["work.create"],
+  } };
+  const response = await handler({ schema_version: "connected_ai_typed_request_v1",
+    operation: "WORK_CREATE_OR_RECONCILE", request: { create_request: {
+      project_id: "project-a", request_id: "request-capability", work_name: "Work",
+      work_type: "software_git", idea: "Idea", objective: "Objective", architecture: {},
+      next_action: "Review", acceptance_criteria: ["Pass"], constraints: [],
+      tasks: [{ title: "Build", weight: 1, required: true }], parent_work_id: null,
+      idempotency_key: "bootstrap-capability",
+    }, idempotency_key: "typed-capability" } }, workCreateOnly);
+  assert.equal(response.structuredContent.requester, "AI_HOST");
 });
 
 test("core_typed_request persists an opaque server-owned Core result", async () => {
