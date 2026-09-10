@@ -11,6 +11,7 @@ import { postgresPoolConfig } from "./postgres-pool-config.js";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
+import { isCodexGoodModeDelegation } from "./auth.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
@@ -788,6 +789,20 @@ async function requireOwnerGovernance(identity, actionType, target, idempotencyK
     throw error;
   }
   return decision;
+}
+
+function requireVerifiedFinalizationOwner(identity) {
+  const oauthOwner = identity?.kind === "oauth" &&
+    identity?.oauthOwnerElevated === true &&
+    identity?.ownerConfirmed === true &&
+    Boolean(String(identity?.confirmationReference || "").trim());
+  const codexOwner = identity?.ownerConfirmed === true &&
+    isCodexGoodModeDelegation(identity, config);
+  if (!oauthOwner && !codexOwner) {
+    const error = new Error("owner_confirmation_required");
+    error.code = "owner_confirmation_required";
+    throw error;
+  }
 }
 
 async function requireBoundedTenantCoordination(identity, actionType, target, idempotencyKey) {
@@ -2746,12 +2761,17 @@ const baseHandlers = {
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
     nyra_verified_work_finalize: async (args, identity) => {
       await requireCanonicalWorkRead(identity, args.work_id);
-      await requireOwnerGovernance(
+      // The public Nyra continuation has already consumed one fresh,
+      // request-bound owner confirmation. Re-prove that exact authenticated
+      // identity here, then let Core authorize only the non-executing
+      // checkpoint transition. Never reinterpret the same human confirmation
+      // through a second owner gate.
+      requireVerifiedFinalizationOwner(identity);
+      await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.checkpoint",
-        args.work_id,
+        "continuity.update",
+        "work_continuity_checkpoint",
         args.idempotency_key,
-        { internalOwnerAssertionScope: "verified_work_finalize" },
       );
       const aclIdentity = withTenantWorkAcl(identity);
       const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });

@@ -3484,7 +3484,7 @@ test("terminal closure entrypoints bypass only generic continuity preflight", ()
   assert.equal(requiresGenericWorkPreflight("tenant_work_task_record", { work_id: "work-active" }), true);
 });
 
-test("verified Work finalization binds Owner governance to the caller idempotency key", () => {
+test("verified Work finalization consumes Owner once then binds Core coordination to the caller key", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const finalizerStart = serverSource.indexOf("nyra_verified_work_finalize: async");
   const finalizerEnd = serverSource.indexOf("work_continuity_native_plan:", finalizerStart);
@@ -3494,8 +3494,9 @@ test("verified Work finalization binds Owner governance to the caller idempotenc
 
   assert.match(
     finalizer,
-    /requireOwnerGovernance\([\s\S]*?"work\.continuity\.checkpoint"[\s\S]*?args\.work_id,[\s\S]*?args\.idempotency_key/,
+    /requireVerifiedFinalizationOwner\(identity\);[\s\S]*?requireBoundedTenantCoordination\([\s\S]*?"continuity\.update"[\s\S]*?"work_continuity_checkpoint"[\s\S]*?args\.idempotency_key/,
   );
+  assert.doesNotMatch(finalizer, /requireOwnerGovernance\(/);
 });
 
 test("legacy reconciliation keeps exact Work ACL while bypassing continuity preflight", () => {
