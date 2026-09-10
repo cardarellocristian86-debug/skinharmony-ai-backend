@@ -2224,6 +2224,59 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   assert.equal(calls[2].rollback_ready, false);
 });
 
+test("write guard derives a request-bound confirmation reference for Codex Good Mode", async () => {
+  const calls = [];
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeCodexEnabled: true,
+    godModeTenantIds: ["codexai"],
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ authorization: {
+        allowed: true,
+        state: "authorized_after_confirmation",
+        mediation: "confirmed",
+        confirmation_required: true,
+        confirmation_satisfied: true,
+      } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const action = {
+    action_label: "Finalize verified Work",
+    action_type: "work.continuity.checkpoint",
+    target: "11111111-1111-4111-8111-111111111111",
+    operation_class: "owner_confirmed_governed_action",
+    idempotency_key: "verified-finalize-request-0001",
+    bounded_scope: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  };
+  const result = await guard(action, {
+    tenantId: "codexai",
+    kind: "codex",
+    subject: "codex",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+  });
+
+  assert.equal(result.allowed, true);
+  assert.equal(calls[0].owner_confirmed, true);
+  assert.match(calls[0].confirmation_reference, /^god_mode_codex:[a-f0-9]{40}$/u);
+  assert.equal(calls[0].idempotency_key, action.idempotency_key);
+});
+
 test("write guard never promotes an explicit Core confirmation denial", async () => {
   const guard = createCoreWriteGuard({
     universalCoreUrl: "https://core.test",

@@ -4714,7 +4714,17 @@ export function createCoreHandlers(config, options = {}) {
         );
       const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap };
       const confirmed = hasExplicitVerifiedOwnerConfirmation(identity, confirmationOptions);
-      const confirmationReference = verifiedConfirmationReference(identity, confirmationOptions);
+      const ownerMode = confirmed && isCodexGoodModeDelegation(identity, config)
+        ? "codex_good_mode"
+        : null;
+      const confirmationReference = confirmed
+        ? hostNativeConfirmationReference(
+            identity,
+            ownerMode,
+            args.action_type,
+            args.idempotency_key,
+          )
+        : "";
       const boundedInternalCoordination =
         args.operation_class === "bounded_internal_coordination_write";
       const sharedContext = await memoryContext({
