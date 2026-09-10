@@ -443,13 +443,13 @@ test("governed continuation intersects wrapper, operation and supported-host cap
 });
 
 test("Core typed entry is visible through governed_continue and reauthorizes each operation", () => {
-  const workCreator = identity(["governed_continue", "work.create"], "chatgpt_native");
+  const workCreator = identity(["work.create"], "chatgpt_native");
   assert.doesNotThrow(() => requireHostAppToolCapability({ identity: workCreator,
     toolName: "core_typed_request", args: { operation: "WORK_CREATE_OR_RECONCILE" }, tools: TOOLS }));
   assert.throws(() => requireHostAppToolCapability({ identity: workCreator,
     toolName: "core_typed_request", args: { operation: "ACTION_TICKET_REQUEST" }, tools: TOOLS }),
   /host_app_capability_required:host_native\.authorize/);
-  const authorizer = identity(["governed_continue", "host_native.authorize"], "codex_native");
+  const authorizer = identity(["host_native.authorize"], "codex_native");
   assert.doesNotThrow(() => requireHostAppToolCapability({ identity: authorizer,
     toolName: "core_typed_request", args: { operation: "ACTION_TICKET_REQUEST" }, tools: TOOLS }));
 });
