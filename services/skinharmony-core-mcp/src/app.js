@@ -138,6 +138,14 @@ export function compactPublishedToolDescriptor(tool) {
         work_bootstrap: COMPACT_OPAQUE_BOUND_OBJECT,
       },
     };
+  } else if (tool.name === "core_typed_request") {
+    inputSchema = {
+      ...inputSchema,
+      properties: {
+        ...inputSchema?.properties,
+        request: COMPACT_OPAQUE_BOUND_OBJECT,
+      },
+    };
   } else if (tool.name === "nyra_continue") {
     // Some Apps clients cannot materialize a callable argument model from a
     // root-level anyOf and degrade the whole tool to `args: unknown`. Publish
