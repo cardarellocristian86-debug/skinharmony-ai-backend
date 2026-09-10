@@ -73,11 +73,34 @@ test("canonical lineage fails closed when project, genesis or active intent is a
   }), /canonical_work_causal_active_intent_missing/u);
 });
 
-test("canonical lineage binds the project active intent and rejects Work intent drift", async () => {
+test("canonical lineage keeps Work and project intent domains distinct and rejects malformed anchors", async () => {
   const { handlers } = fixture();
+  const result = await ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY,
+    work: { ...WORK, intent_digest: "c".repeat(64) } });
+  assert.equal(result.work_intent_digest, "c".repeat(64));
+  assert.equal(result.project_intent_digest, WORK.intent_digest);
   await assert.rejects(() => ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY,
-    work: { ...WORK, intent_digest: "c".repeat(64) } }),
+    work: { ...WORK, intent_digest: "not-a-digest" } }),
   /canonical_work_causal_intent_binding_mismatch/u);
+});
+
+test("canonical lineage retains a valid request-scoped bootstrap intent without equating domains", async () => {
+  const { handlers } = fixture();
+  const result = await ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY,
+    work: { ...WORK, architecture: { host_binding: { canonical_intent_binding: {
+      canonical_intent_digest: "c".repeat(64),
+    } } } } });
+  assert.equal(result.project_intent_digest, WORK.intent_digest);
+  await assert.rejects(() => ensureCanonicalWorkCausalLineage({
+    handlers,
+    identity: IDENTITY,
+    work: {
+      ...WORK,
+      architecture: { host_binding: { canonical_intent_binding: {
+        canonical_intent_digest: "invalid",
+      } } },
+    },
+  }), /canonical_work_causal_intent_binding_mismatch/u);
 });
 
 test("canonical Work replay repairs or replays only the idempotent binding", async () => {
