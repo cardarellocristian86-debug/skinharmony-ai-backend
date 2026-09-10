@@ -35,7 +35,12 @@ const PROVIDER_SETUP_LINK_SERVICE_TENANT = "__provider_setup_service__";
 const MCP_TENANT_GATEWAY_KIND = "mcp_tenant_gateway";
 const MCP_TENANT_GATEWAY_TENANT = "__mcp_tenant_gateway__";
 const LEGACY_MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
-const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION]);
+const PRE_CAUSAL_MCP_TENANT_GATEWAY_SCOPES = Object.freeze([
+  ...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION,
+]);
+const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([
+  ...PRE_CAUSAL_MCP_TENANT_GATEWAY_SCOPES, SCOPES.CAUSAL_READ, SCOPES.CAUSAL_WRITE,
+]);
 const PROVIDER_SETUP_LINK_SCOPES = Object.freeze([SCOPES.WRITE_PROVIDER_SETUP_LINK]);
 
 function isDedicatedProviderSetupLinkRecord(record, tenantId, keyHash) {
@@ -85,8 +90,9 @@ function isLegacyMcpTenantGatewayRecord(record) {
     record.key_type === "connector" && record.status === "active" &&
     record.expires_at === null && record.preset === null && record.brand_scope === "" &&
     Array.isArray(record.allowed_scopes) &&
-    record.allowed_scopes.length === LEGACY_MCP_TENANT_GATEWAY_SCOPES.length &&
-    LEGACY_MCP_TENANT_GATEWAY_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
+    [LEGACY_MCP_TENANT_GATEWAY_SCOPES, PRE_CAUSAL_MCP_TENANT_GATEWAY_SCOPES]
+      .some((scopes) => record.allowed_scopes.length === scopes.length &&
+        scopes.every((scope) => record.allowed_scopes.includes(scope))) &&
     record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND,
   );
 }

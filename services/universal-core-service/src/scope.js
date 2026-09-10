@@ -24,6 +24,8 @@ export const SCOPES = Object.freeze({
   WRITE_RUNBOOK: "write:runbook",
   READ_EVIDENCE: "read:evidence",
   ENTITY360_CONFIGURE: "entity360:configure",
+  CAUSAL_READ: "causal:read",
+  CAUSAL_WRITE: "causal:write",
 });
 
 export const DEFAULT_CONNECTOR_SCOPES = [
