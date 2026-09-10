@@ -1175,6 +1175,58 @@ test("the durable continuation store rejects a drifted Core verdict column", asy
   await assert.rejects(store.initialize(), /nyra_continuation_schema_unverified/);
 });
 
+test("a typed continuation signs the exact JSONB representation of Date-bearing Core results", async () => {
+  let row;
+  const pool = {
+    query: async (statement, parameters = []) => {
+      const sql = String(statement);
+      if (sql.includes("CREATE TABLE IF NOT EXISTS connected_ai_typed_request")) return { rows: [] };
+      if (sql.includes("to_regclass")) return { rows: [{
+        continuation_table: true, operation_table: true, open_index: true,
+        operation_index: true, typed_request_table: true,
+        core_verdict_column: true, bootstrap_request_column: true,
+      }] };
+      if (sql.includes("INSERT INTO connected_ai_typed_request")) {
+        row = {
+          tenant_id: parameters[0], canonical_request_ref: parameters[1],
+          continuation_ref: parameters[2], app_id: parameters[3], host_kind: parameters[4],
+          host_registry_revision: parameters[5], subject_digest: parameters[6],
+          session_fingerprint: parameters[7], operation: parameters[8],
+          request_digest: parameters[9], canonical_request: JSON.parse(parameters[10]),
+          core_result: JSON.parse(parameters[11]), record_digest: parameters[12],
+          issued_at: new Date(parameters[13]), expires_at: new Date(parameters[14]),
+          state: "READY", final_result: null,
+        };
+        return { rows: [row] };
+      }
+      if (sql.includes("SELECT * FROM connected_ai_typed_request")) return { rows: [row] };
+      if (sql.includes("SET state='IN_PROGRESS'")) {
+        row = { ...row, state: "IN_PROGRESS" };
+        return { rowCount: 1, rows: [row] };
+      }
+      throw new Error(`unexpected_sql:${sql.slice(0, 64)}`);
+    },
+  };
+  const store = createNyraGovernedContinuationStore({
+    pool, signingSecret: "continuation-store-test-secret-0123456789abcdef",
+    now: () => Date.parse("2026-09-10T16:00:00.000Z"),
+  });
+  await store.initialize();
+  const caller = identity();
+  const canonicalRequest = { schema_version: "connected_ai_typed_request_v1",
+    operation: "WORK_CREATE_OR_RECONCILE", request: { create_request: { request_id: "live" },
+      idempotency_key: "typed-live" } };
+  const refs = await store.recordConnectedAiTypedRequest({ identity: caller,
+    canonical_request: canonicalRequest,
+    core_result: { ok: true, tenant_id: caller.tenantId,
+      result: { opened_at: new Date("2026-09-10T15:59:00.123Z") } },
+  });
+  const consumed = await store.consumeConnectedAiTypedRequest({ identity: caller,
+    continuation_ref: refs.continuation_ref });
+  assert.equal(consumed.core_result.result.opened_at, "2026-09-10T15:59:00.123Z");
+  assert.equal(consumed.replay, false);
+});
+
 test("an expired open reference is atomically retired before the same Nyra binding is reissued", async () => {
   const statements = [];
   const client = {
