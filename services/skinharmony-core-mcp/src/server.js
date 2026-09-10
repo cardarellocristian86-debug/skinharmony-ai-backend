@@ -1498,6 +1498,9 @@ async function reviewCanonicalWorkCreation(args, identity) {
   );
   return continuityTextResult({
     ok: true,
+    // The direct AI→Core entry verifies the authenticated tenant on every
+    // server-owned result before it persists an opaque continuation.
+    tenant_id: identity.tenantId,
     result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), {
       request: args.request,
       intent_type: "CREATE_WORK",
