@@ -12,6 +12,7 @@ import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { isCodexGoodModeDelegation } from "./auth.js";
+import { verifiedFinalizationAdapter } from "./verified-finalization-adapter.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
 import { createCloudMemoryStore } from "./cloud-memory-store.js";
@@ -2775,7 +2776,7 @@ const baseHandlers = {
       );
       const aclIdentity = withTenantWorkAcl(identity);
       const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });
-      const adapter = state.work.work_type;
+      const adapter = verifiedFinalizationAdapter(state);
       const terminalReplay = await replayNyraVerifiedWorkFinalize({
         store: workContinuityV2Store,
         aclIdentity,

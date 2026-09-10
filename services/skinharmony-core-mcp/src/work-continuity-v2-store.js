@@ -18,6 +18,7 @@ import {
 } from "./work-continuity-runtime.js";
 import { createRetryablePostgresInitializer } from "../../shared/retryable-postgres-initializer.js";
 import { buildNativePlanMergePreview } from "./native-plan-merge-preview.js";
+import { verifiedFinalizationAdapter } from "./verified-finalization-adapter.js";
 import {
   buildCommittedTaskState,
   buildTaskStateContract,
@@ -8458,7 +8459,7 @@ export function createWorkContinuityV2Store({
     if (!CLOSURE_ADAPTERS.includes(adapter)) fail("work_closure_adapter_invalid");
     const state = await transaction((client) => closureState(client, actor, workId, false));
     assertPermission(canRead, state.work, actor);
-    if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
+    if (verifiedFinalizationAdapter(state) !== adapter) fail("work_closure_adapter_mismatch");
     return { work_id: workId, adapter, ...deriveGenericClosureReadiness(state) };
   }
   async function buildGenericCoreJoinRequest(identity, { work_id, adapter, idempotency_key }) {
@@ -8472,7 +8473,7 @@ export function createWorkContinuityV2Store({
       const closure = await closureState(client, actor, workId, false);
       const work = closure.work;
       assertPermission(canClose, work, actor);
-      if (work.work_type !== adapter) fail("work_closure_adapter_mismatch");
+      if (verifiedFinalizationAdapter(closure) !== adapter) fail("work_closure_adapter_mismatch");
       return closure;
     });
     const readiness = deriveGenericClosureReadiness(state);
@@ -8539,7 +8540,7 @@ export function createWorkContinuityV2Store({
         fail("work_closure_legacy_binding_changed");
       }
       assertPermission(canClose, state.work, actor);
-      if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
+      if (verifiedFinalizationAdapter(state) !== adapter) fail("work_closure_adapter_mismatch");
       if (state.receipt) {
         const replay = await verifyAndBackfillExistingClosure(client, actor, state, adapter);
         const coordinationReconciliation = await reconcileTerminalCoordination(

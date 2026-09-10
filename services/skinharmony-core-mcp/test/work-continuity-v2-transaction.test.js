@@ -3085,14 +3085,15 @@ test("generic closure canonicalizes PostgreSQL Date timestamps before JSONB dige
   assert.deepEqual(persistedVerification.failure_codes, []);
 });
 
-test("linked generic closure shares readiness gates and atomically releases Work coordination", async () => {
+test("unbound software proof Work uses generic readiness and atomically releases coordination", async () => {
   const pool = new AtomicWorkPool();
   const workId = "99999999-9999-4999-8999-999999999999";
   const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   pool.works.set(key("tenant-a", workId), candidateWork(100, {
     work_id: workId,
     legacy_work_id: workId,
-    work_type: "research",
+    work_type: "software_git",
+    architecture: { schema_version: "nyra_governed_work_bootstrap_v1", declared: {} },
     created_by_agent_id: "builder-agent",
     created_by_session_fingerprint: "1".repeat(64),
     acceptance_criteria: ["independently verified"],
@@ -3143,14 +3144,14 @@ test("linked generic closure shares readiness gates and atomically releases Work
 
   const incomplete = await store.evaluateGenericClosure(identity(), {
     work_id: workId,
-    adapter: "research",
+    adapter: "generic",
   });
   assert.equal(incomplete.ready, false);
   assert.equal(incomplete.required_tasks_complete, false);
   assert.deepEqual(incomplete.missing, ["required_tasks_incomplete"]);
   await assert.rejects(store.finalizeGenericClosure(identity(), {
     work_id: workId,
-    adapter: "research",
+    adapter: "generic",
   }), /work_closure_gate_unsatisfied/);
 
   Object.assign(pool.tasks.get(key("tenant-a", taskId)), {
@@ -3159,14 +3160,14 @@ test("linked generic closure shares readiness gates and atomically releases Work
   });
   const ready = await store.evaluateGenericClosure(identity(), {
     work_id: workId,
-    adapter: "research",
+    adapter: "generic",
   });
   assert.equal(ready.ready, true);
   assert.deepEqual(ready.missing, []);
   failAfterCoordinationRelease = true;
   await assert.rejects(store.finalizeGenericClosure(identity(), {
     work_id: workId,
-    adapter: "research",
+    adapter: "generic",
   }), /forced_generic_closure_rollback/);
   assert.equal(pool.works.get(key("tenant-a", workId)).status, "ACTIVE");
   assert.equal([...pool.leases.values()].filter((row) =>
@@ -3178,7 +3179,7 @@ test("linked generic closure shares readiness gates and atomically releases Work
   failAfterCoordinationRelease = false;
   const closed = await store.finalizeGenericClosure(identity(), {
     work_id: workId,
-    adapter: "research",
+    adapter: "generic",
   });
 
   assert.equal(closed.terminal_status, "COMPLETED");
