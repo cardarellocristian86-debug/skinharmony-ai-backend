@@ -119,6 +119,40 @@ test("task-scoped native verifier evidence cannot authorize generic Work closure
   assert.equal(released.native_task_evidence_only, false);
 });
 
+test("generic adapter accepts verified native task evidence for an unbound operational proof", () => {
+  const state = {
+    work: {
+      tenant_id: "tenant-a",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      created_by_agent_id: "builder",
+      created_by_session_fingerprint: "builder-session",
+    },
+    tasks: [{ required: true, status: "completed", acceptance_verified: true }],
+    evidence: [{
+      required: true,
+      independently_verified: true,
+      verified_by_agent_id: "verifier",
+      verified_by_session_fingerprint: "verifier-session",
+      kind: "native_verifier_terminal_report",
+    }],
+    join: { core_join_digest: "a".repeat(64) },
+  };
+
+  const nativeReadiness = deriveGenericClosureReadiness(state);
+  assert.equal(nativeReadiness.ready, false);
+  assert.equal(nativeReadiness.native_task_evidence_only, true);
+
+  const operationalReadiness = deriveGenericClosureReadiness(state, { adapter: "generic" });
+  assert.equal(operationalReadiness.ready, false);
+  assert.equal(operationalReadiness.native_task_evidence_only, true);
+
+  state.work.work_type = "software_git";
+  const unboundSoftwareReadiness = deriveGenericClosureReadiness(state, { adapter: "generic" });
+  assert.equal(unboundSoftwareReadiness.ready, true);
+  assert.equal(unboundSoftwareReadiness.native_task_evidence_only, false);
+  assert.deepEqual(unboundSoftwareReadiness.missing, []);
+});
+
 test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
   const baseIdentity = {
     tenantId: "tenant-a",

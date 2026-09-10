@@ -802,6 +802,24 @@ class AtomicWorkPool {
         item.tenant_id === parameters[0] && item.work_id === parameters[1]);
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
+    if (q.startsWith("SELECT core_join_digest,core_join_context FROM tenant_work_core_join")) {
+      const row = this.joins.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_core_join")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        core_join_digest: parameters[2], core_join_context: JSON.parse(parameters[3]),
+        persisted_by_user_id: parameters[4] };
+      this.joins.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work_core_join")) {
+      const row = this.joins.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { core_join_digest: parameters[2],
+        core_join_context: JSON.parse(parameters[3]), persisted_by_user_id: parameters[4] });
+      return { rows: [], rowCount: 1 };
+    }
     if (q.startsWith("SELECT core_join_digest FROM tenant_work_core_join")) {
       const row = this.joins.get(key(parameters[0], parameters[1]));
       return { rows: row ? [{ core_join_digest: row.core_join_digest }] : [], rowCount: row ? 1 : 0 };
@@ -1077,6 +1095,66 @@ function identity(subject = "owner", role = "tenant_owner") {
       tenant_id: "tenant-a", subject, role, expires_at: "2030-01-01T00:00:00.000Z",
       team_ids: [], managed_team_ids: role === "team_manager" ? ["team-a"] : [], assigned_work_ids: [] } };
   return { ...base, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(base, Date.parse("2026-08-08T10:00:00.000Z")) };
+}
+
+async function installCurrentGenericJoin(pool, { workId, adapter, authority = null }) {
+  let signer = authority?.signer;
+  let verifier = authority?.verifier;
+  if (!signer || !verifier) {
+    const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+    const keyId = "gwcj-test-current-state";
+    signer = createLocalGenericWorkCoreJoinSigner({
+      privateKey: privateKey.export({ type: "pkcs8", format: "pem" }), keyId,
+    });
+    verifier = createGenericWorkCoreJoinVerifier({
+      publicKey: publicKey.export({ type: "spki", format: "pem" }), keyId,
+    });
+  }
+  const keyId = signer.key_id;
+  const work = pool.works.get(key("tenant-a", workId));
+  const evidence = [...pool.evidence.values()].filter((item) =>
+    item.work_id === workId && item.required !== false);
+  const evidenceDigests = evidence.map((item) => item.digest).sort();
+  const evidenceDigest = stableDigest(evidenceDigests);
+  const evidenceVerifier = evidence.find((item) => item.independently_verified === true);
+  const acceptanceCriteria = (work.acceptance_criteria || []).map((criterion, index) => ({
+    criterion_id: `criterion-${String(index + 1).padStart(3, "0")}`,
+    criterion_digest: stableDigest(criterion), evidence_digest: evidenceDigest,
+    verification_digest: evidenceVerifier.digest,
+  }));
+  const taskState = [...pool.tasks.values()].filter((item) => item.work_id === workId)
+    .map((task) => ({ task_id: task.task_id,
+      task_state_digest: stableDigest({ status: task.status,
+        acceptance_verified: task.acceptance_verified }),
+      completion_evidence_digest: evidenceDigest,
+      verification_digest: evidenceVerifier.digest }));
+  const unsigned = {
+    schema_version: "generic_work_core_join_v1",
+    verdict_id: `verdict-${workId}`,
+    authority: "universal_core",
+    decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+    tenant_id: "tenant-a",
+    work_id: workId,
+    adapter,
+    acceptance_criteria_digest: stableDigest(acceptanceCriteria),
+    task_state_digest: stableDigest(taskState),
+    evidence_digest: evidenceDigest,
+    independent_verifier_receipt_digest: "d".repeat(64),
+    idempotency_digest: "e".repeat(64),
+    execution_authorized: false,
+    host_action_authorized: false,
+    issued_at: "2026-08-08T10:00:02.000Z",
+    key_id: keyId,
+    signature_algorithm: "ed25519",
+  };
+  const verdictDigest = stableDigest(unsigned);
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: verdictDigest,
+    core_join_context: { ...unsigned, verdict_digest: verdictDigest,
+      signature: await signer.signDigest(verdictDigest) },
+  });
+  return { signer, verifier, verdict_digest: verdictDigest,
+    verdict: pool.joins.get(key("tenant-a", workId)).core_join_context };
 }
 
 function createInput() {
@@ -2954,6 +3032,7 @@ test("unbridged V2 closure never reads or releases an identically named Core Wor
       signature: await authority.signer.signDigest(joinDigest),
     },
   });
+  await installCurrentGenericJoin(pool, { workId, adapter: "research", authority });
   const leaseId = "53535353-5353-4353-8353-535353535353";
   pool.leases.set(key("tenant-a", workId, leaseId), {
     tenant_id: "tenant-a", work_id: workId, lease_id: leaseId,
@@ -3060,6 +3139,7 @@ test("generic closure canonicalizes PostgreSQL Date timestamps before JSONB dige
       signature: await authority.signer.signDigest(joinDigest),
     },
   });
+  await installCurrentGenericJoin(pool, { workId, adapter: "research", authority });
   const store = createWorkContinuityV2Store({
     pool,
     now: () => new Date("2026-08-08T10:03:00.000Z"),
@@ -3115,6 +3195,9 @@ test("unbound software proof Work uses generic readiness and atomically releases
   pool.joins.set(key("tenant-a", workId), {
     tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
   });
+  const currentJoinAuthority = await installCurrentGenericJoin(pool, {
+    workId, adapter: "generic",
+  });
   for (const index of [1, 2]) {
     const leaseId = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
     pool.leases.set(key("tenant-a", workId, leaseId), {
@@ -3135,6 +3218,7 @@ test("unbound software proof Work uses generic readiness and atomically releases
   const store = createWorkContinuityV2Store({
     pool,
     now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: currentJoinAuthority.verifier,
     failureInjector: async (phase) => {
       if (failAfterCoordinationRelease && phase === "generic_closure_coordination_released") {
         throw new Error("forced_generic_closure_rollback");
@@ -3158,6 +3242,22 @@ test("unbound software proof Work uses generic readiness and atomically releases
     status: "completed",
     acceptance_verified: true,
   });
+  const staleJoin = structuredClone(pool.joins.get(key("tenant-a", workId)));
+  await assert.rejects(store.finalizeGenericClosure(identity(), {
+    work_id: workId,
+    adapter: "generic",
+  }), /work_closure_core_join_stale/);
+  const refreshedJoin = await installCurrentGenericJoin(pool, {
+    workId, adapter: "generic", authority: currentJoinAuthority,
+  });
+  pool.joins.set(key("tenant-a", workId), staleJoin);
+  await store.persistCoreJoin({ ...identity(), coreJoinTrusted: true }, {
+    work_id: workId,
+    core_join_digest: refreshedJoin.verdict_digest,
+    core_join_context: refreshedJoin.verdict,
+  });
+  assert.equal(pool.joins.get(key("tenant-a", workId)).core_join_digest,
+    refreshedJoin.verdict_digest);
   const ready = await store.evaluateGenericClosure(identity(), {
     work_id: workId,
     adapter: "generic",
@@ -3188,6 +3288,18 @@ test("unbound software proof Work uses generic readiness and atomically releases
   assert.equal(closed.released_lease_count, 2);
   assert.equal(closed.closed_participant_count, 2);
   assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  const terminalUnsigned = { ...refreshedJoin.verdict,
+    verdict_id: `terminal-reissue-${workId}` };
+  delete terminalUnsigned.verdict_digest;
+  delete terminalUnsigned.signature;
+  const terminalDigest = stableDigest(terminalUnsigned);
+  const terminalVerdict = { ...terminalUnsigned, verdict_digest: terminalDigest,
+    signature: await currentJoinAuthority.signer.signDigest(terminalDigest) };
+  await assert.rejects(store.persistCoreJoin({ ...identity(), coreJoinTrusted: true }, {
+    work_id: workId,
+    core_join_digest: terminalDigest,
+    core_join_context: terminalVerdict,
+  }), /generic_core_join_conflict/);
   assert.equal([...pool.leases.values()].filter((row) =>
     row.work_id === workId && row.status === "released").length, 2);
   assert.equal([...pool.participants.values()].filter((row) =>
@@ -3246,9 +3358,13 @@ test("generic finalize serializes a concurrent legacy Gallery join behind termin
     work_id: workId,
     core_join_digest: "5".repeat(64),
   });
+  const currentJoinAuthority = await installCurrentGenericJoin(pool, {
+    workId, adapter: "research",
+  });
   const store = createWorkContinuityV2Store({
     pool,
     now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: currentJoinAuthority.verifier,
   });
   const runtime = createWorkContinuityRuntime({}, {
     pool,
@@ -3376,6 +3492,9 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
     tenant_id: "tenant-a", work_id: workId, core_join_digest: genericJoinDigest,
     core_join_context: genericJoinContext,
   });
+  await installCurrentGenericJoin(pool, {
+    workId, adapter: "software_git", authority,
+  });
   await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
     server_owned: true,
     finalize_authorization: authority.authorization,
@@ -3449,6 +3568,12 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
     ownerConfirmed: true,
     confirmationReference: "confirm exact manual merge Gallery closure",
   };
+  await assert.rejects(handlers.host_native_owner_manual_merge_finalize_gallery({
+    ticket_id: authority.authorization.action_ticket_id,
+  }, handlerIdentity), /work_closure_core_join_stale/);
+  await installCurrentGenericJoin(pool, {
+    workId, adapter: "software_git", authority,
+  });
   const firstResult = await handlers.host_native_owner_manual_merge_finalize_gallery({
     ticket_id: authority.authorization.action_ticket_id,
   }, handlerIdentity);
