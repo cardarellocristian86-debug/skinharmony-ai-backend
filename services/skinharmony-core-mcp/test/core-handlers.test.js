@@ -2492,6 +2492,30 @@ test("routes Causal Continuity through the signed tenant gateway without changin
   assert.equal(calls[0].init.headers["x-sh-dtt-agent-context"], "dac_verified_context");
 });
 
+test("preserves only the public machine-safe Causal Continuity error code", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "g".repeat(64),
+    tenantContextSigningSecret: "s".repeat(64),
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      error: { code: "STALE_PROJECT_STATE", message: "redacted diagnostic" },
+    }), { status: 409, headers: { "content-type": "application/json" } }),
+  });
+  await assert.rejects(
+    handlers.causalContinuityCoreRequest("/v1/causal/projects/state/snapshot", "tenant-a", {
+      method: "POST",
+      body: { project_id: "project-a", idempotency_key: "snapshot-a" },
+      additionalHeaders: { "x-sh-dtt-agent-context": "dac_verified_context" },
+    }),
+    (error) => error.code === "causal_stale_project_state"
+      && error.message === "core_request_failed:409:causal_stale_project_state"
+      && !error.message.includes("redacted diagnostic"),
+  );
+});
+
 test("bounds every ordinary Core request with an abortable deadline", async () => {
   let observedSignal = null;
   const handlers = createCoreHandlers({

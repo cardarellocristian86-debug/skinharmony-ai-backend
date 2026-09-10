@@ -1321,10 +1321,16 @@ export function createCoreHandlers(config, options = {}) {
         && /^entity360_[a-z0-9_]{1,148}$/u.test(String(payload.error.code || ""))
         ? String(payload.error.code)
         : null;
+      const nestedCausalCode = payload.error && typeof payload.error === "object"
+        && !Array.isArray(payload.error)
+        && typeof payload.error.code === "string"
+        && /^[A-Z][A-Z0-9_]{1,119}$/u.test(payload.error.code)
+        ? `causal_${payload.error.code.toLowerCase()}`
+        : null;
       const candidateUpstreamCode = typeof payload.error === "string"
         && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
-        : nestedEntity360Code || "unknown";
+        : nestedEntity360Code || nestedCausalCode || "unknown";
       const upstreamCode = strictTransport && strictTransportProfile === "policy_registry" && !nestedEntity360Code
         && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
         ? "unknown" : candidateUpstreamCode;
