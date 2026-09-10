@@ -143,6 +143,14 @@ function stable(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
 }
 
+function persistedJson(value) {
+  // Sign exactly the JSON representation PostgreSQL JSONB will retain.
+  // Database-derived Core results may contain Date instances; hashing the
+  // in-memory object would treat a Date as `{}`, while JSONB rehydrates its
+  // ISO string and would make a freshly issued record fail its own HMAC.
+  return JSON.parse(JSON.stringify(value));
+}
+
 function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
@@ -525,7 +533,9 @@ export function createNyraGovernedContinuationStore({
   async function recordConnectedAiTypedRequest({ identity, canonical_request, core_result }) {
     requireReady();
     const binding = identityBinding(identity);
-    const requestDigest = connectedAiTypedRequestDigest(canonical_request);
+    const persistedCanonicalRequest = persistedJson(canonical_request);
+    const persistedCoreResult = persistedJson(core_result);
+    const requestDigest = connectedAiTypedRequestDigest(persistedCanonicalRequest);
     const issuedAtMs = Number(now());
     const values = {
       canonical_request_ref: `cair1_${crypto.randomBytes(30).toString("base64url")}`,
@@ -534,7 +544,8 @@ export function createNyraGovernedContinuationStore({
       expires_at: new Date(issuedAtMs + boundedTtl).toISOString(),
     };
     const typedRecord = { ...binding, ...values, operation: canonical_request.operation,
-      request_digest: requestDigest, canonical_request, core_result };
+      request_digest: requestDigest, canonical_request: persistedCanonicalRequest,
+      core_result: persistedCoreResult };
     const recordDigest = hmac(secret, canonicalTypedRecord(typedRecord));
     const result = await pool.query(`
       INSERT INTO connected_ai_typed_request
@@ -548,7 +559,7 @@ export function createNyraGovernedContinuationStore({
       binding.tenant_id, values.canonical_request_ref, values.continuation_ref, binding.app_id,
       binding.host_kind, binding.host_registry_revision, binding.subject_digest,
       binding.session_fingerprint, canonical_request.operation, requestDigest,
-      JSON.stringify(canonical_request), JSON.stringify(core_result), recordDigest,
+      JSON.stringify(persistedCanonicalRequest), JSON.stringify(persistedCoreResult), recordDigest,
       values.issued_at, values.expires_at,
     ]);
     return Object.freeze({ schema_version: "connected_ai_core_request_ref_v1", ...result.rows[0] });
