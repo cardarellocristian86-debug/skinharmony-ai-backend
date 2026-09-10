@@ -2459,6 +2459,39 @@ test("exposes one non-tool causal Core transport that preserves the verified DTT
   assert.equal(calls[0].init.headers["x-sh-dtt-agent-context"], "dac_verified_context");
 });
 
+test("routes Causal Continuity through the signed tenant gateway without changing generic Core transport", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "g".repeat(64),
+    tenantContextSigningSecret: "s".repeat(64),
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  assert.equal(Object.keys(handlers).includes("causalContinuityCoreRequest"), false);
+  await handlers.causalContinuityCoreRequest("/v1/causal/projects/state/snapshot", "tenant-a", {
+    method: "POST",
+    body: { project_id: "project-a", idempotency_key: "snapshot-a" },
+    additionalHeaders: { "x-sh-dtt-agent-context": "dac_verified_context" },
+  });
+  assert.equal(calls[0].init.headers.authorization, `Bearer ${"g".repeat(64)}`);
+  assert.equal(calls[0].init.headers["x-sh-tenant-id"], "tenant-a");
+  const tenantContext = JSON.parse(Buffer.from(
+    calls[0].init.headers["x-sh-tenant-context"], "base64url",
+  ).toString("utf8"));
+  assert.equal(tenantContext.version, "mcp_tenant_context_v1");
+  assert.equal(tenantContext.tenant_id, "tenant-a");
+  assert.match(tenantContext.assertion, /^mtc_[a-f0-9]{64}$/u);
+  assert.equal(calls[0].init.headers["x-sh-dtt-agent-context"], "dac_verified_context");
+});
+
 test("bounds every ordinary Core request with an abortable deadline", async () => {
   let observedSignal = null;
   const handlers = createCoreHandlers({

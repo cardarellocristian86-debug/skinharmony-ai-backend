@@ -651,7 +651,7 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
     })
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
-  coreRequest: coreHandlers.causalCoreRequest,
+  coreRequest: coreHandlers.causalContinuityCoreRequest,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueCausalAgentIdentityContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,

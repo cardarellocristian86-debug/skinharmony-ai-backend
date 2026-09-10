@@ -5141,6 +5141,18 @@ export function createCoreHandlers(config, options = {}) {
     configurable: false,
     writable: false,
   });
+  // Causal Continuity has a narrower authority transport than generic Core
+  // automation. Universal Core intersects the signed gateway key scopes with
+  // the independently signed agent context on every causal route.
+  Object.defineProperty(handlers, "causalContinuityCoreRequest", {
+    value: (path, tenantId, options = {}) => coreRequest(path, tenantId, {
+      ...options,
+      useTenantGateway: true,
+    }),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
   // Entity 360 is Work-bound at the v1 transport boundary. Reuse the exact
   // active-lease/DTT Work context transport without exposing it as an MCP
   // capability.
