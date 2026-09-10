@@ -168,6 +168,17 @@ test("PostgreSQL 16 carries a divergent bridged intent from createNewWork into t
     assert.equal(bindings.rows[0].payload.legacy_intent_digest,
       bindings.rows[0].legacy_intent_digest);
 
+    // createNewWork is the governed bootstrap boundary and intentionally leaves
+    // the Work non-mutable until the server-owned causal binding completes.
+    // This integration contract exercises the downstream precommit bridge, so
+    // advance through that authoritative repair transition explicitly first.
+    assert.equal(created.work.causal_lineage_state, "PENDING");
+    const lineage = await v2Store.recordCausalLineageState(owner, {
+      work_id: created.work.work_id,
+      state: "READY",
+    });
+    assert.equal(lineage.state, "READY");
+
     const planId = crypto.randomUUID();
     const evaluationId = crypto.randomUUID();
     const v2TaskId = crypto.randomUUID();
