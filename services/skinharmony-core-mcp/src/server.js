@@ -80,6 +80,7 @@ import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
+import { ensureCanonicalWorkCausalLineage } from "./canonical-work-causal-lineage.js";
 import {
   SOFTWARE_COGNITION_TOOLS,
   createSoftwareCognitionAgentContextIssuer,
@@ -119,6 +120,7 @@ import {
   createNyraGovernedContinueHandler,
 } from "./nyra-governed-continue.js";
 import { createNyraGovernedContinuationStore } from "./nyra-governed-continuation-store.js";
+import { createCoreTypedRequestHandler } from "./core-typed-request.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
@@ -1510,6 +1512,23 @@ async function reviewCanonicalWorkCreation(args, identity) {
   });
 }
 
+async function reconcileCanonicalWorkCausalLineage(identity, work) {
+  try {
+    const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
+      identity, work });
+    const state = await workContinuityV2Store.recordCausalLineageState(
+      withTenantWorkAcl(identity), { work_id: work.work_id, state: "READY" });
+    return { state: "READY", binding, lineage_digest: state.lineage_digest };
+  } catch (error) {
+    const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
+    const state = await workContinuityV2Store.recordCausalLineageState(
+      withTenantWorkAcl(identity), { work_id: work.work_id, state: "PENDING",
+        reason_code: reasonCode });
+    return { state: "PENDING", reason_code: reasonCode,
+      lineage_digest: state.lineage_digest };
+  }
+}
+
 async function createCanonicalWorkGoverned(args, identity) {
   if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
   requireHostWorkCreateCapability(identity);
@@ -1547,12 +1566,16 @@ async function createCanonicalWorkGoverned(args, identity) {
         error.status = 503;
         throw error;
       }
+      const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, persisted.work);
       return continuityTextResult({
         ok: true,
         result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
         legacy_work_id: persisted.legacy_work_id,
         core_authorization_receipt: null,
         core_authorization_attempt_receipt: null,
+        causal_lineage: causalLineage,
+        work_ready: causalLineage.state === "READY",
+        continuation_allowed: causalLineage.state === "READY",
         dedicated_core_gate: {
           authorized: false,
           authority: "universal_core",
@@ -1598,6 +1621,10 @@ async function createCanonicalWorkGoverned(args, identity) {
     ...request,
     _core_authorization_receipt: coreAuthorizationReceipt,
   });
+  // Work creation and its causal lineage form one governed logical bootstrap.
+  // The Work store remains the canonical source of every identifier/material;
+  // exact retries repair a missing lineage idempotently before returning.
+  const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, result.work);
   const attemptMaterial = {
     schema_version: "work_bootstrap_core_authorization_attempt_v1",
     authority: "universal_core",
@@ -1620,6 +1647,9 @@ async function createCanonicalWorkGoverned(args, identity) {
     // without rewriting or misattributing the original Work event evidence.
     core_authorization_receipt: result.core_authorization_receipt,
     core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt,
+    causal_lineage: causalLineage,
+    work_ready: causalLineage.state === "READY",
+    continuation_allowed: causalLineage.state === "READY",
     dedicated_core_gate: {
       authorized: true,
       authority: "universal_core",
@@ -1637,6 +1667,9 @@ async function readNyraDirectiveContext(identity, args) {
       tenantWorkIdentity,
       { work_id: args.work_id },
     );
+    if (args.read_only !== true && context?.work?.causal_lineage_state !== "READY") {
+      throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+    }
     const precommitTicketGate = args.read_only === true ? null : typeof workContinuityV2Store.readPrecommitTicketGate === "function"
       ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
           work_id: args.work_id,
@@ -2002,6 +2035,12 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         ),
       finalizeVerifiedWork: (request, identity) =>
         handlers.nyra_verified_work_finalize(request, identity),
+      consumeConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.consumeConnectedAiTypedRequest(request),
+      completeConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.completeConnectedAiTypedRequest(request),
+      releaseConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.releaseConnectedAiTypedRequest(request),
       authorizeNativeCoordination: (request, identity) => {
         const actionType = request.operation === "create_native_plan"
           ? "native_agent.plan"
@@ -2028,9 +2067,21 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
     })
   : null;
 
+const coreTypedRequestHandler = nyraGovernedContinuationStore
+  ? createCoreTypedRequestHandler({ store: nyraGovernedContinuationStore,
+      issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
+      authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
+      reviewWorkBootstrap: (args, identity) => reviewCanonicalWorkCreation(args, identity),
+      resolveWorkBinding: async (workId, identity) => {
+        const value = await readNyraDirectiveContext(identity, { work_id: workId });
+        return { work_id: value?.work_id, intent_digest: value?.intent_digest };
+      } })
+  : null;
+
 const baseHandlers = {
   ...nyraWorkAutomationHandlers,
   nyra_converse: nyraConverseHandler,
+  ...(coreTypedRequestHandler ? { core_typed_request: coreTypedRequestHandler } : {}),
   ...(nyraGovernedContinueHandler
     ? {
       nyra_continue: nyraGovernedContinueHandler,

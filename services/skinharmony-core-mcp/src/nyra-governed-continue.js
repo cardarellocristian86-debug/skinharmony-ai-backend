@@ -40,6 +40,29 @@ function fail(code, status = 422) {
   throw error;
 }
 
+function typedOrchestrationProjection(record) {
+  const core = record?.final_result || record?.core_result || {};
+  const delegationId = core?.delegation?.delegation_id || core?.result?.delegation_id || null;
+  const ticketId = core?.action_ticket?.ticket?.ticket_id || core?.ticket?.ticket_id ||
+    core?.result?.ticket_id || null;
+  return Object.freeze({
+    ok: true,
+    schema_version: "connected_ai_orchestration_ref_v1",
+    operation: record.operation,
+    canonical_request_ref: record.canonical_request_ref,
+    continuation_ref: record.continuation_ref,
+    state: "CONSUMED",
+    replay: record.replay === true,
+    orchestration_refs: Object.freeze({
+      ...(delegationId ? { delegation_id: delegationId } : {}),
+      ...(ticketId ? { ticket_id: ticketId } : {}),
+    }),
+    execution_authorized: core.execution_authorized === true,
+    external_action_authorized: core.external_action_authorized === true,
+    provider_execution: false,
+  });
+}
+
 function precommitReconciliationErrorCode(error) {
   const code = String(error?.code || "");
   const message = String(error?.message || "");
@@ -334,7 +357,7 @@ function pullRequestMaterialization(value, action) {
 
 function assertCallerInput(args) {
   if (!args || typeof args !== "object") fail("nyra_continue_input_invalid");
-  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|preview_native_plan_merge|align_native_plan_status|reevaluate_native_closure|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
+  if (!/^(review_work_bootstrap|create_work|issue_delegation|authorize_action|consume_core_typed_request|preview_native_plan_merge|align_native_plan_status|reevaluate_native_closure|reconcile_persisted_precommit|finalize_verified_work)$/.test(String(args.operation || ""))) {
     fail("nyra_continue_operation_invalid", 409);
   }
   if (!["preview_native_plan_merge", "align_native_plan_status", "reevaluate_native_closure", "reconcile_persisted_precommit", "finalize_verified_work"].includes(args.operation) &&
@@ -489,16 +512,80 @@ export function createNyraGovernedContinueHandler({
   authorizeNativePlanStatusAlignment = null, alignNativePlanStatus = null,
   authorizeNativeClosureReevaluation = null, reevaluateNativeClosure = null,
   authorizePersistedPrecommitReconciliation = null,
-  reconcilePersistedPrecommit = null, finalizeVerifiedWork = null, now = () => Date.now(),
+  reconcilePersistedPrecommit = null, finalizeVerifiedWork = null,
+  consumeConnectedAiTypedRequest = null, completeConnectedAiTypedRequest = null,
+  releaseConnectedAiTypedRequest = null, now = () => Date.now(),
 } = {}) {
   if (!store || typeof store.claim !== "function" || typeof store.complete !== "function" ||
       typeof store.readCompletedOperation !== "function" || typeof readDirectiveContext !== "function" ||
       typeof normalizeDirectiveContext !== "function" || typeof issueDelegation !== "function" ||
       typeof authorizeAction !== "function" || typeof reviewWorkBootstrap !== "function" ||
       typeof createWorkBootstrap !== "function") throw new Error("nyra_continue_dependencies_invalid");
+  const consumeTypedRequest = consumeConnectedAiTypedRequest ||
+    store.consumeConnectedAiTypedRequest?.bind(store);
+  const completeTypedRequest = completeConnectedAiTypedRequest ||
+    store.completeConnectedAiTypedRequest?.bind(store);
+  const releaseTypedRequest = releaseConnectedAiTypedRequest ||
+    store.releaseConnectedAiTypedRequest?.bind(store);
   return async function nyraContinue(args = {}, identity = {}) {
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
+    if (args.operation === "create_work" && args.continuation_ref &&
+        args.work_bootstrap === undefined && args.delegation_request === undefined &&
+        args.action_request === undefined && typeof consumeTypedRequest === "function" &&
+        typeof completeTypedRequest === "function" && typeof releaseTypedRequest === "function") {
+      if (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !String(args.confirmation_reference || "").trim()) {
+        fail("owner_confirmation_required", 403);
+      }
+      const typed = await consumeTypedRequest({ identity,
+        continuation_ref: args.continuation_ref, allow_missing: true });
+      if (typed) {
+        if (typed.replay === true && typed.final_result) return typed.final_result;
+        try {
+          if (typed.operation !== "WORK_CREATE_OR_RECONCILE") {
+            fail("connected_ai_work_create_binding_mismatch", 409);
+          }
+          const request = typed.canonical_request?.request?.create_request;
+          const review = typed.core_result?.result;
+          if (!request || !review?.review_id || !SHA256.test(String(review.review_digest || ""))) {
+            fail("connected_ai_work_review_invalid", 409);
+          }
+          const finalResult = await createWorkBootstrap({ ...request, review_id: review.review_id,
+            review_digest: review.review_digest, idempotency_key: typed.server_idempotency_key,
+            ...(args.review_decision ? { review_decision: args.review_decision } : {}) }, identity);
+          await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
+            final_result: finalResult });
+          return finalResult;
+        } catch (error) {
+          await releaseTypedRequest({ identity,
+            continuation_ref: args.continuation_ref }).catch(() => {});
+          throw error;
+        }
+      }
+    }
+    if (args.operation === "consume_core_typed_request") {
+      const allowed = new Set(["operation", "continuation_ref", "idempotency_key", "owner_confirmed",
+        "confirmation_reference", "review_decision", "agent_id", "client_type", "session_id"]);
+      if (typeof consumeTypedRequest !== "function" || typeof completeTypedRequest !== "function" ||
+          typeof releaseTypedRequest !== "function" ||
+          Object.keys(args).some((field) => !allowed.has(field)) || !args.continuation_ref) {
+        fail("connected_ai_continuation_binding_mismatch", 409);
+      }
+      const result = await consumeTypedRequest({
+        identity, continuation_ref: args.continuation_ref,
+      });
+      if (result.operation === "WORK_CREATE_OR_RECONCILE") {
+        if (result.replay !== true) await releaseTypedRequest({ identity,
+          continuation_ref: args.continuation_ref }).catch(() => {});
+        fail("connected_ai_work_requires_create_operation", 409);
+      }
+      if (result.replay !== true) await completeTypedRequest({ identity,
+        continuation_ref: args.continuation_ref, final_result: result.core_result });
+      const projection = typedOrchestrationProjection(result);
+      return { structuredContent: projection,
+        content: [{ type: "text", text: "Nyra ha ripreso il record Core server-owned tramite il solo riferimento opaco." }] };
+    }
     if (args.operation === "preview_native_plan_merge") {
       const allowedFields = new Set([
         "operation", "work_id", "idempotency_key", "agent_id", "client_type", "session_id",

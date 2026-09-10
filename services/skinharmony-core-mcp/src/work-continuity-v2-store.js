@@ -115,6 +115,9 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_agent_id varchar(128
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_session_fingerprint varchar(128);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_version varchar(64) NOT NULL DEFAULT 'work_priority_v1';
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_context jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_state varchar(16) NOT NULL DEFAULT 'READY';
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_reason varchar(160);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_digest char(64);
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL DEFAULT true;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 1;
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
@@ -1306,6 +1309,9 @@ function assertPermission(predicate, work, actor) {
 function normalizeWork(row) {
   return {
     ...row,
+    causal_lineage_state: String(row.causal_lineage_state || "READY").toUpperCase(),
+    causal_lineage_reason: row.causal_lineage_reason || null,
+    causal_lineage_digest: row.causal_lineage_digest || null,
     assigned_user_ids: Array.isArray(row.assigned_user_ids) ? row.assigned_user_ids : [],
     supervising_user_ids: Array.isArray(row.supervising_user_ids) ? row.supervising_user_ids : [],
     agent_ids: Array.isArray(row.agent_ids) ? row.agent_ids : [],
@@ -1886,6 +1892,73 @@ export function createWorkContinuityV2Store({
     return { sequence_number: sequence, event_type: eventType, event_hash: eventHash };
   }
 
+  async function recordCausalLineageState(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("work_creation_owner_required");
+    const workId = uuid(input.work_id);
+    const state = String(input.state || "").toUpperCase();
+    if (!new Set(["READY", "PENDING"]).has(state)) fail("causal_lineage_state_invalid");
+    const reasonCode = state === "PENDING"
+      ? text(input.reason_code, "causal_lineage_reason_required", 160) : null;
+    const lineageDigest = objectDigest({ schema_version: "canonical_work_causal_lineage_state_v1",
+      tenant_id: actor.tenant_id, work_id: workId, state, reason_code: reasonCode });
+    return transaction(async (client) => {
+      const locked = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (locked.rowCount !== 1) fail("work_not_found");
+      const work = normalizeWork(locked.rows[0]);
+      if (state === "PENDING" && work.causal_lineage_state === "READY") {
+        return { work, state: "READY", reason_code: work.causal_lineage_reason,
+          lineage_digest: work.causal_lineage_digest, event: null, idempotent_replay: true };
+      }
+      const prior = await client.query(`SELECT sequence_number,event_type,event_hash,payload
+        FROM tenant_work_event WHERE tenant_id=$1 AND work_id=$2
+          AND event_type='canonical_causal_lineage_state'
+          AND payload->>'lineage_digest'=$3
+        ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId, lineageDigest]);
+      const event = prior.rows[0] || await appendV2Event(client, actor, workId,
+        "canonical_causal_lineage_state", {
+          schema_version: "canonical_work_causal_lineage_state_v1", state,
+          reason_code: reasonCode, lineage_digest: lineageDigest,
+        });
+      const updated = await client.query(`UPDATE tenant_work
+        SET causal_lineage_state=$3,causal_lineage_reason=$4,causal_lineage_digest=$5,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2
+          AND ($6::boolean OR causal_lineage_state='PENDING') RETURNING *`,
+      [actor.tenant_id, workId, state, reasonCode, lineageDigest, state === "READY"]);
+      const effective = updated.rows[0] || (state === "PENDING"
+        ? (await client.query(`SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2
+          AND causal_lineage_state='READY'`, [actor.tenant_id, workId])).rows[0] : null);
+      if (!effective) fail("causal_lineage_state_conflict");
+      return { work: normalizeWork(effective), state: effective.causal_lineage_state,
+        reason_code: effective.causal_lineage_reason, lineage_digest: effective.causal_lineage_digest,
+        event: { sequence_number: Number(event.sequence_number), event_type: event.event_type,
+          event_hash: event.event_hash }, idempotent_replay: prior.rows.length === 1 };
+    });
+  }
+  function guardPendingWorkMutation(fn) {
+    return async (identity, input = {}, ...rest) => {
+      const workId = input?.work_id ? uuid(input.work_id) : null;
+      if (workId) {
+        const actor = actorFromIdentity(identity);
+        const current = await query(`SELECT * FROM tenant_work
+          WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+        if (String(current.rows[0]?.causal_lineage_state || "READY").toUpperCase() === "PENDING") {
+          fail("canonical_work_causal_lineage_pending", 409);
+        }
+      }
+      return fn(identity, input, ...rest);
+    };
+  }
+  async function assertClientWorkMutationReady(client, tenantId, workId) {
+    const current = await client.query(`SELECT * FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
+    if (String(current.rows[0]?.causal_lineage_state || "READY").toUpperCase() === "PENDING") {
+      fail("canonical_work_causal_lineage_pending", 409);
+    }
+  }
+
   function currentIsoTimestamp() {
     const value = now();
     const resolved = value instanceof Date ? value : new Date(value);
@@ -2123,7 +2196,9 @@ export function createWorkContinuityV2Store({
           assigned_user_ids=$8::jsonb,supervising_user_ids=$9::jsonb,agent_ids=$10::jsonb,visibility_scope=$11,
           priority=$12,priority_score=$13,priority_version=$14,priority_context=$15::jsonb,intent_digest=$16,
           objective=$17,next_action=$18,created_by_agent_id=$19,created_by_session_fingerprint=$20,
-          acceptance_criteria=$21::jsonb,idea=$22,architecture=$23::jsonb,parent_work_id=$24,updated_at=now()
+          acceptance_criteria=$21::jsonb,idea=$22,architecture=$23::jsonb,parent_work_id=$24,
+          causal_lineage_state='PENDING',causal_lineage_reason='CAUSAL_BINDING_PENDING',
+          causal_lineage_digest=NULL,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId,
           workName, workType, projectId, actor.user_id, input.team_id || null,
           JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
@@ -2146,8 +2221,8 @@ export function createWorkContinuityV2Store({
       const workCode = await allocateCode(client, actor, projectId);
       await client.query(`INSERT INTO tenant_work
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,team_id,
-         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria,idea,architecture,parent_work_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'${initialStatus}',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb,$24,$25::jsonb,$26)`,
+         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria,idea,architecture,parent_work_id,causal_lineage_state,causal_lineage_reason)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'${initialStatus}',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb,$24,$25::jsonb,$26,'PENDING','CAUSAL_BINDING_PENDING')`,
       [actor.tenant_id, workId, legacyWorkId, workCode, workName, workType, projectId, actor.user_id, input.team_id || null,
         JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
         priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts),
@@ -2360,6 +2435,18 @@ export function createWorkContinuityV2Store({
           ...(coreAuthorizationReceipt ? {
             core_authorization_receipt: coreAuthorizationReceipt,
           } : {}),
+        });
+        await appendV2Event(client, actor, workId, "canonical_causal_lineage_state", {
+          schema_version: "canonical_work_causal_lineage_state_v1",
+          state: "PENDING",
+          reason_code: "CAUSAL_BINDING_PENDING",
+          lineage_digest: objectDigest({
+            schema_version: "canonical_work_causal_lineage_state_v1",
+            tenant_id: actor.tenant_id,
+            work_id: workId,
+            state: "PENDING",
+            reason_code: "CAUSAL_BINDING_PENDING",
+          }),
         });
         await injectFailure("v2_events_created", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
       }
@@ -4025,6 +4112,9 @@ export function createWorkContinuityV2Store({
         blocker_count: blockers.length,
         work_code: work.work_code, work_name: work.work_name, work_type: work.work_type,
         progress_bp: work.progress_bp, priority: work.priority, priority_score: work.priority_score,
+        causal_lineage_state: work.causal_lineage_state,
+        causal_lineage_reason: work.causal_lineage_reason,
+        causal_lineage_digest: work.causal_lineage_digest,
         governed_continuity: continuityRow ? {
           schema_version: "gallery_governed_continuity_v1",
           work_revision: Number(continuityRow.work_revision),
@@ -5349,6 +5439,7 @@ export function createWorkContinuityV2Store({
     if (source.server_owned !== true) fail("native_verifier_evidence_server_owned_required");
     const tenantId = text(source.tenant_id, "native_verifier_evidence_tenant_invalid", 64);
     const legacyWorkId = uuid(source.work_id, "native_verifier_evidence_work_invalid");
+    await assertClientWorkMutationReady(client, tenantId, legacyWorkId);
     const planId = uuid(source.plan_id, "native_verifier_evidence_plan_invalid");
     const taskId = text(source.task_id, "native_verifier_evidence_task_invalid", 120);
     const agentId = text(source.agent_id, "native_verifier_evidence_agent_invalid", 120);
@@ -5847,6 +5938,7 @@ export function createWorkContinuityV2Store({
     const tenantId = text(source.tenant_id,
       "generic_terminal_reconciliation_tenant_invalid", 64);
     const workId = uuid(source.work_id, "generic_terminal_reconciliation_work_invalid");
+    await assertClientWorkMutationReady(client, tenantId, workId);
     const planId = uuid(source.plan_id, "generic_terminal_reconciliation_plan_invalid");
     const workResult = await client.query(`SELECT * FROM tenant_work
       WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
@@ -6781,6 +6873,7 @@ export function createWorkContinuityV2Store({
     if (source.server_owned !== true) fail("native_precommit_gate_server_owned_required");
     const tenantId = text(source.tenant_id, "native_precommit_gate_tenant_invalid", 64);
     const workId = uuid(source.work_id, "native_precommit_gate_work_invalid");
+    await assertClientWorkMutationReady(client, tenantId, workId);
     const planId = uuid(source.plan_id, "native_precommit_gate_plan_invalid");
     const evaluationId = uuid(source.evaluation_id, "native_precommit_gate_evaluation_invalid");
     const evaluationDigest = digest(source.evaluation_digest, "native_precommit_gate_evaluation_digest_invalid");
@@ -8567,28 +8660,44 @@ export function createWorkContinuityV2Store({
         ...(ownerManualMergeClosure ? { closure_note: "owner_manual_merge" } : {}) };
     });
   }
-  return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
-    ensureLegacyBridge,
+  return Object.freeze({ initialize, createWork: guardPendingWorkMutation(createWork), createNewWork,
+    readCreatedWorkByBootstrapRequest, recordCausalLineageState,
+    queueNewWork: guardPendingWorkMutation(queueNewWork),
+    ensureLegacyBridge: guardPendingWorkMutation(ensureLegacyBridge),
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
-    readWork, previewNativePlanMerge, alignNativePlanStatus, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork,
-    archiveHistoricalBridgedWork, reopenWork,
-    preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
-    reconcilePersistedPrecommitTicketGate,
-    claimPrecommitTicketGate, reconcilePrecommitTicketGateClaim, readPrecommitTicketGateClaimRecovery,
+    readWork, previewNativePlanMerge,
+    alignNativePlanStatus: guardPendingWorkMutation(alignNativePlanStatus), verifyWorkClosure, listWorks,
+    assignQueuedWork: guardPendingWorkMutation(assignQueuedWork),
+    acceptQueuedWorkAssignment: guardPendingWorkMutation(acceptQueuedWorkAssignment),
+    archiveWork: guardPendingWorkMutation(archiveWork),
+    archiveHistoricalBridgedWork: guardPendingWorkMutation(archiveHistoricalBridgedWork),
+    reopenWork: guardPendingWorkMutation(reopenWork),
+    preflightGallery, openWorkReview, readPrecommitTicketGate,
+    reconcilePrecommitTicketGate: guardPendingWorkMutation(reconcilePrecommitTicketGate),
+    reconcilePersistedPrecommitTicketGate: guardPendingWorkMutation(reconcilePersistedPrecommitTicketGate),
+    claimPrecommitTicketGate: guardPendingWorkMutation(claimPrecommitTicketGate),
+    reconcilePrecommitTicketGateClaim: guardPendingWorkMutation(reconcilePrecommitTicketGateClaim), readPrecommitTicketGateClaimRecovery,
     readActivePrecommitTicketGateClaimForReconciliation,
-    abandonInactivePrecommitTicketGateClaim,
+    abandonInactivePrecommitTicketGateClaim: guardPendingWorkMutation(abandonInactivePrecommitTicketGateClaim),
     materializeNativePrecommitTicketGateWithClient,
-    fulfillPrecommitTicketTask,
+    fulfillPrecommitTicketTask: guardPendingWorkMutation(fulfillPrecommitTicketTask),
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
-    recordTask, recordTaskContract, recordDependencyManifest, evaluateWorkTrajectory,
-    commitTaskState, invalidateTaskState, observeEffectState,
-    readWorkStateProjection, resolveNativeTaskBindingWithClient, recordEvidence,
-    recordOwnerManualMergeReleaseEvidence,
+    recordTask: guardPendingWorkMutation(recordTask),
+    recordTaskContract: guardPendingWorkMutation(recordTaskContract),
+    recordDependencyManifest: guardPendingWorkMutation(recordDependencyManifest), evaluateWorkTrajectory,
+    commitTaskState: guardPendingWorkMutation(commitTaskState),
+    invalidateTaskState: guardPendingWorkMutation(invalidateTaskState),
+    observeEffectState: guardPendingWorkMutation(observeEffectState),
+    readWorkStateProjection, resolveNativeTaskBindingWithClient,
+    recordEvidence: guardPendingWorkMutation(recordEvidence),
+    recordOwnerManualMergeReleaseEvidence: guardPendingWorkMutation(recordOwnerManualMergeReleaseEvidence),
     recordNativeVerifierEvidenceWithClient,
     materializeGenericTerminalReconciliationV3WithClient,
-    persistCoreJoin, refreshDerived, reconcileStaleDryRun,
-    reconcileLegacyClosed,
-    evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,
+    persistCoreJoin: guardPendingWorkMutation(persistCoreJoin),
+    refreshDerived: guardPendingWorkMutation(refreshDerived), reconcileStaleDryRun,
+    reconcileLegacyClosed: guardPendingWorkMutation(reconcileLegacyClosed),
+    evaluateGenericClosure, buildGenericCoreJoinRequest,
+    finalizeGenericClosure: guardPendingWorkMutation(finalizeGenericClosure),
     coreJoinVerifierMetadata: resolvedCoreJoinVerifier?.metadata || null,
     verifyCoreJoinVerdict: (verdict, expected) => Boolean(
       resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(verdict, expected)),

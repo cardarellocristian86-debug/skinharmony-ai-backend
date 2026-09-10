@@ -769,7 +769,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     } : null });
   }
 
-  async function assemble(identity, input, { requireReadyBeforePersist = false } = {}) {
+  async function assemble(identity, input, { requireReadyBeforePersist = false,
+    persistenceRequestDigest = null } = {}) {
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
     requireCanonicalWorkBinding(workId, input.identity);
@@ -787,12 +788,15 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const asOf = timestamp(input.as_of, new Date(now()).toISOString(), "entity360_as_of_invalid");
     const requestInput = { ...input };
     delete requestInput.tenant_id;
-    const requestDigest = entity360Digest({
+    const derivedRequestDigest = entity360Digest({
       schema_version: "entity_360_snapshot_assemble_request_v1",
       tenant_id: identity.tenant_id,
       actor_id: identity.actor_id,
       input: requestInput,
     });
+    // Bootstrap owns its current-state cut server-side.  Its replay binding is
+    // therefore the stable caller request, not a newly sampled server clock.
+    const requestDigest = persistenceRequestDigest || derivedRequestDigest;
     const prior = await store.readSnapshotWriteReplay({ tenant_id: identity.tenant_id,
       idempotency_key: idempotencyKey, request_digest: requestDigest });
     if (prior) {
@@ -940,7 +944,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const expectedRevision = integer(input.expected_revision,
       "entity360_expected_revision_required");
     if (expectedRevision !== 0) fail("entity360_bootstrap_revision_invalid", 409);
-    const asOf = timestamp(input.as_of, null, "entity360_as_of_invalid");
+    const requestedAsOf = timestamp(input.as_of, null, "entity360_as_of_invalid");
+    const asOf = new Date(now()).toISOString();
     const idempotencyKey = text(input.idempotency_key,
       "entity360_idempotency_key_required", 240);
     const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
@@ -948,7 +953,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       work_id: workId,
       entity_type: "work",
       identity: { work_id: workId },
-      as_of: asOf,
+      as_of: requestedAsOf,
       expected_revision: 0,
       idempotency_key: idempotencyKey,
     };
@@ -958,8 +963,14 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       actor_id: identity.actor_id,
       input: assemblyInput,
     });
+    // This route establishes the first snapshot of an already-created
+    // canonical Work.  A host timestamp sampled before the atomic Work commit
+    // must not hide the just-committed Genesis/Intent/ICF rows and deadlock
+    // Semantic Scope ENFORCE.  Read the current canonical cut using Core's
+    // clock, while retaining the immutable caller request as the replay key.
+    assemblyInput.as_of = asOf;
     const assembled = await assemble(identity, assemblyInput,
-      { requireReadyBeforePersist: true });
+      { requireReadyBeforePersist: true, persistenceRequestDigest: requestDigest });
     const snapshot = assembled?.snapshot;
     if (!snapshot || snapshot.tenant_scope !== identity.tenant_id
       || snapshot.entity_type !== "work"
