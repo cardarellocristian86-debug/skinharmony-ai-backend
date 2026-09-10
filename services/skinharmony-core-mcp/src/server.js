@@ -2741,7 +2741,12 @@ const baseHandlers = {
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
     nyra_verified_work_finalize: async (args, identity) => {
       await requireCanonicalWorkRead(identity, args.work_id);
-      await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
+      await requireOwnerGovernance(
+        identity,
+        "work.continuity.checkpoint",
+        args.work_id,
+        args.idempotency_key,
+      );
       const aclIdentity = withTenantWorkAcl(identity);
       const state = await workContinuityV2Store.readWork(aclIdentity, { work_id: args.work_id });
       const adapter = state.work.work_type;
