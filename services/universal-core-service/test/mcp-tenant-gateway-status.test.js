@@ -96,7 +96,7 @@ async function providerRequest(base, {
   return { status: response.status, json: await response.json() };
 }
 
-test("legacy gateway record gains owner assertion without rotating its key", () => {
+test("pre-causal gateway record gains causal transport scopes without rotating its key", () => {
   const storageRoot = path.join(os.tmpdir(), `mcp-tenant-gateway-migration-${Date.now()}-${Math.random()}`);
   const keysDir = path.join(storageRoot, "keys");
   fs.mkdirSync(keysDir, { recursive: true });
@@ -108,7 +108,7 @@ test("legacy gateway record gains owner assertion without rotating its key", () 
     brand_scope: "",
     label: "MCP verified tenant gateway",
     preset: null,
-    allowed_scopes: [...DEFAULT_AUTOMATION_SCOPES],
+    allowed_scopes: [...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION],
     status: "active",
     created_at: "2026-01-01T00:00:00.000Z",
     expires_at: null,
@@ -133,7 +133,12 @@ test("legacy gateway record gains owner assertion without rotating its key", () 
   const [record] = JSON.parse(fs.readFileSync(path.join(keysDir, "keys.json"), "utf8"));
   assert.equal(record.key_id, "key_existing_gateway");
   assert.equal(record.key_hash, crypto.createHash("sha256").update(GATEWAY_KEY).digest("hex"));
-  assert.deepEqual(record.allowed_scopes, [...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION]);
+  assert.deepEqual(record.allowed_scopes, [
+    ...DEFAULT_AUTOMATION_SCOPES,
+    SCOPES.OWNER_ASSERTION,
+    SCOPES.CAUSAL_READ,
+    SCOPES.CAUSAL_WRITE,
+  ]);
 });
 
 test("weak gateway bootstrap material fails closed without creating a gateway record", async () => {
