@@ -184,6 +184,17 @@ test("creates stable project lineage and rejects stale project state", async () 
   assert.notEqual(next.state_digest, f.snapshot.state_digest);
 });
 
+test("an unchanged project state reuses its immutable snapshot across operation keys", async () => {
+  const f = await fixture();
+  const replay = await f.runtime.project_state_snapshot(CONTEXT, {
+    project_id: f.project.project_id,
+    idempotency_key: "same-state-new-operation",
+  });
+  assert.equal(replay.snapshot_id, f.snapshot.snapshot_id);
+  assert.equal(replay.state_digest, f.snapshot.state_digest);
+  assert.notEqual(replay._event.event_id, f.snapshot._event.event_id);
+});
+
 test("parent intent revision is same-project, approved and cycle-safe", async () => {
   const f = await fixture();
   const other = await f.runtime.project_identity_create(CONTEXT, { idempotency_key: "other-project", canonical_name: "Other" });
