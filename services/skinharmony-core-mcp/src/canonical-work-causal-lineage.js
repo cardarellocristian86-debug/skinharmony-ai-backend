@@ -30,10 +30,23 @@ export async function ensureCanonicalWorkCausalLineage({ handlers, identity, wor
   if (!revision?.intent_revision_id) fail("canonical_work_causal_active_intent_missing");
   const workIntentDigest = String(work.intent_digest || "").trim().toLowerCase();
   const activeIntentDigest = String(revision.canonical_digest || "").trim().toLowerCase();
-  if (!/^[a-f0-9]{64}$/u.test(workIntentDigest)
-    || activeIntentDigest !== workIntentDigest) fail("canonical_work_causal_intent_binding_mismatch");
+  // Work Continuity and Causal Continuity intentionally use distinct intent
+  // domains: the Work digest anchors its bounded execution contract, while
+  // the active project revision anchors the wider project decision path.
+  // Equating them deadlocked every additional Work in an existing project.
+  if (!/^[a-f0-9]{64}$/u.test(workIntentDigest) || !/^[a-f0-9]{64}$/u.test(activeIntentDigest)) {
+    fail("canonical_work_causal_intent_binding_mismatch");
+  }
+  const governedBootstrapIntentDigest = String(work.architecture?.host_binding
+    ?.canonical_intent_binding?.canonical_intent_digest || "").trim().toLowerCase();
+  // A conversational bootstrap intent is a third, request-scoped domain. It
+  // must remain a valid immutable digest, but it is not a project revision.
+  if (governedBootstrapIntentDigest && !/^[a-f0-9]{64}$/u.test(governedBootstrapIntentDigest)) {
+    fail("canonical_work_causal_intent_binding_mismatch");
+  }
   const key = `canonical-work-lineage:${digest({ tenant_id: identity.tenantId,
-    project_id: projectId, work_id: workId, intent_revision_id: revision.intent_revision_id }).slice(0, 48)}`;
+    project_id: projectId, work_id: workId, intent_revision_id: revision.intent_revision_id,
+    work_intent_digest: workIntentDigest, project_intent_digest: activeIntentDigest }).slice(0, 48)}`;
   const state = payload(await handlers.project_state_snapshot({ project_id: projectId,
     idempotency_key: `${key}:state` }, identity));
   if (!state?.state_digest) fail("canonical_work_causal_project_state_missing");
@@ -46,5 +59,6 @@ export async function ensureCanonicalWorkCausalLineage({ handlers, identity, wor
     fail("canonical_work_causal_binding_readback_invalid");
   }
   return Object.freeze({ project_id: projectId, work_id: workId,
-    intent_revision_id: revision.intent_revision_id, state_digest: state.state_digest });
+    intent_revision_id: revision.intent_revision_id, work_intent_digest: workIntentDigest,
+    project_intent_digest: activeIntentDigest, state_digest: state.state_digest });
 }
