@@ -849,7 +849,11 @@ function commitRequest(gate = precommitGate()) {
     intent_anchor_digest: SECRET_DIGEST,
     delegation_id: "hnd_commit-delegation-001",
     repository: "cardarellocristian86-debug/skinharmony-ai-backend",
-    action: { kind: "git.commit", branch: "fix/nyra-conversation-quality-v1" },
+    action: {
+      kind: "git.commit",
+      branch: "fix/nyra-conversation-quality-v1",
+      repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    },
     evidence_digest: gate.projection_digest,
   };
 }
@@ -1457,6 +1461,36 @@ test("native precommit gate is CAS-claimed before authorization and fulfilled fr
   assert.equal(response.structuredContent.ticket_id, record.ticket.ticket_id);
   assert.deepEqual(order, ["claim", "authorize", "readback", "fulfill"]);
   assert.equal(recoveryLookups, 1, "the post-claim path must not recover a newly created claim");
+});
+
+test("rejects an action repository mismatch before claiming the native precommit gate", async (t) => {
+  for (const [name, actionRepository] of [
+    ["missing", undefined],
+    ["different", "different-owner/different-repo"],
+  ]) await t.test(name, async () => {
+    const gate = nativePrecommitGate();
+    const request = commitRequest(gate);
+    request.action.repository = actionRepository;
+    let claims = 0;
+    const handler = createNyraGovernedContinueHandler({
+      store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+      readDirectiveContext: async () => commitContext(gate),
+      normalizeDirectiveContext: (value) => value,
+      issueDelegation: async () => {},
+      reviewWorkBootstrap: async () => {},
+      createWorkBootstrap: async () => {},
+      claimPrecommitTicketGate: async () => { claims += 1; },
+      readPrecommitTicketGateClaimRecovery: async () => null,
+      authorizeAction: async () => { throw new Error("unexpected_authorization"); },
+    });
+    await assert.rejects(handler({
+      operation: "authorize_action",
+      continuation_ref: CONTINUATION_REF,
+      idempotency_key: `caller-invalid-action-repository-${name}`,
+      action_request: request,
+    }, identity()), /nyra_continue_action_repository_binding_mismatch/);
+    assert.equal(claims, 0);
+  });
 });
 
 test("native precommit reconciliation preserves an allowlisted PostgreSQL trigger cause", async () => {

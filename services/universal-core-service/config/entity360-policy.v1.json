@@ -1,6 +1,6 @@
 {
   "schema_version": "entity_360_context_policy_v1",
-  "policy_version": "entity_360_reference_policy_v2",
+  "policy_version": "entity_360_reference_policy_v3",
   "mode": "SHADOW",
   "source_registry": [
     {
