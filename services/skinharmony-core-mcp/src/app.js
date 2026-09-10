@@ -761,7 +761,15 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
           // submit its one terminal report. The exact target is reauthorized
           // before dispatch, so this does not make any other mutation usable.
           hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_READ)
-        );
+      );
+    }
+    if (tool.name === "core_typed_request") {
+      if (!principal) return hostAppCanAccessTool({ identity, toolName: tool.name, tools });
+      return principal.registered === true && [
+        HOST_APP_CAPABILITIES.WORK_CREATE,
+        HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
+        HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+      ].some((capability) => hostPrincipalAllows(identity, capability));
     }
     return hostAppCanAccessTool({
       identity,
@@ -772,8 +780,11 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
   if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return capabilityFiltered;
   return capabilityFiltered.filter((tool) => (
     (tool.name === "core_typed_request"
-      ? principal?.registered === true &&
-        hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)
+      ? principal?.registered === true && [
+        HOST_APP_CAPABILITIES.WORK_CREATE,
+        HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
+        HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+      ].some((capability) => hostPrincipalAllows(identity, capability))
       : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name)) ||
     (["nyra_continue", "nyra_governed_continue"].includes(tool.name) &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))

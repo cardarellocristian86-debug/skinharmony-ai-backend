@@ -227,7 +227,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       host_kind: "codex_native",
       client_type: "codex",
       interaction_mode: "nyra_conversational",
-      capabilities: ["work.read", "work.coordinate", "governed_continue"],
+      capabilities: ["work.read", "work.coordinate", "work.create", "governed_continue"],
     },
   };
   for (const clientType of ["codex", "other"]) {

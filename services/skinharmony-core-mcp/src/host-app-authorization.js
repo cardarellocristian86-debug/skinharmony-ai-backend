@@ -359,7 +359,10 @@ export function requireHostAppToolCapability({
       identity?.platformOwner !== true) {
     fail("platform_owner_required");
   }
-  const requiredCapabilities = [required];
+  // The typed Core entry is not a Nyra continuation. Its exact operation is
+  // the authority boundary, so registered AI hosts need only that operation's
+  // capability rather than the legacy governed_continue bridge.
+  const requiredCapabilities = target === "core_typed_request" ? [] : [required];
   const governedOperationCapability = target === "nyra_continue"
     ? {
         review_work_bootstrap: HOST_APP_CAPABILITIES.WORK_CREATE,
