@@ -1019,6 +1019,18 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(createHandler, /authorized: false/);
 });
 
+test("a governed mutating resume repairs pending canonical causal lineage before continuing", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = serverSource.indexOf("async function readNyraDirectiveContext");
+  const end = serverSource.indexOf("async function", start + 1);
+  const handler = serverSource.slice(start, end);
+  assert.match(handler, /args\.read_only !== true/);
+  assert.match(handler, /await reconcileCanonicalWorkCausalLineage\(identity, context\.work\)/);
+  assert.match(handler, /reconciliation\.state !== "READY"/);
+  assert.match(handler, /context = await workContinuityV2Store\.readWork/);
+  assert.match(handler, /canonical_work_causal_lineage_pending/);
+});
+
 test("legacy Work reads and auto-resume intersect canonical V2 visibility", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /work_continuity_read: async[\s\S]*?readLegacyWorkAuthorized\(identity, args\)/);
