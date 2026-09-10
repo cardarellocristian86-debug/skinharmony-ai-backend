@@ -1904,7 +1904,10 @@ export function createWorkContinuityV2Store({
     const lineageDigest = objectDigest({ schema_version: "canonical_work_causal_lineage_state_v1",
       tenant_id: actor.tenant_id, work_id: workId, state, reason_code: reasonCode });
     return transaction(async (client) => {
-      const work = await lockWork(client, actor, workId);
+      const locked = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (locked.rowCount !== 1) fail("work_not_found");
+      const work = normalizeWork(locked.rows[0]);
       if (state === "PENDING" && work.causal_lineage_state === "READY") {
         return { work, state: "READY", reason_code: work.causal_lineage_reason,
           lineage_digest: work.causal_lineage_digest, event: null, idempotent_replay: true };
