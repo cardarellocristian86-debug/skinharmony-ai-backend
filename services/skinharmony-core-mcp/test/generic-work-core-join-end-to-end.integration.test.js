@@ -80,19 +80,20 @@ function leaseBinding(tenantId, presence = agentPresence()) {
 }
 
 function genericJoinRequest() {
+  const evidence_digests = [digest("evidence-e2e-001")];
+  const evidenceDigest = genericWorkCoreJoinDigest([...evidence_digests].sort());
   const acceptance_criteria = [{
-    criterion_id: "criterion-e2e-001",
-    criterion_digest: digest("criterion"),
-    evidence_digest: digest("criterion-evidence"),
-    verification_digest: digest("criterion-verification"),
+    criterion_id: "criterion-001",
+    criterion_digest: genericWorkCoreJoinDigest("criterion"),
+    evidence_digest: evidenceDigest,
+    verification_digest: evidence_digests[0],
   }];
   const task_state = [{
     task_id: "task-e2e-001",
-    completion_evidence_digest: digest("task-evidence"),
-    task_state_digest: digest("task-state"),
-    verification_digest: digest("task-verification"),
+    completion_evidence_digest: evidenceDigest,
+    task_state_digest: genericWorkCoreJoinDigest({ status: "completed", acceptance_verified: true }),
+    verification_digest: evidence_digests[0],
   }];
-  const evidence_digests = [digest("evidence-e2e-001")];
   const issued = Date.now();
   const unsignedReceipt = {
     schema_version: "generic_work_independent_verifier_receipt_v1",
@@ -173,6 +174,7 @@ class VerdictPersistencePool {
       priority_context: {},
       created_at: "2026-08-08T00:00:00.000Z",
       updated_at: "2026-08-08T00:00:00.000Z",
+      acceptance_criteria: ["criterion"],
     };
     this.join = null;
     this.insertCount = 0;
@@ -194,8 +196,34 @@ class VerdictPersistencePool {
       const found = parameters[0] === this.work.tenant_id && parameters[1] === this.work.work_id;
       return { rows: found ? [structuredClone(this.work)] : [], rowCount: found ? 1 : 0 };
     }
+    if (query.startsWith("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2")) {
+      return { rows: [{ tenant_id: TENANT, work_id: WORK_ID,
+        task_id: "task-e2e-001", required: true, status: "completed",
+        acceptance_verified: true }], rowCount: 1 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2")) {
+      return { rows: [{ tenant_id: TENANT, work_id: WORK_ID,
+        evidence_id: "evidence-e2e-001", required: true,
+        digest: digest("evidence-e2e-001"), independently_verified: true,
+        verified_by_agent_id: "verifier-e2e-001",
+        verified_by_session_fingerprint: "verifier-session-e2e-001" }], rowCount: 1 };
+    }
+    if (query.includes("FROM tenant_work_task_contract")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM tenant_work_committed_task_state")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM tenant_work_dependency_manifest")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM tenant_work_generic_evidence_reconciliation_batch_v3")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (query.includes("FROM tenant_work_state_projection")) return { rows: [], rowCount: 0 };
     if (query.startsWith("SELECT core_join_digest,core_join_context FROM tenant_work_core_join")) {
       return { rows: this.join ? [structuredClone(this.join)] : [], rowCount: this.join ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_core_join")) {
+      return { rows: this.join ? [structuredClone(this.join)] : [], rowCount: this.join ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_closure_receipt") ||
+        query.startsWith("SELECT * FROM tenant_work_final_report")) {
+      return { rows: [], rowCount: 0 };
     }
     if (query.startsWith("INSERT INTO tenant_work_core_join")) {
       this.join = { core_join_digest: parameters[2], core_join_context: JSON.parse(parameters[3]),

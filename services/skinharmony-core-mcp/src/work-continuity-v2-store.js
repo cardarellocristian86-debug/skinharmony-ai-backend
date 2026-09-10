@@ -1687,7 +1687,7 @@ export function deriveEffectiveGenericClosureEvidence(state = {}) {
   });
 }
 
-export function deriveGenericClosureReadiness(state = {}) {
+export function deriveGenericClosureReadiness(state = {}, { adapter = null } = {}) {
   const work = plainRecord(state.work) ? state.work : {};
   const tasks = Array.isArray(state.tasks)
     ? state.tasks.filter((item) => item?.required !== false)
@@ -1709,7 +1709,14 @@ export function deriveGenericClosureReadiness(state = {}) {
     authoritativeNativeReleaseEvidence(item, work));
   const workWideReconciliationPersisted = effectiveEvidence.reconciliation_count > 0 &&
     effectiveEvidence.invalid_reconciliation_count === 0;
-  const nativeTaskEvidenceOnly = nativeTaskEvidencePresent &&
+  // Native verifier reports are task-scoped for repository-bound software and
+  // therefore cannot replace its release attestation. A bootstrap that Core
+  // authoritatively reclassifies as an unbound operational proof has no code
+  // effect to attest; its independently verified task set is the complete
+  // evidence surface for the generic Core Join.
+  const unboundSoftwareProof = work.work_type === "software_git" && adapter === "generic";
+  const nativeReleaseRequired = !unboundSoftwareProof;
+  const nativeTaskEvidenceOnly = nativeReleaseRequired && nativeTaskEvidencePresent &&
     !nativeReleaseAuthorityPersisted && !workWideReconciliationPersisted;
   const coreJoinPersisted = Boolean(state.join);
   const missing = [];
@@ -7589,19 +7596,43 @@ export function createWorkContinuityV2Store({
     if (!resolvedCoreJoinVerifier || !resolvedCoreJoinVerifier.verify(core_join_context)) fail("generic_core_join_signature_invalid");
     const workId = uuid(work_id);
     const outcome = await transaction(async (client) => {
-      const work = await loadWork(client, actor, workId, true);
+      const closure = await closureState(client, actor, workId, true);
+      const work = closure.work;
       assertPermission(canClose, work, actor);
       const joinDigest = digest(core_join_digest, "core_join_digest_invalid");
       const context = core_join_context || {};
-      if (context.tenant_id !== actor.tenant_id || context.work_id !== workId || context.adapter !== work.work_type ||
+      const expectedAdapter = verifiedFinalizationAdapter(closure);
+      const effectiveEvidence = deriveEffectiveGenericClosureEvidence(closure).evidence;
+      const evidenceDigests = effectiveEvidence.map((item) => item.digest).sort();
+      const evidenceDigest = objectDigest(evidenceDigests);
+      const verifier = effectiveEvidence.find((item) =>
+        independentlyVerifiedGenericEvidence(item, work));
+      const acceptanceCriteria = (work.acceptance_criteria || []).map((criterion, index) => ({
+        criterion_id: `criterion-${String(index + 1).padStart(3, "0")}`,
+        criterion_digest: objectDigest(criterion), evidence_digest: evidenceDigest,
+        verification_digest: verifier?.digest,
+      }));
+      const taskState = closure.tasks.map((task) => ({ task_id: task.task_id,
+        task_state_digest: objectDigest({ status: task.status,
+          acceptance_verified: task.acceptance_verified }),
+        completion_evidence_digest: evidenceDigest,
+        verification_digest: verifier?.digest }));
+      if (context.tenant_id !== actor.tenant_id || context.work_id !== workId || context.adapter !== expectedAdapter ||
           context.verdict_digest !== joinDigest || context.authority !== "universal_core" ||
           context.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || typeof context.signature !== "string" || context.signature.length < 16) {
         fail("generic_core_join_context_invalid");
       }
+      if (context.evidence_digest !== evidenceDigest ||
+          context.acceptance_criteria_digest !== objectDigest(acceptanceCriteria) ||
+          context.task_state_digest !== objectDigest(taskState)) {
+        fail("generic_core_join_context_stale");
+      }
       const existing = await client.query("SELECT core_join_digest,core_join_context FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [actor.tenant_id, workId]);
       if (existing.rows[0]) {
-        if (existing.rows[0].core_join_digest !== joinDigest || objectDigest(existing.rows[0].core_join_context) !== objectDigest(context)) fail("generic_core_join_conflict");
+        const exactReplay = existing.rows[0].core_join_digest === joinDigest &&
+          objectDigest(existing.rows[0].core_join_context) === objectDigest(context);
         if (ARCHIVE_STATUSES.has(work.status)) {
+          if (!exactReplay) fail("generic_core_join_conflict");
           return {
             terminal_replay: true,
             derived: await deriveWorkStateWithClient(
@@ -7613,6 +7644,12 @@ export function createWorkContinuityV2Store({
           };
         }
         assertOperationalWorkMutation(work);
+        if (!exactReplay) {
+          await client.query(`UPDATE tenant_work_core_join
+            SET core_join_digest=$3,core_join_context=$4::jsonb,persisted_by_user_id=$5,persisted_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [actor.tenant_id, workId, joinDigest, JSON.stringify(context), actor.user_id]);
+        }
         return {
           terminal_replay: false,
           derived: await refreshDerivedWithClient(client, actor, workId),
@@ -8460,7 +8497,7 @@ export function createWorkContinuityV2Store({
     const state = await transaction((client) => closureState(client, actor, workId, false));
     assertPermission(canRead, state.work, actor);
     if (verifiedFinalizationAdapter(state) !== adapter) fail("work_closure_adapter_mismatch");
-    return { work_id: workId, adapter, ...deriveGenericClosureReadiness(state) };
+    return { work_id: workId, adapter, ...deriveGenericClosureReadiness(state, { adapter }) };
   }
   async function buildGenericCoreJoinRequest(identity, { work_id, adapter, idempotency_key }) {
     await initialize();
@@ -8476,7 +8513,7 @@ export function createWorkContinuityV2Store({
       if (verifiedFinalizationAdapter(closure) !== adapter) fail("work_closure_adapter_mismatch");
       return closure;
     });
-    const readiness = deriveGenericClosureReadiness(state);
+    const readiness = deriveGenericClosureReadiness(state, { adapter });
     const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state).evidence;
     if (!readiness.required_tasks_complete) fail("generic_core_join_tasks_incomplete");
     if (readiness.native_task_evidence_only) {
@@ -8559,7 +8596,7 @@ export function createWorkContinuityV2Store({
           closed_participant_count: replay.closed_participant_count,
           terminal_coordination_reconciliation: coordinationReconciliation };
       }
-      const readiness = deriveGenericClosureReadiness(state);
+      const readiness = deriveGenericClosureReadiness(state, { adapter });
       if (!readiness.ready) fail("work_closure_gate_unsatisfied");
       const effectiveEvidence = deriveEffectiveGenericClosureEvidence(state).evidence;
       const effectiveEvidenceDigests = effectiveEvidence.map((item) => item.digest).sort();
@@ -8578,13 +8615,13 @@ export function createWorkContinuityV2Store({
           acceptance_verified: task.acceptance_verified }),
         completion_evidence_digest: currentEvidenceDigest,
         verification_digest: currentVerifier?.digest }));
-      if (state.generic_evidence_reconciliation_head_v3 &&
-          (!joinedVerdict || !resolvedCoreJoinVerifier?.verify(joinedVerdict) ||
+      if (!joinedVerdict || !resolvedCoreJoinVerifier?.verify(joinedVerdict) ||
+          joinedVerdict.verdict_digest !== state.join?.core_join_digest ||
           joinedVerdict.tenant_id !== actor.tenant_id || joinedVerdict.work_id !== workId ||
           joinedVerdict.adapter !== adapter ||
           joinedVerdict.evidence_digest !== currentEvidenceDigest ||
           joinedVerdict.acceptance_criteria_digest !== objectDigest(currentAcceptanceCriteria) ||
-          joinedVerdict.task_state_digest !== objectDigest(currentTaskState))) {
+          joinedVerdict.task_state_digest !== objectDigest(currentTaskState)) {
         fail("work_closure_core_join_stale");
       }
       const ownerManualMergeClosure = effectiveEvidence.some((item) =>
