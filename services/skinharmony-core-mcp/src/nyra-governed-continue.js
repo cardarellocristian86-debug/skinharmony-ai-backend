@@ -756,6 +756,16 @@ export function createNyraGovernedContinueHandler({
             !actionKindAllowed(payload.action_class, request.action?.kind)) {
           fail("nyra_continue_action_binding_mismatch", 409);
         }
+        // Universal Core requires the repository in both the request envelope
+        // and the action itself. Reject an incomplete or divergent action
+        // before the continuation/precommit CAS claim: otherwise a request
+        // that Core can never authorize freezes the one-use gate until its
+        // delegation expires.
+        if (payload.action_class === "GIT_COMMIT" &&
+            (typeof request.repository !== "string" || request.repository.length < 3 ||
+              request.action?.repository !== request.repository)) {
+          fail("nyra_continue_action_repository_binding_mismatch", 409);
+        }
         if (payload.action_class === "PULL_REQUEST_OPEN") {
           pullRequestMaterialization(args.pull_request_materialization, request.action);
         } else if (args.pull_request_materialization !== undefined) {

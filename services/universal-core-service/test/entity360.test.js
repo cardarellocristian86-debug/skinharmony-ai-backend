@@ -255,6 +255,7 @@ function rebindTamperedQualificationClaim(value, contribution, claim) {
 
 test("configuration compiles a versioned domain-neutral policy and ontology", () => {
   assert.equal(POLICY.schema_version, "entity_360_context_policy_v1");
+  assert.equal(POLICY.policy_version, "entity_360_reference_policy_v3");
   assert.match(POLICY.policy_digest, /^[a-f0-9]{64}$/u);
   assert.equal(POLICY.shadow_observation.minimum_interval_ms, 30_000);
   assert.equal(POLICY.shadow_observation.max_inflight_per_tenant, 2);
