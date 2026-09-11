@@ -288,7 +288,14 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
     if (revision.classification === "STRATEGIC_PIVOT" && !actor.owner_confirmed && !actor.authority_scope.includes("intent:approve:strategic")) {
       throw new CausalContinuityError("OWNER_AUTHORITY_REQUIRED");
     }
-    return store.approveRevision({ ...prepared, project_id: revision.project_id, intent_revision_id, approved: input.approved !== false, authorized_by: actor.actor_id });
+    return store.approveRevision({
+      ...prepared,
+      project_id: revision.project_id,
+      intent_revision_id,
+      approved: input.approved !== false,
+      expected_no_active_intent: input.expected_no_active_intent === true,
+      authorized_by: actor.actor_id,
+    });
   }
 
   async function intent_revision_impact(context, input = {}) {

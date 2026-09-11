@@ -222,6 +222,33 @@ test("parent intent revision is same-project, approved and cycle-safe", async ()
   );
 });
 
+test("bootstrap approval cannot replace an intent made active by another actor", async () => {
+  const f = await fixture();
+  const proposal = await f.runtime.intent_revision_propose(CONTEXT, {
+    project_id: f.project.project_id,
+    parent_revision_id: f.revision.intent_revision_id,
+    idempotency_key: "bootstrap-race-proposal",
+    alias: "canonical-work-bootstrap-initial",
+    classification: "REFINEMENT",
+    motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
+    problem: "A concurrent initial approval must not be overwritten.",
+  });
+  await assert.rejects(
+    () => f.runtime.intent_revision_approve(CONTEXT, {
+      project_id: f.project.project_id,
+      intent_revision_id: proposal.intent_revision_id,
+      approved: true,
+      expected_no_active_intent: true,
+      idempotency_key: "bootstrap-race-approve",
+    }),
+    (error) => error.code === "INTENT_ACTIVE_CONFLICT",
+  );
+  const path = await f.runtime.project_decision_path_read(CONTEXT, { project_id: f.project.project_id });
+  assert.equal(path.project.active_intent_revision_id, f.revision.intent_revision_id);
+  assert.equal(path.intent_revisions.find((item) => item.intent_revision_id === proposal.intent_revision_id).state,
+    "PROPOSED");
+});
+
 test("purpose change cannot be approved in place", async () => {
   const f = await fixture();
   const purpose = await f.runtime.intent_revision_propose(CONTEXT, {

@@ -27,6 +27,42 @@ function approvedRevision(decisionPath, project) {
     item?.state === "APPROVED" && item.intent_revision_id === activeIntentRevisionId) || null;
 }
 
+function bootstrapInitialProposal(revision, work, projectAlias) {
+  const revisionPayload = revision?.revision_payload && typeof revision.revision_payload === "object"
+    ? revision.revision_payload : {};
+  return revision?.state === "PROPOSED" && revision.parent_revision_id == null &&
+    revision.alias === "canonical-work-bootstrap-initial" &&
+    revision.classification === "REFINEMENT" &&
+    revisionPayload.motivation === "Establish the initial approved causal decision path for canonical Work lineage." &&
+    revisionPayload.problem === String(work.objective || work.idea || projectAlias).slice(0, 8_000) &&
+    JSON.stringify(revisionPayload.scope_added || []) === JSON.stringify([projectAlias]) &&
+    JSON.stringify(revisionPayload.invariants || []) === JSON.stringify([
+      "Canonical Work lineage remains server-derived and effect-free at bootstrap.",
+    ]);
+}
+
+async function readGenesisOrMaterialize({ handlers, identity, work, projectAlias, projectId }) {
+  try {
+    return payload(await handlers.genesis_intent_read({ project_id: projectId }, identity));
+  } catch (error) {
+    if (!isCausalNotFound(error)) fail("canonical_work_causal_intent_missing");
+  }
+  try {
+    await handlers.genesis_intent_create({
+      project_id: projectId,
+      intent_text: String(work.objective || work.idea || projectAlias).slice(0, 20_000),
+      idempotency_key: lineageKey(identity, projectAlias, "genesis"),
+    }, identity);
+  } catch {
+    // A concurrent bootstrap can have committed the immutable Genesis first.
+  }
+  try {
+    return payload(await handlers.genesis_intent_read({ project_id: projectId }, identity));
+  } catch {
+    fail("canonical_work_causal_genesis_materialization_failed");
+  }
+}
+
 async function materializeProjectDecisionPath({ handlers, identity, work, projectAlias, project }) {
   const projectKey = lineageKey(identity, projectAlias, "project");
   let resolvedProject = project;
@@ -57,52 +93,57 @@ async function materializeProjectDecisionPath({ handlers, identity, work, projec
   }
   const projectId = String(resolvedProject?.project_id || "").trim();
   if (!projectId) fail("canonical_work_causal_project_missing");
+  await readGenesisOrMaterialize({ handlers, identity, work, projectAlias, projectId });
   let decisionPath;
   try { decisionPath = payload(await handlers.project_decision_path_read({ project_id: projectId }, identity)); }
   catch { fail("canonical_work_causal_intent_missing"); }
-  if (!decisionPath?.genesis_intent) {
-    try {
-      await handlers.genesis_intent_create({
-        project_id: projectId,
-        // This is server-owned Work material, not a caller prompt. It gives a
-        // new causal project a stable descriptive root without expanding the
-        // Work's external authority.
-        intent_text: String(work.objective || work.idea || projectAlias).slice(0, 20_000),
-        idempotency_key: lineageKey(identity, projectAlias, "genesis"),
-      }, identity);
-    } catch {
-      fail("canonical_work_causal_genesis_materialization_failed");
-    }
-    try { decisionPath = payload(await handlers.project_decision_path_read({ project_id: projectId }, identity)); }
-    catch { fail("canonical_work_causal_intent_missing"); }
-  }
   if (!decisionPath?.genesis_intent) fail("canonical_work_causal_genesis_missing");
   if (!approvedRevision(decisionPath, resolvedProject)) {
-    if ((decisionPath.intent_revisions || []).length !== 0) {
+    const drafts = (decisionPath.intent_revisions || []).filter((revision) =>
+      bootstrapInitialProposal(revision, work, projectAlias));
+    if ((decisionPath.intent_revisions || []).length !== 0 && drafts.length !== 1) {
       fail("canonical_work_causal_active_intent_missing");
     }
-    let revision;
+    if (!drafts[0]) {
+      try {
+        await handlers.intent_revision_propose({
+          project_id: projectId,
+          alias: "canonical-work-bootstrap-initial",
+          classification: "REFINEMENT",
+          motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
+          problem: String(work.objective || work.idea || projectAlias).slice(0, 8_000),
+          scope_added: [projectAlias],
+          invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
+          risks: [],
+          affected_work_ids: [],
+          idempotency_key: lineageKey(identity, projectAlias, "initial-revision"),
+        }, identity);
+      } catch {
+        // The deterministic proposal may have committed while its response was lost.
+      }
+    }
     try {
-      revision = payload(await handlers.intent_revision_propose({
-        project_id: projectId,
-        alias: "canonical-work-bootstrap-initial",
-        classification: "REFINEMENT",
-        motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
-        problem: String(work.objective || work.idea || projectAlias).slice(0, 8_000),
-        scope_added: [projectAlias],
-        invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
-        risks: [],
-        affected_work_ids: [],
-        idempotency_key: lineageKey(identity, projectAlias, "initial-revision"),
-      }, identity));
-      await handlers.intent_revision_approve({
-        project_id: projectId,
-        intent_revision_id: revision?.intent_revision_id,
-        approved: true,
-        idempotency_key: lineageKey(identity, projectAlias, "initial-approval"),
-      }, identity);
-    } catch {
-      fail("canonical_work_causal_initial_intent_materialization_failed");
+      decisionPath = payload(await handlers.project_decision_path_read({ project_id: projectId }, identity));
+      resolvedProject = decisionPath?.project || resolvedProject;
+    } catch { fail("canonical_work_causal_intent_missing"); }
+    if (!approvedRevision(decisionPath, resolvedProject)) {
+      const resumable = (decisionPath.intent_revisions || []).filter((revision) =>
+        bootstrapInitialProposal(revision, work, projectAlias));
+      if (resumable.length !== 1 || !resumable[0]?.intent_revision_id) {
+        fail("canonical_work_causal_active_intent_missing");
+      }
+      try {
+        await handlers.intent_revision_approve({
+          project_id: projectId,
+          intent_revision_id: resumable[0].intent_revision_id,
+          approved: true,
+          expected_no_active_intent: true,
+          idempotency_key: lineageKey(identity, projectAlias, "initial-approval"),
+        }, identity);
+      } catch {
+        // The final authoritative readback below distinguishes an exact retry
+        // or concurrent approval from a genuinely unavailable decision path.
+      }
     }
     try {
       decisionPath = payload(await handlers.project_decision_path_read({ project_id: projectId }, identity));

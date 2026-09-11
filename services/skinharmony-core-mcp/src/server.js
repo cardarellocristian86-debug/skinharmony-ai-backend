@@ -1661,6 +1661,10 @@ async function createCanonicalWorkGoverned(args, identity) {
       .update(JSON.stringify(stableCanonical(receiptMaterial)))
       .digest("hex"),
   });
+  await workContinuityV2Store.validateCanonicalWorkBootstrapReview(
+    withTenantWorkAcl(identity),
+    request,
+  );
   // Materialize the causal project/genesis/approved revision before the V2
   // Work exists.  A causal outage therefore aborts this governed creation
   // instead of persisting an ACTIVE Work that no actor can start.  The same

@@ -2388,6 +2388,59 @@ export function createWorkContinuityV2Store({
     if (!consumedBinding.rows[0]) fail("open_work_review_request_binding_invalid");
     return { review: consumed.rows[0], decision: effectiveDecision, decision_digest: decisionDigest, idempotent_replay: false };
   }
+  async function validateCanonicalWorkBootstrapReview(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("work_creation_owner_required");
+    if (String(input.intent_type || "CREATE_WORK") !== "CREATE_WORK" || input.resume_existing === true) {
+      fail("open_work_review_create_intent_required");
+    }
+    const reviewId = uuid(input.review_id, "open_work_review_id_required");
+    const reviewDigest = digest(input.review_digest, "open_work_review_digest_required");
+    const requestDigest = createRequestDigest(input);
+    const requestId = text(canonicalCreateRequest(input).request_id,
+      "open_work_review_request_id_required", 160);
+    const workId = input.work_id ? uuid(input.work_id) : deterministicWorkId(actor.tenant_id, reviewId, requestDigest);
+    return transaction(async (client) => {
+      // This is intentionally a state-pure prevalidation. It rejects stale,
+      // mismatched and expired review material before remote causal mutations;
+      // createNewWork still consumes and revalidates the same review under its
+      // transaction lock immediately before persistence.
+      const binding = (await client.query(`SELECT * FROM tenant_work_bootstrap_request
+        WHERE tenant_id=$1 AND subject_user_id=$2 AND request_id=$3`,
+      [actor.tenant_id, actor.user_id, requestId])).rows[0];
+      if (!binding || binding.request_digest !== requestDigest || binding.review_id !== reviewId) {
+        fail("open_work_review_request_binding_invalid");
+      }
+      const review = (await client.query(`SELECT * FROM tenant_work_open_review
+        WHERE tenant_id=$1 AND review_id=$2`, [actor.tenant_id, reviewId])).rows[0];
+      if (!review) fail("open_work_review_not_found");
+      if (review.review_digest !== reviewDigest || review.request_digest !== requestDigest ||
+          review.subject_user_id !== actor.user_id || review.request_id !== requestId ||
+          (review.project_id && review.project_id !== input.project_id) ||
+          (review.intent_digest || null) !== (input.intent_digest || null)) {
+        fail("open_work_review_binding_mismatch");
+      }
+      if (binding.consumed_work_id && binding.consumed_work_id !== review.consumed_work_id) {
+        fail("open_work_review_request_binding_invalid");
+      }
+      const requestedDecision = String(input.review_decision || "").trim();
+      const effectiveDecision = review.decision_required
+        ? requestedDecision : (requestedDecision || "NO_CONFLICT_PROCEED");
+      if (review.decision_required &&
+          !["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(effectiveDecision)) {
+        fail("open_work_review_proceed_decision_required");
+      }
+      if (review.consumed_at) {
+        if (review.consumed_work_id !== workId || binding.consumed_work_id !== workId ||
+            review.decision !== effectiveDecision) fail("open_work_review_replay_denied");
+      } else if (Date.parse(review.expires_at) <= now().getTime()) {
+        fail("open_work_review_expired");
+      }
+      return Object.freeze({ review_id: reviewId, request_id: requestId,
+        idempotent_replay: Boolean(review.consumed_at), valid: true });
+    });
+  }
   async function createNewWork(identity, input = {}) {
     if (!legacyRuntime || typeof legacyRuntime.ensureWithClient !== "function") fail("legacy_work_transaction_bridge_unavailable");
     await Promise.all([initialize(), legacyRuntime.initialize()]);
@@ -8699,6 +8752,7 @@ export function createWorkContinuityV2Store({
     });
   }
   return Object.freeze({ initialize, createWork: guardPendingWorkMutation(createWork), createNewWork,
+    validateCanonicalWorkBootstrapReview,
     readCreatedWorkByBootstrapRequest, recordCausalLineageState,
     queueNewWork: guardPendingWorkMutation(queueNewWork),
     ensureLegacyBridge: guardPendingWorkMutation(ensureLegacyBridge),
