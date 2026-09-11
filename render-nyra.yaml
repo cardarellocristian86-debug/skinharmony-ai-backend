@@ -146,7 +146,7 @@ services:
       - key: NYRA_POLICY_REGISTRY_DATABASE_URL
         sync: false
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
-        sync: false
+        value: https://skinharmony-core-mcp.onrender.com
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH
         value: /v1/policy-registry/nyra/sign
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE
@@ -156,7 +156,10 @@ services:
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID
         value: nyra-policy-registry-v1
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TIMEOUT_MS
         value: "1500"
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_MAX_RESPONSE_BYTES
