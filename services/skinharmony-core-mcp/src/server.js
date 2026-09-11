@@ -2962,13 +2962,13 @@ const baseHandlers = {
       await requireOwnerGovernance(identity, "nyra.native_agent.activate", args.agent_instance_id);
       return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.requestActivation(identity, args), execution_authorized: false });
     },
-    nyra_agent_factory_catalog: async (_args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: agentFactoryCatalog() }),
-    nyra_agent_factory_plan: async (args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: compileAgentManifest(args.manifest) }),
+    nyra_agent_factory_catalog: async (_args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: agentFactoryCatalog({ capabilityRegistry: config.nyraAgentCapabilityRegistry }) }),
+    nyra_agent_factory_plan: async (args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: compileAgentManifest(args.manifest, { capabilityRegistry: config.nyraAgentCapabilityRegistry }) }),
     nyra_agent_factory_create: async (args, identity) => {
       await requireOwnerGovernance(identity, "nyra.agent_factory.create", args.work_id);
-      const plan = compileAgentManifest(args.manifest);
+      const plan = compileAgentManifest(args.manifest, { capabilityRegistry: config.nyraAgentCapabilityRegistry });
       if (!plan.creation_ready) throw new Error("nyra_agent_factory_capability_missing");
-      return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.createCustomAgent(identity, { ...args, agent_name: plan.agent.name, role: plan.agent.role, objective: plan.agent.objective, blueprint_id: plan.composition.default_blueprint_id }), factory_plan: plan, execution_authorized: false });
+      return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.createCustomAgent(identity, { ...args, manifest_id: plan.agent.id, factory_plan_digest: plan.plan_digest, capability_allowlist: plan.composition.reusable_capabilities, agent_name: plan.agent.name, role: plan.agent.role, objective: plan.agent.objective, blueprint_id: plan.composition.default_blueprint_id }), factory_plan: plan, execution_authorized: false });
     },
   } : {}),
   ...(nyraAutopilotRuntime ? {
