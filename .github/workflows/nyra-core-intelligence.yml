@@ -443,13 +443,12 @@ jobs:
             abort("#{key}: signer custody must remain manually provisioned") unless
               mcp_env[key] == { "key" => key, "sync" => false }
           end
-          %w[
-            POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
-            POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
-          ].each do |key|
-            abort("#{key}: signer target must derive from Render build identity") if
-              mcp_env.key?(key)
-          end
+          abort("POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT: signer target must derive from Render build identity") if
+            mcp_env.key?("POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT")
+          abort("POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT: Nyra release pin must remain manually provisioned") unless
+            mcp_env["POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT"] == {
+              "key" => "POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT", "sync" => false,
+            }
           policy_registry_core_values = {
             "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "enforced",
             "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED" => "true",
