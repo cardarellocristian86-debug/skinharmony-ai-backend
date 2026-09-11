@@ -146,6 +146,7 @@ const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   allowedPurposes: new Set(["nyra.policy_registry.attestation", "nyra.precore.decision.v1"]),
   signatureAlgorithm: "ed25519",
   derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
+  allowConfiguredTargetCommit: true,
 });
 const genericWorkCoreJoinSigner = createGenericWorkCoreJoinSigner({
   coreOrigin: config.universalCoreUrl,
