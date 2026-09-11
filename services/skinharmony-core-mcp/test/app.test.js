@@ -1017,6 +1017,11 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(createHandler, /attachNyraWorkOrchestration\(identity, result, "work_created"\)/);
   assert.match(createHandler, /route: "durable_work_bootstrap_readback"/);
   assert.match(createHandler, /authorized: false/);
+  const causalBootstrap = createHandler.indexOf("await ensureCanonicalWorkProjectDecisionPath");
+  const reviewValidation = createHandler.indexOf("validateCanonicalWorkBootstrapReview");
+  const workCreate = createHandler.indexOf("workContinuityV2Store.createNewWork");
+  assert.ok(reviewValidation >= 0 && causalBootstrap > reviewValidation && workCreate > causalBootstrap,
+    "a valid review must precede causal bootstrap, which must precede V2 Work persistence");
 });
 
 test("a governed mutating resume repairs pending canonical causal lineage before continuing", () => {
