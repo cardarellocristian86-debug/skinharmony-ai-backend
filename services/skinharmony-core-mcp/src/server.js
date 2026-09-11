@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 38942)
-Total output lines: 3494
-
 import {
   createApp,
   qualifiesForStatePureReadPath,
@@ -1463,7 +1460,808 @@ async function listLegacyWorksAuthorized(identity, args = {}) {
 }
 
 // Auto-resume must use the exact same canonical V2 operational view exposed
-// by t…8942 tokens truncated…rue,
+// by the Gallery. The legacy projection is retained for legacy reads only:
+// it can deliberately preserve historical rows and therefore cannot decide
+// that an owner has more than one resumable Work.
+async function listCanonicalOperationalWorks(identity, args = {}) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityV2Store?.listWorks !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  return workContinuityV2Store.listWorks(withTenantWorkAcl(identity), {
+    view: "operational",
+    ...(args.project_id ? { project_id: args.project_id } : {}),
+  });
+}
+
+async function galleryLegacyWorksAuthorized(identity, args = {}) {
+  if (typeof workContinuityRuntime?.galleryAuthorized !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.galleryAuthorized(identity, args, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: identity.tenantId,
+    work_ids: workIds,
+  });
+}
+
+async function coordinationOverviewAuthorized(identity, args = {}) {
+  if (typeof workContinuityRuntime?.coordinationOverviewAuthorized !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.coordinationOverviewAuthorized(identity, args, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: identity.tenantId,
+    work_ids: workIds,
+  });
+}
+
+const governedLegacyReadRuntime = workContinuityRuntime ? Object.freeze({
+  listOperationalWorks: listCanonicalOperationalWorks,
+  readIntent: readLegacyIntentAuthorized,
+}) : null;
+
+function requireHostWorkCreateCapability(identity) {
+  if (identity?.authenticatedHostPrincipal &&
+      !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE)) {
+    const error = new Error("registered_host_work_create_capability_required");
+    error.code = "registered_host_work_create_capability_required";
+    error.status = 403;
+    throw error;
+  }
+}
+
+async function reviewCanonicalWorkCreation(args, identity) {
+  if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+  requireHostWorkCreateCapability(identity);
+  const request = bindWorkBootstrapRequestToAuthenticatedHost({
+    request: args?.create_request || {},
+    identity,
+  });
+  await requireBoundedTenantCoordination(
+    identity,
+    "work.bootstrap.review",
+    governedWorkBootstrapAuthorizationTarget({
+      phase: "review",
+      request,
+      identity,
+    }),
+    args.idempotency_key,
+  );
+  return continuityTextResult({
+    ok: true,
+    // The direct AI→Core entry verifies the authenticated tenant on every
+    // server-owned result before it persists an opaque continuation.
+    tenant_id: identity.tenantId,
+    result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), {
+      request: args.request,
+      intent_type: "CREATE_WORK",
+      create_request: request,
+    }),
+    dedicated_core_gate: {
+      authorized: true,
+      authority: "universal_core",
+      route: "/v1/action-evaluator",
+      server_owned: true,
+    },
+  });
+}
+
+async function reconcileCanonicalWorkCausalLineage(identity, work) {
+  try {
+    const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
+      identity, work });
+    const state = await workContinuityV2Store.recordCausalLineageState(
+      withTenantWorkAcl(identity), { work_id: work.work_id, state: "READY" });
+    return { state: "READY", binding, lineage_digest: state.lineage_digest };
+  } catch (error) {
+    const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
+    const state = await workContinuityV2Store.recordCausalLineageState(
+      withTenantWorkAcl(identity), { work_id: work.work_id, state: "PENDING",
+        reason_code: reasonCode });
+    return { state: "PENDING", reason_code: reasonCode,
+      lineage_digest: state.lineage_digest };
+  }
+}
+
+async function createCanonicalWorkGoverned(args, identity) {
+  if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+  requireHostWorkCreateCapability(identity);
+  const boundRequest = bindWorkBootstrapRequestToAuthenticatedHost({ request: args, identity });
+  const governanceIdempotencyKey = String(boundRequest.idempotency_key || "").trim() ||
+    `work_bootstrap_${crypto.createHash("sha256").update(JSON.stringify(stableCanonical({
+      tenant_id: identity.tenantId,
+      subject: identity.subject,
+      project_id: boundRequest.project_id,
+      request_id: boundRequest.request_id || boundRequest.session_id,
+    }))).digest("hex").slice(0, 48)}`;
+  const request = Object.freeze({
+    ...boundRequest,
+    idempotency_key: governanceIdempotencyKey,
+  });
+  const authorizationTarget = governedWorkBootstrapAuthorizationTarget({
+    phase: "create",
+    request,
+    identity,
+  });
+  // Exact retries first consult the durable tenant+subject+request mapping.
+  // This readback is evidence, never renewed authority: it permits recovery
+  // after the short Core receipt expires without invoking Core again or
+  // creating/mutating a Work. Every binding and event digest is independently
+  // revalidated by the V2 store.
+  if (typeof workContinuityV2Store.readCreatedWorkByBootstrapRequest === "function") {
+    const persisted = await workContinuityV2Store.readCreatedWorkByBootstrapRequest(
+      withTenantWorkAcl(identity),
+      request,
+    );
+    if (persisted) {
+      if (persisted.persisted_core_authorization_receipt?.target !== authorizationTarget) {
+        const error = new Error("work_bootstrap_replay_evidence_invalid");
+        error.code = "work_bootstrap_replay_evidence_invalid";
+        error.status = 503;
+        throw error;
+      }
+      const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, persisted.work);
+      return continuityTextResult({
+        ok: true,
+        result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
+        legacy_work_id: persisted.legacy_work_id,
+        core_authorization_receipt: null,
+        core_authorization_attempt_receipt: null,
+        causal_lineage: causalLineage,
+        work_ready: causalLineage.state === "READY",
+        continuation_allowed: causalLineage.state === "READY",
+        dedicated_core_gate: {
+          authorized: false,
+          authority: "universal_core",
+          route: "durable_work_bootstrap_readback",
+          server_owned: true,
+          readback_only: true,
+        },
+      });
+    }
+  }
+  const coreDecision = await requireOwnerGovernance(
+    identity,
+    "work.continuity.v2.create",
+    authorizationTarget,
+    request.idempotency_key,
+  );
+  if (!coreDecision.core_authorization_receipt ||
+      coreDecision.core_authorization_receipt.authority !== "universal_core") {
+    const error = new Error("core_authorization_receipt_required");
+    error.code = "core_authorization_receipt_required";
+    error.status = 503;
+    throw error;
+  }
+  const receiptMaterial = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: authorizationTarget,
+    decision_id: coreDecision.decision_id || null,
+    decision: coreDecision.decision,
+    mediation: coreDecision.mediation,
+    owner_confirmation_required: coreDecision.owner_confirmation_required === true,
+    confirmation_satisfied: coreDecision.confirmation_satisfied === true,
+    core_authorization_receipt: coreDecision.core_authorization_receipt,
+  };
+  const coreAuthorizationReceipt = Object.freeze({
+    ...receiptMaterial,
+    receipt_digest: crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(receiptMaterial)))
+      .digest("hex"),
+  });
+  const result = await workContinuityV2Store.createNewWork(withTenantWorkAcl(identity), {
+    ...request,
+    _core_authorization_receipt: coreAuthorizationReceipt,
+  });
+  // Work creation and its causal lineage form one governed logical bootstrap.
+  // The Work store remains the canonical source of every identifier/material;
+  // exact retries repair a missing lineage idempotently before returning.
+  const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, result.work);
+  const attemptMaterial = {
+    schema_version: "work_bootstrap_core_authorization_attempt_v1",
+    authority: "universal_core",
+    work_bootstrap_authorization_receipt: coreAuthorizationReceipt,
+    core_authorization_attempt_receipt: coreDecision.core_authorization_attempt_receipt,
+    core_idempotent_replay: coreDecision.idempotent_replay === true,
+  };
+  const coreAuthorizationAttemptReceipt = Object.freeze({
+    ...attemptMaterial,
+    attempt_digest: crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(attemptMaterial)))
+      .digest("hex"),
+  });
+  return continuityTextResult({
+    ok: true,
+    result: await attachNyraWorkOrchestration(identity, result, "work_created"),
+    legacy_work_id: result.legacy_work_id,
+    // Only a newly persisted creation owns the durable receipt. An exact
+    // replay still has a fresh Core attempt decision, exposed separately,
+    // without rewriting or misattributing the original Work event evidence.
+    core_authorization_receipt: result.core_authorization_receipt,
+    core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt,
+    causal_lineage: causalLineage,
+    work_ready: causalLineage.state === "READY",
+    continuation_allowed: causalLineage.state === "READY",
+    dedicated_core_gate: {
+      authorized: true,
+      authority: "universal_core",
+      route: "/v1/action-evaluator",
+      server_owned: true,
+    },
+  });
+}
+
+async function readNyraDirectiveContext(identity, args) {
+  if (!workContinuityV2Store) return null;
+  try {
+    const tenantWorkIdentity = withTenantWorkAcl(identity);
+    let context = await workContinuityV2Store.readWork(
+      tenantWorkIdentity,
+      { work_id: args.work_id },
+    );
+    if (args.read_only !== true && context?.work?.causal_lineage_state !== "READY") {
+      // A bootstrap can persist its canonical Work before a transient causal
+      // binding failure.  The next governed, mutating resume is the recovery
+      // boundary: rebuild the binding exclusively from server-owned Work and
+      // project state, then re-read the Work before permitting any mutation.
+      // Pure reads remain side-effect free and continue to expose PENDING.
+      const reconciliation = await reconcileCanonicalWorkCausalLineage(identity, context.work);
+      if (reconciliation.state !== "READY") {
+        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      }
+      context = await workContinuityV2Store.readWork(
+        tenantWorkIdentity,
+        { work_id: args.work_id },
+      );
+      if (context?.work?.causal_lineage_state !== "READY") {
+        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      }
+    }
+    const precommitTicketGate = args.read_only === true ? null : typeof workContinuityV2Store.readPrecommitTicketGate === "function"
+      ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
+          work_id: args.work_id,
+        })
+      : null;
+    const withPrecommitGate = {
+      ...context,
+      precommit_ticket_gate: precommitTicketGate,
+    };
+    const status = String(context?.work?.status || "").toUpperCase();
+    if (["COMPLETED", "ARCHIVED"].includes(status) &&
+        typeof workContinuityV2Store.verifyWorkClosure === "function") {
+      return {
+        ...withPrecommitGate,
+        closure_verification: await workContinuityV2Store.verifyWorkClosure(
+          tenantWorkIdentity,
+          { work_id: args.work_id },
+        ),
+      };
+    }
+    return withPrecommitGate;
+  } catch (error) {
+    // A legacy Work may not have a V2 projection for a non-admin reader yet.
+    // Keep advisory work available, but leave every consequential ticket in
+    // NEEDS_CONTEXT until the governed projection exists. ACL/binding errors
+    // are never converted into absence.
+    if (String(error?.message || "") === "tenant_work_not_found") return null;
+    throw error;
+  }
+}
+
+async function nyraVerifierAssignmentScope(identity, assignment) {
+  if (assignment?.role !== "independent_verifier" || !assignment?.work_id) return null;
+  const context = await readNyraDirectiveContext(identity, { work_id: assignment.work_id });
+  const tasks = Array.isArray(context?.tasks) ? context.tasks
+    .filter((task) => task?.required !== false)
+    .map((task) => ({ task_id: task.task_id, title: task.title }))
+    .filter((task) => typeof task.task_id === "string" && typeof task.title === "string")
+    : [];
+  if (!tasks.length) return null;
+  return Object.freeze({
+    schema_version: "nyra_independent_verification_scope_v1",
+    work_id: assignment.work_id,
+    required_work_tasks: Object.freeze(tasks),
+    required_result: Object.freeze({
+      schema_version: "nyra_independent_verification_v1",
+      verdict: "approved",
+      required_fields: Object.freeze([
+        "schema_version", "verdict", "summary", "verified_work_task_ids",
+        "verified_assignment_ids", "evidence_refs",
+      ]),
+    }),
+    execution_authorized: false,
+  });
+}
+
+async function resumeExistingContinuityWork(args, identity) {
+  const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+  const canonicalWork = canonical?.work || canonical;
+  const sessionId = String(identity.agentPresence?.session_id || "").trim();
+  if (!canonicalWork?.project_id || !sessionId) {
+    throw new Error("work_continuity_resume_binding_invalid");
+  }
+  // Resume mutates only the already-readable tenant Work and its authenticated
+  // logical session. It is the closed internal resume-or-bind capability, not
+  // an owner assertion and not a generic action-class escape hatch.
+  const authorization = await requireBoundedTenantCoordination(
+    identity,
+    "work.continuity.resume_or_bind",
+    `${canonicalWork.project_id}:${sessionId}`,
+    args.idempotency_key,
+  );
+  const payload = {
+    ok: true,
+    result: await workContinuityRuntime.resume(
+      identity,
+      { ...args, session_id: sessionId },
+      authorization,
+    ),
+  };
+  payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
+  payload.result.nyra_control_context = await materializeNyraControlContext(
+    identity,
+    payload.result,
+    "work_resumed",
+    { autopilot: payload.result.nyra_autopilot, force: true },
+  );
+  payload.dedicated_core_gate = {
+    authorized: true,
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    server_owned: true,
+  };
+  return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+}
+
+async function createNativeContinuityPlan(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_plan",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
+  const intent = await readLegacyIntentAuthorized(identity, {
+    work_id: nativeArgs.work_id,
+  });
+  const corePlanResult = await coreHandlers.host_native_work_plan_create({
+    work_id: nativeArgs.work_id,
+    intent_anchor_digest: intent.intent_digest,
+    repository: nativeArgs.repository,
+    base_branch: nativeArgs.base_branch,
+    objective: intent.anchor?.objective,
+    required_checks: nativeArgs.required_checks,
+    agents: nativeArgs.tasks.map((task) => ({
+      agent_id: task.task_id,
+      role: task.kind,
+      task: task.instruction,
+      depends_on: task.dependencies || [],
+      capabilities: [],
+    })),
+    max_parallel: nativeArgs.max_parallel,
+  }, identity);
+  const corePlan = corePlanResult?.structuredContent?.plan;
+  if (!corePlan) throw new Error("core_host_native_work_plan_required");
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
+      corePlan,
+    }),
+  });
+}
+
+async function bindNativeContinuityChild(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_bind",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
+  });
+}
+
+const nyraConverseHandler = createNyraConverseHandler({
+  preflight: createNyraConversePreflight({
+    workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
+    ensureContinuity,
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: governedLegacyReadRuntime,
+    hostType,
+    verifyRequestedWork: async (identity, workId) => {
+      requireTenantWorkCapability(identity, "read");
+      if (!workContinuityV2Store?.readWork) {
+        throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+      }
+      try {
+        return await workContinuityV2Store.readWork(
+          withTenantWorkAcl(identity),
+          { work_id: workId },
+        );
+      } catch (error) {
+        const reason = String(error?.code || error?.message || "");
+        if (reason === "tenant_work_not_found" || reason === "legacy_work_not_found") {
+          throw legacyWorkAclError("nyra_converse_work_not_found", 404);
+        }
+        if (reason === "work_acl_denied" || reason.startsWith("tenant_work_membership_")) {
+          throw legacyWorkAclError("continuity_work_acl_denied", 403);
+        }
+        throw error;
+      }
+    },
+  }),
+  interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
+  readControlContext: async (identity, args) => {
+    await requireCanonicalWorkRead(identity, args.work_id);
+    return workContinuityRuntime.readControlContext(identity, args);
+  },
+  readDirectiveContext: readNyraDirectiveContext,
+  openContinuation: nyraContinuationOpener,
+  // Gallery selection is intentionally served from the canonical V2 store
+  // rather than via work_preflight/ensureContinuity. It is a tenant-ACL read
+  // only, so asking Nyra to choose a Work cannot bind the current session to
+  // an older Work or consume a mutation idempotency slot.
+  listWorkChoices: async (identity, args = {}) => {
+    requireTenantWorkCapability(identity, "read");
+    if (typeof workContinuityV2Store?.listWorks !== "function") {
+      throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+    }
+    return workContinuityV2Store.listWorks(withTenantWorkAcl(identity), {
+      view: "operational",
+      ...(args.project_id ? { project_id: args.project_id } : {}),
+    });
+  },
+  readCommandCatalog: (args, identity) => handlers.core_capability_catalog(args, identity),
+  readControlRoomStatus: (args, identity) => coreHandlers.nyra_control_room_status(args, identity),
+  // The conversational surface reads the existing bounded Core capability
+  // internally; it does not expose a new direct route or materialize state.
+  readNyraSelfModel: (args, identity) => coreHandlers.nyra_self_model(args, identity),
+  readDistilledLessons: async (args, identity) => cloudMemoryStore
+    ? {
+      tenant_lessons: await cloudMemoryStore.listDistilledLessons(identity.tenantId, args.project_id, 10),
+      // Platform blocks are aggregate-only and contain no tenant, project,
+      // prompt or raw failure material. They remain advisory until Core's
+      // separate promotion path can attest a verified lifecycle state.
+      platform_blocks: await cloudMemoryStore.listPlatformLearningBlocks(10),
+    }
+    : { tenant_lessons: [], platform_blocks: [] },
+  dialogueEnabled: config.nyraDialogueEnabled === true,
+});
+
+const nyraGovernedContinueHandler = nyraGovernedContinuationStore
+  ? createNyraGovernedContinueHandler({
+      store: nyraGovernedContinuationStore,
+      readDirectiveContext: readNyraDirectiveContext,
+      normalizeDirectiveContext: normalizeNyraDirectiveContext,
+      issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
+      authorizeAction: (args, identity, nativeClaim) =>
+        coreHandlers.host_native_action_authorize(args,
+          nativeClaim ? { ...identity, nativePrecommitClaimIssuer: true } : identity,
+          nativeClaim),
+      reviewWorkBootstrap: reviewCanonicalWorkCreation,
+      createWorkBootstrap: createCanonicalWorkGoverned,
+      resumeExistingWork: resumeExistingContinuityWork,
+      createNativePlan: createNativeContinuityPlan,
+      previewNativePlanMerge: (request, identity) =>
+        workContinuityV2Store.previewNativePlanMerge(withTenantWorkAcl(identity), request),
+      authorizeNativePlanStatusAlignment: (request, identity) => {
+        const requestDigest = crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical({
+            schema_version: "native_plan_status_alignment_request_v1",
+            work_id: request.work_id,
+          })))
+          .digest("hex");
+        return requireBoundedTenantCoordination(
+          identity,
+          "work.continuity.native_plan.status.align",
+          `native_plan_status_align:${request.work_id}:${requestDigest}`,
+          request.idempotency_key,
+        );
+      },
+      alignNativePlanStatus: (request, identity) =>
+        workContinuityV2Store.alignNativePlanStatus(withTenantWorkAcl(identity), request),
+      authorizeNativeClosureReevaluation: (request, identity) => {
+        const requestDigest = crypto.createHash("sha256").update(JSON.stringify(stableCanonical({
+          schema_version: "native_closure_reevaluation_request_v1",
+          work_id: request.work_id, plan_id: request.plan_id,
+        }))).digest("hex");
+        return requireBoundedTenantCoordination(identity,
+          "work.continuity.native_closure.reevaluate",
+          `native_closure_reevaluate:${request.work_id}:${request.plan_id}:${requestDigest}`,
+          request.idempotency_key);
+      },
+      reevaluateNativeClosure: (request, identity) =>
+        workContinuityRuntime.evaluateClosure(identity, request),
+      bindNativeChild: bindNativeContinuityChild,
+      readActionTicket: (args, identity) => coreHandlers.host_native_action_read(args, identity),
+      coordinatePullRequest: (request, identity) =>
+        coreHandlers.coordinateNyraDraftPullRequest(request, identity),
+      claimPrecommitTicketGate: (request, identity) =>
+        workContinuityV2Store.claimPrecommitTicketGate(
+          withTenantWorkAcl(identity), request,
+        ),
+      releaseOrReconcilePrecommitTicketGateClaim: (request, identity) =>
+        workContinuityV2Store.reconcilePrecommitTicketGateClaim(
+          withTenantWorkAcl(identity), request,
+        ),
+      abandonInactivePrecommitTicketGateClaim: async (request, identity) => {
+        const claim = request?.gate_claim;
+        const coreResult = await coreHandlers.host_native_delegation_read({
+          delegation_id: claim?.delegation_id,
+        }, identity);
+        const payload = coreResult?.structuredContent;
+        const delegation = payload?.delegation;
+        if (payload?.ok !== true || payload.tenant_id !== identity.tenantId ||
+            !delegation || delegation.delegation_id !== claim?.delegation_id ||
+            delegation.grant?.tenant_id !== identity.tenantId ||
+            delegation.grant?.work_id !== request.work_id ||
+            !["active", "expired", "revoked"].includes(delegation.effective_state) ||
+            !Number.isFinite(Date.parse(delegation.grant?.expires_at || "")) ||
+            typeof delegation.signature !== "string" || delegation.signature.length < 16) {
+          throw new Error("precommit_claim_abandonment_core_readback_invalid");
+        }
+        if (delegation.effective_state === "active") return null;
+        const readbackMaterial = {
+          schema_version: "core_precommit_claim_inactive_readback_v1",
+          authority: "universal_core",
+          tenant_id: identity.tenantId,
+          work_id: request.work_id,
+          delegation_id: delegation.delegation_id,
+          effective_state: delegation.effective_state,
+          state: String(delegation.state || ""),
+          expires_at: new Date(delegation.grant.expires_at).toISOString(),
+          revoked_at: delegation.revoked_at
+            ? new Date(delegation.revoked_at).toISOString()
+            : null,
+          signature_digest: crypto.createHash("sha256")
+            .update(delegation.signature).digest("hex"),
+          provider_execution: false,
+        };
+        const coreDelegationReadback = Object.freeze({
+          ...readbackMaterial,
+          readback_digest: crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical(readbackMaterial))).digest("hex"),
+        });
+        return workContinuityV2Store.abandonInactivePrecommitTicketGateClaim(
+          withTenantWorkAcl(identity), {
+            server_owned: true,
+            work_id: request.work_id,
+            gate_claim: claim,
+            core_delegation_readback: coreDelegationReadback,
+          },
+        );
+      },
+      readPrecommitTicketGateClaimRecovery: (request, identity) =>
+        workContinuityV2Store.readPrecommitTicketGateClaimRecovery(
+          withTenantWorkAcl(identity), request,
+        ),
+      readActivePrecommitTicketGateClaimForReconciliation: (request, identity) =>
+        workContinuityV2Store.readActivePrecommitTicketGateClaimForReconciliation(
+          withTenantWorkAcl(identity), request,
+        ),
+      fulfillPrecommitTicketTask: (request, identity) =>
+        workContinuityV2Store.fulfillPrecommitTicketTask(
+          withTenantWorkAcl(identity), request,
+        ),
+      ensureFinalizeWorkBinding: (request, identity) => ensureNyraReadBinding({
+        runtime: workContinuityRuntime,
+        authorizeRead: requireCanonicalWorkRead,
+        identity,
+        continuity: { work_id: request.work_id },
+      }),
+      authorizePersistedPrecommitReconciliation: (request, identity) => {
+        const requestDigest = crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical({
+            schema_version: "persisted_precommit_reconciliation_request_v1",
+            work_id: request.work_id,
+          })))
+          .digest("hex");
+        // The public nyra_continue operation and this nested Core decision are
+        // distinct idempotent operations. Reusing the caller key for both
+        // makes the decision ledger reject the nested authorization as a
+        // conflicting replay before reconciliation can release the claim.
+        const coreIdempotencyKey = `precommit_reconcile_core_${crypto.createHash("sha256")
+          .update(`${request.idempotency_key}:${requestDigest}`)
+          .digest("hex")}`;
+        return requireBoundedTenantCoordination(
+          identity,
+          "work.continuity.precommit.reconcile.persisted",
+          `precommit_reconcile_persisted:${request.work_id}:${requestDigest}`,
+          coreIdempotencyKey,
+        );
+      },
+      reconcilePersistedPrecommit: (request, identity) =>
+        workContinuityV2Store.reconcilePersistedPrecommitTicketGate(
+          withTenantWorkAcl(identity), request,
+        ),
+      finalizeVerifiedWork: (request, identity) =>
+        handlers.nyra_verified_work_finalize(request, identity),
+      consumeConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.consumeConnectedAiTypedRequest(request),
+      completeConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.completeConnectedAiTypedRequest(request),
+      releaseConnectedAiTypedRequest: (request) =>
+        nyraGovernedContinuationStore.releaseConnectedAiTypedRequest(request),
+      authorizeNativeCoordination: (request, identity) => {
+        const actionType = request.operation === "create_native_plan"
+          ? "native_agent.plan"
+          : request.operation === "bind_native_child"
+            ? "native_agent.bind"
+            : null;
+        if (!actionType || !/^[a-f0-9]{64}$/.test(String(request.request_digest || ""))) {
+          throw new Error("nyra_governed_continue_native_coordination_invalid");
+        }
+        const targetParts = [
+          request.tool_name,
+          request.work_id,
+          request.plan_id,
+          request.task_id,
+          request.request_digest.slice(0, 24),
+        ].filter(Boolean);
+        return requireBoundedTenantCoordination(
+          identity,
+          actionType,
+          targetParts.join(":"),
+          request.idempotency_key,
+        );
+      },
+    })
+  : null;
+
+const coreTypedRequestHandler = nyraGovernedContinuationStore
+  ? createCoreTypedRequestHandler({ store: nyraGovernedContinuationStore,
+      issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
+      authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
+      reviewWorkBootstrap: (args, identity) => reviewCanonicalWorkCreation(args, identity),
+      resolveWorkBinding: async (workId, identity) => {
+        const value = await readNyraDirectiveContext(identity, { work_id: workId });
+        return { work_id: value?.work_id, intent_digest: value?.intent_digest };
+      } })
+  : null;
+
+const baseHandlers = {
+  ...nyraWorkAutomationHandlers,
+  nyra_converse: nyraConverseHandler,
+  ...(coreTypedRequestHandler ? { core_typed_request: coreTypedRequestHandler } : {}),
+  ...(nyraGovernedContinueHandler
+    ? {
+      nyra_continue: nyraGovernedContinueHandler,
+      nyra_governed_continue: (args, identity) => nyraGovernedContinueHandler({
+        ...args,
+        continuation_ref: args.continuation_ref || args.candidate_attestation,
+      }, identity),
+    }
+    : {}),
+  web_compatibility_manifest: async (_args, identity) => ({
+    structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
+    content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
+  }),
+  web_compatibility_execute: async (args, identity) => {
+    const method = String(args.method || "GET").toUpperCase();
+    const hasBody = args.body !== undefined && args.body !== null;
+    if (!["GET", "HEAD"].includes(method) || hasBody) {
+      throw new Error("web_mutating_request_disabled");
+    }
+    const gate = await coreHandlers.core_gate_action({
+      action_label: "Execute allowlisted web compatibility request",
+      action_type: "web.compatibility.request",
+      target: String(args.url || "").slice(0, 512),
+      operation_class: "owner_confirmed_governed_action",
+      external_side_effect: false,
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      configuration_changes: false,
+      destructive: false,
+      bypass_orchestrator: false,
+      provider_execution: false,
+      bounded_scope: true,
+      low_impact: true,
+      idempotent_or_compensable: true,
+      rollback_ready: true,
+      audit_ready: Boolean(decisionLedger),
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      idempotency_key: args.idempotency_key,
+    }, identity);
+    const authorization = gate?.structuredContent?.authorization || {};
+    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
+    const result = await webTransport.request({
+      tenantId: identity.tenantId,
+      url: args.url,
+      method,
+      headers: args.headers || {},
+      body: args.body,
+    });
+    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
+    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  },
+
+  ...coreHandlers,
+  ...causalContinuityHandlers,
+  ...softwareCognitionHandlers,
+  ...entity360Handlers,
+  work_preflight: async (args, identity) => {
+    const continuityBinding = await resolveContinuityProjectBinding(
+      identity,
+      args,
+      governedLegacyReadRuntime,
+      { preferPersistedWorkProject: true },
+    );
+    const result = await coreHandlers.work_preflight({
+      ...args,
+      project_id: continuityBinding.projectId,
+      // Server-owned: public schema validation rejects this field. The
+      // explicit diagnostic tool observes hierarchy status instead of running
+      // the audited hierarchy evaluator used by writer preflight.
+      state_pure_observation: true,
+    }, identity);
+    return attachObservedContinuity(result, continuityBinding.continuityArgs,
+      continuityBinding.projectId);
+  },
+  ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
+  ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
+  ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
+  ...suiteHandlers,
+  ...collaborationHandlers,
+  ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
+    const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
+    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  } } : {}),
+  ...(workContinuityRuntime ? {
+    work_continuity_create: async (args, identity) => {
+      requireHostWorkCreateCapability(identity);
+      const error = new Error("canonical_work_bootstrap_v2_required");
+      error.code = "canonical_work_bootstrap_v2_required";
+      error.status = 409;
+      throw error;
+    },
+    work_continuity_record_change: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
+      const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_changed");
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        payload.result,
+        "work_changed",
+        { autopilot: payload.result.nyra_autopilot, force: true },
+      );
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_checkpoint: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
+      // requireOwnerGovernance above is the server-owned Universal Core decision
+      // for this exact checkpoint. Do not invoke the generic gate again: the
+      // confirmation assertion is request-bound, and a second evaluation can
+      // reject an action already authorized by the authoritative Core gate.
+      const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        { ...payload.result, project_id: args.project_id, next_action: args.next_action },
+        "checkpoint_created",
+        { force: true },
+      );
+      payload.dedicated_core_gate = {
+        authorized: true,
+        authority: "universal_core",
+        route: "/v1/action-evaluator",
+        server_owned: true,
       };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
