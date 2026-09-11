@@ -38,6 +38,8 @@ test("Native Team persistence is tenant/work scoped and keeps a receipt ledger a
   const runtime = createNyraNativeTeamRuntime({}, { pool: { query: async () => ({ rows: [] }), end() {} } });
   assert.match(runtime.schemaSql, /core_nyra_native_team_packages/);
   assert.match(runtime.schemaSql, /core_nyra_agent_instances/);
+  assert.match(runtime.schemaSql, /core_nyra_custom_agent_definitions/);
+  assert.match(runtime.schemaSql, /core_nyra_agent_activation_requests/);
   assert.match(runtime.schemaSql, /tenant_id varchar\(64\) NOT NULL,\n  project_id varchar\(64\) NOT NULL,\n  work_id uuid NOT NULL/);
   assert.match(runtime.schemaSql, /UNIQUE \(tenant_id, work_id, blueprint_id\)/);
   assert.match(runtime.schemaSql, /FOREIGN KEY \(tenant_id, work_id\) REFERENCES core_continuity_works/);
@@ -46,18 +48,21 @@ test("Native Team persistence is tenant/work scoped and keeps a receipt ledger a
   assert.match(runtime.schemaSql, /external_action_allowed boolean NOT NULL DEFAULT false/);
   assert.equal(typeof runtime.materializeForWork, "function");
   assert.equal(typeof runtime.materializeForWorkInTransaction, "function");
+  assert.equal(typeof runtime.createCustomAgent, "function");
+  assert.equal(typeof runtime.requestActivation, "function");
 });
 
 test("Native Team MCP tools separate reads from owner-gated package and bootstrap writes", () => {
   const tools = Object.fromEntries(NYRA_NATIVE_TEAM_TOOLS.map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), [
+    "nyra_native_agent_activate", "nyra_native_agent_create",
     "nyra_native_team_blueprints", "nyra_native_team_bootstrap",
     "nyra_native_team_enable", "nyra_native_team_status",
   ]);
   for (const name of ["nyra_native_team_blueprints", "nyra_native_team_status"]) {
     assert.equal(tools[name].annotations.readOnlyHint, true);
   }
-  for (const name of ["nyra_native_team_enable", "nyra_native_team_bootstrap"]) {
+  for (const name of ["nyra_native_team_enable", "nyra_native_team_bootstrap", "nyra_native_agent_create", "nyra_native_agent_activate"]) {
     assert.equal(tools[name].annotations.readOnlyHint, false);
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], true);
   }
