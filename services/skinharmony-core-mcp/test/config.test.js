@@ -800,3 +800,11 @@ test("loads only exact server-owned Nyra project release bindings", () => {
     /must be valid JSON/,
   );
 });
+
+test("keeps horizontal Agent Factory capabilities empty until a vertical registry is configured", () => {
+  assert.deepEqual(loadConfig({}).nyraAgentCapabilityRegistry, []);
+  assert.deepEqual(loadConfig({
+    NYRA_AGENT_CAPABILITY_REGISTRY_JSON: '{"capabilities":["message.classify","request.extract"]}',
+  }).nyraAgentCapabilityRegistry, ["message.classify", "request.extract"]);
+  assert.throws(() => loadConfig({ NYRA_AGENT_CAPABILITY_REGISTRY_JSON: '{"capabilities":["message.classify",3]}' }), /agent_capability_registry_invalid/);
+});
