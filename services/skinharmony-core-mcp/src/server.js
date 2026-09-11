@@ -83,7 +83,10 @@ import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
-import { ensureCanonicalWorkCausalLineage } from "./canonical-work-causal-lineage.js";
+import {
+  ensureCanonicalWorkCausalLineage,
+  ensureCanonicalWorkProjectDecisionPath,
+} from "./canonical-work-causal-lineage.js";
 import {
   SOFTWARE_COGNITION_TOOLS,
   createSoftwareCognitionAgentContextIssuer,
@@ -1657,6 +1660,15 @@ async function createCanonicalWorkGoverned(args, identity) {
     receipt_digest: crypto.createHash("sha256")
       .update(JSON.stringify(stableCanonical(receiptMaterial)))
       .digest("hex"),
+  });
+  // Materialize the causal project/genesis/approved revision before the V2
+  // Work exists.  A causal outage therefore aborts this governed creation
+  // instead of persisting an ACTIVE Work that no actor can start.  The same
+  // server-owned material is later bound to the new Work idempotently.
+  await ensureCanonicalWorkProjectDecisionPath({
+    handlers: causalContinuityHandlers,
+    identity,
+    work: request,
   });
   const result = await workContinuityV2Store.createNewWork(withTenantWorkAcl(identity), {
     ...request,
