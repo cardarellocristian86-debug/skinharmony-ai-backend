@@ -1459,6 +1459,21 @@ async function listLegacyWorksAuthorized(identity, args = {}) {
   });
 }
 
+// Auto-resume must use the exact same canonical V2 operational view exposed
+// by the Gallery. The legacy projection is retained for legacy reads only:
+// it can deliberately preserve historical rows and therefore cannot decide
+// that an owner has more than one resumable Work.
+async function listCanonicalOperationalWorks(identity, args = {}) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityV2Store?.listWorks !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  return workContinuityV2Store.listWorks(withTenantWorkAcl(identity), {
+    view: "operational",
+    ...(args.project_id ? { project_id: args.project_id } : {}),
+  });
+}
+
 async function galleryLegacyWorksAuthorized(identity, args = {}) {
   if (typeof workContinuityRuntime?.galleryAuthorized !== "function") {
     throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
@@ -1486,7 +1501,7 @@ async function coordinationOverviewAuthorized(identity, args = {}) {
 }
 
 const governedLegacyReadRuntime = workContinuityRuntime ? Object.freeze({
-  listWorks: listLegacyWorksAuthorized,
+  listOperationalWorks: listCanonicalOperationalWorks,
   readIntent: readLegacyIntentAuthorized,
 }) : null;
 
