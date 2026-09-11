@@ -125,11 +125,19 @@ test("signer derives target commit from the verified build and only accepts an i
   assert.equal(unavailable.health().error, "policy_registry_signer_target_commit_invalid");
 });
 
-test("Nyra Blueprint binds the client to the isolated Nyra signer route", () => {
+test("Nyra Blueprint binds the client directly to the isolated Nyra signer", () => {
   const blueprint = fs.readFileSync(path.join(REPOSITORY_ROOT, "render-nyra.yaml"), "utf8");
   assert.match(
     blueprint,
+    /- key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN\s+value: https:\/\/skinharmony-core-mcp\.onrender\.com/,
+  );
+  assert.match(
+    blueprint,
     /- key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH\s+value: \/v1\/policy-registry\/nyra\/sign/,
+  );
+  assert.match(
+    blueprint,
+    /- key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN\s+fromService:\s+type: web\s+name: skinharmony-core-mcp\s+envVarKey: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN/,
   );
   assert.doesNotMatch(
     blueprint,
