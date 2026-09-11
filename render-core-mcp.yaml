@@ -208,6 +208,11 @@ services:
         value: nyra-policy-registry-signer
       - key: POLICY_REGISTRY_NYRA_SIGNER_KEY_ID
         value: nyra-policy-registry-v1
+      # Pinned to the Nyra build that this dedicated signer may attest.
+      # It is intentionally provisioned per Nyra release, independently of
+      # the Core MCP build commit that hosts the signer.
+      - key: POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+        sync: false
       - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
         sync: false
       - key: POLICY_REGISTRY_NYRA_SIGNER_SEED

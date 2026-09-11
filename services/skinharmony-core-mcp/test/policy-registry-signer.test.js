@@ -106,7 +106,7 @@ test("Nyra signer uses an isolated route, purpose, key, and derivation domain", 
   assert.equal(wrongPurpose.statusCode, 400);
 });
 
-test("signer derives target commit from the verified build and only accepts an identical legacy pin", () => {
+test("core signer derives target commit from the verified build and only accepts an identical pin", () => {
   const withoutLegacyPin = { ...env };
   delete withoutLegacyPin.POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
   assert.equal(createPolicyRegistrySigner({ env: withoutLegacyPin }).health().target_commit, COMMIT);
@@ -123,6 +123,28 @@ test("signer derives target commit from the verified build and only accepts an i
   const unavailable = createPolicyRegistrySigner({ env: missingBuild });
   assert.equal(unavailable.health().ready, false);
   assert.equal(unavailable.health().error, "policy_registry_signer_target_commit_invalid");
+});
+
+test("Nyra signer accepts an explicit pinned Nyra target commit", () => {
+  const nyraTarget = "b".repeat(40);
+  const signer = createPolicyRegistrySigner({
+    env: {
+      RENDER_GIT_COMMIT: COMMIT,
+      POLICY_REGISTRY_NYRA_SIGNER_ENABLED: "true",
+      POLICY_REGISTRY_NYRA_SIGNER_SERVICE: "nyra-policy-registry-signer",
+      POLICY_REGISTRY_NYRA_SIGNER_KEY_ID: "nyra-policy-registry-v1",
+      POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT: nyraTarget,
+      POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN: TOKEN,
+      POLICY_REGISTRY_NYRA_SIGNER_SEED: env.POLICY_REGISTRY_CORE_SIGNER_SEED,
+    },
+    prefix: "POLICY_REGISTRY_NYRA_SIGNER",
+    route: NYRA_POLICY_REGISTRY_SIGN_ROUTE,
+    allowedPurposes: new Set(["nyra.policy_registry.attestation"]),
+    derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
+    allowConfiguredTargetCommit: true,
+  });
+  assert.equal(signer.health().ready, true);
+  assert.equal(signer.health().target_commit, nyraTarget);
 });
 
 test("Nyra Blueprint binds the client to the isolated Nyra signer route", () => {

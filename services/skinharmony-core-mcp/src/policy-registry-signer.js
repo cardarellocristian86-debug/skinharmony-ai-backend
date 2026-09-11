@@ -63,6 +63,7 @@ export function createPolicyRegistrySigner({
   allowedPurposes = PURPOSES,
   signatureAlgorithm = "Ed25519",
   derivationDomain = "skinharmony-policy-registry-core-signer-v1",
+  allowConfiguredTargetCommit = false,
 } = {}) {
   let state = { configured: false, ready: false, error: "policy_registry_signer_disabled" };
   let signingKey = null;
@@ -80,10 +81,10 @@ export function createPolicyRegistrySigner({
     const buildCommit = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().toLowerCase();
     const configuredTargetCommit = String(env[`${prefix}_TARGET_COMMIT`] || "").trim().toLowerCase();
     if (!COMMIT.test(buildCommit)) throw new Error("policy_registry_signer_target_commit_invalid");
-    if (configuredTargetCommit && configuredTargetCommit !== buildCommit) {
+    if (configuredTargetCommit && configuredTargetCommit !== buildCommit && !allowConfiguredTargetCommit) {
       throw new Error("policy_registry_signer_target_commit_mismatch");
     }
-    targetCommit = buildCommit;
+    targetCommit = configuredTargetCommit || buildCommit;
     token = String(env[`${prefix}_SERVICE_TOKEN`] || "");
     if (!SERVICE.test(service)) throw new Error("policy_registry_signer_service_invalid");
     if (!ID.test(keyId)) throw new Error("policy_registry_signer_key_id_invalid");
