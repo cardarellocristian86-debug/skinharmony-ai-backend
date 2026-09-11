@@ -2080,6 +2080,18 @@ function directiveReplySeed(locale, directive, workBound, { message = "", style 
   const english = locale === "en";
   const focus = directiveConversationFocus(message);
   const responseStyle = ["concise", "balanced", "detailed"].includes(style) ? style : "balanced";
+  // A resume is the normal human entry point. Keep the conversation natural:
+  // the structured connected-AI brief carries the server-issued task and its
+  // gate, while the owner should not need to read task IDs or Core vocabulary
+  // just to continue the sole canonical Work. This never authorizes a write.
+  if (workBound && pureResumeRequest(message) &&
+      ["RESUME", "PROCEED_READ_ONLY", "PREPARE_BOUNDED_WORK"].includes(directive.decision?.disposition) &&
+      String(directive.work_context?.status || "").toUpperCase() === "ACTIVE" &&
+      directive.core_diagnostics?.state !== "BLOCKED") {
+    return english
+      ? "I resumed the Work from its last verified point. The connected AI can prepare the next bounded step now; I will ask for your confirmation only before a real external change."
+      : "Ho ripreso il Work dall’ultimo punto verificabile. L’AI collegata può preparare ora il prossimo passo circoscritto; ti chiederò conferma soltanto prima di una modifica esterna reale.";
+  }
   const parts = [directiveStateSummary({ directive, workBound, focus, english, message, relatedChildRequested })];
   if (pureWorkObservationRequest(message)) {
     const observation = directiveObservationSummary(directive.work_context, english);
@@ -2902,15 +2914,20 @@ async function advisoryConversationResult({
   }));
 }
 
-// A fresh host session has no caller-owned work_id.  Nyra must not make the
+// A fresh host session has no caller-owned work_id. Nyra must not make the
 // connected AI enumerate the Gallery and guess: when the authenticated tenant
-// has exactly one operational Work, the server can safely and deterministically
-// restore that identity before the one governed preflight. More than one
-// operational Work remains deliberately unbound so Core can request a
-// selection. Do not query only `active`: a blocked, verified or release-ready
-// Work is still operational and must make this selection explicit.
+// has exactly one Work in the *canonical V2 operational Gallery*, the server
+// can safely and deterministically restore that identity before the one
+// governed preflight. More than one operational Work remains deliberately
+// unbound so Core can request a selection.
+//
+// Do not use the legacy continuity catalogue here. Its projection can retain
+// an old ACTIVE/BLOCKED row after the V2 Work was archived or superseded. That
+// made the dialogue ask for a choice that the Gallery could not display. The
+// V2 operational snapshot is the one visible to the owner and is ACL-scoped
+// by the server before this function receives it.
 async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
-  if (boundedWorkId(args.work_id) || typeof workContinuityRuntime?.listWorks !== "function") {
+  if (boundedWorkId(args.work_id) || typeof workContinuityRuntime?.listOperationalWorks !== "function") {
     return args;
   }
   // An explicit bootstrap specification must enter the semantic duplicate
@@ -2919,15 +2936,11 @@ async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
   // wins above and resumes that exact canonical Work.
   if (args.work_bootstrap !== undefined || args.canonical_intent?.work_requirement === "NEW") return args;
   const requestedProjectId = boundedProjectId(args.project_id);
-  let catalogs;
+  let catalog;
   try {
-    catalogs = await Promise.all(["active", "verified", "release_ready", "blocked"].map((status) => (
-      workContinuityRuntime.listWorks(identity, {
-        status,
-        limit: 2,
-        ...(requestedProjectId ? { project_id: requestedProjectId } : {}),
-      })
-    )));
+    catalog = await workContinuityRuntime.listOperationalWorks(identity, {
+      ...(requestedProjectId ? { project_id: requestedProjectId } : {}),
+    });
   } catch {
     // This optimisation must never turn an otherwise valid read-only Nyra
     // turn into an outage.  The normal preflight retains its fail-closed
@@ -2935,19 +2948,15 @@ async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
     return args;
   }
   const workById = new Map();
-  let hasMore = false;
-  for (const catalog of catalogs) {
-    hasMore ||= Boolean(catalog?.next_cursor);
-    for (const work of Array.isArray(catalog?.works) ? catalog.works : []) {
-      const work_id = boundedWorkId(work?.work_id);
-      const project_id = boundedProjectId(work?.project_id);
-      if (work_id && project_id && (!requestedProjectId || project_id === requestedProjectId)) {
-        workById.set(work_id, { work_id, project_id });
-      }
+  for (const work of Array.isArray(catalog) ? catalog : []) {
+    const work_id = boundedWorkId(work?.work_id);
+    const project_id = boundedProjectId(work?.project_id);
+    if (work_id && project_id && (!requestedProjectId || project_id === requestedProjectId)) {
+      workById.set(work_id, { work_id, project_id });
     }
   }
   const works = [...workById.values()];
-  if (works.length !== 1 || hasMore) return args;
+  if (works.length !== 1) return args;
   return Object.freeze({
     ...args,
     work_id: works[0].work_id,

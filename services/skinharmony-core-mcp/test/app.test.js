@@ -1031,7 +1031,7 @@ test("a governed mutating resume repairs pending canonical causal lineage before
   assert.match(handler, /canonical_work_causal_lineage_pending/);
 });
 
-test("legacy Work reads and auto-resume intersect canonical V2 visibility", () => {
+test("legacy Work reads and auto-resume use canonical V2 visibility", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /work_continuity_read: async[\s\S]*?readLegacyWorkAuthorized\(identity, args\)/);
   assert.match(serverSource, /work_continuity_intent_read: async[\s\S]*?readLegacyIntentAuthorized\(identity, args\)/);
@@ -1040,7 +1040,8 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
   assert.match(serverSource, /workContinuityV2Store\.listWorks\(aclIdentity, \{ view: "operational", project_id \}\)/);
   assert.match(serverSource, /authorizedResumeWorkIds,/);
   assert.match(serverSource, /allowAuthorizedSessionRebind: Boolean\(args\.work_id\)/);
-  assert.match(serverSource, /const governedLegacyReadRuntime = workContinuityRuntime \? Object\.freeze\(\{[\s\S]*?listWorks: listLegacyWorksAuthorized,[\s\S]*?readIntent: readLegacyIntentAuthorized/);
+  assert.match(serverSource, /async function listCanonicalOperationalWorks[\s\S]*?view: "operational"/);
+  assert.match(serverSource, /const governedLegacyReadRuntime = workContinuityRuntime \? Object\.freeze\(\{[\s\S]*?listOperationalWorks: listCanonicalOperationalWorks,[\s\S]*?readIntent: readLegacyIntentAuthorized/);
   assert.match(serverSource, /resolveContinuityProjectBinding\([\s\S]*?governedLegacyReadRuntime,[\s\S]*?preferPersistedWorkProject: true/);
   const hookStart = serverSource.indexOf("beforeToolCall: async");
   const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);

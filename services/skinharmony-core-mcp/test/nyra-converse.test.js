@@ -1858,6 +1858,24 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
 });
 
+test("renders an active Work resume for the owner without task IDs or gate jargon", async () => {
+  const response = await harness({ directiveContext: directiveContextFixture() }).handler({
+    message: "Continua il lavoro.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(payload.work.work_id, WORK_ID);
+  assert.equal(payload.execution_authorized, false);
+  assert.equal(payload.external_action_authorized, false);
+  assert.equal(payload.host_response_contract.reply_seed,
+    "Ho ripreso il Work dall’ultimo punto verificabile. L’AI collegata può preparare ora il prossimo passo circoscritto; ti chiederò conferma soltanto prima di una modifica esterna reale.");
+  assert.doesNotMatch(payload.host_response_contract.reply_seed, new RegExp(`${TASK_ID}|task canonico|gate|READ_ONLY|WORKSPACE`, "i"));
+  assert.equal(payload.host_response_contract.connected_ai_brief.state, "READY");
+});
+
 test("does not let a cached Work step dominate a new technical orchestration request", async () => {
   const context = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
     continuity: {
@@ -3271,7 +3289,7 @@ test("canonicalizes an uppercase Work UUID through the full conversation binding
   assert.equal(response.structuredContent.orchestration_directive.work_context.work_id, WORK_ID);
 });
 
-test("restores the sole operational Work before Nyra's single governed preflight", async () => {
+test("restores the sole canonical Gallery Work before Nyra's single governed preflight", async () => {
   const calls = { catalog: [], intent: [], preflight: [], continuity: [] };
   const authenticatedIdentity = identity();
   const preflight = createNyraConversePreflight({
@@ -3282,13 +3300,12 @@ test("restores the sole operational Work before Nyra's single governed preflight
     ensureContinuity: async (...args) => calls.continuity.push(args),
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async (receivedIdentity, input) => {
+      listOperationalWorks: async (receivedIdentity, input) => {
         calls.catalog.push({ identity: receivedIdentity, input });
-        return {
-          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
-          next_cursor: null,
-        };
+        return [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }];
       },
+      // A stale legacy bridge must never participate in auto-resume.
+      listWorks: async () => { throw new Error("legacy_catalog_must_not_be_used"); },
       readIntent: async (receivedIdentity, args) => {
         calls.intent.push({ identity: receivedIdentity, args });
         return { project_id: "nyra_core" };
@@ -3297,12 +3314,12 @@ test("restores the sole operational Work before Nyra's single governed preflight
     hostType: () => "chatgpt_native",
   });
 
-  await preflight({ message: "Nyra, riprendi il Work" }, authenticatedIdentity);
+  await preflight({ message: "Continua il lavoro." }, authenticatedIdentity);
 
-  assert.deepEqual(calls.catalog, ["active", "verified", "release_ready", "blocked"].map((status) => ({
+  assert.deepEqual(calls.catalog, [{
     identity: authenticatedIdentity,
-    input: { status, limit: 2 },
-  })));
+    input: {},
+  }]);
   assert.deepEqual(calls.intent, [{
     identity: authenticatedIdentity,
     args: { work_id: WORK_ID },
@@ -3329,12 +3346,9 @@ test("routes an unbound explicit bootstrap to duplicate review instead of auto-b
     ensureContinuity: async (...args) => calls.continuity.push(args),
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async (...args) => {
+      listOperationalWorks: async (...args) => {
         calls.catalog.push(args);
-        return {
-          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
-          next_cursor: null,
-        };
+        return [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }];
       },
       readIntent: async (...args) => {
         calls.intent.push(args);
@@ -3373,12 +3387,9 @@ test("routes a prose NEW intent without auto-binding the sole Gallery Work", asy
     ensureContinuity: async (...args) => calls.continuity.push(args),
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async (...args) => {
+      listOperationalWorks: async (...args) => {
         calls.catalog.push(args);
-        return {
-          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
-          next_cursor: null,
-        };
+        return [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }];
       },
     },
     hostType: () => "chatgpt_native",
@@ -3413,14 +3424,11 @@ test("does not bind a tenant-wide Work from another project during bootstrap", a
     ensureContinuity: async () => {},
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async (_receivedIdentity, input) => {
+      listOperationalWorks: async (_receivedIdentity, input) => {
         calls.catalog.push(input);
-        return {
-          // Deliberately ignore the requested project like a stale adapter;
-          // Nyra must still filter the response before binding a Work.
-          works: [{ work_id: WORK_ID, project_id: "other_project", status: input.status }],
-          next_cursor: null,
-        };
+        // Deliberately ignore the requested project like a stale adapter;
+        // Nyra must still filter the response before binding a Work.
+        return [{ work_id: WORK_ID, project_id: "other_project", status: "active" }];
       },
       readIntent: async (...args) => {
         calls.intent.push(args);
@@ -3435,11 +3443,9 @@ test("does not bind a tenant-wide Work from another project during bootstrap", a
     project_id: "new_project",
   }, authenticatedIdentity);
 
-  assert.deepEqual(calls.catalog, ["active", "verified", "release_ready", "blocked"].map((status) => ({
-    status,
-    limit: 2,
+  assert.deepEqual(calls.catalog, [{
     project_id: "new_project",
-  })));
+  }]);
   assert.deepEqual(calls.intent, []);
   assert.equal(calls.preflight[0].work_id, undefined);
   assert.equal(calls.preflight[0].project_id, "new_project");
@@ -3455,13 +3461,10 @@ test("does not guess a Work when the active Gallery has more than one candidate"
     ensureContinuity: async () => {},
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async () => ({
-        works: [
-          { work_id: WORK_ID, project_id: "nyra_core", status: "active" },
-          { work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "active" },
-        ],
-        next_cursor: null,
-      }),
+      listOperationalWorks: async () => ([
+        { work_id: WORK_ID, project_id: "nyra_core", status: "active" },
+        { work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "active" },
+      ]),
       readIntent: async (...args) => {
         calls.intent.push(args);
         return { project_id: "must-not-be-used" };
@@ -3478,7 +3481,7 @@ test("does not guess a Work when the active Gallery has more than one candidate"
   assert.equal(calls.preflight[0].project_id, "nyra_conversational_runtime");
 });
 
-test("does not guess an active Work when another operational Work is blocked", async () => {
+test("does not guess a Work when the canonical operational Gallery has multiple statuses", async () => {
   const calls = { intent: [], preflight: [] };
   const preflight = createNyraConversePreflight({
     workPreflight: async (args) => {
@@ -3488,14 +3491,10 @@ test("does not guess an active Work when another operational Work is blocked", a
     ensureContinuity: async () => {},
     resolveContinuityProjectBinding,
     workContinuityRuntime: {
-      listWorks: async (_identity, input) => ({
-        works: input.status === "active"
-          ? [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }]
-          : input.status === "blocked"
-            ? [{ work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "blocked" }]
-            : [],
-        next_cursor: null,
-      }),
+      listOperationalWorks: async () => ([
+        { work_id: WORK_ID, project_id: "nyra_core", status: "active" },
+        { work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "blocked" },
+      ]),
       readIntent: async (...args) => {
         calls.intent.push(args);
         return { project_id: "must-not-be-used" };
