@@ -2953,6 +2953,14 @@ const baseHandlers = {
         execution_authorized: false,
       });
     },
+    nyra_native_agent_create: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_agent.create", args.work_id);
+      return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.createCustomAgent(identity, args), execution_authorized: false });
+    },
+    nyra_native_agent_activate: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_agent.activate", args.agent_instance_id);
+      return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.requestActivation(identity, args), execution_authorized: false });
+    },
   } : {}),
   ...(nyraAutopilotRuntime ? {
     nyra_autopilot_status: async (_args, identity) => continuityTextResult({

@@ -178,6 +178,48 @@ CREATE TABLE IF NOT EXISTS core_nyra_agent_instances (
 CREATE INDEX IF NOT EXISTS core_nyra_agent_instances_scope_idx
   ON core_nyra_agent_instances (tenant_id, project_id, work_id, created_at);
 
+CREATE TABLE IF NOT EXISTS core_nyra_custom_agent_definitions (
+  tenant_id varchar(64) NOT NULL,
+  project_id varchar(64) NOT NULL,
+  work_id uuid NOT NULL,
+  agent_instance_id uuid NOT NULL,
+  agent_name varchar(120) NOT NULL,
+  role varchar(120) NOT NULL,
+  objective text NOT NULL,
+  blueprint_id varchar(80) NOT NULL,
+  blueprint_digest char(64) NOT NULL,
+  status varchar(40) NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','launch_requested','connected','blocked','retired')),
+  execution_mode varchar(40) NOT NULL DEFAULT 'disabled',
+  model_invocation_allowed boolean NOT NULL DEFAULT false,
+  external_action_allowed boolean NOT NULL DEFAULT false,
+  capability_allowlist jsonb NOT NULL DEFAULT '[]'::jsonb,
+  tool_allowlist jsonb NOT NULL DEFAULT '[]'::jsonb,
+  request_digest char(64) NOT NULL,
+  idempotency_key varchar(160) NOT NULL,
+  created_by varchar(120) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id, agent_instance_id),
+  UNIQUE (tenant_id, work_id, idempotency_key),
+  FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
+);
+CREATE INDEX IF NOT EXISTS core_nyra_custom_agents_scope_idx ON core_nyra_custom_agent_definitions (tenant_id, project_id, work_id, created_at);
+
+CREATE TABLE IF NOT EXISTS core_nyra_agent_activation_requests (
+  tenant_id varchar(64) NOT NULL,
+  work_id uuid NOT NULL,
+  agent_instance_id uuid NOT NULL,
+  activation_id uuid NOT NULL,
+  host_type varchar(40) NOT NULL CHECK (host_type IN ('chatgpt_native','codex_native')),
+  state varchar(40) NOT NULL DEFAULT 'launch_requested' CHECK (state IN ('launch_requested','connected','expired','cancelled')),
+  request_digest char(64) NOT NULL,
+  idempotency_key varchar(160) NOT NULL,
+  created_by varchar(120) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id, activation_id),
+  UNIQUE (tenant_id, work_id, idempotency_key),
+  FOREIGN KEY (tenant_id, work_id, agent_instance_id) REFERENCES core_nyra_custom_agent_definitions(tenant_id, work_id, agent_instance_id)
+);
+
 CREATE TABLE IF NOT EXISTS core_nyra_agent_receipts (
   tenant_id varchar(64) NOT NULL,
   work_id uuid NOT NULL,
@@ -391,6 +433,52 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     return transaction((client) => materializeForWorkInTransaction(client, identity, input));
   }
 
+  function customAgent(row) {
+    return {
+      agent_instance_id: row.agent_instance_id, agent_name: row.agent_name, role: row.role, objective: row.objective,
+      blueprint_id: row.blueprint_id, status: row.status,
+      execution: { mode: row.execution_mode, model_invocation_allowed: row.model_invocation_allowed === true, external_action_allowed: false, core_gate_required: true },
+      capability_allowlist: Array.isArray(row.capability_allowlist) ? row.capability_allowlist : [],
+      tool_allowlist: Array.isArray(row.tool_allowlist) ? row.tool_allowlist : [], created_at: row.created_at,
+    };
+  }
+
+  async function createCustomAgent(identity, input = {}) {
+    const tenantId = tenant(identity?.tenantId); const workId = uuid(input.work_id, "work_id"); const projectId = identifier(input.project_id, "project_id");
+    const agentName = String(input.agent_name || "").trim().slice(0, 120); const role = String(input.role || "").trim().slice(0, 120);
+    const objective = String(input.objective || "").trim().slice(0, 4_000); const blueprintId = identifier(input.blueprint_id, "blueprint_id"); const key = idempotencyKey(input.idempotency_key);
+    if (agentName.length < 3 || role.length < 3 || objective.length < 8) throw new Error("nyra_custom_agent_contract_invalid");
+    const spec = NYRA_NATIVE_TEAM_BLUEPRINTS.find((item) => item.blueprint_id === blueprintId); if (!spec) throw new Error("nyra_native_team_blueprint_unknown");
+    const actor = identifier(input.agent_id || identity?.subject || "nyra", "agent_id");
+    return transaction(async (client) => {
+      const work = await client.query("SELECT project_id FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [tenantId, workId]);
+      if (!work.rows[0]) throw new Error("continuity_work_not_found"); if (work.rows[0].project_id !== projectId) throw new Error("nyra_native_team_project_mismatch");
+      const request = { project_id: projectId, work_id: workId, agent_name: agentName, role, objective, blueprint_id: blueprintId };
+      const existing = await client.query("SELECT * FROM core_nyra_custom_agent_definitions WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3", [tenantId, workId, key]);
+      if (existing.rows[0]) { if (existing.rows[0].request_digest !== digest(request)) throw new Error("idempotency_key_conflict"); return { agent: customAgent(existing.rows[0]), idempotent_replay: true }; }
+      const inserted = await client.query(`INSERT INTO core_nyra_custom_agent_definitions (tenant_id,project_id,work_id,agent_instance_id,agent_name,role,objective,blueprint_id,blueprint_digest,capability_allowlist,tool_allowlist,request_digest,idempotency_key,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'[]'::jsonb,$11,$12,$13) RETURNING *`, [tenantId, projectId, workId, crypto.randomUUID(), agentName, role, objective, blueprintId, BLUEPRINT_DIGEST, JSON.stringify(spec.capability_allowlist), digest(request), key, actor]);
+      const agent = customAgent(inserted.rows[0]); const receipt = await appendReceipt(client, { tenantId, workId, projectId, actor }, "custom_agent_created", { agent, request_digest: digest(request) });
+      return { agent, receipt, execution_authorized: false, idempotent_replay: false };
+    });
+  }
+
+  async function requestActivation(identity, input = {}) {
+    const tenantId = tenant(identity?.tenantId); const workId = uuid(input.work_id, "work_id"); const agentId = uuid(input.agent_instance_id, "agent_instance_id"); const hostType = String(input.host_type || ""); const key = idempotencyKey(input.idempotency_key);
+    if (!["chatgpt_native", "codex_native"].includes(hostType)) throw new Error("nyra_native_agent_host_type_invalid"); const actor = identifier(input.agent_id || identity?.subject || "nyra", "agent_id");
+    return transaction(async (client) => {
+      const agentResult = await client.query("SELECT * FROM core_nyra_custom_agent_definitions WHERE tenant_id=$1 AND work_id=$2 AND agent_instance_id=$3 FOR UPDATE", [tenantId, workId, agentId]);
+      if (!agentResult.rows[0]) throw new Error("nyra_custom_agent_not_found"); const agent = agentResult.rows[0]; const request = { work_id: workId, agent_instance_id: agentId, host_type: hostType };
+      const replay = await client.query("SELECT * FROM core_nyra_agent_activation_requests WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3", [tenantId, workId, key]);
+      if (replay.rows[0]) { if (replay.rows[0].request_digest !== digest(request)) throw new Error("idempotency_key_conflict"); return { activation_id: replay.rows[0].activation_id, state: replay.rows[0].state, idempotent_replay: true }; }
+      const activationId = crypto.randomUUID(); await client.query("INSERT INTO core_nyra_agent_activation_requests (tenant_id,work_id,agent_instance_id,activation_id,host_type,request_digest,idempotency_key,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", [tenantId, workId, agentId, activationId, hostType, digest(request), key, actor]);
+      await client.query("UPDATE core_nyra_custom_agent_definitions SET status='launch_requested' WHERE tenant_id=$1 AND work_id=$2 AND agent_instance_id=$3", [tenantId, workId, agentId]);
+      const launch_request = { schema_version: "nyra_connected_agent_launch_v1", activation_id: activationId, work_id: workId, agent: customAgent({ ...agent, status: "launch_requested" }), host_type: hostType, constraints: { distinct_child_session_required: true, server_model_invocation: false, external_action_allowed: false, core_gate_required: true, evidence_report_required: true } };
+      const receipt = await appendReceipt(client, { tenantId, workId, projectId: agent.project_id, actor }, "custom_agent_activation_requested", { activation_id: activationId, agent_instance_id: agentId, host_type: hostType, launch_request_digest: digest(launch_request) });
+      return { activation_id: activationId, state: "launch_requested", launch_request, receipt, execution_authorized: false, idempotent_replay: false };
+    });
+  }
+
   return {
     schemaSql: CREATE_SCHEMA_SQL,
     blueprintCatalog: nyraNativeTeamBlueprintCatalog,
@@ -449,6 +537,8 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     // Internal composition surface: callers must already own the transaction.
     // It is intentionally absent from the MCP tool registry.
     materializeForWorkInTransaction,
+    createCustomAgent,
+    requestActivation,
 
     async read(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
@@ -461,10 +551,11 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
         FROM core_nyra_agent_instances i JOIN core_continuity_works w ON w.tenant_id=i.tenant_id AND w.work_id=i.work_id
         WHERE i.tenant_id=$1 AND i.work_id=$2 ${projectId ? "AND w.project_id=$3" : ""} ORDER BY i.blueprint_id`,
       projectId ? [tenantId, workId, projectId] : [tenantId, workId]);
-      if (!result.rows.length && projectId) throw new Error("nyra_native_team_not_found");
-      return { tenant_id: tenantId, project_id: result.rows[0]?.project_id || projectId || null, work_id: workId,
+      const custom = await pool.query(`SELECT * FROM core_nyra_custom_agent_definitions WHERE tenant_id=$1 AND work_id=$2 ${projectId ? "AND project_id=$3" : ""} ORDER BY created_at`, projectId ? [tenantId, workId, projectId] : [tenantId, workId]);
+      if (!result.rows.length && !custom.rows.length && projectId) throw new Error("nyra_native_team_not_found");
+      return { tenant_id: tenantId, project_id: result.rows[0]?.project_id || custom.rows[0]?.project_id || projectId || null, work_id: workId,
         parent: { kind: "nyra", agent_id: NYRA_NATIVE_TEAM_PARENT_ID }, blueprint_digest: BLUEPRINT_DIGEST,
-        instances: result.rows.map(publicInstance), execution_authorized: false };
+        instances: result.rows.map(publicInstance), custom_agents: custom.rows.map(customAgent), execution_authorized: false };
     },
   };
 }
