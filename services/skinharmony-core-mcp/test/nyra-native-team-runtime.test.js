@@ -55,14 +55,15 @@ test("Native Team persistence is tenant/work scoped and keeps a receipt ledger a
 test("Native Team MCP tools separate reads from owner-gated package and bootstrap writes", () => {
   const tools = Object.fromEntries(NYRA_NATIVE_TEAM_TOOLS.map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), [
+    "nyra_agent_factory_catalog", "nyra_agent_factory_create", "nyra_agent_factory_plan",
     "nyra_native_agent_activate", "nyra_native_agent_create",
     "nyra_native_team_blueprints", "nyra_native_team_bootstrap",
     "nyra_native_team_enable", "nyra_native_team_status",
   ]);
-  for (const name of ["nyra_native_team_blueprints", "nyra_native_team_status"]) {
+  for (const name of ["nyra_native_team_blueprints", "nyra_native_team_status", "nyra_agent_factory_catalog", "nyra_agent_factory_plan"]) {
     assert.equal(tools[name].annotations.readOnlyHint, true);
   }
-  for (const name of ["nyra_native_team_enable", "nyra_native_team_bootstrap", "nyra_native_agent_create", "nyra_native_agent_activate"]) {
+  for (const name of ["nyra_native_team_enable", "nyra_native_team_bootstrap", "nyra_native_agent_create", "nyra_native_agent_activate", "nyra_agent_factory_create"]) {
     assert.equal(tools[name].annotations.readOnlyHint, false);
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], true);
   }

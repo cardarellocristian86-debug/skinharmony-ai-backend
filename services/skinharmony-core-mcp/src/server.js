@@ -38,6 +38,7 @@ import {
   deriveAuthenticatedTenantWorkAcl,
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
+import { agentFactoryCatalog, compileAgentManifest } from "./agent-manifest-factory.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import {
   createNyraConverseHandler,
@@ -2960,6 +2961,14 @@ const baseHandlers = {
     nyra_native_agent_activate: async (args, identity) => {
       await requireOwnerGovernance(identity, "nyra.native_agent.activate", args.agent_instance_id);
       return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.requestActivation(identity, args), execution_authorized: false });
+    },
+    nyra_agent_factory_catalog: async (_args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: agentFactoryCatalog() }),
+    nyra_agent_factory_plan: async (args, identity) => continuityTextResult({ ok: true, tenant_id: identity.tenantId, result: compileAgentManifest(args.manifest) }),
+    nyra_agent_factory_create: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.agent_factory.create", args.work_id);
+      const plan = compileAgentManifest(args.manifest);
+      if (!plan.creation_ready) throw new Error("nyra_agent_factory_capability_missing");
+      return continuityTextResult({ ok: true, result: await nyraNativeTeamRuntime.createCustomAgent(identity, { ...args, agent_name: plan.agent.name, role: plan.agent.role, objective: plan.agent.objective, blueprint_id: plan.composition.default_blueprint_id }), factory_plan: plan, execution_authorized: false });
     },
   } : {}),
   ...(nyraAutopilotRuntime ? {
