@@ -34,6 +34,20 @@ function idempotencyKey(value) {
   return identifier(value, "idempotency_key");
 }
 
+function boundedText(value, field, maximum) {
+  if (typeof value !== "string") throw new Error(`${field}_invalid`);
+  return value.trim().slice(0, maximum);
+}
+
+function capabilityAllowlist(value) {
+  if (!Array.isArray(value) || value.length > 80) throw new Error("capability_allowlist_invalid");
+  const result = value.map((item) => boundedText(item, "capability_allowlist", 120));
+  if (result.some((item) => !/^[a-z][a-z0-9_.-]{1,119}$/.test(item)) || new Set(result).size !== result.length) {
+    throw new Error("capability_allowlist_invalid");
+  }
+  return result;
+}
+
 function selectedBlueprints(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > NYRA_NATIVE_TEAM_BLUEPRINTS.length) {
     throw new Error("nyra_native_team_blueprints_invalid");
@@ -203,6 +217,8 @@ CREATE TABLE IF NOT EXISTS core_nyra_custom_agent_definitions (
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
 );
 CREATE INDEX IF NOT EXISTS core_nyra_custom_agents_scope_idx ON core_nyra_custom_agent_definitions (tenant_id, project_id, work_id, created_at);
+ALTER TABLE core_nyra_custom_agent_definitions ADD COLUMN IF NOT EXISTS manifest_id varchar(64);
+ALTER TABLE core_nyra_custom_agent_definitions ADD COLUMN IF NOT EXISTS factory_plan_digest char(64);
 
 CREATE TABLE IF NOT EXISTS core_nyra_agent_activation_requests (
   tenant_id varchar(64) NOT NULL,
@@ -437,6 +453,7 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     return {
       agent_instance_id: row.agent_instance_id, agent_name: row.agent_name, role: row.role, objective: row.objective,
       blueprint_id: row.blueprint_id, status: row.status,
+      manifest_id: row.manifest_id || null, factory_plan_digest: row.factory_plan_digest || null,
       execution: { mode: row.execution_mode, model_invocation_allowed: row.model_invocation_allowed === true, external_action_allowed: false, core_gate_required: true },
       capability_allowlist: Array.isArray(row.capability_allowlist) ? row.capability_allowlist : [],
       tool_allowlist: Array.isArray(row.tool_allowlist) ? row.tool_allowlist : [], created_at: row.created_at,
@@ -445,19 +462,22 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
 
   async function createCustomAgent(identity, input = {}) {
     const tenantId = tenant(identity?.tenantId); const workId = uuid(input.work_id, "work_id"); const projectId = identifier(input.project_id, "project_id");
-    const agentName = String(input.agent_name || "").trim().slice(0, 120); const role = String(input.role || "").trim().slice(0, 120);
-    const objective = String(input.objective || "").trim().slice(0, 4_000); const blueprintId = identifier(input.blueprint_id, "blueprint_id"); const key = idempotencyKey(input.idempotency_key);
+    const agentName = boundedText(input.agent_name, "agent_name", 120); const role = boundedText(input.role, "role", 120);
+    const objective = boundedText(input.objective, "objective", 4_000); const blueprintId = identifier(input.blueprint_id, "blueprint_id"); const key = idempotencyKey(input.idempotency_key);
+    const manifestId = identifier(input.manifest_id, "manifest_id"); const factoryPlanDigest = boundedText(input.factory_plan_digest, "factory_plan_digest", 64).toLowerCase();
+    const capabilities = capabilityAllowlist(input.capability_allowlist);
+    if (!/^[a-f0-9]{64}$/.test(factoryPlanDigest)) throw new Error("factory_plan_digest_invalid");
     if (agentName.length < 3 || role.length < 3 || objective.length < 8) throw new Error("nyra_custom_agent_contract_invalid");
     const spec = NYRA_NATIVE_TEAM_BLUEPRINTS.find((item) => item.blueprint_id === blueprintId); if (!spec) throw new Error("nyra_native_team_blueprint_unknown");
     const actor = identifier(input.agent_id || identity?.subject || "nyra", "agent_id");
     return transaction(async (client) => {
       const work = await client.query("SELECT project_id FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [tenantId, workId]);
       if (!work.rows[0]) throw new Error("continuity_work_not_found"); if (work.rows[0].project_id !== projectId) throw new Error("nyra_native_team_project_mismatch");
-      const request = { project_id: projectId, work_id: workId, agent_name: agentName, role, objective, blueprint_id: blueprintId };
+      const request = { project_id: projectId, work_id: workId, manifest_id: manifestId, factory_plan_digest: factoryPlanDigest, capability_allowlist: capabilities, agent_name: agentName, role, objective, blueprint_id: blueprintId };
       const existing = await client.query("SELECT * FROM core_nyra_custom_agent_definitions WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3", [tenantId, workId, key]);
       if (existing.rows[0]) { if (existing.rows[0].request_digest !== digest(request)) throw new Error("idempotency_key_conflict"); return { agent: customAgent(existing.rows[0]), idempotent_replay: true }; }
-      const inserted = await client.query(`INSERT INTO core_nyra_custom_agent_definitions (tenant_id,project_id,work_id,agent_instance_id,agent_name,role,objective,blueprint_id,blueprint_digest,capability_allowlist,tool_allowlist,request_digest,idempotency_key,created_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,'[]'::jsonb,$11,$12,$13) RETURNING *`, [tenantId, projectId, workId, crypto.randomUUID(), agentName, role, objective, blueprintId, BLUEPRINT_DIGEST, JSON.stringify(spec.capability_allowlist), digest(request), key, actor]);
+      const inserted = await client.query(`INSERT INTO core_nyra_custom_agent_definitions (tenant_id,project_id,work_id,agent_instance_id,agent_name,role,objective,blueprint_id,blueprint_digest,manifest_id,factory_plan_digest,capability_allowlist,tool_allowlist,request_digest,idempotency_key,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,'[]'::jsonb,$13,$14,$15) RETURNING *`, [tenantId, projectId, workId, crypto.randomUUID(), agentName, role, objective, blueprintId, BLUEPRINT_DIGEST, manifestId, factoryPlanDigest, JSON.stringify(capabilities), digest(request), key, actor]);
       const agent = customAgent(inserted.rows[0]); const receipt = await appendReceipt(client, { tenantId, workId, projectId, actor }, "custom_agent_created", { agent, request_digest: digest(request) });
       return { agent, receipt, execution_authorized: false, idempotent_replay: false };
     });
