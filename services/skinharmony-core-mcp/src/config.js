@@ -1,5 +1,6 @@
 import { parseNyraProjectReleaseBindings } from "./nyra-native-plan-bridge.js";
 import { parseHostAppRegistry } from "./host-app-registry.js";
+import { parseAgentCapabilityRegistry } from "./agent-manifest-factory.js";
 
 function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -449,6 +450,11 @@ export function loadConfig(env = process.env) {
     env.NYRA_ATLAS_GITHUB_TOKENS_JSON,
     "NYRA_ATLAS_GITHUB_TOKENS_JSON",
   );
+  // Business capabilities are only made available by a server-side vertical
+  // adapter registry. A domain declaration alone never enables a capability.
+  const nyraAgentCapabilityRegistry = parseAgentCapabilityRegistry(
+    env.NYRA_AGENT_CAPABILITY_REGISTRY_JSON,
+  );
   const genericWorkCoreJoinEnabledFlag = strictFlag(
     env.GENERIC_WORK_CORE_JOIN_ENABLED,
     false,
@@ -666,6 +672,7 @@ export function loadConfig(env = process.env) {
     nyraProjectReleaseBindings,
     nyraAtlasRepositoryBindings,
     nyraAtlasGithubTokens,
+    nyraAgentCapabilityRegistry,
     genericWorkCoreJoinEnabled,
     genericWorkCoreJoinRequired,
     genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,
