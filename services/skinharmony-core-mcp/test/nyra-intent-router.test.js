@@ -74,6 +74,19 @@ test("routes explicit consequential language while preserving diagnostic and cla
   }
 });
 
+test("does not turn an explicit no-new-Work resume/read request into bootstrap", () => {
+  const route = classify(
+    "Riprendi il Work esistente senza crearne uno nuovo. Leggi il checkpoint e il task successivo.",
+  );
+  assert.notEqual(route.intent, "work_create");
+  assert.equal(route.canonical_intent.work_requirement, "NONE");
+  assert.deepEqual(route.canonical_intent.requested_now, []);
+
+  const positive = classify("Crea un nuovo Work per la migrazione.");
+  assert.equal(positive.intent, "work_create");
+  assert.equal(positive.canonical_intent.work_requirement, "NEW");
+});
+
 test("routes global runtime status to Control Room and keeps Work or mutation scope out", () => {
   for (const message of [
     "Nyra, che funzioni sono attive?",

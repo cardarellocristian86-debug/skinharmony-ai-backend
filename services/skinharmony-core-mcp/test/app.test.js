@@ -1036,6 +1036,17 @@ test("a governed mutating resume repairs pending canonical causal lineage before
   assert.match(handler, /canonical_work_causal_lineage_pending/);
 });
 
+test("every Work-bound dynamic mutation repairs pending causal lineage before preflight or handler", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = serverSource.indexOf("if (requiresCanonicalWorkReadAuthorization(toolName, args))");
+  const end = serverSource.indexOf("// Native reports are authenticated", start);
+  const gate = serverSource.slice(start, end);
+  assert.match(gate, /targetDefinition\?\.annotations\?\.readOnlyHint !== true/);
+  assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
+  assert.match(gate, /read_only: false/);
+  assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);
+});
+
 test("legacy Work reads and auto-resume use canonical V2 visibility", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /work_continuity_read: async[\s\S]*?readLegacyWorkAuthorized\(identity, args\)/);

@@ -3332,6 +3332,18 @@ const app = createApp(config, {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
         await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
+        const targetDefinition = TOOLS.find((item) => item.name === authorizationTarget.toolName);
+        // A previously persisted bootstrap may still be PENDING after a
+        // transient causal failure.  Repair it at the first authenticated,
+        // Work-bound mutation boundary, before preflight and before the
+        // dynamic handler reaches the store guard.  The repair consumes only
+        // server-owned Work/project material; read-only calls remain pure.
+        if (targetDefinition?.annotations?.readOnlyHint !== true) {
+          await readNyraDirectiveContext(identity, {
+            work_id: authorizationTarget.args.work_id,
+            read_only: false,
+          });
+        }
       }
     }
     // Native reports are authenticated by the child transport binding plus the
