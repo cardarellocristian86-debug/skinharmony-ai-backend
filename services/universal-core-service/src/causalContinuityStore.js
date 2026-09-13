@@ -440,10 +440,17 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
           [input.tenant_id, input.intent_revision_id, state, input.authorized_by],
         )).rows[0];
         if (state === "APPROVED") {
-          await client.query(
-            "UPDATE core_projects SET active_intent_revision_id=$3,version=version+1 WHERE tenant_id=$1 AND project_id=$2",
-            [input.tenant_id, revision.project_id, input.intent_revision_id],
+          const activeResult = await client.query(
+            `UPDATE core_projects SET active_intent_revision_id=$3,version=version+1
+             WHERE tenant_id=$1 AND project_id=$2
+               AND ($4::boolean=false OR active_intent_revision_id IS NULL)
+             RETURNING project_id`,
+            [input.tenant_id, revision.project_id, input.intent_revision_id,
+              input.expected_no_active_intent === true],
           );
+          if (activeResult.rowCount !== 1) {
+            throw new CausalContinuityError("INTENT_ACTIVE_CONFLICT");
+          }
         }
         return updated;
       },
@@ -1602,8 +1609,14 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       if (!revision) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
       if (revision.state !== "PROPOSED") throw new CausalContinuityError("INTENT_REVISION_IMMUTABLE");
       if (revision.classification === "PURPOSE_CHANGE" && input.approved !== false) throw new CausalContinuityError("NEW_PROJECT_REQUIRED");
+      const project = state.projects.get(key(input.tenant_id, revision.project_id));
+      if (!project) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
+      if (input.approved !== false && input.expected_no_active_intent === true &&
+          project.active_intent_revision_id !== null) {
+        throw new CausalContinuityError("INTENT_ACTIVE_CONFLICT");
+      }
       revision.state = input.approved === false ? "REJECTED" : "APPROVED"; revision.authorized_by = input.authorized_by;
-      if (revision.state === "APPROVED") state.projects.get(key(input.tenant_id, revision.project_id)).active_intent_revision_id = revision.intent_revision_id;
+      if (revision.state === "APPROVED") project.active_intent_revision_id = revision.intent_revision_id;
       return revision;
     }); },
     async listRevisions(input) { return listFor(state.revisions, input.tenant_id, (row) => row.project_id === input.project_id); },

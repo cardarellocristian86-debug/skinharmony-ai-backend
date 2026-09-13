@@ -1257,6 +1257,25 @@ async function reviewed(store, input, actor = identity()) {
   return { ...input, review_id: review.review_id, review_digest: review.review_digest };
 }
 
+test("causal bootstrap prevalidation is state-pure and rejects an expired review", async () => {
+  const pool = new AtomicWorkPool();
+  let clock = new Date("2026-08-08T10:00:00.000Z");
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date(clock) });
+  const input = await reviewed(store, createInput());
+  const valid = await store.validateCanonicalWorkBootstrapReview(identity(), input);
+  assert.equal(valid.valid, true);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+  clock = new Date("2026-08-08T11:00:00.000Z");
+  await assert.rejects(
+    () => store.validateCanonicalWorkBootstrapReview(identity(), input),
+    /open_work_review_expired/u,
+  );
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+});
+
 function coreAuthorizationReceipt() {
   const coreMaterial = {
     schema_version: "core_action_authorization_receipt_v1",
