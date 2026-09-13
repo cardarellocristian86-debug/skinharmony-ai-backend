@@ -510,6 +510,15 @@ test("materializes canonical intent before Work and preserves temporal and owner
   assert.equal(newWork.canonical_intent.work_requirement, "NEW");
   assert.match(newWork.canonical_intent.intent_digest, /^[a-f0-9]{64}$/);
 
+  for (const message of [
+    "Crea un Work senza avviare il lavoro.",
+    "Crea un Work senza creare un nuovo ticket.",
+  ]) {
+    const result = classify(message);
+    assert.equal(result.canonical_intent.work_requirement, "NEW", message);
+    assert.ok(result.canonical_intent.requested_now.includes("work_bootstrap"), message);
+  }
+
   const currentMerge = classify("Crea la PR e poi fai merge.");
   assert.ok(currentMerge.canonical_intent.requested_now.length > 0);
   assert.equal(currentMerge.canonical_intent.consequential_intent, true);

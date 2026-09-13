@@ -1903,7 +1903,11 @@ export function createWorkContinuityV2Store({
   async function recordCausalLineageState(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
-    if (!isAdmin(actor)) fail("work_creation_owner_required");
+    const serverOwnedRecovery = input?.server_owned_recovery === true;
+    if (serverOwnedRecovery && identity?.serverOwnedCausalLineageRecovery !== true) {
+      fail("causal_lineage_server_owned_recovery_required");
+    }
+    if (!isAdmin(actor) && !serverOwnedRecovery) fail("work_creation_owner_required");
     const workId = uuid(input.work_id);
     const state = String(input.state || "").toUpperCase();
     if (!new Set(["READY", "PENDING"]).has(state)) fail("causal_lineage_state_invalid");

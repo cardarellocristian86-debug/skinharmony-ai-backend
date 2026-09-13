@@ -1370,6 +1370,22 @@ function withTenantWorkAcl(identity) {
   return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
 }
 
+function withServerOwnedCausalLineageRecovery(identity) {
+  // This marker is created only after the authenticated caller has passed
+  // exact Work visibility, host capability, presence and Airlock checks.  It
+  // lets the durable store record its narrowly bounded recovery transition
+  // even when the caller is an assigned collaborator rather than the owner.
+  // It is never derived from tool arguments or exposed by an MCP schema.
+  const recoveryIdentity = withTenantWorkAcl(identity);
+  Object.defineProperty(recoveryIdentity, "serverOwnedCausalLineageRecovery", {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return Object.freeze(recoveryIdentity);
+}
+
 function legacyWorkAclError(code, status = 403) {
   const error = new Error(code);
   error.code = code;
@@ -1557,17 +1573,18 @@ async function reviewCanonicalWorkCreation(args, identity) {
 }
 
 async function reconcileCanonicalWorkCausalLineage(identity, work) {
+  const recoveryIdentity = withServerOwnedCausalLineageRecovery(identity);
   try {
     const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
       identity, work });
     const state = await workContinuityV2Store.recordCausalLineageState(
-      withTenantWorkAcl(identity), { work_id: work.work_id, state: "READY" });
+      recoveryIdentity, { work_id: work.work_id, state: "READY", server_owned_recovery: true });
     return { state: "READY", binding, lineage_digest: state.lineage_digest };
   } catch (error) {
     const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
     const state = await workContinuityV2Store.recordCausalLineageState(
-      withTenantWorkAcl(identity), { work_id: work.work_id, state: "PENDING",
-        reason_code: reasonCode });
+      recoveryIdentity, { work_id: work.work_id, state: "PENDING",
+        reason_code: reasonCode, server_owned_recovery: true });
     return { state: "PENDING", reason_code: reasonCode,
       lineage_digest: state.lineage_digest };
   }
@@ -3328,20 +3345,19 @@ const app = createApp(config, {
     // calls, ledger writes and continuity session bindings. A generic or
     // dynamic tool must not use preflight as a tenant-only read oracle for a
     // private canonical Work.
+    let pendingCausalLineageMutation = null;
     if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
         await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
         const targetDefinition = TOOLS.find((item) => item.name === authorizationTarget.toolName);
-        // A previously persisted bootstrap may still be PENDING after a
-        // transient causal failure.  Repair it at the first authenticated,
-        // Work-bound mutation boundary, before preflight and before the
-        // dynamic handler reaches the store guard.  The repair consumes only
-        // server-owned Work/project material; read-only calls remain pure.
+        // Retain the exact known mutating target, but do not repair yet.
+        // Presence and Research Airlock must authorize this request first.
+        // Unknown dynamic capability ids have no definition and cannot cause
+        // a durable side effect before the router rejects them.
         if (targetDefinition && targetDefinition.annotations?.readOnlyHint !== true) {
-          await readNyraDirectiveContext(identity, {
+          pendingCausalLineageMutation = Object.freeze({
             work_id: authorizationTarget.args.work_id,
-            read_only: false,
           });
         }
       }
@@ -3388,6 +3404,17 @@ const app = createApp(config, {
         error.status = 403;
         throw error;
       }
+    }
+    // A previous bootstrap can leave its Work in PENDING after a transient
+    // causal failure.  Only now—after authenticated Work visibility,
+    // transport presence and Airlock authorization—may a known mutating
+    // capability repair server-owned lineage.  This remains before generic
+    // Work preflight and the handler, so neither can hit the store guard.
+    if (pendingCausalLineageMutation) {
+      await readNyraDirectiveContext(identity, {
+        work_id: pendingCausalLineageMutation.work_id,
+        read_only: false,
+      });
     }
     // The exact positive read matrix skips presence, ledger, continuity and
     // post-call writes only after Airlock applies the same active-phase policy

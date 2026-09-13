@@ -1036,15 +1036,32 @@ test("a governed mutating resume repairs pending canonical causal lineage before
   assert.match(handler, /canonical_work_causal_lineage_pending/);
 });
 
-test("every Work-bound dynamic mutation repairs pending causal lineage before preflight or handler", () => {
+test("every Work-bound dynamic mutation repairs pending causal lineage after presence and Airlock but before preflight or handler", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
-  const start = serverSource.indexOf("if (requiresCanonicalWorkReadAuthorization(toolName, args))");
-  const end = serverSource.indexOf("// Native reports are authenticated", start);
-  const gate = serverSource.slice(start, end);
+  const hookStart = serverSource.indexOf("beforeToolCall: async");
+  const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);
+  const gate = serverSource.slice(hookStart, hookEnd);
   assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true/);
+  assert.match(gate, /pendingCausalLineageMutation = Object\.freeze/);
   assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
   assert.match(gate, /read_only: false/);
+  assert.ok(gate.indexOf("await registerAuthenticatedPresence(identity)") <
+    gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
+  assert.ok(gate.indexOf("nyra_research_airlock_session_tool_authorize") <
+    gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
+  assert.ok(gate.lastIndexOf("await readNyraDirectiveContext(identity, {") <
+    gate.indexOf("const ledgerContext = decisionLedger"));
   assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);
+});
+
+test("causal lineage recovery is server-owned and never caller-provided", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const storeSource = fs.readFileSync(new URL("../src/work-continuity-v2-store.js", import.meta.url), "utf8");
+  assert.match(serverSource, /function withServerOwnedCausalLineageRecovery\(identity\)/);
+  assert.match(serverSource, /serverOwnedCausalLineageRecovery/);
+  assert.match(serverSource, /server_owned_recovery: true/);
+  assert.match(storeSource, /serverOwnedRecovery && identity\?\.serverOwnedCausalLineageRecovery !== true/);
+  assert.match(storeSource, /!isAdmin\(actor\) && !serverOwnedRecovery/);
 });
 
 test("legacy Work reads and auto-resume use canonical V2 visibility", () => {

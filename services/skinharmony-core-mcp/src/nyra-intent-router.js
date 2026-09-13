@@ -8,11 +8,12 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$/;
 
 const WORK_CREATE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b/iu;
+const WORK_CREATE_AFFIRMATIVE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b/iu;
 // `Work esistente senza crearne uno nuovo` contains both `Work` and `nuovo`,
 // but it is an explicit prohibition, not a bootstrap request.  Keep this
 // separate from the broad create detector so a human can resume/read a Work
 // naturally without being routed into the bootstrap path.
-const NEGATED_WORK_CREATE = /\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro|nuov\w*|new)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open|nuov\w*|new)\b/iu;
+const NEGATED_WORK_CREATE = /\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\bcrearne\b.{0,80}\b(?:un(?:o)?\s+)?nuov\w*\b/iu;
 const WORK_RESUME = /^(?:nyra\s+)?(?:riprendi|continua|resume|continue)(?:\s+(?:(?:il|lo|la|questo|questa|the|this|current|existing|corrente|attuale)\s+)?(?:work|lavoro))?(?:\s+(?:esistente|corrente|attuale|current|existing))?$/iu;
 const COMMAND_CATALOG = /\b(?:comandi|commands|capabilit(?:y|ies|à)|cosa\s+(?:puoi|sai)\s+fare|catalogo\s+(?:comandi|capabilit)|help\s+(?:commands?|capabilit(?:y|ies)))\b/iu;
 const ANALYSIS = /\b(?:analizz\w*|analysis|diagnos\w*|spiega\w*|explain|perch[eé]|why|confront\w*|compare|architett\w*|architecture|stato|status)\b/iu;
@@ -213,7 +214,7 @@ function clauseArtifacts(text) {
         categoryImperativeIndex < 0 ? genericActionVerbIndex :
           Math.min(genericActionVerbIndex, categoryImperativeIndex);
       const negationIndex = clause.search(NEGATION);
-      const workCreateIndex = clause.search(WORK_CREATE);
+      const workCreateIndex = clause.search(WORK_CREATE_AFFIRMATIVE);
       const negatedWorkCreate = NEGATED_WORK_CREATE.test(clause);
       let affirmativeActions = actionMatches.filter(([, position]) =>
         negationIndex < 0 || position < negationIndex).map(([name]) => name);
@@ -244,7 +245,8 @@ function clauseArtifacts(text) {
         work_create_candidate: WORK_CREATE.test(clause),
         work_create_affirmative: workCreateIndex >= 0 &&
           !diagnostic && !interrogative && !conditional && !hypothetical && !quoted &&
-          !negatedWorkCreate && (negationIndex < 0 || workCreateIndex < negationIndex),
+          (!negatedWorkCreate || (negationIndex >= 0 && workCreateIndex < negationIndex)) &&
+          (negationIndex < 0 || workCreateIndex < negationIndex),
       });
     })),
     truncated: split.truncated,
