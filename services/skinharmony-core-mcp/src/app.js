@@ -1419,6 +1419,28 @@ export function resolveHostTransportPresence({
   // bound to the current transport.
   const oauthVerifiedFinalizeCall = toolName === "nyra_continue" &&
     operation === "finalize_verified_work";
+  // Typed Work bootstrap is a two-step, server-issued continuation.  A
+  // connector can rotate its physical MCP transport between the ready,
+  // review and owner-confirmed create calls, while the continuation record is
+  // already bound to the signed logical session.  Preserve that exact logical
+  // presence only for the two bootstrap operations that consume the record.
+  // This is deliberately stricter than the legacy finalization bridge: the
+  // registered host must have both the continuation and Work-creation grants.
+  const oauthWorkBootstrapContinuationCall = toolName === "nyra_continue" &&
+    ["review_work_bootstrap", "create_work"].includes(String(operation || ""));
+  const oauthWorkBootstrapContinuationBound = Boolean(
+    oauthWorkBootstrapContinuationCall &&
+    declaredSessionId &&
+    agentPresence &&
+    identity?.kind === "oauth" &&
+    identity?.oauthOwnerBound === true &&
+    identity?.authenticatedHostPrincipal?.registered === true &&
+    hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE) &&
+    hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) &&
+    membership?.authenticated === true &&
+    membership?.tenant_id === identity?.tenantId &&
+    membership?.role === "tenant_owner",
+  );
   // Assignment hand-off is a bounded Gallery operation, not a general Work
   // mutation. ChatGPT may rotate MCP transports between messages, so an
   // authenticated registered host can carry its server-signed logical
@@ -1470,6 +1492,12 @@ export function resolveHostTransportPresence({
     return Object.freeze({
       presence: agentPresence,
       binding_source: "oauth_declared_finalize",
+    });
+  }
+  if (oauthWorkBootstrapContinuationBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_declared_work_bootstrap",
     });
   }
   if (transportAgentPresence) {

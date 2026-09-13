@@ -135,6 +135,22 @@ test("project-side causal bootstrap accepts server-owned material before a Work 
     undefined);
 });
 
+test("canonical project bootstrap never materializes a project after a causal presence failure", async () => {
+  const { handlers, calls } = fixture({ existing: false, genesisPresent: false, revisionPresent: false });
+  handlers.project_identity_resolve = async () => {
+    const error = new Error("host_transport_session_fingerprint_invalid");
+    error.code = "host_transport_session_fingerprint_invalid";
+    throw error;
+  };
+  await assert.rejects(() => ensureCanonicalWorkProjectDecisionPath({
+    handlers,
+    identity: IDENTITY,
+    work: { project_id: WORK.project_id, objective: WORK.objective },
+  }), /canonical_work_causal_presence_binding_invalid/u);
+  assert.equal(calls.some((item) => item.name === "project_identity_create"), false);
+  assert.equal(calls.some((item) => item.name === "genesis_intent_create"), false);
+});
+
 test("canonical lineage fails closed when existing causal history lacks an active approval", async () => {
   const { handlers } = fixture({ existing: true, genesisPresent: true, revisionPresent: false });
   handlers.intent_revision_propose = async () => ({ structuredContent: { ok: true, result: {

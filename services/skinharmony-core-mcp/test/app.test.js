@@ -157,6 +157,86 @@ test("binds only owner-bound verified finalization to its signed logical presenc
   }
 });
 
+test("binds only a registered owner bootstrap continuation to its signed logical presence", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "oauth-owner-bootstrap",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const rotatedTransportPresence = Object.freeze({
+    agent_id: "oauth-owner-bootstrap",
+    session_fingerprint: "c".repeat(24),
+    signature: `ags_${"d".repeat(32)}`,
+  });
+  const owner = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    oauthOwnerBound: true,
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "tenant_owner",
+    },
+    authenticatedHostPrincipal: {
+      registered: true,
+      capabilities: [
+        HOST_APP_CAPABILITIES.GOVERNED_CONTINUE,
+        HOST_APP_CAPABILITIES.WORK_CREATE,
+      ],
+    },
+  };
+  for (const operation of ["review_work_bootstrap", "create_work"]) {
+    const resolved = resolveHostTransportPresence({
+      identity: owner,
+      toolName: "nyra_continue",
+      operation,
+      declaredSessionId: "logical-owner-bootstrap-session",
+      agentPresence,
+      transportAgentPresence: rotatedTransportPresence,
+    });
+    assert.equal(resolved.presence, agentPresence, operation);
+    assert.equal(resolved.binding_source, "oauth_declared_work_bootstrap", operation);
+  }
+  for (const [label, identity] of [
+    ["missing-create", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal,
+      capabilities: [HOST_APP_CAPABILITIES.GOVERNED_CONTINUE],
+    } }],
+    ["missing-governed-continue", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal,
+      capabilities: [HOST_APP_CAPABILITIES.WORK_CREATE],
+    } }],
+    ["unregistered", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal, registered: false,
+    } }],
+    ["not-owner-bound", { ...owner, oauthOwnerBound: false }],
+    ["tenant-mismatch", { ...owner, authenticatedTenantMembership: {
+      ...owner.authenticatedTenantMembership, tenant_id: "tenant-b",
+    } }],
+  ]) {
+    const rejected = resolveHostTransportPresence({
+      identity,
+      toolName: "nyra_continue",
+      operation: "create_work",
+      declaredSessionId: "logical-owner-bootstrap-session",
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(rejected.presence, null, label);
+    assert.equal(rejected.binding_source, null, label);
+  }
+  const unrelated = resolveHostTransportPresence({
+    identity: owner,
+    toolName: "nyra_continue",
+    operation: "authorize_action",
+    declaredSessionId: "logical-owner-bootstrap-session",
+    agentPresence,
+    transportAgentPresence: rotatedTransportPresence,
+  });
+  assert.equal(unrelated.presence, rotatedTransportPresence);
+  assert.equal(unrelated.binding_source, "transport");
+});
+
 test("does not promote caller-declared sessions without an authenticated OAuth owner binding", () => {
   const agentPresence = Object.freeze({
     agent_id: "untrusted-agent",
