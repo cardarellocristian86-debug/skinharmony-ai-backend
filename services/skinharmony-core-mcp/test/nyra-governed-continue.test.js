@@ -1344,7 +1344,8 @@ test("Nyra forwards a child parent only from the reviewed continuation decision"
   await handler({ operation: "create_work", continuation_ref: CONTINUATION_REF,
     idempotency_key: "create-child-parent", owner_confirmed: true,
     review_decision: "CREATE_CHILD_WORK", work_id: parentWorkId }, identity());
-  assert.equal(createInput.parent_work_id, parentWorkId);
+  assert.equal(createInput.review_parent_work_id, parentWorkId);
+  assert.equal(createInput.parent_work_id, null);
   assert.equal(createInput.review_decision, "CREATE_CHILD_WORK");
 
   const missingParentStore = fakeStore(bootstrapRecord());
@@ -1354,6 +1355,15 @@ test("Nyra forwards a child parent only from the reviewed continuation decision"
   await assert.rejects(missingParent({ operation: "create_work", continuation_ref: CONTINUATION_REF,
     idempotency_key: "create-child-missing-parent", owner_confirmed: true,
     review_decision: "CREATE_CHILD_WORK" }, identity()), /nyra_continue_work_bootstrap_parent_required/);
+
+  const unexpectedParentStore = fakeStore(bootstrapRecord());
+  const unexpectedParent = bootstrapHandler(unexpectedParentStore, []);
+  await unexpectedParent({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "review-parent-unexpected" }, identity());
+  await assert.rejects(unexpectedParent({ operation: "create_work", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "create-parent-unexpected", owner_confirmed: true,
+    review_decision: "CONTINUE_NEW_WORK", work_id: parentWorkId }, identity()),
+  /nyra_continue_work_bootstrap_parent_unexpected/);
 });
 
 test("ChatGPT and Codex replay the same typed bootstrap through their bound canonical records", async () => {

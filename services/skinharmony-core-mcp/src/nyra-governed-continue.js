@@ -60,7 +60,11 @@ function bootstrapCreateInput(request, review, args, idempotencyKey) {
     review_digest: review.review_digest,
     idempotency_key: idempotencyKey,
     ...(decision ? { review_decision: decision } : {}),
-    ...(parentWorkId ? { parent_work_id: parentWorkId } : {}),
+    // The parent is selected after Core has published its candidate set.
+    // Keep it out of the immutable bootstrap request digest; the V2 store
+    // accepts it only as a review-bound candidate and binds it to the
+    // consumed decision/replay digest.
+    ...(parentWorkId ? { review_parent_work_id: parentWorkId } : {}),
   });
 }
 
