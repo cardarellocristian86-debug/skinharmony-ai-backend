@@ -1579,13 +1579,16 @@ async function reconcileCanonicalWorkCausalLineage(identity, work) {
       identity, work });
     const state = await workContinuityV2Store.recordCausalLineageState(
       recoveryIdentity, { work_id: work.work_id, state: "READY", server_owned_recovery: true });
-    return { state: "READY", binding, lineage_digest: state.lineage_digest };
+    return { state: state.state, binding, lineage_digest: state.lineage_digest };
   } catch (error) {
     const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
     const state = await workContinuityV2Store.recordCausalLineageState(
       recoveryIdentity, { work_id: work.work_id, state: "PENDING",
         reason_code: reasonCode, server_owned_recovery: true });
-    return { state: "PENDING", reason_code: reasonCode,
+    // A competing recovery can make the Work READY between the failed causal
+    // attempt and this fallback. Preserve the store's effective state instead
+    // of returning a false PENDING result to the losing caller.
+    return { state: state.state, ...(state.state === "PENDING" ? { reason_code: reasonCode } : {}),
       lineage_digest: state.lineage_digest };
   }
 }
@@ -3193,6 +3196,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
     }, identity);
   }
 });
+const prevalidateDynamicCapabilityInvoke = dynamicHandlers.prevalidateInvoke;
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
@@ -3411,6 +3415,29 @@ const app = createApp(config, {
     // capability repair server-owned lineage.  This remains before generic
     // Work preflight and the handler, so neither can hit the store guard.
     if (pendingCausalLineageMutation) {
+      // `core_capability_invoke` normally validates its exact target after
+      // this hook. A PENDING Work cannot first complete generic preflight, so
+      // recover only after the same non-effectful catalog/scope/schema/owner
+      // and idempotency validation plus a separate bounded Core decision. The
+      // requested target still traverses its normal exact Core gate once the
+      // lineage is READY; this recovery grants no target authority.
+      if (toolName === "core_capability_invoke") {
+        const validated = prevalidateDynamicCapabilityInvoke(args, identity);
+        if (validated.tool.name !== dynamicInvocationTarget(toolName, args, identity).toolName) {
+          const error = new Error("dynamic_capability_target_mismatch");
+          error.code = "dynamic_capability_target_mismatch";
+          throw error;
+        }
+        await requireBoundedTenantCoordination(
+          identity,
+          "canonical_work.causal_lineage.recover",
+          tenantWorkCoordinationTarget("canonical_work_causal_lineage_recover", {
+            work_id: pendingCausalLineageMutation.work_id,
+            target_capability: validated.tool.name,
+          }),
+          args.idempotency_key,
+        );
+      }
       await readNyraDirectiveContext(identity, {
         work_id: pendingCausalLineageMutation.work_id,
         read_only: false,

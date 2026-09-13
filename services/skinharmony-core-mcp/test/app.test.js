@@ -1044,6 +1044,8 @@ test("every Work-bound dynamic mutation repairs pending causal lineage after pre
   assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true/);
   assert.match(gate, /pendingCausalLineageMutation = Object\.freeze/);
   assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
+  assert.match(gate, /prevalidateDynamicCapabilityInvoke\(args, identity\)/);
+  assert.match(gate, /await requireBoundedTenantCoordination\(/);
   assert.match(gate, /read_only: false/);
   assert.ok(gate.indexOf("await registerAuthenticatedPresence(identity)") <
     gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
@@ -1052,6 +1054,15 @@ test("every Work-bound dynamic mutation repairs pending causal lineage after pre
   assert.ok(gate.lastIndexOf("await readNyraDirectiveContext(identity, {") <
     gate.indexOf("const ledgerContext = decisionLedger"));
   assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);
+});
+
+test("causal lineage fallback returns a concurrent READY state instead of inventing PENDING", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
+  const end = serverSource.indexOf("async function createCanonicalWorkGoverned", start);
+  const helper = serverSource.slice(start, end);
+  assert.match(helper, /return \{ state: state\.state, binding/);
+  assert.match(helper, /state\.state === "PENDING"/);
 });
 
 test("causal lineage recovery is server-owned and never caller-provided", () => {

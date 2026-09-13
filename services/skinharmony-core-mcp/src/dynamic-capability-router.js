@@ -581,7 +581,38 @@ export function createDynamicCapabilityHandlers({
     assertRevision(args.catalog_revision, admittedState.revision);
   }
 
-  return {
+  // Validate exactly the caller-controlled invocation material without
+  // dispatching a handler or issuing a Core decision. The server hook uses
+  // this before recovering a PENDING bootstrap, so invalid catalog versions,
+  // scopes, owner confirmations, schemas or idempotency keys cannot create a
+  // durable Work transition merely by naming a pending Work.
+  function prevalidateInvoke(args, identity) {
+    const state = stateFor(identity);
+    assertInvokeRevision(args, identity, state);
+    const tool = exactAuthorizedCapability(state, args.capability_id);
+    if (tool.annotations?.readOnlyHint === true) {
+      throw new Error("dynamic_capability_mutation_required");
+    }
+    requireScopes(identity, tool.scopes || []);
+    const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);
+    if (ownerConfirmationRequired &&
+        (args.owner_confirmed !== true || identity.ownerConfirmed !== true)) {
+      const error = new Error("owner_confirmation_required");
+      error.oauthOwnerUpgradeRequired = true;
+      throw error;
+    }
+    if (!String(args.idempotency_key || "").trim()) {
+      throw new Error("idempotency_key_required");
+    }
+    return Object.freeze({
+      state,
+      tool,
+      ownerConfirmationRequired,
+      callArgs: targetArguments(tool, args, identity),
+    });
+  }
+
+  const dynamicHandlers = {
     core_capability_catalog: async (args, identity) => {
       const state = stateFor(identity);
       if (args.capability_id) {
@@ -738,29 +769,15 @@ export function createDynamicCapabilityHandlers({
     },
 
     core_capability_invoke: async (args, identity) => {
-      const state = stateFor(identity);
-      assertInvokeRevision(args, identity, state);
-      const tool = exactAuthorizedCapability(state, args.capability_id);
-      if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
-      requireScopes(identity, tool.scopes || []);
-      const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);
+      const {
+        state,
+        tool,
+        ownerConfirmationRequired,
+        callArgs,
+      } = prevalidateInvoke(args, identity);
       const dedicatedCoreGate =
         tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
       const handlerOwnsCoreGate = internallyGoverned.has(tool.name);
-      if (
-        ownerConfirmationRequired &&
-        (args.owner_confirmed !== true || identity.ownerConfirmed !== true)
-      ) {
-        // Preserve a private provenance marker so the MCP transport can offer
-        // an OAuth upgrade to a bearer-host. A handler-produced error with the
-        // same public message must never manufacture an authentication
-        // challenge.
-        const error = new Error("owner_confirmation_required");
-        error.oauthOwnerUpgradeRequired = true;
-        throw error;
-      }
-      if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
-      const callArgs = targetArguments(tool, args, identity);
       if (!dedicatedCoreGate && !handlerOwnsCoreGate) {
         if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
         const gateTool = ownerConfirmationRequired
@@ -828,6 +845,13 @@ export function createDynamicCapabilityHandlers({
       };
     },
   };
+  Object.defineProperty(dynamicHandlers, "prevalidateInvoke", {
+    value: prevalidateInvoke,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return dynamicHandlers;
 }
 
 export function compactMcpTools(tools, handlers) {

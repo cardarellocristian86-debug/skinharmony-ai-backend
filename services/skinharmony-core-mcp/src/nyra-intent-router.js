@@ -8,12 +8,12 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$/;
 
 const WORK_CREATE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b/iu;
-const WORK_CREATE_AFFIRMATIVE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b/iu;
+const WORK_CREATE_AFFIRMATIVE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)|(?:work|lavoro)\s+(?:nuov\w*|new))\b/iu;
 // `Work esistente senza crearne uno nuovo` contains both `Work` and `nuovo`,
 // but it is an explicit prohibition, not a bootstrap request.  Keep this
 // separate from the broad create detector so a human can resume/read a Work
 // naturally without being routed into the bootstrap path.
-const NEGATED_WORK_CREATE = /\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\bcrearne\b.{0,80}\b(?:un(?:o)?\s+)?nuov\w*\b/iu;
+const NEGATED_WORK_CREATE = /\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\bcrearne\b.{0,80}\b(?:un(?:o)?\s+)?nuov\w*\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:non|no)\s+(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b/iu;
 const WORK_RESUME = /^(?:nyra\s+)?(?:riprendi|continua|resume|continue)(?:\s+(?:(?:il|lo|la|questo|questa|the|this|current|existing|corrente|attuale)\s+)?(?:work|lavoro))?(?:\s+(?:esistente|corrente|attuale|current|existing))?$/iu;
 const COMMAND_CATALOG = /\b(?:comandi|commands|capabilit(?:y|ies|à)|cosa\s+(?:puoi|sai)\s+fare|catalogo\s+(?:comandi|capabilit)|help\s+(?:commands?|capabilit(?:y|ies)))\b/iu;
 const ANALYSIS = /\b(?:analizz\w*|analysis|diagnos\w*|spiega\w*|explain|perch[eé]|why|confront\w*|compare|architett\w*|architecture|stato|status)\b/iu;
@@ -171,7 +171,9 @@ function hasQuotedActionLanguage(clause) {
     ...String(clause || "").matchAll(/["“”`]([^"“”`]{1,400})["“”`]/gu),
     ...String(clause || "").matchAll(/(?:^|\s)['‘’]([^'‘’]{1,400})['‘’](?=\s|$)/gu),
   ].map((match) => match[1] || "");
-  return quotedSegments.some((segment) => ACTION_TYPES.some(([, pattern]) => pattern.test(segment)));
+  return quotedSegments.some((segment) =>
+    ACTION_TYPES.some(([, pattern]) => pattern.test(segment)) ||
+    WORK_CREATE.test(segment) || WORK_CREATE_AFFIRMATIVE.test(segment));
 }
 
 function clauseArtifacts(text) {
@@ -245,7 +247,7 @@ function clauseArtifacts(text) {
         work_create_candidate: WORK_CREATE.test(clause),
         work_create_affirmative: workCreateIndex >= 0 &&
           !diagnostic && !interrogative && !conditional && !hypothetical && !quoted &&
-          (!negatedWorkCreate || (negationIndex >= 0 && workCreateIndex < negationIndex)) &&
+          !negatedWorkCreate && !FUTURE_SCOPE.test(clause) &&
           (negationIndex < 0 || workCreateIndex < negationIndex),
       });
     })),

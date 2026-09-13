@@ -87,6 +87,29 @@ test("does not turn an explicit no-new-Work resume/read request into bootstrap",
   assert.equal(positive.canonical_intent.work_requirement, "NEW");
 });
 
+test("keeps desire-style Work creation bounded by object negation, quotation and time", () => {
+  for (const message of [
+    "Voglio un Work nuovo per la correzione.",
+    "Serve un lavoro nuovo per la correzione.",
+  ]) {
+    const route = classify(message);
+    assert.equal(route.intent, "work_create", message);
+    assert.equal(route.canonical_intent.work_requirement, "NEW", message);
+  }
+  for (const message of [
+    "Voglio non un nuovo Work ma quello esistente.",
+    "I need no new Work; resume the existing Work.",
+    'La frase "Serve un nuovo Work" compare nel manuale.',
+    'The document says "need a new Work".',
+    "Più avanti voglio un nuovo Work.",
+    "I need a new Work later.",
+  ]) {
+    const route = classify(message);
+    assert.notEqual(route.intent, "work_create", message);
+    assert.equal(route.canonical_intent.work_requirement, "NONE", message);
+  }
+});
+
 test("routes global runtime status to Control Room and keeps Work or mutation scope out", () => {
   for (const message of [
     "Nyra, che funzioni sono attive?",
