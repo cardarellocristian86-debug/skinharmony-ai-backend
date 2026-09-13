@@ -249,6 +249,34 @@ test("bootstrap approval cannot replace an intent made active by another actor",
     "PROPOSED");
 });
 
+test("approval without the optional CAS flag preserves legacy idempotent replay", async () => {
+  const store = createInMemoryCausalContinuityStore();
+  const runtime = createCausalContinuityRuntime({ store, contextSigner: signer(), verifyActionLease: async () => null });
+  await runtime.initialize();
+  const project = await runtime.project_identity_create(CONTEXT, {
+    idempotency_key: "legacy-approval-project", alias: "legacy-approval", canonical_name: "Legacy approval",
+  });
+  await runtime.genesis_intent_create(CONTEXT, {
+    project_id: project.project_id, idempotency_key: "legacy-approval-genesis", intent_text: "Preserve old approval replay.",
+  });
+  const proposal = await runtime.intent_revision_propose(CONTEXT, {
+    project_id: project.project_id, idempotency_key: "legacy-approval-proposal", alias: "legacy-approval-v1",
+    classification: "REFINEMENT", motivation: "Compatibility", problem: "Old approval requests omit the CAS flag.",
+  });
+  const first = await runtime.intent_revision_approve(CONTEXT, {
+    project_id: project.project_id, intent_revision_id: proposal.intent_revision_id,
+    approved: true, idempotency_key: "legacy-approval-approve",
+  });
+  const replay = await runtime.intent_revision_approve(CONTEXT, {
+    project_id: project.project_id, intent_revision_id: proposal.intent_revision_id,
+    approved: true, idempotency_key: "legacy-approval-approve",
+  });
+  assert.equal(replay.intent_revision_id, first.intent_revision_id);
+  assert.equal([...store.state.events.values()].filter((event) =>
+    event.operation === "intent_revision_approve" && event.idempotency_key === "legacy-approval-approve").length,
+  1);
+});
+
 test("purpose change cannot be approved in place", async () => {
   const f = await fixture();
   const purpose = await f.runtime.intent_revision_propose(CONTEXT, {

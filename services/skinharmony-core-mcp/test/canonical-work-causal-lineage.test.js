@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import {
   ensureCanonicalWorkCausalLineage,
   ensureCanonicalWorkProjectDecisionPath,
@@ -13,14 +14,30 @@ const WORK = Object.freeze({
 });
 const IDENTITY = Object.freeze({ tenantId: "tenant-a" });
 
-function fixture({ existing = true, genesisPresent = true, revisionPresent = true } = {}) {
+function bootstrapRevisionId(projectId) {
+  const binding = crypto.createHash("sha256").update(JSON.stringify({
+    tenant_id: IDENTITY.tenantId,
+    project_alias: WORK.project_id,
+    subject: "", host_app_id: "", session_fingerprint: "",
+  })).digest("hex").slice(0, 48);
+  const key = `canonical-work-initial-revision-${binding}`;
+  const bytes = crypto.createHash("sha256").update([
+    IDENTITY.tenantId, projectId, "intent_revision_propose", key,
+  ].join("\u0000")).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function fixture({ existing = true, genesisPresent = true, revisionPresent = true, proposedRevision = null } = {}) {
   const calls = [];
   let project = existing ? { project_id: "22222222-2222-4222-8222-222222222222",
     active_intent_revision_id: "44444444-4444-4444-8444-444444444444" } : null;
   let genesis = genesisPresent ? { genesis_intent_id: "33333333-3333-4333-8333-333333333333" } : null;
   let revision = revisionPresent ? { intent_revision_id: "44444444-4444-4444-8444-444444444444",
     canonical_digest: WORK.intent_digest, state: "APPROVED",
-    decided_at: "2026-09-10T00:00:00.000Z" } : null;
+    decided_at: "2026-09-10T00:00:00.000Z" } : proposedRevision;
   const invoke = (name, fn) => async (args) => {
     calls.push({ name, args });
     return { structuredContent: { ok: true, result: await fn(args) } };
@@ -42,17 +59,21 @@ function fixture({ existing = true, genesisPresent = true, revisionPresent = tru
     }),
     genesis_intent_create: invoke("genesis_intent_create", async () =>
       (genesis ||= { genesis_intent_id: "33333333-3333-4333-8333-333333333333" })),
-    intent_revision_propose: invoke("intent_revision_propose", async () =>
+    intent_revision_propose: invoke("intent_revision_propose", async (args) =>
       (revision ||= {
-        intent_revision_id: "44444444-4444-4444-8444-444444444444",
+        intent_revision_id: bootstrapRevisionId(args.project_id),
         canonical_digest: "d".repeat(64), state: "PROPOSED",
         alias: "canonical-work-bootstrap-initial", classification: "REFINEMENT",
         parent_revision_id: null,
         revision_payload: {
           motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
           problem: WORK.objective,
+          alternatives_considered: [], chosen_alternative: null, rejected_alternatives: [],
           scope_added: [WORK.project_id],
+          scope_removed: [],
           invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
+          risks: [], affected_work_ids: [], obligations_maintained: [],
+          obligations_replaced: [], authorization: null,
         },
       })),
     intent_revision_approve: invoke("intent_revision_approve", async () => {
@@ -108,7 +129,7 @@ test("project-side causal bootstrap accepts server-owned material before a Work 
     work: { project_id: WORK.project_id, objective: WORK.objective },
   });
   assert.equal(result.project_id, "22222222-2222-4222-8222-222222222222");
-  assert.equal(result.intent_revision_id, "44444444-4444-4444-8444-444444444444");
+  assert.equal(result.intent_revision_id, bootstrapRevisionId("22222222-2222-4222-8222-222222222222"));
   assert.equal(calls.some((item) => item.name === "work_bind_intent"), false);
   assert.equal(calls.find((item) => item.name === "project_identity_create").args.provenance.work_id,
     undefined);
@@ -143,8 +164,34 @@ test("canonical lineage resumes only its exact pending bootstrap proposal", asyn
   const resumed = await ensureCanonicalWorkProjectDecisionPath({
     handlers, identity: IDENTITY, work: { project_id: WORK.project_id, objective: WORK.objective },
   });
-  assert.equal(resumed.intent_revision_id, "44444444-4444-4444-8444-444444444444");
+  assert.equal(resumed.intent_revision_id, bootstrapRevisionId("22222222-2222-4222-8222-222222222222"));
   assert.equal(calls.filter((item) => item.name === "intent_revision_propose").length, 1);
+});
+
+test("canonical lineage never approves a proposal that only imitates bootstrap fields", async () => {
+  const { handlers, calls } = fixture({
+    existing: true,
+    genesisPresent: true,
+    revisionPresent: false,
+    proposedRevision: {
+      intent_revision_id: "55555555-5555-4555-8555-555555555555",
+      state: "PROPOSED",
+      alias: "canonical-work-bootstrap-initial",
+      classification: "REFINEMENT",
+      parent_revision_id: null,
+      revision_payload: {
+        motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
+        problem: WORK.objective,
+        scope_added: [WORK.project_id],
+        invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
+        authorization: { forged: true },
+      },
+    },
+  });
+  await assert.rejects(() => ensureCanonicalWorkProjectDecisionPath({
+    handlers, identity: IDENTITY, work: { project_id: WORK.project_id, objective: WORK.objective },
+  }), /canonical_work_causal_active_intent_missing/u);
+  assert.equal(calls.some((item) => item.name === "intent_revision_approve"), false);
 });
 
 test("canonical lineage keeps Work and project intent domains distinct and rejects malformed anchors", async () => {

@@ -293,7 +293,7 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       project_id: revision.project_id,
       intent_revision_id,
       approved: input.approved !== false,
-      expected_no_active_intent: input.expected_no_active_intent === true,
+      ...(input.expected_no_active_intent === true ? { expected_no_active_intent: true } : {}),
       authorized_by: actor.actor_id,
     });
   }

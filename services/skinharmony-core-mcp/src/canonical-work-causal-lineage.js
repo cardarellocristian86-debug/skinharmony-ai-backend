@@ -17,7 +17,18 @@ function lineageKey(identity, projectAlias, suffix) {
   return `canonical-work-${suffix}-${digest({
     tenant_id: identity.tenantId,
     project_alias: projectAlias,
+    subject: String(identity?.subject || ""),
+    host_app_id: String(identity?.authenticatedHostPrincipal?.app_id || ""),
+    session_fingerprint: String(identity?.agentPresence?.session_fingerprint || ""),
   }).slice(0, 48)}`;
+}
+
+function stableUuid(...parts) {
+  const bytes = crypto.createHash("sha256").update(parts.join("\u0000")).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function approvedRevision(decisionPath, project) {
@@ -27,18 +38,25 @@ function approvedRevision(decisionPath, project) {
     item?.state === "APPROVED" && item.intent_revision_id === activeIntentRevisionId) || null;
 }
 
-function bootstrapInitialProposal(revision, work, projectAlias) {
+function bootstrapInitialProposal(revision, work, identity, projectAlias, projectId) {
   const revisionPayload = revision?.revision_payload && typeof revision.revision_payload === "object"
     ? revision.revision_payload : {};
-  return revision?.state === "PROPOSED" && revision.parent_revision_id == null &&
+  const expectedRevisionId = stableUuid(identity.tenantId, projectId, "intent_revision_propose",
+    lineageKey(identity, projectAlias, "initial-revision"));
+  const expectedPayload = {
+    motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
+    problem: String(work.objective || work.idea || projectAlias).slice(0, 8_000),
+    alternatives_considered: [], chosen_alternative: null, rejected_alternatives: [],
+    scope_added: [projectAlias], scope_removed: [],
+    invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
+    risks: [], affected_work_ids: [], obligations_maintained: [],
+    obligations_replaced: [], authorization: null,
+  };
+  return revision?.intent_revision_id === expectedRevisionId &&
+    revision?.state === "PROPOSED" && revision.parent_revision_id == null &&
     revision.alias === "canonical-work-bootstrap-initial" &&
     revision.classification === "REFINEMENT" &&
-    revisionPayload.motivation === "Establish the initial approved causal decision path for canonical Work lineage." &&
-    revisionPayload.problem === String(work.objective || work.idea || projectAlias).slice(0, 8_000) &&
-    JSON.stringify(revisionPayload.scope_added || []) === JSON.stringify([projectAlias]) &&
-    JSON.stringify(revisionPayload.invariants || []) === JSON.stringify([
-      "Canonical Work lineage remains server-derived and effect-free at bootstrap.",
-    ]);
+    JSON.stringify(revisionPayload) === JSON.stringify(expectedPayload);
 }
 
 async function readGenesisOrMaterialize({ handlers, identity, work, projectAlias, projectId }) {
@@ -100,7 +118,7 @@ async function materializeProjectDecisionPath({ handlers, identity, work, projec
   if (!decisionPath?.genesis_intent) fail("canonical_work_causal_genesis_missing");
   if (!approvedRevision(decisionPath, resolvedProject)) {
     const drafts = (decisionPath.intent_revisions || []).filter((revision) =>
-      bootstrapInitialProposal(revision, work, projectAlias));
+      bootstrapInitialProposal(revision, work, identity, projectAlias, projectId));
     if ((decisionPath.intent_revisions || []).length !== 0 && drafts.length !== 1) {
       fail("canonical_work_causal_active_intent_missing");
     }
@@ -128,7 +146,7 @@ async function materializeProjectDecisionPath({ handlers, identity, work, projec
     } catch { fail("canonical_work_causal_intent_missing"); }
     if (!approvedRevision(decisionPath, resolvedProject)) {
       const resumable = (decisionPath.intent_revisions || []).filter((revision) =>
-        bootstrapInitialProposal(revision, work, projectAlias));
+        bootstrapInitialProposal(revision, work, identity, projectAlias, projectId));
       if (resumable.length !== 1 || !resumable[0]?.intent_revision_id) {
         fail("canonical_work_causal_active_intent_missing");
       }

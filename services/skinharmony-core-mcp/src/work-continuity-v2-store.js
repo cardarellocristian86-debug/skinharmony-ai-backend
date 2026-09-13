@@ -2253,6 +2253,69 @@ export function createWorkContinuityV2Store({
       return created.work;
     });
   }
+  async function validateFreshOpenReviewWithClient(client, actor, input, review, effectiveDecision) {
+    const currentWorks = await canonicalOpenReviewWorks(client, actor);
+    const resolutionContract = validatedOpenReviewResolutionContract(
+      review,
+      input.project_id,
+      input.intent_digest || null,
+    );
+    const currentResolution = resolveWorkRequest(
+      resolutionContract.resolver_query,
+      currentWorks,
+      actor,
+      { project_id: input.project_id, intent_digest: input.intent_digest || null, now: now() },
+    );
+    const related = currentWorks.filter((work) => work.project_id === input.project_id);
+    const currentFlags = {
+      significant_overlap:
+        currentResolution.classification !== "NO_CONFLICT" || currentResolution.hidden_conflict === true,
+      stale: related.some((work) => ["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"]
+        .includes(classifyStaleWork(work, now()).classification)),
+      priority: related.some((work) => ["P0", "P1"].includes(work.priority)),
+      dependency: Boolean(input.parent_work_id && related.some((work) =>
+        work.work_id === input.parent_work_id && OPERATIONAL_STATUSES.has(work.status))),
+      invisible_conflict: currentResolution.hidden_conflict === true,
+    };
+    const original = review.review_result && typeof review.review_result === "object"
+      ? review.review_result
+      : {};
+    const originalCandidateIds = new Set([
+      ...(Array.isArray(original.candidates) ? original.candidates : [])
+        .map((item) => String(item.work_id || "")),
+      String(original.selected_work_id || ""),
+    ].filter(Boolean));
+    const currentCandidates = visibleProjectResolutionCandidates(
+      currentResolution,
+      currentWorks,
+      input.project_id,
+      actor,
+    );
+    const selectedCurrentWork = currentWorks.find((work) =>
+      work.work_id === currentResolution.selected_work_id &&
+      work.project_id === input.project_id && canRead(work, actor));
+    const currentCandidateIds = new Set([
+      ...currentCandidates.map((item) => String(item.work_id || "")),
+      String(selectedCurrentWork?.work_id || ""),
+    ].filter(Boolean));
+    if (effectiveDecision === "CREATE_CHILD_WORK") {
+      const parentWorkId = uuid(input.parent_work_id, "open_work_review_child_parent_required");
+      const parentWork = currentWorks.find((work) =>
+        work.work_id === parentWorkId && work.project_id === input.project_id &&
+        OPERATIONAL_STATUSES.has(work.status) && canRead(work, actor));
+      if (!parentWork || !originalCandidateIds.has(parentWorkId) || !currentCandidateIds.has(parentWorkId)) {
+        fail("open_work_review_child_parent_conflict");
+      }
+    }
+    const newCandidate = [...currentCandidateIds].some((workId) => !originalCandidateIds.has(workId));
+    const newConflictFlag = Object.entries(currentFlags).some(([name, value]) =>
+      value === true && original.conflict_flags?.[name] !== true);
+    if (newCandidate || newConflictFlag ||
+        (currentFlags.significant_overlap && original.requires_owner_decision !== true)) {
+      fail("open_work_review_stale_conflict");
+    }
+  }
+
   async function consumeOpenReviewWithClient(client, actor, input, workId) {
     const reviewId = uuid(input.review_id, "open_work_review_id_required");
     const reviewDigest = digest(input.review_digest, "open_work_review_digest_required");
@@ -2302,79 +2365,10 @@ export function createWorkContinuityV2Store({
       return { review, decision: effectiveDecision, decision_digest: decisionDigest, idempotent_replay: true };
     }
     if (Date.parse(review.expires_at) <= now().getTime()) fail("open_work_review_expired");
-    // A fresh review must be revalidated while holding the tenant+project
-    // bootstrap lock; otherwise two concurrent no-conflict reviews could both
-    // create a semantically duplicate Work.
-    {
-      const currentWorks = await canonicalOpenReviewWorks(client, actor);
-      const resolutionContract = validatedOpenReviewResolutionContract(
-        review,
-        input.project_id,
-        input.intent_digest || null,
-      );
-      const currentResolution = resolveWorkRequest(
-        resolutionContract.resolver_query,
-        currentWorks,
-        actor,
-        { project_id: input.project_id, intent_digest: input.intent_digest || null, now: now() },
-      );
-      const related = currentWorks.filter((work) => work.project_id === input.project_id);
-      const currentFlags = {
-        significant_overlap:
-          currentResolution.classification !== "NO_CONFLICT" || currentResolution.hidden_conflict === true,
-        stale: related.some((work) => ["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"]
-          .includes(classifyStaleWork(work, now()).classification)),
-        priority: related.some((work) => ["P0", "P1"].includes(work.priority)),
-        dependency: Boolean(input.parent_work_id && related.some((work) =>
-          work.work_id === input.parent_work_id && OPERATIONAL_STATUSES.has(work.status))),
-        invisible_conflict: currentResolution.hidden_conflict === true,
-      };
-      const original = review.review_result && typeof review.review_result === "object"
-        ? review.review_result
-        : {};
-      // Keep the projection project-scoped while also accounting for a
-      // selected same-project Work that may have been redacted from the
-      // rendered candidate list. A visible cross-project selection is not a
-      // new candidate for this project's already-reviewed decision.
-      const originalCandidateIds = new Set([
-        ...(Array.isArray(original.candidates) ? original.candidates : [])
-          .map((item) => String(item.work_id || "")),
-        String(original.selected_work_id || ""),
-      ].filter(Boolean));
-      const currentCandidates = visibleProjectResolutionCandidates(
-        currentResolution,
-        currentWorks,
-        input.project_id,
-        actor,
-      );
-      const selectedCurrentWork = currentWorks.find((work) =>
-        work.work_id === currentResolution.selected_work_id &&
-        work.project_id === input.project_id && canRead(work, actor));
-      const currentCandidateIds = new Set([
-        ...currentCandidates.map((item) => String(item.work_id || "")),
-        String(selectedCurrentWork?.work_id || ""),
-      ].filter(Boolean));
-      if (effectiveDecision === "CREATE_CHILD_WORK") {
-        const parentWorkId = uuid(input.parent_work_id, "open_work_review_child_parent_required");
-        const parentWork = currentWorks.find((work) =>
-          work.work_id === parentWorkId && work.project_id === input.project_id &&
-          OPERATIONAL_STATUSES.has(work.status) && canRead(work, actor));
-        // A child relationship resolves a reviewed overlap; it is never a
-        // bypass around duplicate detection. The parent must remain visible,
-        // operational and present in both the reviewed and current candidate
-        // sets while the bootstrap transaction holds its project lock.
-        if (!parentWork || !originalCandidateIds.has(parentWorkId) || !currentCandidateIds.has(parentWorkId)) {
-          fail("open_work_review_child_parent_conflict");
-        }
-      }
-      const newCandidate = [...currentCandidateIds].some((workId) => !originalCandidateIds.has(workId));
-      const newConflictFlag = Object.entries(currentFlags).some(([name, value]) =>
-        value === true && original.conflict_flags?.[name] !== true);
-      if (newCandidate || newConflictFlag ||
-          (currentFlags.significant_overlap && original.requires_owner_decision !== true)) {
-        fail("open_work_review_stale_conflict");
-      }
-    }
+    // A fresh review is revalidated while holding the tenant+project bootstrap
+    // lock. The state-pure prevalidation uses this exact same function before
+    // causal mutations, then this locked recheck closes the race before create.
+    await validateFreshOpenReviewWithClient(client, actor, input, review, effectiveDecision);
     const consumed = await client.query(`UPDATE tenant_work_open_review SET
         consumed_at=now(),consumed_by_user_id=$3,decision=$4,decision_digest=$5,consumed_work_id=$6
       WHERE tenant_id=$1 AND review_id=$2 AND consumed_at IS NULL
@@ -2436,6 +2430,8 @@ export function createWorkContinuityV2Store({
             review.decision !== effectiveDecision) fail("open_work_review_replay_denied");
       } else if (Date.parse(review.expires_at) <= now().getTime()) {
         fail("open_work_review_expired");
+      } else {
+        await validateFreshOpenReviewWithClient(client, actor, input, review, effectiveDecision);
       }
       return Object.freeze({ review_id: reviewId, request_id: requestId,
         idempotent_replay: Boolean(review.consumed_at), valid: true });
