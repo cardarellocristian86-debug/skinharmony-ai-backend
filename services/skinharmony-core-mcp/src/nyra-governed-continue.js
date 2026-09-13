@@ -5,6 +5,7 @@ import { SUPPORTED_HOST_NATIVE_KINDS } from "./host-app-authorization.js";
 import { governedWorkBootstrapDigest } from "./work-bootstrap-contract.js";
 
 const SHA256 = /^[a-f0-9]{64}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACTION_TICKET_ID = /^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/;
 const ACTION_TICKET_SIGNATURE = /^hnt_[a-f0-9]{64}$/;
 const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
@@ -38,6 +39,29 @@ function fail(code, status = 422) {
   error.code = code;
   error.status = status;
   throw error;
+}
+
+function bootstrapCreateInput(request, review, args, idempotencyKey) {
+  const decision = args.review_decision;
+  if (decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(decision)) {
+    fail("nyra_continue_work_bootstrap_review_decision_invalid", 409);
+  }
+  const parentWorkId = typeof args.work_id === "string" ? args.work_id.toLowerCase() : null;
+  if (decision === "CREATE_CHILD_WORK") {
+    if (!parentWorkId || !UUID.test(parentWorkId)) {
+      fail("nyra_continue_work_bootstrap_parent_required", 409);
+    }
+  } else if (parentWorkId !== null) {
+    fail("nyra_continue_work_bootstrap_parent_unexpected", 409);
+  }
+  return Object.freeze({
+    ...request,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+    idempotency_key: idempotencyKey,
+    ...(decision ? { review_decision: decision } : {}),
+    ...(parentWorkId ? { parent_work_id: parentWorkId } : {}),
+  });
 }
 
 function typedOrchestrationProjection(record) {
@@ -551,9 +575,8 @@ export function createNyraGovernedContinueHandler({
           if (!request || !review?.review_id || !SHA256.test(String(review.review_digest || ""))) {
             fail("connected_ai_work_review_invalid", 409);
           }
-          const finalResult = await createWorkBootstrap({ ...request, review_id: review.review_id,
-            review_digest: review.review_digest, idempotency_key: typed.server_idempotency_key,
-            ...(args.review_decision ? { review_decision: args.review_decision } : {}) }, identity);
+          const finalResult = await createWorkBootstrap(
+            bootstrapCreateInput(request, review, args, typed.server_idempotency_key), identity);
           await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
             final_result: finalResult });
           return finalResult;
@@ -941,8 +964,8 @@ export function createNyraGovernedContinueHandler({
         const review = await store.readCompletedOperation({ identity, continuation_ref: args.continuation_ref,
           operation: "review_work_bootstrap" });
         if (!review.review_id || !SHA256.test(String(review.review_digest || ""))) fail("nyra_continue_work_bootstrap_review_required", 409);
-        outcome = coreOutcome(await createWorkBootstrap({ ...request, review_id: review.review_id, review_digest: review.review_digest,
-          idempotency_key: claim.idempotency_key, ...(args.review_decision ? { review_decision: args.review_decision } : {}) }, identity));
+        outcome = coreOutcome(await createWorkBootstrap(
+          bootstrapCreateInput(request, review, args, claim.idempotency_key), identity));
       }
     } else {
       if (bootstrapOperation || args.work_bootstrap !== undefined || args.review_id !== undefined || args.review_digest !== undefined ||
