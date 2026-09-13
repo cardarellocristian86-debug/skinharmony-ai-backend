@@ -1041,7 +1041,7 @@ test("every Work-bound dynamic mutation repairs pending causal lineage before pr
   const start = serverSource.indexOf("if (requiresCanonicalWorkReadAuthorization(toolName, args))");
   const end = serverSource.indexOf("// Native reports are authenticated", start);
   const gate = serverSource.slice(start, end);
-  assert.match(gate, /targetDefinition\?\.annotations\?\.readOnlyHint !== true/);
+  assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true/);
   assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
   assert.match(gate, /read_only: false/);
   assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);

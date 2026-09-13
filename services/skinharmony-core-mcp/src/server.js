@@ -3338,7 +3338,7 @@ const app = createApp(config, {
         // Work-bound mutation boundary, before preflight and before the
         // dynamic handler reaches the store guard.  The repair consumes only
         // server-owned Work/project material; read-only calls remain pure.
-        if (targetDefinition?.annotations?.readOnlyHint !== true) {
+        if (targetDefinition && targetDefinition.annotations?.readOnlyHint !== true) {
           await readNyraDirectiveContext(identity, {
             work_id: authorizationTarget.args.work_id,
             read_only: false,
