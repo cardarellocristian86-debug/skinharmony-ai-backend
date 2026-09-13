@@ -341,6 +341,16 @@ function materializeCanonicalIntent({
       referencedActions.push(...actions);
     }
   }
+  // A typed bootstrap is a request to materialize and review a Work, not an
+  // authorization to carry out any incidental imperative in its prose.  Keep
+  // those terms as references/prohibitions/future goals, but make the
+  // server-issued bootstrap the sole current action.  Without this boundary a
+  // phrase such as "do not deploy in this turn" could make the otherwise safe
+  // bootstrap envelope internally inconsistent before it reaches Core.
+  if (workBootstrap) {
+    referencedActions.push(...requestedNow);
+    requestedNow.length = 0;
+  }
   if (workBootstrap || intent === "work_create") requestedNow.unshift("work_bootstrap");
   const unique = (items) => Object.freeze([...new Set(items)]);
   const consequentialIntent = requestedNow.some((action) => action !== "work_bootstrap");
@@ -574,7 +584,17 @@ export function classifyNyraIntent({
     !WORK_RESUME.test(normalized) && !explicitWorkScope && !actionVerbPresent &&
     semanticAssessment.disposition === "allow";
 
-  if (clauseResult.truncated) {
+  // A valid typed bootstrap is its own bounded contract.  It cannot authorize
+  // an external effect, and it must not be discarded merely because the
+  // explanatory prose has many clauses or mentions a prohibited future
+  // release.  The bootstrap validator still owns the candidate specification
+  // and Core still owns review/create.
+  if (workBootstrap) {
+    intent = "work_create";
+    route = "CORE_CONTEXT_THEN_NYRA";
+    confidence = 1;
+    reason = "typed_work_bootstrap";
+  } else if (clauseResult.truncated) {
     intent = "ambiguous_consequential";
     route = "CORE_HOLD_THEN_NYRA";
     confidence = 0.99;
@@ -643,7 +663,7 @@ export function classifyNyraIntent({
     route = "ADVISORY_READ";
     confidence = 0.86;
     reason = "host_intent_bridge_advisory_explain";
-  } else if (explicitReadOnlyBoundary) {
+  } else if (explicitReadOnlyBoundary && !workBootstrap) {
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.99;
@@ -653,11 +673,11 @@ export function classifyNyraIntent({
     route = "CORE_HOLD_THEN_NYRA";
     confidence = 0.99;
     reason = "work_create_and_action_require_separation";
-  } else if (workBootstrap || workCreateRequested) {
+  } else if (workCreateRequested) {
     intent = "work_create";
     route = "CORE_CONTEXT_THEN_NYRA";
-    confidence = workBootstrap ? 1 : 0.94;
-    reason = workBootstrap ? "typed_work_bootstrap" : "work_create_language";
+    confidence = 0.94;
+    reason = "work_create_language";
   } else if (WORK_RESUME.test(normalized)) {
     intent = "work_resume";
     route = "CORE_CONTEXT_THEN_NYRA";

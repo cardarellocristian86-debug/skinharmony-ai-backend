@@ -359,6 +359,36 @@ test("requires affirmative prose Work creation while retaining typed bootstrap",
     "work_create");
 });
 
+test("keeps a typed bootstrap read-only when its prose names prohibited release actions", () => {
+  const route = classify(
+    "Crea il Work tipizzato. Non eseguire push, merge, deploy o effetti esterni in questo turno.",
+    { workBootstrap: true },
+  );
+  assert.equal(route.intent, "work_create");
+  assert.deepEqual(route.canonical_intent.requested_now, ["work_bootstrap"]);
+  assert.equal(route.canonical_intent.operation_class, "READ_ONLY");
+  assert.equal(route.canonical_intent.consequential_intent, false);
+  assert.equal(route.canonical_intent.work_requirement, "NEW");
+});
+
+test("keeps a valid typed bootstrap when explanatory prose exceeds clause analysis", () => {
+  const route = classify([
+    "Crea il Work tipizzato per correggere la causal lineage",
+    "conserva il gate Core",
+    "non eseguire deploy",
+    "registra i test",
+    "mantieni il Work esistente come dipendenza se necessario",
+    "non eseguire push",
+    "prepara il readback",
+    "mantieni i tenant binding",
+    "chiudi solo dopo verifica",
+  ].join(". "), { workBootstrap: true });
+  assert.equal(route.intent, "work_create");
+  assert.equal(route.reason, "typed_work_bootstrap");
+  assert.deepEqual(route.canonical_intent.requested_now, ["work_bootstrap"]);
+  assert.equal(route.canonical_intent.work_requirement, "NEW");
+});
+
 test("shares all consequential categories and holds unsafe modality without losing affirmative intent", () => {
   const matrix = [
     ["release", "Esegui il deploy", "Non fare deploy", "Se approvato, esegui il deploy", "Spiega perché il deploy manca"],
