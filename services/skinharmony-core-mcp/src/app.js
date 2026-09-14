@@ -698,6 +698,9 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   // them to discover Work state, mint a ticket, or execute an external action.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  // Separate ChatGPT-only review entrypoint.  It can only consume an opaque
+  // continuation issued by Nyra and runs the mandatory duplicate review.
+  "nyra_chatgpt_work_bootstrap_review",
 ]);
 function connectorToolCandidate(value) {
   if (typeof value !== "string") return "";
@@ -1501,7 +1504,7 @@ export function resolveMcpLogicalSession({
   transportSessionId = "",
   serverIssuedSessionId = "",
 } = {}) {
-  const continuationRebind = ["nyra_continue", "nyra_governed_continue"].includes(toolName) &&
+  const continuationRebind = ["nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(toolName) &&
     Boolean(declaredSessionId) &&
     transportPresence?.session_id !== declaredSessionId;
   return Object.freeze({
