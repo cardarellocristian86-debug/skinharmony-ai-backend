@@ -1108,7 +1108,7 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert(chatGptReview);
   assert.deepEqual(chatGptReview.inputSchema.required, ["continuation_ref", "idempotency_key"]);
   assert.deepEqual(Object.keys(chatGptReview.inputSchema.properties).sort(),
-    ["agent_id", "client_type", "continuation_ref", "idempotency_key", "review_decision", "session_id"]);
+    ["agent_id", "client_type", "continuation_ref", "idempotency_key", "session_id"]);
   assert.equal(chatGptReview._meta["skinharmony/chatgptBootstrapReview"], true);
 });
 
