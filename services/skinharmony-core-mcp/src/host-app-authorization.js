@@ -344,6 +344,11 @@ export function requireHostAppToolCapability({
   // public MCP request receives it in the authenticated identity layer.
   if (!identity?.authenticatedHostPrincipal) return null;
   const target = dynamicHostCapabilityTarget(toolName, args);
+  if (target === "nyra_chatgpt_work_bootstrap_review" &&
+      !(identity.authenticatedHostPrincipal.registered === true &&
+        identity.authenticatedHostPrincipal.client_type === "chatgpt")) {
+    fail("chatgpt_work_bootstrap_review_host_required");
+  }
   // The wrapper itself remains dynamically reauthorized below against its
   // exact target. Only direct allowlisted tools receive this compatibility;
   // it does not turn an unregistered OAuth principal into a Core reader.
