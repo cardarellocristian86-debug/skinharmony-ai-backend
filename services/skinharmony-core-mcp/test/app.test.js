@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 53375)
-Total output lines: 4917
-
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
@@ -2185,7 +2182,359 @@ test("host-native security prerequisites are production-and-feature scoped", () 
       "host_native_tenant_context_signing_not_configured",
       "host_native_dtt_identity_signing_not_configured",
       "host_native_agent_signature_not_configured",
-   …3375 tokens truncated…A", async () => {
+    ],
+  );
+
+  const complete = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: true,
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    agentSignatureSecret: "a".repeat(32),
+  }, {
+    readiness: {
+      continuityInitialized: true,
+      postgresMajorVersion: { major: 16, verified: true },
+      cloudMemoryInitialized: true,
+    },
+  });
+  assert.equal(complete.components.host_native_security.required, true);
+  assert.equal(complete.components.host_native_security.ready, true);
+  assert.equal(
+    complete.components.host_native_security.tenant_context_signing_configured,
+    true,
+  );
+  assert.equal(complete.ready, true);
+
+  const reusableSecret = "r".repeat(32);
+  for (const reusedConfig of [
+    { universalCoreKey: reusableSecret },
+    { universalCoreKeys: { tenant: reusableSecret } },
+    { tenantGatewayKey: reusableSecret },
+    { ownerContextSigningSecret: reusableSecret },
+    { tenantContextSigningSecret: reusableSecret },
+    { dttAgentIdentitySigningSecret: reusableSecret },
+    { nyraDeepV2McpRequestSigningSecret: reusableSecret },
+    { agentSignatureSecretReused: true },
+  ]) {
+    const reused = buildReadiness({
+      ...productionBase,
+      hostNativeAgentProtocolEnabled: true,
+      universalCoreKey: "tenant-core-secret",
+      tenantGatewayKey: "g".repeat(32),
+      ownerContextSigningSecret: "o".repeat(32),
+      tenantContextSigningSecret: "t".repeat(32),
+      dttAgentIdentitySigningSecret: "d".repeat(32),
+      agentSignatureSecret: reusableSecret,
+      ...reusedConfig,
+    }, {
+      readiness: {
+        continuityInitialized: true,
+        postgresMajorVersion: { major: 16, verified: true },
+      },
+    });
+    assert(reused.reasons.includes("host_native_agent_signature_reused"));
+    assert.equal(
+      reused.components.host_native_security.agent_signature_independent,
+      false,
+    );
+    assert.equal(reused.ready, false);
+  }
+
+  const weakGateway = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: true,
+    tenantGatewayKey: "g".repeat(31),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert(weakGateway.reasons.includes("host_native_tenant_gateway_not_configured"));
+
+  const development = buildReadiness({
+    ...productionBase,
+    environment: "development",
+    hostNativeAgentProtocolEnabled: true,
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert.equal(development.components.host_native_security.required, false);
+  assert.equal(
+    development.reasons.some((reason) => reason.startsWith("host_native_")),
+    false,
+  );
+});
+
+test("governed multi-host readiness requires registry, independent signing, and host protocol", () => {
+  const base = {
+    environment: "development",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    nyraGovernedContinueEnabled: true,
+  };
+  const missing = buildReadiness(base);
+  assert.equal(missing.components.governed_multi_host.required, true);
+  assert.equal(missing.components.governed_multi_host.ready, false);
+  assert(missing.reasons.includes("governed_multi_host_not_configured"));
+  assert(missing.reasons.includes("governed_multi_host_protocol_disabled"));
+
+  const ready = buildReadiness({
+    ...base,
+    hostNativeAgentProtocolEnabled: true,
+    databaseUrl: "postgres://configured",
+    hostAppRegistry: {
+      configured: true,
+      revision: "a".repeat(64),
+      apps: [{ app_id: "chatgpt_prod" }, { app_id: "future_ai" }],
+    },
+    nyraGovernedContinueSigningSecret: "n".repeat(32),
+    nyraGovernedContinueConfigurationValid: true,
+  }, {
+    readiness: {
+      continuityInitialized: true,
+      nyraContinuationStoreInitialized: true,
+    },
+  });
+  assert.equal(ready.components.governed_multi_host.ready, true);
+  assert.equal(ready.components.governed_multi_host.registered_app_count, 2);
+  assert.equal(ready.components.governed_multi_host.registry_revision, "a".repeat(64));
+  assert.equal(ready.components.nyra_continuation_store.ready, true);
+  assert.equal(ready.ready, true);
+
+  const storeUnavailable = buildReadiness({
+    ...base,
+    hostNativeAgentProtocolEnabled: true,
+    databaseUrl: "postgres://configured",
+    hostAppRegistry: {
+      configured: true,
+      revision: "a".repeat(64),
+      apps: [{ app_id: "chatgpt_prod" }],
+    },
+    nyraGovernedContinueSigningSecret: "n".repeat(32),
+    nyraGovernedContinueConfigurationValid: true,
+  }, {
+    readiness: {
+      continuityInitialized: true,
+      nyraContinuationStoreInitializationFailed: true,
+    },
+  });
+  assert.equal(storeUnavailable.components.nyra_continuation_store.ready, false);
+  assert.equal(storeUnavailable.components.nyra_continuation_store.initialization_failed, true);
+  assert(storeUnavailable.reasons.includes("nyra_continuation_store_not_initialized"));
+});
+
+test("production host-native readiness fails closed for missing, short, and reused AGENT_SIGNATURE_SECRET", () => {
+  const independentBase = {
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "core-bearer",
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    databaseUrl: "postgres://configured",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: true,
+    decisionLedgerRequired: false,
+  };
+  const readinessOptions = {
+    readiness: {
+      continuityInitialized: true,
+      postgresMajorVersion: { major: 16, verified: true },
+    },
+  };
+  for (const [name, override, expectedReason] of [
+    [
+      "missing",
+      {},
+      "host_native_agent_signature_not_configured",
+    ],
+    [
+      "short",
+      { agentSignatureSecret: "too-short" },
+      "host_native_agent_signature_not_configured",
+    ],
+    [
+      "Core bearer reuse",
+      {
+        agentSignatureSecret: "r".repeat(32),
+        universalCoreKey: "r".repeat(32),
+      },
+      "host_native_agent_signature_reused",
+    ],
+    [
+      "host-native owner secret reuse",
+      {
+        agentSignatureSecret: "r".repeat(32),
+        ownerContextSigningSecret: "r".repeat(32),
+      },
+      "host_native_agent_signature_reused",
+    ],
+  ]) {
+    const result = buildReadiness(
+      { ...independentBase, ...override },
+      readinessOptions,
+    );
+    assert(
+      result.reasons.includes(expectedReason),
+      `${name} must report ${expectedReason}`,
+    );
+    assert.equal(
+      result.components.host_native_security.agent_signature_independent,
+      false,
+      `${name} must not be independent`,
+    );
+    assert.equal(result.ready, false, `${name} must fail readiness`);
+  }
+});
+
+test("readiness evaluator accepts a complete production configuration without Core reachability", () => {
+  const readiness = buildReadiness({
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    auth0Issuer: "https://tenant.auth0.com",
+    codexKeys: [],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKeys: { tenant: "secret" },
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  });
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.components.universal_core.reachability_checked, false);
+});
+
+test("does not publish retired provider setup readiness", async () => serve(async (base) => {
+  const health = await fetch(`${base}/healthz`).then((response) => response.json());
+  assert.equal(health.owner_context_signing_configured, true);
+  assert.equal(JSON.stringify(health).includes("test-owner-context-signing-secret"), false);
+  assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
+  assert.equal(Object.hasOwn(health, "provider_setup_link_source_configured"), false);
+}, { ownerContextSigningSecret: "test-owner-context-signing-secret" }));
+
+test("health reports only the tenant membership binding count", async () => serve(async (base) => {
+  const health = await fetch(`${base}/healthz`).then((response) => response.json());
+  assert.equal(health.tenant_membership_bindings, 2);
+  assert.equal(JSON.stringify(health).includes("oauth|member-a"), false);
+  assert.equal(JSON.stringify(health).includes("codexai"), false);
+}, {
+  oauthTenantMemberships: {
+    "oauth|member-a": { tenantId: "codexai", role: "member" },
+    "oauth|member-b": { tenantId: "codexai", role: "reviewer" },
+  },
+}));
+
+test("liveness responds without consulting unreachable governed dependencies", async () => {
+  let upstreamHealthCalls = 0;
+  await serve(async (base) => {
+    const response = await fetch(`${base}/livez`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      service: "skinharmony-core-mcp",
+      liveness: "process_running",
+    });
+    assert.equal(upstreamHealthCalls, 0);
+  }, {}, {
+    fetchImpl: async () => {
+      upstreamHealthCalls += 1;
+      throw new Error("governed_upstream_unavailable");
+    },
+  });
+});
+
+test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
+  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  assert.equal(response.status, 401);
+  assert.match(response.headers.get("www-authenticate"), /oauth-protected-resource/);
+  const migrationResponse = await fetch(`${base}/mcp-v015`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+  assert.equal(migrationResponse.status, 401);
+  assert.match(migrationResponse.headers.get("www-authenticate"), /oauth-protected-resource\/mcp-v015/);
+  const initialize = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "initialize", params: {} }),
+  });
+  assert.equal(initialize.status, 401);
+  assert.match(initialize.headers.get("www-authenticate"), /oauth-protected-resource/);
+}));
+
+test("rejects non-canonical OAuth resource origins before serving a challenge", () => {
+  for (const publicUrl of [
+    "https://user:secret@mcp.example.test",
+    "https://mcp.example.test/path",
+    "https://mcp.example.test?redirect=https://attacker.invalid",
+    "https://mcp.example.test#attacker",
+    "javascript:alert(1)",
+    "http://mcp.example.test",
+    "http://127.attacker.example",
+    "http://127.0.0.1.attacker.example",
+  ]) {
+    assert.throws(() => createApp({ ...config, publicUrl }), /mcp_public_url_invalid/);
+  }
+  assert.throws(
+    () => createApp({ ...config, publicUrl: "http://mcp.example.test", production: true }),
+    /mcp_public_url_invalid/,
+  );
+  assert.doesNotThrow(() => createApp({ ...config, publicUrl: "http://localhost:8790" }));
+});
+
+test("tools/call without a bearer returns a 401 reconnect CTA while tools/list stays transport-unauthorized", async () => {
+  let handlerCalls = 0;
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => {
+    handlerCalls += 1;
+    return { content: [{ type: "text", text: "must not run" }] };
+  }]));
+  const app = createApp(config, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    for (const [transport, metadataPath] of [
+      ["/mcp", "/.well-known/oauth-protected-resource"],
+      ["/mcp-v015", "/.well-known/oauth-protected-resource/mcp-v015"],
+    ]) {
+      const response = await fetch(`${base}${transport}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: `call-${transport}`, method: "tools/call",
+          params: { name: "core_health", arguments: {} },
+        }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 401, JSON.stringify(body));
+      assert.equal(body.result.isError, true);
+      const challenges = body.result._meta?.["mcp/www_authenticate"];
+      assert(Array.isArray(challenges));
+      assert.equal(challenges.length, 1);
+      assert.match(challenges[0], new RegExp(`resource_metadata="https://mcp\\.example\\.test${metadataPath.replaceAll("/", "\\/")}"`));
+      assert.match(challenges[0], /error="invalid_token"/);
+
+      const listed = await fetch(`${base}${transport}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: `list-${transport}`, method: "tools/list" }),
+      });
+      assert.equal(listed.status, 401);
+      assert.equal((await listed.json()).result, undefined);
+    }
+    assert.equal(handlerCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("an expired valid Auth0 JWT returns only a bounded reconnect CTA", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "expired-chatgpt-token-key";
@@ -2517,6 +2866,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
+      assert.equal(body.result.tools.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"), false);
   const genericTool = body.result.tools.find((tool) => tool.name === "memory_document_upsert");
   assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], undefined);
   assert.equal(genericTool._meta["skinharmony/automatic_preflight"], true);
@@ -2592,9 +2942,8 @@ test("production compact mode exposes only the stable connector surface", async 
         COMPACT_MCP_TOOL_NAMES.filter((name) =>
           TOOLS.some((tool) => tool.name === name) &&
           !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name) &&
-          name !== "nyra_chatgpt_work_bootstrap_review"));
+          name !== "nyra_chatgpt_work_bootstrap_review"));;
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
-      assert.equal(body.result.tools.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 32 * 1024);
       const compactConverse = body.result.tools.find((tool) => tool.name === "nyra_converse");
