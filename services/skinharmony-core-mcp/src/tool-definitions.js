@@ -1641,7 +1641,6 @@ const nyraChatGptWorkBootstrapReviewInputSchema = Object.freeze({
   type: "object",
   properties: {
     continuation_ref: nyraContinueProperties.continuation_ref,
-    review_decision: nyraContinueProperties.review_decision,
     idempotency_key: nyraContinueProperties.idempotency_key,
   },
   required: Object.freeze(["continuation_ref", "idempotency_key"]),
