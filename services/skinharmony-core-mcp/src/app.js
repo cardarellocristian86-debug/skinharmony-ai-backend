@@ -646,7 +646,8 @@ function resolveNyraConnectorFrontDoorFallback(value, tools = [], {
 } = {}) {
   const canonical = resolveConnectorToolName(value, tools);
   if (!canonical || !NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(canonical)) return null;
-  if (canonical === "nyra_converse" && dialogueEnabled !== true) return null;
+  if (["nyra_converse", "nyra_chatgpt_work_bootstrap_review"].includes(canonical) &&
+      dialogueEnabled !== true) return null;
   return canonical;
 }
 
@@ -698,6 +699,9 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   // them to discover Work state, mint a ticket, or execute an external action.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  // Separate ChatGPT-only review entrypoint.  It can only consume an opaque
+  // continuation issued by Nyra and runs the mandatory duplicate review.
+  "nyra_chatgpt_work_bootstrap_review",
 ]);
 function connectorToolCandidate(value) {
   if (typeof value !== "string") return "";
@@ -736,8 +740,16 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
     // conversation and continuation entrypoints when Dialogue is OFF. The
     // dedicated Control Room read remains independently capability-bound.
     if (dialogueEnabled !== true &&
-        ["nyra_converse", "nyra_continue", "nyra_governed_continue"].includes(tool.name)) {
+        ["nyra_converse", "nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(tool.name)) {
       return false;
+    }
+    // This separate bootstrap-review surface belongs exclusively to a
+    // registered ChatGPT conversational host. It is never a generic Nyra
+    // continuation for Codex or unregistered compatibility clients.
+    if (tool.name === "nyra_chatgpt_work_bootstrap_review") {
+      return principal?.registered === true &&
+        principal?.client_type === "chatgpt" &&
+        hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE);
     }
     if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
     // Dynamic wrappers are authorized against their exact capability_id at
@@ -793,7 +805,11 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
         HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
       ].some((capability) => hostPrincipalAllows(identity, capability))
-      : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name)) ||
+      : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) &&
+        (tool.name !== "nyra_chatgpt_work_bootstrap_review" ||
+          principal?.registered === true &&
+          principal?.client_type === "chatgpt" &&
+          hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE))) ||
     (["nyra_continue", "nyra_governed_continue"].includes(tool.name) &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
   ));
@@ -955,6 +971,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // by Nyra and re-reads the Work before using dedicated Core routes.
   "nyra_continue",
   "nyra_governed_continue",
+  "nyra_chatgpt_work_bootstrap_review",
   // Core itself resolves or reviews the typed Work binding. Preflighting this
   // entry through Nyra would recreate the Work-required-to-create-Work cycle.
   "core_typed_request",
@@ -1529,7 +1546,7 @@ export function resolveMcpLogicalSession({
   transportSessionId = "",
   serverIssuedSessionId = "",
 } = {}) {
-  const continuationRebind = ["nyra_continue", "nyra_governed_continue"].includes(toolName) &&
+  const continuationRebind = ["nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(toolName) &&
     Boolean(declaredSessionId) &&
     transportPresence?.session_id !== declaredSessionId;
   return Object.freeze({

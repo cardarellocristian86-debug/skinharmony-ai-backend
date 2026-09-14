@@ -18,6 +18,7 @@ const TOOLS = [
   { name: "core_branch_registry", annotations: { readOnlyHint: true } },
   { name: "core_semantic_select", annotations: { readOnlyHint: true } },
   { name: "nyra_intent_bridge", annotations: { readOnlyHint: true } },
+  { name: "nyra_chatgpt_work_bootstrap_review", annotations: { readOnlyHint: false } },
   { name: "core_capability_read", annotations: { readOnlyHint: true } },
   { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
@@ -118,6 +119,34 @@ test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact 
     ...compatible,
     authenticatedTenantMembership: { ...compatible.authenticatedTenantMembership, tenant_id: "tenant-b" },
   }, "work_preflight"), false);
+});
+
+test("reserves bootstrap duplicate review for registered ChatGPT Work creators", () => {
+  const chatgptCreator = identity(["work.create"]);
+  chatgptCreator.authenticatedHostPrincipal.client_type = "chatgpt";
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: chatgptCreator,
+    toolName: "nyra_chatgpt_work_bootstrap_review",
+    tools: TOOLS,
+  }));
+
+  const codexCreator = identity(["work.create"]);
+  codexCreator.authenticatedHostPrincipal.client_type = "codex";
+  assert.throws(() => requireHostAppToolCapability({
+    identity: codexCreator,
+    toolName: "nyra_chatgpt_work_bootstrap_review",
+    tools: TOOLS,
+  }), /chatgpt_work_bootstrap_review_host_required/);
+  assert.throws(() => requireHostAppToolCapability({
+    identity: tenantBoundUnregisteredChatGpt({
+      authenticatedHostPrincipal: {
+        ...tenantBoundUnregisteredChatGpt().authenticatedHostPrincipal,
+        capabilities: ["work.create"],
+      },
+    }),
+    toolName: "nyra_chatgpt_work_bootstrap_review",
+    tools: TOOLS,
+  }), /chatgpt_work_bootstrap_review_host_required/);
 });
 
 test("requires a separately derived platform owner marker for Core administration", () => {

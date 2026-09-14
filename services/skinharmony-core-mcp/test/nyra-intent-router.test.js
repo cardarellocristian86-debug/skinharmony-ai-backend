@@ -572,6 +572,14 @@ test("materializes canonical intent before Work and preserves temporal and owner
     assert.ok(result.canonical_intent.requested_now.includes("work_bootstrap"), message);
   }
 
+  const ownerAuthorizedWork = classify("Confermo come Owner la creazione di un nuovo Work canonico separato. Autorizzo esclusivamente la creazione del Work e il readback finale. Non autorizzo modifiche, commit, push, PR, merge o deploy.");
+  assert.equal(ownerAuthorizedWork.intent, "work_create");
+  assert.deepEqual(ownerAuthorizedWork.canonical_intent.requested_now, ["work_bootstrap"]);
+  assert.equal(ownerAuthorizedWork.canonical_intent.work_requirement, "NEW");
+  assert.equal(ownerAuthorizedWork.canonical_intent.owner_reserved_actions.includes("authorization"), false);
+  assert.ok(ownerAuthorizedWork.canonical_intent.prohibited_actions.includes("commit"));
+  assert.ok(ownerAuthorizedWork.canonical_intent.prohibited_actions.includes("deploy"));
+
   const currentMerge = classify("Crea la PR e poi fai merge.");
   assert.ok(currentMerge.canonical_intent.requested_now.length > 0);
   assert.equal(currentMerge.canonical_intent.consequential_intent, true);

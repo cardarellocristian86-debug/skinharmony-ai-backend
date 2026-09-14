@@ -29,6 +29,9 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // continuation reference and is deliberately direct-only, never
   // catalog-addressable.
   "nyra_continue",
+  // ChatGPT receives a deliberately separate bootstrap-review action. It is
+  // direct-only so dynamic discovery cannot turn it into a generic Work path.
+  "nyra_chatgpt_work_bootstrap_review",
   // Nyra exposes these only after the durable dialogue has named one exact
   // assignment. They are kept direct-only so the generic Core catalogue can
   // never turn them into unbounded Work discovery or release tooling.
@@ -888,6 +891,25 @@ export function compactMcpTools(tools, handlers) {
           },
         },
         required: ["schema_version", "operation", "request"],
+        additionalProperties: false,
+      },
+      scopes: tool.scopes,
+      annotations: tool.annotations,
+      ...(tool._meta ? { _meta: tool._meta } : {}),
+    } : tool.name === "nyra_chatgpt_work_bootstrap_review" ? {
+      // The gateway derives transport identity. Keep this ChatGPT-only
+      // compact contract to its two caller fields so it remains inside the
+      // connector import budget while server validation stays exact.
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: {
+        type: "object",
+        properties: {
+          continuation_ref: tool.inputSchema.properties.continuation_ref,
+          idempotency_key: tool.inputSchema.properties.idempotency_key,
+        },
+        required: ["continuation_ref", "idempotency_key"],
         additionalProperties: false,
       },
       scopes: tool.scopes,

@@ -2985,6 +2985,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
+      assert.equal(body.result.tools.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"), false);
   const genericTool = body.result.tools.find((tool) => tool.name === "memory_document_upsert");
   assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], undefined);
   assert.equal(genericTool._meta["skinharmony/automatic_preflight"], true);
@@ -3058,7 +3059,9 @@ test("production compact mode exposes only the stable connector surface", async 
       assert.equal(response.status, 200);
       assert.deepEqual(body.result.tools.map((tool) => tool.name),
         COMPACT_MCP_TOOL_NAMES.filter((name) =>
-          TOOLS.some((tool) => tool.name === name) && !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name)));
+          TOOLS.some((tool) => tool.name === name) &&
+          !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name) &&
+          name !== "nyra_chatgpt_work_bootstrap_review"));;
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 32 * 1024);

@@ -88,6 +88,9 @@ test("resolves only deployed Nyra front-door descriptors across catalog projecti
   assert.equal(resolveNyraConnectorFrontDoorFallback(
     "skinharmony_nyra_core.nyra_converse", TOOLS, { dialogueEnabled: false },
   ), null);
+  assert.equal(resolveNyraConnectorFrontDoorFallback(
+    "skinharmony_nyra_core.nyra_chatgpt_work_bootstrap_review", TOOLS, { dialogueEnabled: false },
+  ), null);
   for (const name of [
     "core_health",
     "core_capability_invoke",
@@ -194,7 +197,7 @@ test("keeps claim-only and unregistered conversational hosts on the Nyra front d
     },
   };
   assert.deepEqual(filterToolsForClient(TOOLS, unregisteredCodex).map((tool) => tool.name), ["nyra_control_room_status", "nyra_converse"]);
-  assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
+  assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length - 1);
 });
 
 test("hides Nyra Dialogue entrypoints when disabled but preserves direct Control Room status", () => {
@@ -203,6 +206,7 @@ test("hides Nyra Dialogue entrypoints when disabled but preserves direct Control
   assert.equal(names.includes("nyra_converse"), false);
   assert.equal(names.includes("nyra_continue"), false);
   assert.equal(names.includes("nyra_governed_continue"), false);
+  assert.equal(names.includes("nyra_chatgpt_work_bootstrap_review"), false);
   assert.equal(names.includes("nyra_control_room_status"), true);
 });
 
@@ -230,7 +234,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       capabilities: ["work.read", "work.coordinate", "work.create", "governed_continue"],
     },
   };
-  for (const clientType of ["codex", "other"]) {
+  for (const clientType of ["codex", "other", "chatgpt"]) {
     const names = filterToolsForClient(serverTools, {
       ...identity,
       authenticatedHostPrincipal: {
@@ -239,15 +243,17 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
         app_id: `${clientType}_conversational`,
       },
     }).map((tool) => tool.name);
-    assert.deepEqual(names, [
+    const expected = [
       "core_typed_request",
       "nyra_control_room_status",
       "nyra_converse",
       "nyra_continue",
+      ...(clientType === "chatgpt" ? ["nyra_chatgpt_work_bootstrap_review"] : []),
       "nyra_intent_bridge",
       "nyra_work_assignment_claim",
       "nyra_work_assignment_submit",
-    ], clientType);
+    ];
+    assert.deepEqual(names, expected, clientType);
   }
   const activationNames = filterToolsForClient(serverTools, {
     ...identity,
@@ -424,6 +430,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
     advisoryWrites.map((tool) => tool.name),
     [
       "nyra_continue",
+      "nyra_chatgpt_work_bootstrap_review",
       "core_capability_invoke",
       "orchestration_dtt_plan",
       "orchestration_dtt_core_join",

@@ -286,7 +286,13 @@ function ownerReservedActionsForClause(source, actions) {
   const selected = before || after;
   const reserved = selected ? [selected.action] : [];
   if (reserved.length > 0 && actions.includes("release")) reserved.push("release");
-  return reserved.length > 0 ? reserved : actions.length === 1 ? [...actions] : [];
+  // An Owner reference does not reserve every action in its clause. In
+  // particular, "Owner autorizza la creazione" is the current authorization,
+  // not an Owner-reserved authorization action. Reserve only an explicitly
+  // identified release action; otherwise a valid Work bootstrap would be
+  // materialized as both requested-now and owner-reserved and fail closed as
+  // a false temporal-authority overlap.
+  return reserved.length > 0 ? reserved : [];
 }
 
 function materializeCanonicalIntent({
@@ -351,7 +357,19 @@ function materializeCanonicalIntent({
     referencedActions.push(...requestedNow);
     requestedNow.length = 0;
   }
-  if (workBootstrap || intent === "work_create") requestedNow.unshift("work_bootstrap");
+  if (workBootstrap || intent === "work_create") {
+    // "Owner authorizes creation of the Work" describes the authority for the
+    // typed bootstrap; it is not a second generic authorization effect.  Keep
+    // the bootstrap as the sole current action so a later negative fence such
+    // as "do not authorize commit/push/..." cannot create a false overlap.
+    for (const collection of [requestedNow, futureGoals, constraints, prohibitedActions,
+      referencedActions, ownerReservedActions]) {
+      for (let index = collection.length - 1; index >= 0; index -= 1) {
+        if (collection[index] === "authorization") collection.splice(index, 1);
+      }
+    }
+    requestedNow.unshift("work_bootstrap");
+  }
   const unique = (items) => Object.freeze([...new Set(items)]);
   const consequentialIntent = requestedNow.some((action) => action !== "work_bootstrap");
   const workRequirement = intent === "work_create" ? "NEW" :
@@ -668,7 +686,8 @@ export function classifyNyraIntent({
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.99;
     reason = explicitReadOnlyFence ? "explicit_read_only_fence" : "explicit_read_only_boundary";
-  } else if (!workBootstrap && workCreateRequested && actionClauses.length > 0) {
+  } else if (!workBootstrap && workCreateRequested && actionClauses.some((clause) =>
+      clause.affirmative_action_candidates.some((action) => action !== "authorization"))) {
     intent = "ambiguous_consequential";
     route = "CORE_HOLD_THEN_NYRA";
     confidence = 0.99;
