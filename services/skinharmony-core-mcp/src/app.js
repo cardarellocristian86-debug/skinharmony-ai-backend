@@ -742,6 +742,14 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
         ["nyra_converse", "nyra_continue", "nyra_governed_continue"].includes(tool.name)) {
       return false;
     }
+    // This separate bootstrap-review surface belongs exclusively to a
+    // registered ChatGPT conversational host. It is never a generic Nyra
+    // continuation for Codex or unregistered compatibility clients.
+    if (tool.name === "nyra_chatgpt_work_bootstrap_review") {
+      return principal?.registered === true &&
+        principal?.client_type === "chatgpt" &&
+        hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE);
+    }
     if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
     // Dynamic wrappers are authorized against their exact capability_id at
     // call time. Keep only the wrapper modes for which the registered app has
@@ -796,7 +804,11 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
         HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
       ].some((capability) => hostPrincipalAllows(identity, capability))
-      : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name)) ||
+      : NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) &&
+        (tool.name !== "nyra_chatgpt_work_bootstrap_review" ||
+          principal?.registered === true &&
+          principal?.client_type === "chatgpt" &&
+          hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE))) ||
     (["nyra_continue", "nyra_governed_continue"].includes(tool.name) &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
   ));
