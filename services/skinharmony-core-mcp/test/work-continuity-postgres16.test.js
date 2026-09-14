@@ -600,9 +600,9 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     };
     const firstWork = await runtime.ensure(coordinator, initial, { creationAuthorized: true });
     await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: firstWork.work_id });
-    // Native assignments bind to this exact V2 task before either builder or
-    // verifier can report. The bridge must never infer a task from a title or
-    // from the native task id.
+    // The server-owned plan resolver must bind the next required V2 task
+    // before either builder or verifier can report. The host supplies no V2
+    // task id and cannot infer or substitute one from a title.
     const bridgeTaskId = crypto.randomUUID();
     await v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
@@ -619,6 +619,12 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       status: "completed",
       required: true,
     });
+    // Keep this Work-wide criterion independently settled so the only
+    // server-selectable next task is the bridge target.
+    await pool.query(`UPDATE tenant_work_task
+      SET acceptance_verified=true
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`,
+    [tenantId, firstWork.work_id, unrelatedTaskId]);
     const tables = await pool.query(`SELECT
       to_regclass('public.core_continuity_works') AS works,
       to_regclass('public.core_continuity_intent_anchors') AS anchors,
@@ -1229,6 +1235,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       host_type: "codex_native",
       required_checks: ["core-mcp"],
       max_parallel: 1,
+      v2_task_binding_mode: "server_next_required_v1",
       tasks: [
         { task_id: "build", kind: "builder", instruction: "Implement the bounded database contract." },
         {
@@ -1255,8 +1262,17 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-builder",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-build",
-      v2_task_id: bridgeTaskId.toUpperCase(),
     });
+    assert.equal(builder.binding.v2_task_id, bridgeTaskId);
+    await assert.rejects(runtime.bindNativeAgent(coordinator, {
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      task_id: "build",
+      native_agent_id: "codex-builder-client-v2",
+      host_type: "codex_native",
+      host_task_id: "/root/postgres16-build-client-v2",
+      v2_task_id: bridgeTaskId,
+    }), /native_agent_v2_task_client_input_forbidden/);
     const projectedBeforeBridge = await pool.query(`SELECT created_by_agent_id,
         created_by_session_fingerprint
       FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`, [tenantId, firstWork.work_id]);
@@ -1294,7 +1310,6 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-verifier",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-verify",
-      v2_task_id: bridgeTaskId.toUpperCase(),
     });
     const verifierReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-verifier", "d".repeat(64), "d"),

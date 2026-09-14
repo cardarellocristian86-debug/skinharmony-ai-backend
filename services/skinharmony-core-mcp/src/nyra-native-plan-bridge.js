@@ -133,6 +133,9 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
     base_branch: binding.base_branch,
     host_type,
     required_checks: [...binding.required_checks],
+    // The host never chooses a V2 task. Work Continuity resolves the next
+    // required task while it persists the plan and freezes that binding.
+    v2_task_binding_mode: "server_next_required_v1",
     tasks: [
       { task_id: "build", kind: "builder", instruction: builderInstruction },
       { task_id: "verify", kind: "verifier", instruction: verifierInstruction, dependencies: ["build"] },

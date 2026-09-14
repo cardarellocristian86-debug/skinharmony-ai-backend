@@ -147,6 +147,12 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
     scope_valid: false,
     pending_required_task_ids: [ticketTaskId],
   }), false);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...base,
+    v2_task_governed: true,
+    pending_required_task_ids: [ticketTaskId, otherTaskId],
+    task_bindings: [{ native_bindings: [{ native_task_id: "build" }] }],
+  }), true);
 
   const evaluation = {
     closed: false,
@@ -180,6 +186,9 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
 
   const unrelatedPending = bindNativeV2TaskSnapshotToEvaluation(evaluation, {
     ...snapshot,
+    // A pending task in the native cohort invalidates the cohort snapshot;
+    // an authoritative snapshot never marks this combination scope-valid.
+    scope_valid: false,
     pending_required_task_ids: [ticketTaskId, otherTaskId],
     missing: [
       `native_v2_task_acceptance_not_current:${ticketTaskId}`,

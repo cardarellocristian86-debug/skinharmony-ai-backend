@@ -528,6 +528,12 @@ export function buildNativeAgentPlan(input = {}) {
   if (!NATIVE_HOST_TYPES.has(hostType)) throw new Error("native_agent_host_type_invalid");
   const tasks = Array.isArray(input.tasks) ? input.tasks : [];
   if (!tasks.length || tasks.length > 3) throw new Error("native_agent_task_count_invalid");
+  const v2TaskBindingMode = input.v2_task_binding_mode === undefined
+    ? null
+    : String(input.v2_task_binding_mode || "");
+  if (v2TaskBindingMode !== null && v2TaskBindingMode !== "server_next_required_v1") {
+    throw new Error("native_agent_v2_task_binding_mode_invalid");
+  }
   const seen = new Set();
   const normalizedTasks = tasks.map((task) => {
     requireObject(task, "native_agent_task");
@@ -588,6 +594,7 @@ export function buildNativeAgentPlan(input = {}) {
     max_parallel: maxParallel,
     required_checks: requiredChecks,
     tasks: normalizedTasks,
+    ...(v2TaskBindingMode ? { v2_task_binding_mode: v2TaskBindingMode } : {}),
     closure_requirements: requirements,
     ...(softwareContract ? { software_contract: { schema_version: "worker_plan_contract_v1", ...softwareContract } } : {}),
   };
@@ -1233,6 +1240,15 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
 
 export function nativeV2PrecommitPendingTaskAllowed(snapshot) {
   if (!snapshot || snapshot.scope_valid !== true) return false;
+  // Precommit proves the server-bound native task cohort, not the final
+  // outcome of every required Work task. Requiring later deploy/readback
+  // tasks before a commit ticket exists creates a circular gate. Those tasks
+  // remain visible in work_valid and still block final closure.
+  if (snapshot.v2_task_governed === true &&
+      Array.isArray(snapshot.task_bindings) &&
+      snapshot.task_bindings.some((binding) => binding.native_bindings?.length > 0)) {
+    return true;
+  }
   const pending = Array.isArray(snapshot.pending_required_task_ids)
     ? [...new Set(snapshot.pending_required_task_ids.map((value) =>
       String(value || "").trim().toLowerCase()).filter(Boolean))]
@@ -3159,6 +3175,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     if (!closureRevalidation) return Object.freeze({
       ...expected,
+      status: String(resolved?.status || ""),
+      acceptance_verified: resolved?.acceptance_verified === true,
+      revision: Number(resolved?.revision),
       ...(resolved?.precommit_revalidation ? {
         precommit_revalidation: resolved.precommit_revalidation,
       } : {}),
@@ -3249,8 +3268,68 @@ export function createWorkContinuityRuntime(config, options = {}) {
       work_id: String(context.workId).toLowerCase(),
       work_type: workType,
       v2_task_governed: governed,
+      next_action: safeText(resolved?.next_action, 4_000).trim(),
       bindings: Object.freeze(bindings),
     });
+  }
+
+  function frozenNativePlanV2TaskBinding(binding) {
+    const taskId = uuid(binding?.task_id, "native_agent_v2_task_binding_invalid").toLowerCase();
+    const taskDigest = String(binding?.v2_task_digest || "").toLowerCase();
+    const revision = Number(binding?.revision);
+    if (!SHA256_DIGEST.test(taskDigest) || !Number.isSafeInteger(revision) || revision < 1) {
+      throw new Error("native_agent_v2_task_binding_invalid");
+    }
+    return Object.freeze({
+      schema_version: "native_plan_v2_task_binding_v1",
+      task_id: taskId,
+      v2_task_digest: taskDigest,
+      revision,
+    });
+  }
+
+  // This runs inside the plan transaction. The host supplies no task id: the
+  // V2 projection selects and freezes the exact next required task.
+  async function materializeNativePlanV2TaskBinding(client, context, planId, basePlan) {
+    if (basePlan.v2_task_binding_mode !== "server_next_required_v1") return basePlan;
+    const workTasks = await resolveNativeV2WorkTaskBindings(client, context);
+    if (workTasks?.v2_task_governed !== true) {
+      throw new Error("native_agent_v2_task_scope_not_governed");
+    }
+    const candidates = workTasks.bindings
+      .filter((binding) => binding.required === true &&
+        (binding.status !== "completed" || binding.acceptance_verified !== true))
+      .sort((left, right) => left.task_id.localeCompare(right.task_id));
+    if (!candidates.length) throw new Error("native_agent_v2_task_assignment_unavailable");
+    const normalizeSelectionText = (value) => safeText(value, 4_000)
+      .toLocaleLowerCase("en-US")
+      .replace(/[^a-z0-9]+/g, " ").trim();
+    const nextAction = normalizeSelectionText(workTasks.next_action);
+    const actionMatches = nextAction
+      ? candidates.filter((candidate) => {
+        const title = normalizeSelectionText(candidate.title_preview);
+        return title && nextAction.includes(title);
+      }) : [];
+    const selectedCandidates = actionMatches.length ? actionMatches :
+      candidates.length === 1 ? candidates : [];
+    if (selectedCandidates.length !== 1) {
+      throw new Error("native_agent_v2_task_assignment_ambiguous");
+    }
+    const selected = await resolveNativeV2TaskBinding(client, context, selectedCandidates[0].task_id, {
+      precommitRevalidationPlanId: planId,
+    });
+    const v2TaskBinding = frozenNativePlanV2TaskBinding(selected);
+    const tasks = basePlan.tasks.map((task) => Object.freeze({
+      ...task,
+      v2_task_binding: v2TaskBinding,
+      task_digest: digest({
+        task_id: task.task_id,
+        kind: task.kind,
+        instruction: task.instruction,
+        v2_task_binding: v2TaskBinding,
+      }),
+    }));
+    return Object.freeze({ ...basePlan, tasks: Object.freeze(tasks) });
   }
 
   async function nativeV2TaskClosureSnapshot(client, context, agents = []) {
@@ -5678,8 +5757,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
             architecture_digest: work.rows[0].architecture_digest,
           },
         );
+        const materializedPlan = await materializeNativePlanV2TaskBinding(
+          client, context, planId, basePlan,
+        );
         const plan = {
-          ...basePlan,
+          ...materializedPlan,
           ...(input.launch_request?.schema_version === "nyra_host_launch_request_v1" &&
               input.launch_request?.requested_by === "nyra" && input.launch_request?.action === "START_NATIVE_PLAN" &&
               input.launch_request?.verifier_task_id === "verify" && input.launch_request?.distinct_session_required === true &&
@@ -5691,7 +5773,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
           acceptance_contract: acceptanceContract,
           precommit_acceptance_policy: buildPrecommitAcceptancePolicy(acceptanceContract),
-          core_authority: bindCoreWorkPlan(options.corePlan, basePlan, {
+          core_authority: bindCoreWorkPlan(options.corePlan, materializedPlan, {
             workId: context.workId,
             intentDigest: work.rows[0].intent_digest,
             repository: safeText(input.repository, 240),
@@ -5872,7 +5954,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const taskId = identifier(input.task_id, "task_id", 120);
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
-    const v2TaskId = input.v2_task_id === undefined
+    const suppliedV2TaskId = input.v2_task_id === undefined
       ? null
       : uuid(input.v2_task_id, "native_agent_v2_task_invalid").toLowerCase();
     const hostType = String(input.host_type || "");
@@ -5892,6 +5974,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId]);
       const plan = planResult.rows[0]?.plan;
       const task = plan?.tasks?.find((candidate) => candidate.task_id === taskId);
+      const planV2TaskBinding = task?.v2_task_binding
+        ? frozenNativePlanV2TaskBinding(task.v2_task_binding) : null;
+      if (planV2TaskBinding && input.v2_task_id !== undefined) {
+        throw new Error("native_agent_v2_task_client_input_forbidden");
+      }
+      const v2TaskId = planV2TaskBinding?.task_id || suppliedV2TaskId;
       const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,v2_task_digest,v2_precommit_revalidation_digest,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
@@ -5966,6 +6054,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       }
       const task = plan.tasks.find((candidate) => candidate.task_id === taskId);
       if (!task) throw new Error("native_agent_task_not_found");
+      const planV2TaskBinding = task.v2_task_binding
+        ? frozenNativePlanV2TaskBinding(task.v2_task_binding) : null;
+      if (planV2TaskBinding && input.v2_task_id !== undefined) {
+        throw new Error("native_agent_v2_task_client_input_forbidden");
+      }
+      const v2TaskId = planV2TaskBinding?.task_id || suppliedV2TaskId;
       const active = await client.query(`SELECT task_id,status
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
@@ -6047,6 +6141,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         v2TaskId,
         { precommitRevalidationPlanId: planId },
       );
+      if (planV2TaskBinding &&
+          (v2TaskBinding?.v2_task_digest !== planV2TaskBinding.v2_task_digest ||
+           Number(v2TaskBinding?.revision) !== planV2TaskBinding.revision)) {
+        throw new Error("native_agent_v2_task_binding_changed");
+      }
       const v2PrecommitRevalidationDigest =
         v2TaskBinding?.precommit_revalidation?.revalidation_digest || null;
       const v2PrecommitRevalidation =

@@ -4943,7 +4943,7 @@ export function createWorkContinuityV2Store({
     if (!closureRevalidation && !taskId) fail("native_v2_task_binding_task_invalid");
     let linkedWork = null;
     if (closureRevalidation) {
-      const linked = await client.query(`SELECT work_id,work_type FROM tenant_work
+      const linked = await client.query(`SELECT work_id,work_type,next_action FROM tenant_work
         WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2 FOR UPDATE`,
       [tenantId, workId]);
       if (!linked.rows[0]) fail("native_v2_task_binding_work_invalid");
@@ -5161,6 +5161,7 @@ export function createWorkContinuityV2Store({
       binding.v2_task_governed = !(
         binding.work_type === "legacy" && result.rows.length === 0
       );
+      binding.next_action = String(linkedWork.next_action || "").slice(0, 4_000);
       binding.work_task_bindings = Object.freeze(result.rows.map((candidate) =>
         Object.freeze({
           ...buildNativeV2TaskBinding({
