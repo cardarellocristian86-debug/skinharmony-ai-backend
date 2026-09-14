@@ -2157,6 +2157,10 @@ const baseHandlers = {
   ...(nyraGovernedContinueHandler
     ? {
       nyra_continue: nyraGovernedContinueHandler,
+      nyra_chatgpt_work_bootstrap_review: (args, identity) => nyraGovernedContinueHandler({
+        ...args,
+        operation: "review_work_bootstrap",
+      }, identity),
       nyra_governed_continue: (args, identity) => nyraGovernedContinueHandler({
         ...args,
         continuation_ref: args.continuation_ref || args.candidate_attestation,
