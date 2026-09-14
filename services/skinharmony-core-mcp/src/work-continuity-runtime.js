@@ -3773,22 +3773,43 @@ export function createWorkContinuityRuntime(config, options = {}) {
         live_state_hash: input.live_state_hash || null,
         requested_work_id: input.work_id || null,
       });
+      // A reviewed child Work is the sole creation path allowed to move the
+      // current session binding from its parent to a new Work in the same
+      // project.  The V2 bootstrap store only sets this non-public option
+      // after it has consumed a fresh, owner-authorized CREATE_CHILD_WORK
+      // review.  Do not infer it from a caller supplied parent_work_id: doing
+      // so would turn the session binding into an alternate creation bypass.
+      const reviewedChildParentId = input.parent_work_id
+        ? uuid(input.parent_work_id, "parent_work_id")
+        : null;
+      const reviewedChildSessionRebind = Boolean(
+        binding.rows[0] &&
+        options.creationAuthorized === true &&
+        options.trustedReviewedChildCreation === true &&
+        input.work_id &&
+        reviewedChildParentId &&
+        binding.rows[0].work_id === reviewedChildParentId &&
+        binding.rows[0].work_id !== workId,
+      );
       if (binding.rows[0]) {
-        if (binding.rows[0].create_request_digest !== createRequestDigest ||
-            (input.work_id && binding.rows[0].work_id !== workId)) {
+        if (!reviewedChildSessionRebind &&
+            (binding.rows[0].create_request_digest !== createRequestDigest ||
+              (input.work_id && binding.rows[0].work_id !== workId))) {
           throw new Error("continuity_session_intent_conflict");
         }
-        const anchored = await client.query(`SELECT intent_digest FROM core_continuity_intent_anchors
-          WHERE tenant_id=$1 AND work_id=$2`, [tenantId, binding.rows[0].work_id]);
-        return {
-          schema_version: WORK_CONTINUITY_SCHEMA_VERSION,
-          fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
-          tenant_id: tenantId,
-          project_id: projectId,
-          work_id: binding.rows[0].work_id,
-          intent_digest: anchored.rows[0]?.intent_digest || null,
-          idempotent_replay: true,
-        };
+        if (!reviewedChildSessionRebind) {
+          const anchored = await client.query(`SELECT intent_digest FROM core_continuity_intent_anchors
+            WHERE tenant_id=$1 AND work_id=$2`, [tenantId, binding.rows[0].work_id]);
+          return {
+            schema_version: WORK_CONTINUITY_SCHEMA_VERSION,
+            fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+            tenant_id: tenantId,
+            project_id: projectId,
+            work_id: binding.rows[0].work_id,
+            intent_digest: anchored.rows[0]?.intent_digest || null,
+            idempotent_replay: true,
+          };
+        }
       }
       if (options.creationAuthorized !== true) {
         const error = new Error("continuity_creation_owner_confirmation_required");
@@ -3829,10 +3850,22 @@ export function createWorkContinuityRuntime(config, options = {}) {
         VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`,
       [tenantId, workId, projectId, sessionId, JSON.stringify(intent.anchor), intent.intent_digest,
         createRequestDigest, context.actor]);
-      await client.query(`INSERT INTO core_continuity_session_bindings
-        (tenant_id,project_id,session_id,work_id,create_request_digest)
-        VALUES ($1,$2,$3,$4,$5)`,
-      [tenantId, projectId, sessionId, workId, createRequestDigest]);
+      if (reviewedChildSessionRebind) {
+        const rebound = await client.query(`UPDATE core_continuity_session_bindings
+          SET work_id=$4,create_request_digest=$5
+          WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 AND work_id=$6
+          RETURNING work_id,create_request_digest`,
+        [tenantId, projectId, sessionId, workId, createRequestDigest, reviewedChildParentId]);
+        if (!rebound.rows[0] || rebound.rows[0].work_id !== workId ||
+            rebound.rows[0].create_request_digest !== createRequestDigest) {
+          throw new Error("continuity_reviewed_child_session_rebind_conflict");
+        }
+      } else {
+        await client.query(`INSERT INTO core_continuity_session_bindings
+          (tenant_id,project_id,session_id,work_id,create_request_digest)
+          VALUES ($1,$2,$3,$4,$5)`,
+        [tenantId, projectId, sessionId, workId, createRequestDigest]);
+      }
       const event = await appendEvent(client, context, "work_created", {
         project_id: projectId, session_id: sessionId, parent_work_id: input.parent_work_id || null,
         architecture_digest: architectureDigest,

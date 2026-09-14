@@ -2521,6 +2521,11 @@ export function createWorkContinuityV2Store({
       await injectFailure("review_consumed", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
       const legacy = await legacyRuntime.ensureWithClient(client, identity, { ...effectiveInput, work_id: workId }, {
         creationAuthorized: true,
+        // The review was consumed above in this same transaction. Only that
+        // server-owned CREATE_CHILD_WORK decision may rebind the active
+        // session from the reviewed parent to its child during creation.
+        trustedReviewedChildCreation: review.decision === "CREATE_CHILD_WORK" &&
+          Boolean(effectiveInput.parent_work_id),
       });
       if (legacy.work_id !== workId) fail("legacy_work_identity_mismatch");
       await injectFailure("legacy_created", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
