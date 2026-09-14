@@ -88,6 +88,9 @@ test("resolves only deployed Nyra front-door descriptors across catalog projecti
   assert.equal(resolveNyraConnectorFrontDoorFallback(
     "skinharmony_nyra_core.nyra_converse", TOOLS, { dialogueEnabled: false },
   ), null);
+  assert.equal(resolveNyraConnectorFrontDoorFallback(
+    "skinharmony_nyra_core.nyra_chatgpt_work_bootstrap_review", TOOLS, { dialogueEnabled: false },
+  ), null);
   for (const name of [
     "core_health",
     "core_capability_invoke",
@@ -203,6 +206,7 @@ test("hides Nyra Dialogue entrypoints when disabled but preserves direct Control
   assert.equal(names.includes("nyra_converse"), false);
   assert.equal(names.includes("nyra_continue"), false);
   assert.equal(names.includes("nyra_governed_continue"), false);
+  assert.equal(names.includes("nyra_chatgpt_work_bootstrap_review"), false);
   assert.equal(names.includes("nyra_control_room_status"), true);
 });
 
