@@ -646,7 +646,8 @@ function resolveNyraConnectorFrontDoorFallback(value, tools = [], {
 } = {}) {
   const canonical = resolveConnectorToolName(value, tools);
   if (!canonical || !NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(canonical)) return null;
-  if (canonical === "nyra_converse" && dialogueEnabled !== true) return null;
+  if (["nyra_converse", "nyra_chatgpt_work_bootstrap_review"].includes(canonical) &&
+      dialogueEnabled !== true) return null;
   return canonical;
 }
 
@@ -739,7 +740,7 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
     // conversation and continuation entrypoints when Dialogue is OFF. The
     // dedicated Control Room read remains independently capability-bound.
     if (dialogueEnabled !== true &&
-        ["nyra_converse", "nyra_continue", "nyra_governed_continue"].includes(tool.name)) {
+        ["nyra_converse", "nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(tool.name)) {
       return false;
     }
     // This separate bootstrap-review surface belongs exclusively to a
@@ -970,6 +971,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // by Nyra and re-reads the Work before using dedicated Core routes.
   "nyra_continue",
   "nyra_governed_continue",
+  "nyra_chatgpt_work_bootstrap_review",
   // Core itself resolves or reviews the typed Work binding. Preflighting this
   // entry through Nyra would recreate the Work-required-to-create-Work cycle.
   "core_typed_request",
