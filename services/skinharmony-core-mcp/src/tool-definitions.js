@@ -1632,6 +1632,21 @@ const nyraContinueInputSchema = Object.freeze({
   // or producing an effect.
 });
 
+// ChatGPT's conversational surface receives this as a separate, narrow MCP
+// action.  It is intentionally not an alias advertised as `nyra_continue`:
+// the caller can only consume an existing, server-attested bootstrap
+// continuation for duplicate review, never select another continuation
+// operation or create a Work.
+const nyraChatGptWorkBootstrapReviewInputSchema = Object.freeze({
+  type: "object",
+  properties: {
+    continuation_ref: nyraContinueProperties.continuation_ref,
+    idempotency_key: nyraContinueProperties.idempotency_key,
+  },
+  required: Object.freeze(["continuation_ref", "idempotency_key"]),
+  additionalProperties: false,
+});
+
 const coreTypedRequestPayloadSchema = Object.freeze({ oneOf: [
   object({
     create_request: object({
@@ -1794,6 +1809,17 @@ export const TOOLS = [
       "skinharmony/nyraGovernedContinuation": true,
     },
   }),
+  tool("nyra_chatgpt_work_bootstrap_review", "Review Nyra Work bootstrap",
+    "ChatGPT-only bounded continuation: review one server-attested Work bootstrap for duplicates. It never creates a Work or grants execution authority.",
+    nyraChatGptWorkBootstrapReviewInputSchema, ["core:govern"], false, true, {
+      ownerConfirmationRequired: false,
+      meta: {
+        "skinharmony/dedicatedCoreGate": true,
+        "skinharmony/externalSideEffect": false,
+        "skinharmony/providerExecution": false,
+        "skinharmony/chatgptBootstrapReview": true,
+      },
+    }),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("nyra_self_model", "Read Nyra persistent self model", "Read Nyra's tenant-scoped, signed self model through Universal Core. This read never creates, refreshes, authorizes or executes anything.", object(), ["core:read"]),
   tool("nyra_self_model_refresh", "Materialize Nyra persistent self model", "Materialize or refresh Nyra's tenant-scoped, signed self model through Universal Core. This is an owner-confirmed internal state mutation: it never authorizes execution, calls a provider model, modifies a Work, or performs an external action.", object(), ["core:govern"], false, true, {
