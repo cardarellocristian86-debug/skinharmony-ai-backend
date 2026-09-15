@@ -91,7 +91,7 @@ function typedOrchestrationProjection(record) {
   });
 }
 
-function precommitReconciliationErrorCode(error) {
+export function precommitReconciliationErrorCode(error) {
   const code = String(error?.code || "");
   const message = String(error?.message || "");
   // PostgreSQL uses the generic P0001 SQLSTATE for RAISE EXCEPTION. Retain
@@ -184,7 +184,7 @@ function actionKindAllowed(actionClass, kind) {
   return ACTION_KIND_BY_CLASS[actionClass]?.has(String(kind || "")) === true;
 }
 
-function commitPrecommitGate(context, payload, request) {
+export function commitPrecommitGate(context, payload, request) {
   const gate = context?.precommit_ticket_gate;
   const hashes = [
     gate?.evaluation_digest,
@@ -225,7 +225,7 @@ function commitPrecommitGate(context, payload, request) {
   return gate;
 }
 
-function fulfilledCommitPrecommitGate(context, payload, request) {
+export function fulfilledCommitPrecommitGate(context, payload, request) {
   const gate = context?.precommit_ticket_gate;
   const nativeFields = [
     "schema_version", "gate_source", "tenant_id", "work_id", "action_kind", "gate_kind",
@@ -260,7 +260,7 @@ function fulfilledCommitPrecommitGate(context, payload, request) {
   return Object.freeze({ gate, original_projection_digest: request.evidence_digest });
 }
 
-function nativePrecommitClaimBinding(payload, request, gate, identity, continuationRef,
+export function nativePrecommitClaimBinding(payload, request, gate, identity, continuationRef,
   requestDigestValue, idempotencyKey) {
   return Object.freeze({
     work_id: payload.work_id,
@@ -274,7 +274,7 @@ function nativePrecommitClaimBinding(payload, request, gate, identity, continuat
   });
 }
 
-function trustedNativePrecommitClaim(value, binding) {
+export function trustedNativePrecommitClaim(value, binding) {
   const fields = [
     "schema_version", "claim_id", "work_id", "continuation_ref", "request_digest",
     "delegation_id", "action_digest", "gate_projection_digest", "host_session_fingerprint",
@@ -295,7 +295,7 @@ function trustedNativePrecommitClaim(value, binding) {
   return Object.freeze({ ...value });
 }
 
-function trustedRecoveredNativePrecommitClaim(value, binding) {
+export function trustedRecoveredNativePrecommitClaim(value, binding) {
   const fields = [
     "schema_version", "claim_id", "work_id", "continuation_ref", "request_digest",
     "delegation_id", "action_digest", "gate_projection_digest", "host_session_fingerprint",
@@ -319,7 +319,7 @@ function trustedRecoveredNativePrecommitClaim(value, binding) {
   return Object.freeze({ ...value });
 }
 
-function trustedIssuedActionTicket(readback, payload, request, identity, gate, currentTime,
+export function trustedIssuedActionTicket(readback, payload, request, identity, gate, currentTime,
   { allowPriorIssuedAt = false } = {}) {
   const body = readback?.structuredContent;
   const record = body?.action_ticket;
@@ -606,6 +606,11 @@ export function createNyraGovernedContinueHandler({
         if (result.replay !== true) await releaseTypedRequest({ identity,
           continuation_ref: args.continuation_ref }).catch(() => {});
         fail("connected_ai_work_requires_create_operation", 409);
+      }
+      if (result.core_result?.schema_version === "connected_ai_core_pending_v1") {
+        if (result.replay !== true) await releaseTypedRequest({ identity,
+          continuation_ref: args.continuation_ref }).catch(() => {});
+        fail("connected_ai_core_request_pending", 409);
       }
       if (result.replay !== true) await completeTypedRequest({ identity,
         continuation_ref: args.continuation_ref, final_result: result.core_result });

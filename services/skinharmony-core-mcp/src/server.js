@@ -121,11 +121,9 @@ import {
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
-import {
-  createNyraContinuationOpener,
-  createNyraGovernedContinueHandler,
-} from "./nyra-governed-continue.js";
+import { createNyraContinuationOpener, createNyraGovernedContinueHandler } from "./nyra-governed-continue.js";
 import { createNyraGovernedContinuationStore } from "./nyra-governed-continuation-store.js";
+import { createCoreTypedActionAuthorizer } from "./core-typed-action-authorizer.js";
 import {
   canonicalWorkBindingFromDirectiveContext,
   createCoreTypedRequestHandler,
@@ -1982,6 +1980,15 @@ const nyraConverseHandler = createNyraConverseHandler({
   dialogueEnabled: config.nyraDialogueEnabled === true,
 });
 
+const coreTypedActionAuthorizer = workContinuityV2Store
+  ? createCoreTypedActionAuthorizer({
+      coreHandlers,
+      workStore: workContinuityV2Store,
+      tenantAcl: withTenantWorkAcl,
+      hostKind: authenticatedHostKind,
+    })
+  : null;
+
 const nyraGovernedContinueHandler = nyraGovernedContinuationStore
   ? createNyraGovernedContinueHandler({
       store: nyraGovernedContinuationStore,
@@ -2038,53 +2045,7 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         workContinuityV2Store.reconcilePrecommitTicketGateClaim(
           withTenantWorkAcl(identity), request,
         ),
-      abandonInactivePrecommitTicketGateClaim: async (request, identity) => {
-        const claim = request?.gate_claim;
-        const coreResult = await coreHandlers.host_native_delegation_read({
-          delegation_id: claim?.delegation_id,
-        }, identity);
-        const payload = coreResult?.structuredContent;
-        const delegation = payload?.delegation;
-        if (payload?.ok !== true || payload.tenant_id !== identity.tenantId ||
-            !delegation || delegation.delegation_id !== claim?.delegation_id ||
-            delegation.grant?.tenant_id !== identity.tenantId ||
-            delegation.grant?.work_id !== request.work_id ||
-            !["active", "expired", "revoked"].includes(delegation.effective_state) ||
-            !Number.isFinite(Date.parse(delegation.grant?.expires_at || "")) ||
-            typeof delegation.signature !== "string" || delegation.signature.length < 16) {
-          throw new Error("precommit_claim_abandonment_core_readback_invalid");
-        }
-        if (delegation.effective_state === "active") return null;
-        const readbackMaterial = {
-          schema_version: "core_precommit_claim_inactive_readback_v1",
-          authority: "universal_core",
-          tenant_id: identity.tenantId,
-          work_id: request.work_id,
-          delegation_id: delegation.delegation_id,
-          effective_state: delegation.effective_state,
-          state: String(delegation.state || ""),
-          expires_at: new Date(delegation.grant.expires_at).toISOString(),
-          revoked_at: delegation.revoked_at
-            ? new Date(delegation.revoked_at).toISOString()
-            : null,
-          signature_digest: crypto.createHash("sha256")
-            .update(delegation.signature).digest("hex"),
-          provider_execution: false,
-        };
-        const coreDelegationReadback = Object.freeze({
-          ...readbackMaterial,
-          readback_digest: crypto.createHash("sha256")
-            .update(JSON.stringify(stableCanonical(readbackMaterial))).digest("hex"),
-        });
-        return workContinuityV2Store.abandonInactivePrecommitTicketGateClaim(
-          withTenantWorkAcl(identity), {
-            server_owned: true,
-            work_id: request.work_id,
-            gate_claim: claim,
-            core_delegation_readback: coreDelegationReadback,
-          },
-        );
-      },
+      abandonInactivePrecommitTicketGateClaim: coreTypedActionAuthorizer.abandonInactiveClaim,
       readPrecommitTicketGateClaimRecovery: (request, identity) =>
         workContinuityV2Store.readPrecommitTicketGateClaimRecovery(
           withTenantWorkAcl(identity), request,
@@ -2162,10 +2123,10 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
     })
   : null;
 
-const coreTypedRequestHandler = nyraGovernedContinuationStore
+const coreTypedRequestHandler = nyraGovernedContinuationStore && coreTypedActionAuthorizer
   ? createCoreTypedRequestHandler({ store: nyraGovernedContinuationStore,
       issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
-      authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
+      authorizeAction: coreTypedActionAuthorizer.authorize,
       reviewWorkBootstrap: (args, identity) => reviewCanonicalWorkCreation(args, identity),
       resolveWorkBinding: async (workId, identity) => {
         const value = await readNyraDirectiveContext(identity, { work_id: workId });
@@ -2173,7 +2134,15 @@ const coreTypedRequestHandler = nyraGovernedContinuationStore
         // immutable identity is nested under `work`; reading fields from the
         // envelope root made every direct Core delegation/action request look
         // unbound even though Nyra and Gallery could read the same Work.
-        return canonicalWorkBindingFromDirectiveContext(value);
+        const binding = Object.freeze({
+          ...canonicalWorkBindingFromDirectiveContext(value),
+          project_id: value?.work?.project_id,
+          work_revision: value?.work?.revision,
+        });
+        return Object.freeze({
+          ...binding,
+          directive_context: normalizeNyraDirectiveContext(value, identity, binding),
+        });
       } })
   : null;
 

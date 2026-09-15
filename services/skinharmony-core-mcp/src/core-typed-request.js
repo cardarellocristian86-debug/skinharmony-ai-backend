@@ -31,6 +31,7 @@ export function createCoreTypedRequestHandler({ store, issueDelegation, authoriz
     }
     let materializedRequest = canonical.request;
     let coreResponse;
+    let refs = null;
     if (canonical.operation === "WORK_CREATE_OR_RECONCILE") {
       coreResponse = await reviewWorkBootstrap(canonical.request, identity);
     } else {
@@ -40,15 +41,51 @@ export function createCoreTypedRequestHandler({ store, issueDelegation, authoriz
       }
       materializedRequest = Object.freeze({ ...canonical.request,
         intent_anchor_digest: binding.intent_digest });
-      coreResponse = canonical.operation === "DELEGATION_REQUEST"
-        ? await issueDelegation(materializedRequest, identity)
-        : await authorizeAction(materializedRequest, identity);
+      if (canonical.operation === "DELEGATION_REQUEST") {
+        coreResponse = await issueDelegation(materializedRequest, identity);
+      } else {
+        if (!store.consumeConnectedAiTypedRequest ||
+            !store.completeConnectedAiTypedRequest ||
+            !store.releaseConnectedAiTypedRequest) {
+          fail("core_typed_request_action_store_invalid", 503);
+        }
+        refs = await store.recordConnectedAiTypedRequest({
+          identity,
+          canonical_request: Object.freeze({ ...canonical, request: materializedRequest }),
+          core_result: Object.freeze({ schema_version: "connected_ai_core_pending_v1",
+            state: "PENDING", ok: false, tenant_id: identity.tenantId }),
+        });
+        const typedRecord = await store.consumeConnectedAiTypedRequest({
+          identity, continuation_ref: refs.continuation_ref,
+        });
+        if (typedRecord.replay === true) {
+          coreResponse = { structuredContent: typedRecord.final_result };
+        } else {
+          try {
+            coreResponse = await authorizeAction(materializedRequest, identity, Object.freeze({
+              typed_record: typedRecord,
+              work_binding: binding,
+            }));
+            const finalResult = coreResponse?.structuredContent;
+            if (!finalResult || finalResult.ok !== true ||
+                finalResult.tenant_id !== identity.tenantId) {
+              fail("core_typed_request_core_result_invalid", 502);
+            }
+            await store.completeConnectedAiTypedRequest({ identity,
+              continuation_ref: refs.continuation_ref, final_result: finalResult });
+          } catch (error) {
+            await store.releaseConnectedAiTypedRequest({ identity,
+              continuation_ref: refs.continuation_ref }).catch(() => {});
+            throw error;
+          }
+        }
+      }
     }
     const coreResult = coreResponse?.structuredContent;
     if (!coreResult || coreResult.ok !== true || coreResult.tenant_id !== identity.tenantId) {
       fail("core_typed_request_core_result_invalid", 502);
     }
-    const refs = await store.recordConnectedAiTypedRequest({
+    refs ||= await store.recordConnectedAiTypedRequest({
       identity, canonical_request: Object.freeze({ ...canonical, request: materializedRequest }),
       core_result: coreResult,
     });
