@@ -70,6 +70,12 @@ const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
 const FUTURE_SCOPE = /\b(?:pi[uù]\s+avanti|in\s+seguito|dopo|quando|poi|later|afterwards?|eventually|in\s+the\s+future|when)\b/iu;
 const OWNER_RESERVED = /(?:\b(?:lo\s+far[oò]\s+io|lo\s+faccio\s+io|faccio\s+io|lo\s+far[aà]\s+l[’']?owner|owner\s+(?:esegue|far[aà]|will\s+do)|i(?:'|’)ll\s+do\s+it)(?=\s|[;,.!?]|$)|\b(?:merge|deploy\w*|push|pull(?:\s+request)?|\bpr\b|publish\w*|release)\b.{0,40}\b(?:manual(?:e|mente)?|owner)\b)/iu;
+// A request to prepare an exact Core ticket is a governed request distinct
+// from the provider effect named as its target.  Hosts frequently say this
+// explicitly ("prepare the push ticket; do not push in this turn").  Treating
+// the target as both current and prohibited makes the canonical envelope
+// impossible to validate and prevents Core from reviewing the request.
+const TICKET_PREPARATION_ONLY = /\b(?:prepara\w*|richied\w*|emetti\w*|issue|request)\b.{0,120}\b(?:richiesta|ticket)\b[\s\S]{0,240}\b(?:non|senza|do\s+not|don't)\b[\s\S]{0,80}\b(?:esegui\w*|execute|perform|effett\w*|push|merge|deploy\w*|publish\w*)\b/iu;
 // V1 deliberately admitted only two global routes. V2 is the connected-AI
 // intent bridge: an upstream model may translate the user's language into a
 // small, closed read-only intent, but it never supplies authority, an ID, a
@@ -305,6 +311,7 @@ function materializeCanonicalIntent({
   semanticIntake,
   semanticAssessment,
   workBootstrap,
+  ticketPreparationOnly = false,
   forceReadOnly = false,
 }) {
   const sourceClauses = splitIntentClauses(text).clauses;
@@ -369,6 +376,17 @@ function materializeCanonicalIntent({
       }
     }
     requestedNow.unshift("work_bootstrap");
+  }
+  if (ticketPreparationOnly && !workBootstrap) {
+    const directTargets = [...new Set(requestedNow.filter((action) =>
+      !["ticket", "delegation", "authorization", "release"].includes(action)))];
+    // A ticket request may name one exact governed target.  More than one
+    // remains ambiguous and is left to the normal Core hold path.
+    if (directTargets.length === 1) {
+      referencedActions.push(...requestedNow);
+      requestedNow.length = 0;
+      requestedNow.push(`ticket_${directTargets[0]}`);
+    }
   }
   const unique = (items) => Object.freeze([...new Set(items)]);
   const consequentialIntent = requestedNow.some((action) => action !== "work_bootstrap");
@@ -523,6 +541,7 @@ export function classifyNyraIntent({
     ((clause.affirmative_action_candidates.length > 0 && clause.imperative) ||
       clause.modality !== "asserted" || clause.quote_scope));
   const sourceClauses = splitIntentClauses(text).clauses;
+  const ticketPreparationOnly = TICKET_PREPARATION_ONLY.test(text);
   const distinctActions = new Set(actionClauses.flatMap((clause) => {
     const source = sourceClauses[clause.index] || "";
     if (FUTURE_SCOPE.test(source)) return [];
@@ -530,11 +549,11 @@ export function classifyNyraIntent({
     return clause.affirmative_action_candidates.filter((action) => !reserved.has(action));
   }));
   const englishNegatedBareContrast = /\bdo\s+not\b[^;.!?]{0,200}(?:,|\bbut\b)\s*(?:deploy|push|merge|publish|release)\b/iu.test(text);
-  const ambiguousActionLanguage = englishNegatedBareContrast || distinctActions.size > 1 || actionClauses.some((clause) => (
+  const ambiguousActionLanguage = !ticketPreparationOnly && (englishNegatedBareContrast || distinctActions.size > 1 || actionClauses.some((clause) => (
     (clause.polarity === "negative" && clause.affirmative_action_candidates.length === 0) ||
     clause.condition || clause.quote_scope ||
     clause.modality === "hypothetical"
-  ));
+  )));
   const workCreateRequested = clauses.some((clause) => clause.work_create_affirmative);
   // The explicit fence governs vocabulary that follows it: a clause splitter
   // must not detach "inviare" from "sola lettura: non ..." and mint a ticket.
@@ -761,7 +780,8 @@ export function classifyNyraIntent({
 
   const canonicalIntent = materializeCanonicalIntent({
     text, intent, route, confidence, reason, clauses, semanticIntake,
-    semanticAssessment, workBootstrap, forceReadOnly: explicitReadOnlyFence && !workBootstrap,
+    semanticAssessment, workBootstrap, ticketPreparationOnly,
+    forceReadOnly: explicitReadOnlyFence && !workBootstrap,
   });
   return Object.freeze({
     schema_version: "nyra_intent_route_v2",

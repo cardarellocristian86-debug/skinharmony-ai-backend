@@ -126,7 +126,10 @@ import {
   createNyraGovernedContinueHandler,
 } from "./nyra-governed-continue.js";
 import { createNyraGovernedContinuationStore } from "./nyra-governed-continuation-store.js";
-import { createCoreTypedRequestHandler } from "./core-typed-request.js";
+import {
+  canonicalWorkBindingFromDirectiveContext,
+  createCoreTypedRequestHandler,
+} from "./core-typed-request.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
@@ -2166,7 +2169,11 @@ const coreTypedRequestHandler = nyraGovernedContinuationStore
       reviewWorkBootstrap: (args, identity) => reviewCanonicalWorkCreation(args, identity),
       resolveWorkBinding: async (workId, identity) => {
         const value = await readNyraDirectiveContext(identity, { work_id: workId });
-        return { work_id: value?.work_id, intent_digest: value?.intent_digest };
+        // readNyraDirectiveContext returns the canonical V2 envelope. Its
+        // immutable identity is nested under `work`; reading fields from the
+        // envelope root made every direct Core delegation/action request look
+        // unbound even though Nyra and Gallery could read the same Work.
+        return canonicalWorkBindingFromDirectiveContext(value);
       } })
   : null;
 
@@ -2928,8 +2935,8 @@ const baseHandlers = {
         .digest("hex");
       await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.precommit.reconcile",
-        `precommit_reconcile:${args.work_id}:${reconciliationRequestDigest}`,
+        "work.continuity.precommit.reconcile.persisted",
+        `precommit_reconcile_persisted:${args.work_id}:${reconciliationRequestDigest}`,
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -3030,7 +3037,17 @@ const baseHandlers = {
       });
     },
     nyra_autopilot_reconcile: async (args, identity) => {
-      await requireOwnerGovernance(identity, "nyra.autopilot.reconcile", args.work_id);
+      // Reconciliation restores only the server-derived, zero-privilege Nyra
+      // plan for one existing tenant Work.  Enabling Autopilot remains
+      // Owner-gated; a second Owner elevation here stranded active Work when a
+      // connected AI needed to resume it.  The exact Work ID, authenticated
+      // tenant and idempotency key remain Core-gated before materialization.
+      const coreGate = await requireBoundedTenantCoordination(
+        identity,
+        "work.autopilot.reconcile",
+        args.work_id,
+        args.idempotency_key,
+      );
       const result = await nyraAutopilotRuntime.reconcile(identity, {
         ...args,
         trigger_type: "reconcile",
@@ -3042,6 +3059,12 @@ const baseHandlers = {
       return continuityTextResult({
         ok: true,
         result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) },
+        dedicated_core_gate: {
+          authorized: coreGate.allowed === true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        },
         execution_authorized: false,
       });
     },
@@ -3110,6 +3133,7 @@ const baseHandlers = {
 function internalCoordinationActionType(toolName) {
   const tenantWorkActionType = tenantWorkCoordinationActionType(toolName);
   if (tenantWorkActionType) return tenantWorkActionType;
+  if (toolName === "nyra_autopilot_reconcile") return "work.autopilot.reconcile";
   if (toolName === "agent_heartbeat") return "agent.heartbeat";
   if (toolName.includes("native_plan")) return "native_agent.plan";
   if (toolName.includes("native_bind")) return "native_agent.bind";
@@ -3435,10 +3459,13 @@ const app = createApp(config, {
         await requireBoundedTenantCoordination(
           identity,
           "canonical_work.causal_lineage.recover",
-          tenantWorkCoordinationTarget("canonical_work_causal_lineage_recover", {
-            work_id: pendingCausalLineageMutation.work_id,
-            target_capability: validated.tool.name,
-          }),
+          `causal_lineage_recover:${pendingCausalLineageMutation.work_id}:${crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical({
+              schema_version: "canonical_work_causal_lineage_recovery_target_v1",
+              work_id: pendingCausalLineageMutation.work_id,
+              target_capability: validated.tool.name,
+            })))
+            .digest("hex")}`,
           args.idempotency_key,
         );
       }

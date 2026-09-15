@@ -5,6 +5,13 @@ function fail(code, status = 422) {
   const error = new Error(code); error.code = code; error.status = status; throw error;
 }
 
+export function canonicalWorkBindingFromDirectiveContext(value) {
+  return Object.freeze({
+    work_id: value?.work?.work_id,
+    intent_digest: value?.work?.intent_digest,
+  });
+}
+
 export function createCoreTypedRequestHandler({ store, issueDelegation, authorizeAction,
   reviewWorkBootstrap, resolveWorkBinding } = {}) {
   if (!store?.recordConnectedAiTypedRequest || typeof issueDelegation !== "function" ||

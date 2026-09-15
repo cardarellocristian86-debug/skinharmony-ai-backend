@@ -3550,7 +3550,7 @@ test("server resolves inner arguments for dynamic reads before exact Work prefli
   assert.match(target, /toolName: capabilityId \|\| toolName/);
 });
 
-test("requires generic preflight for dynamic invoke except signed presence and Work bootstrap", () => {
+test("requires generic preflight for dynamic invoke except signed presence, Work bootstrap and exact Work recovery", () => {
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
     true,
@@ -3559,6 +3559,7 @@ test("requires generic preflight for dynamic invoke except signed presence and W
     "tenant_work_open_review",
     "work_continuity_v2_create",
     "tenant_work_queue_create_v3",
+    "nyra_autopilot_reconcile",
   ]) {
     assert.equal(
       requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),
@@ -3587,6 +3588,33 @@ test("requires generic preflight for dynamic invoke except signed presence and W
     }),
     true,
   );
+  assert.equal(
+    requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id: "nyra_autopilot_reconcile",
+      arguments: { work_id: "740915b2-a259-4cd9-b9c7-053854aeb3a5" },
+    }),
+    true,
+  );
+});
+
+test("direct Core typed requests take Work identity and Intent from the canonical V2 envelope", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const typedStart = serverSource.indexOf("const coreTypedRequestHandler");
+  const typedEnd = serverSource.indexOf("const baseHandlers", typedStart);
+  const typed = serverSource.slice(typedStart, typedEnd);
+  assert.ok(typedStart >= 0);
+  assert.ok(typedEnd > typedStart);
+  assert.match(typed, /canonicalWorkBindingFromDirectiveContext\(value\)/);
+  assert.doesNotMatch(typed, /work_id: value\?\.work_id/);
+  assert.doesNotMatch(typed, /intent_digest: value\?\.intent_digest/);
+});
+
+test("pending causal lineage and public precommit repair use exact allowlisted Core coordination shapes", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /"work\.continuity\.precommit\.reconcile\.persisted"/);
+  assert.match(serverSource, /precommit_reconcile_persisted:\$\{args\.work_id\}/);
+  assert.doesNotMatch(serverSource, /"work\.continuity\.precommit\.reconcile",\n\s*`precommit_reconcile:/);
+  assert.match(serverSource, /causal_lineage_recover:\$\{pendingCausalLineageMutation\.work_id\}:\$\{crypto\.createHash/);
 });
 
 test("terminal closure entrypoints bypass only generic continuity preflight", () => {

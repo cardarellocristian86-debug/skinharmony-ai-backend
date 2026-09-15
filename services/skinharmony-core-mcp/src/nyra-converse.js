@@ -658,18 +658,22 @@ function serverConnectorHint(args) {
 function requestedActionClass(canonicalIntent, connectorHint, workBootstrapProvided = false) {
   const requested = new Set(canonicalIntent?.requested_now || []);
   const has = (name) => [...requested].some((action) => action === name || action.startsWith(`${name}_`));
+  const hasTicketTarget = (name) => requested.has(`ticket_${name}`);
   if (connectorHint.capability_hint === "host_native_action_reserve") return "TICKET_RESERVE";
   // A structured bootstrap is an explicit, typed request.  Its contract must
   // win over incidental prose such as "then merge/deploy" in the objective;
   // otherwise a new-Work review can be incorrectly promoted to an external
   // mutation before Core has evaluated the candidate.
   if (workBootstrapProvided) return "WORK_BOOTSTRAP";
-  if (has("merge")) return "GIT_MERGE";
-  if (has("commit")) return "GIT_COMMIT";
-  if (has("push")) return "GIT_PUSH";
-  if (has("pull_request")) return "PULL_REQUEST_OPEN";
-  if (has("deploy")) return "DEPLOY";
-  if (has("publish")) return "PUBLISH";
+  // `ticket_<effect>` represents a request for Core to review the named
+  // target, never execution of that effect by Nyra.  Retain the exact target
+  // class so the ticket candidate cannot be rebound to another release step.
+  if (has("merge") || hasTicketTarget("merge")) return "GIT_MERGE";
+  if (has("commit") || hasTicketTarget("commit")) return "GIT_COMMIT";
+  if (has("push") || hasTicketTarget("push")) return "GIT_PUSH";
+  if (has("pull_request") || hasTicketTarget("pull_request")) return "PULL_REQUEST_OPEN";
+  if (has("deploy") || hasTicketTarget("deploy")) return "DEPLOY";
+  if (has("publish") || hasTicketTarget("publish")) return "PUBLISH";
   if (requested.has("work_bootstrap")) return "WORK_BOOTSTRAP";
   return "NONE";
 }
@@ -684,7 +688,7 @@ function actionPolicy(
   const categories = [...new Set(requested.flatMap((action) => {
     const values = [];
     if (["commit", "push", "pull_request", "merge", "deploy", "publish", "rollback", "release"]
-      .some((name) => action === name || action.startsWith(`${name}_`))) values.push("release");
+      .some((name) => action === name || action.startsWith(`${name}_`) || action === `ticket_${name}`)) values.push("release");
     for (const name of ["communication", "destructive", "financial", "scheduling", "access"]) {
       if (action === name || action.endsWith(`_${name}`)) values.push(name);
     }

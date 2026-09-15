@@ -583,6 +583,17 @@ test("materializes canonical intent before Work and preserves temporal and owner
   const currentMerge = classify("Crea la PR e poi fai merge.");
   assert.ok(currentMerge.canonical_intent.requested_now.length > 0);
   assert.equal(currentMerge.canonical_intent.consequential_intent, true);
+
+  const ticketPreparation = classify(
+    "Prepara esclusivamente la richiesta tipizzata a Universal Core per il ticket di push del ramo fix/universal-bootstrap; non eseguire push, PR, merge o deploy.",
+  );
+  assert.equal(ticketPreparation.intent, "ticket_or_action");
+  assert.equal(ticketPreparation.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.deepEqual(ticketPreparation.canonical_intent.requested_now, ["ticket_push"]);
+  assert.ok(ticketPreparation.canonical_intent.referenced_actions.includes("push"));
+  assert.ok(ticketPreparation.canonical_intent.prohibited_actions.includes("push"));
+  assert.equal(ticketPreparation.canonical_intent.operation_class, "EXTERNAL_MUTATION");
+  assert.equal(ticketPreparation.canonical_intent.ambiguity, false);
 });
 
 test("routes horizontal global reads without manufacturing a Work requirement", () => {

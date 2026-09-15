@@ -15,7 +15,12 @@ const object = (properties = {}, required = []) => ({ type: "object", properties
 const uuid = { type: "string", format: "uuid" };
 const identifier = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,159}$" };
 
-function tool(name, title, description, inputSchema, { readOnly = true, ownerRequired = false, bounded = false } = {}) {
+function tool(name, title, description, inputSchema, {
+  readOnly = true,
+  ownerRequired = false,
+  bounded = false,
+  dedicatedCoreGate = false,
+} = {}) {
   return {
     name, title, description,
     inputSchema: {
@@ -27,6 +32,7 @@ function tool(name, title, description, inputSchema, { readOnly = true, ownerReq
     ...(!readOnly ? { _meta: {
       "skinharmony/ownerConfirmationRequired": ownerRequired,
       ...(bounded ? { "skinharmony/tenantBoundedCollaboration": true } : {}),
+      ...(dedicatedCoreGate ? { "skinharmony/dedicatedCoreGate": true } : {}),
     } } : {}),
   };
 }
@@ -44,8 +50,9 @@ export const NYRA_AUTOPILOT_TOOLS = [
     "Owner-gated activation of automatic governed Work planning. Never enables credentials or external actions.",
     object({ idempotency_key: identifier }, ["idempotency_key"]), { readOnly: false, ownerRequired: true }),
   tool("nyra_autopilot_reconcile", "Recover or plan a Nyra Work",
-    "Owner recovery command for one existing Work. Normal Work creation and Work changes invoke the same process automatically.",
-    object({ work_id: uuid, project_id: identifier }, ["work_id"]), { readOnly: false, ownerRequired: true }),
+    "Reconcile one existing tenant Work into its idempotent, zero-privilege Nyra plan. It cannot enable Autopilot, grant authority, or execute an external action.",
+    object({ work_id: uuid, project_id: identifier, idempotency_key: identifier }, ["work_id", "idempotency_key"]),
+    { readOnly: false, bounded: true, dedicatedCoreGate: true }),
   tool("nyra_work_assignment_claim", "Claim a bounded Nyra assignment",
     "Claim one ready assignment with transport-bound AI presence.",
     object({ work_id: uuid, assignment_id: uuid, ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 }, idempotency_key: identifier }, ["work_id", "assignment_id", "idempotency_key"]),

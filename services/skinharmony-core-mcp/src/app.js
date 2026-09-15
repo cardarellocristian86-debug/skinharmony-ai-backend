@@ -1010,6 +1010,10 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
 const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
   "tenant_work_legacy_reconcile_close",
   "tenant_work_historical_archive_v3",
+  // An existing Work must be recoverable even when an optional Entity360
+  // projection has not yet been materialized. The reconciliation handler
+  // retains the exact canonical Work ACL and its own bounded Core gate.
+  "nyra_autopilot_reconcile",
   // Terminal replay must be reachable without trying to recreate a read
   // lease or participant on a Work that is already closed. These entrypoints
   // retain exact Work ACL, presence, Airlock, ledger and their dedicated Core
