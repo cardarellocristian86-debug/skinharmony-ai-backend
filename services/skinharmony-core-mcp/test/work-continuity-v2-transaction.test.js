@@ -1968,16 +1968,30 @@ test("a reviewed additional implementation becomes a linked child Work instead o
     session_id: "session-child-implementation",
     work_name: "Continuity transaction implementation extension",
     objective: "Implement the next bounded part of the continuity transaction",
-    parent_work_id: parentWorkId,
   });
   const created = await store.createNewWork(identity(), {
     ...input,
     review_decision: "CREATE_CHILD_WORK",
+    review_parent_work_id: parentWorkId,
   });
   assert.equal(created.review.decision, "CREATE_CHILD_WORK");
   assert.equal(created.work.parent_work_id, parentWorkId);
   assert.equal(pool.works.get(key("tenant-a", created.work.work_id)).parent_work_id, parentWorkId);
   assert.equal(pool.works.size, 2);
+  const replay = await store.createNewWork(identity(), {
+    ...input,
+    review_decision: "CREATE_CHILD_WORK",
+    review_parent_work_id: parentWorkId,
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.work.work_id, created.work.work_id);
+  assert.equal(pool.works.size, 2, "an exact reviewed-parent retry must not create another child");
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    review_decision: "CREATE_CHILD_WORK",
+    review_parent_work_id: "22222222-2222-4222-8222-222222222222",
+  }), /open_work_review_replay_denied/);
+  assert.equal(pool.works.size, 2, "a changed selected parent must not mutate the Work graph");
 });
 
 test("a child decision cannot select an unrelated or unreviewed parent", async () => {
@@ -1995,7 +2009,6 @@ test("a child decision cannot select an unrelated or unreviewed parent", async (
     now: () => new Date("2026-08-08T10:00:00.000Z") });
   const input = await reviewed(store, {
     ...createInput(), request_id: "request-child-invalid", session_id: "session-child-invalid",
-    parent_work_id: unrelatedParentId,
   });
   pool.works.set(key("tenant-a", unrelatedParentId), {
     tenant_id: "tenant-a", work_id: unrelatedParentId, legacy_work_id: null,
@@ -2005,7 +2018,7 @@ test("a child decision cannot select an unrelated or unreviewed parent", async (
     progress_bp: 0, next_action: "continue", updated_at: "2026-08-08T10:00:00.000Z",
   });
   await assert.rejects(store.createNewWork(identity(), {
-    ...input, review_decision: "CREATE_CHILD_WORK",
+    ...input, review_decision: "CREATE_CHILD_WORK", review_parent_work_id: unrelatedParentId,
   }), /open_work_review_child_parent_conflict/);
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
 });

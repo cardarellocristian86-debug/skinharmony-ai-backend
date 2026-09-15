@@ -12,6 +12,13 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "work.continuity.precommit.reconcile.persisted",
   "work.continuity.native_plan.status.align",
   "work.continuity.native_closure.reevaluate",
+  // A PENDING lineage is repaired only from the server-bound Work and target
+  // capability. The recovery is a coordination write, never an effect.
+  "canonical_work.causal_lineage.recover",
+  // Reconciliation restores only the server-derived, zero-privilege Nyra
+  // plan for an already-existing Work. It cannot activate Autopilot, create a
+  // Work, issue a delegation, or execute an external effect.
+  "work.autopilot.reconcile",
   "work.participant.join",
   "work.participant.heartbeat",
   "work.branch.open",
@@ -76,6 +83,10 @@ function targetMatchesAction(actionType, value) {
   if (actionType === "work.continuity.native_closure.reevaluate") {
     return /^native_closure_reevaluate:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{64}$/i.test(target);
   }
+  if (actionType === "canonical_work.causal_lineage.recover") {
+    return /^causal_lineage_recover:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}:[a-f0-9]{64}$/i.test(target);
+  }
+  if (actionType === "work.autopilot.reconcile") return workIdTarget;
   if (actionType === "work.participant.join") return workIdTarget || target === "tenant_work_gallery_join";
   if (actionType === "work.participant.heartbeat") return workIdTarget || target === "tenant_work_gallery_heartbeat";
   if (actionType === "work.branch.open") return workIdTarget || target === "tenant_work_branch_open";

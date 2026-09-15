@@ -1328,6 +1328,51 @@ test("Nyra performs the Core bootstrap review then creates one Work using the pe
   assert.equal(created.structuredContent.core_authority, "UNIVERSAL_CORE");
 });
 
+test("Nyra forwards a child parent only from the reviewed continuation decision", async () => {
+  const store = fakeStore(bootstrapRecord());
+  let createInput = null;
+  const handler = createNyraGovernedContinueHandler({
+    store,
+    readDirectiveContext: async () => { throw new Error("unexpected_work_read"); },
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_authorization"); },
+    reviewWorkBootstrap: async () => ({ structuredContent: { result: {
+      review_id: "22222222-2222-4222-8222-222222222222", review_digest: CONTEXT_DIGEST,
+    } } }),
+    createWorkBootstrap: async (input) => {
+      createInput = input;
+      return { structuredContent: { result: { work: { work_id: WORK_ID } } } };
+    },
+  });
+  await handler({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "review-child-parent" }, identity());
+  const parentWorkId = "33333333-3333-4333-8333-333333333333";
+  await handler({ operation: "create_work", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "create-child-parent", owner_confirmed: true,
+    review_decision: "CREATE_CHILD_WORK", work_id: parentWorkId }, identity());
+  assert.equal(createInput.review_parent_work_id, parentWorkId);
+  assert.equal(createInput.parent_work_id, null);
+  assert.equal(createInput.review_decision, "CREATE_CHILD_WORK");
+
+  const missingParentStore = fakeStore(bootstrapRecord());
+  const missingParent = bootstrapHandler(missingParentStore, []);
+  await missingParent({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "review-child-missing-parent" }, identity());
+  await assert.rejects(missingParent({ operation: "create_work", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "create-child-missing-parent", owner_confirmed: true,
+    review_decision: "CREATE_CHILD_WORK" }, identity()), /nyra_continue_work_bootstrap_parent_required/);
+
+  const unexpectedParentStore = fakeStore(bootstrapRecord());
+  const unexpectedParent = bootstrapHandler(unexpectedParentStore, []);
+  await unexpectedParent({ operation: "review_work_bootstrap", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "review-parent-unexpected" }, identity());
+  await assert.rejects(unexpectedParent({ operation: "create_work", continuation_ref: CONTINUATION_REF,
+    idempotency_key: "create-parent-unexpected", owner_confirmed: true,
+    review_decision: "CONTINUE_NEW_WORK", work_id: parentWorkId }, identity()),
+  /nyra_continue_work_bootstrap_parent_unexpected/);
+});
+
 test("ChatGPT and Codex replay the same typed bootstrap through their bound canonical records", async () => {
   for (const host of [
     { app_id: "chatgpt_prod", host_kind: "chatgpt_native", client_type: "chatgpt", session_id: "chatgpt-session" },

@@ -8,6 +8,12 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$/;
 
 const WORK_CREATE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b/iu;
+const WORK_CREATE_AFFIRMATIVE = /\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:nuov\w*\s+)?(?:work|lavoro)\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)|(?:work|lavoro)\s+(?:nuov\w*|new))\b/iu;
+// `Work esistente senza crearne uno nuovo` contains both `Work` and `nuovo`,
+// but it is an explicit prohibition, not a bootstrap request.  Keep this
+// separate from the broad create detector so a human can resume/read a Work
+// naturally without being routed into the bootstrap path.
+const NEGATED_WORK_CREATE = /\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:non|senza)\b.{0,80}\bcrearne\b.{0,80}\b(?:un(?:o)?\s+)?nuov\w*\b|\b(?:voglio|vorrei|richied\w*|serve|need)\b.{0,80}\b(?:non|no)\s+(?:un(?:o)?\s+)?(?:nuov\w*|new)\s+(?:work|lavoro)\b/iu;
 const WORK_RESUME = /^(?:nyra\s+)?(?:riprendi|continua|resume|continue)(?:\s+(?:(?:il|lo|la|questo|questa|the|this|current|existing|corrente|attuale)\s+)?(?:work|lavoro))?(?:\s+(?:esistente|corrente|attuale|current|existing))?$/iu;
 const COMMAND_CATALOG = /\b(?:comandi|commands|capabilit(?:y|ies|à)|cosa\s+(?:puoi|sai)\s+fare|catalogo\s+(?:comandi|capabilit)|help\s+(?:commands?|capabilit(?:y|ies)))\b/iu;
 const ANALYSIS = /\b(?:analizz\w*|analysis|diagnos\w*|spiega\w*|explain|perch[eé]|why|confront\w*|compare|architett\w*|architecture|stato|status)\b/iu;
@@ -64,6 +70,12 @@ const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
 const FUTURE_SCOPE = /\b(?:pi[uù]\s+avanti|in\s+seguito|dopo|quando|poi|later|afterwards?|eventually|in\s+the\s+future|when)\b/iu;
 const OWNER_RESERVED = /(?:\b(?:lo\s+far[oò]\s+io|lo\s+faccio\s+io|faccio\s+io|lo\s+far[aà]\s+l[’']?owner|owner\s+(?:esegue|far[aà]|will\s+do)|i(?:'|’)ll\s+do\s+it)(?=\s|[;,.!?]|$)|\b(?:merge|deploy\w*|push|pull(?:\s+request)?|\bpr\b|publish\w*|release)\b.{0,40}\b(?:manual(?:e|mente)?|owner)\b)/iu;
+// A request to prepare an exact Core ticket is a governed request distinct
+// from the provider effect named as its target.  Hosts frequently say this
+// explicitly ("prepare the push ticket; do not push in this turn").  Treating
+// the target as both current and prohibited makes the canonical envelope
+// impossible to validate and prevents Core from reviewing the request.
+const TICKET_PREPARATION_ONLY = /\b(?:prepara\w*|richied\w*|emetti\w*|issue|request)\b.{0,120}\b(?:richiesta|ticket)\b[\s\S]{0,240}\b(?:non|senza|do\s+not|don't)\b[\s\S]{0,80}\b(?:esegui\w*|execute|perform|effett\w*|push|merge|deploy\w*|publish\w*)\b/iu;
 // V1 deliberately admitted only two global routes. V2 is the connected-AI
 // intent bridge: an upstream model may translate the user's language into a
 // small, closed read-only intent, but it never supplies authority, an ID, a
@@ -165,7 +177,9 @@ function hasQuotedActionLanguage(clause) {
     ...String(clause || "").matchAll(/["“”`]([^"“”`]{1,400})["“”`]/gu),
     ...String(clause || "").matchAll(/(?:^|\s)['‘’]([^'‘’]{1,400})['‘’](?=\s|$)/gu),
   ].map((match) => match[1] || "");
-  return quotedSegments.some((segment) => ACTION_TYPES.some(([, pattern]) => pattern.test(segment)));
+  return quotedSegments.some((segment) =>
+    ACTION_TYPES.some(([, pattern]) => pattern.test(segment)) ||
+    WORK_CREATE.test(segment) || WORK_CREATE_AFFIRMATIVE.test(segment));
 }
 
 function clauseArtifacts(text) {
@@ -208,7 +222,8 @@ function clauseArtifacts(text) {
         categoryImperativeIndex < 0 ? genericActionVerbIndex :
           Math.min(genericActionVerbIndex, categoryImperativeIndex);
       const negationIndex = clause.search(NEGATION);
-      const workCreateIndex = clause.search(WORK_CREATE);
+      const workCreateIndex = clause.search(WORK_CREATE_AFFIRMATIVE);
+      const negatedWorkCreate = NEGATED_WORK_CREATE.test(clause);
       let affirmativeActions = actionMatches.filter(([, position]) =>
         negationIndex < 0 || position < negationIndex).map(([name]) => name);
       if (affirmativeActions.includes("runtime_control")) affirmativeActions = ["runtime_control"];
@@ -238,6 +253,7 @@ function clauseArtifacts(text) {
         work_create_candidate: WORK_CREATE.test(clause),
         work_create_affirmative: workCreateIndex >= 0 &&
           !diagnostic && !interrogative && !conditional && !hypothetical && !quoted &&
+          !negatedWorkCreate && !FUTURE_SCOPE.test(clause) &&
           (negationIndex < 0 || workCreateIndex < negationIndex),
       });
     })),
@@ -295,6 +311,7 @@ function materializeCanonicalIntent({
   semanticIntake,
   semanticAssessment,
   workBootstrap,
+  ticketPreparationOnly = false,
   forceReadOnly = false,
 }) {
   const sourceClauses = splitIntentClauses(text).clauses;
@@ -337,6 +354,16 @@ function materializeCanonicalIntent({
       referencedActions.push(...actions);
     }
   }
+  // A typed bootstrap is a request to materialize and review a Work, not an
+  // authorization to carry out any incidental imperative in its prose.  Keep
+  // those terms as references/prohibitions/future goals, but make the
+  // server-issued bootstrap the sole current action.  Without this boundary a
+  // phrase such as "do not deploy in this turn" could make the otherwise safe
+  // bootstrap envelope internally inconsistent before it reaches Core.
+  if (workBootstrap) {
+    referencedActions.push(...requestedNow);
+    requestedNow.length = 0;
+  }
   if (workBootstrap || intent === "work_create") {
     // "Owner authorizes creation of the Work" describes the authority for the
     // typed bootstrap; it is not a second generic authorization effect.  Keep
@@ -349,6 +376,17 @@ function materializeCanonicalIntent({
       }
     }
     requestedNow.unshift("work_bootstrap");
+  }
+  if (ticketPreparationOnly && !workBootstrap) {
+    const directTargets = [...new Set(requestedNow.filter((action) =>
+      !["ticket", "delegation", "authorization", "release"].includes(action)))];
+    // A ticket request may name one exact governed target.  More than one
+    // remains ambiguous and is left to the normal Core hold path.
+    if (directTargets.length === 1) {
+      referencedActions.push(...requestedNow);
+      requestedNow.length = 0;
+      requestedNow.push(`ticket_${directTargets[0]}`);
+    }
   }
   const unique = (items) => Object.freeze([...new Set(items)]);
   const consequentialIntent = requestedNow.some((action) => action !== "work_bootstrap");
@@ -503,6 +541,7 @@ export function classifyNyraIntent({
     ((clause.affirmative_action_candidates.length > 0 && clause.imperative) ||
       clause.modality !== "asserted" || clause.quote_scope));
   const sourceClauses = splitIntentClauses(text).clauses;
+  const ticketPreparationOnly = TICKET_PREPARATION_ONLY.test(text);
   const distinctActions = new Set(actionClauses.flatMap((clause) => {
     const source = sourceClauses[clause.index] || "";
     if (FUTURE_SCOPE.test(source)) return [];
@@ -510,11 +549,11 @@ export function classifyNyraIntent({
     return clause.affirmative_action_candidates.filter((action) => !reserved.has(action));
   }));
   const englishNegatedBareContrast = /\bdo\s+not\b[^;.!?]{0,200}(?:,|\bbut\b)\s*(?:deploy|push|merge|publish|release)\b/iu.test(text);
-  const ambiguousActionLanguage = englishNegatedBareContrast || distinctActions.size > 1 || actionClauses.some((clause) => (
+  const ambiguousActionLanguage = !ticketPreparationOnly && (englishNegatedBareContrast || distinctActions.size > 1 || actionClauses.some((clause) => (
     (clause.polarity === "negative" && clause.affirmative_action_candidates.length === 0) ||
     clause.condition || clause.quote_scope ||
     clause.modality === "hypothetical"
-  ));
+  )));
   const workCreateRequested = clauses.some((clause) => clause.work_create_affirmative);
   // The explicit fence governs vocabulary that follows it: a clause splitter
   // must not detach "inviare" from "sola lettura: non ..." and mint a ticket.
@@ -582,7 +621,17 @@ export function classifyNyraIntent({
     !WORK_RESUME.test(normalized) && !explicitWorkScope && !actionVerbPresent &&
     semanticAssessment.disposition === "allow";
 
-  if (clauseResult.truncated) {
+  // A valid typed bootstrap is its own bounded contract.  It cannot authorize
+  // an external effect, and it must not be discarded merely because the
+  // explanatory prose has many clauses or mentions a prohibited future
+  // release.  The bootstrap validator still owns the candidate specification
+  // and Core still owns review/create.
+  if (workBootstrap) {
+    intent = "work_create";
+    route = "CORE_CONTEXT_THEN_NYRA";
+    confidence = 1;
+    reason = "typed_work_bootstrap";
+  } else if (clauseResult.truncated) {
     intent = "ambiguous_consequential";
     route = "CORE_HOLD_THEN_NYRA";
     confidence = 0.99;
@@ -651,7 +700,7 @@ export function classifyNyraIntent({
     route = "ADVISORY_READ";
     confidence = 0.86;
     reason = "host_intent_bridge_advisory_explain";
-  } else if (explicitReadOnlyBoundary) {
+  } else if (explicitReadOnlyBoundary && !workBootstrap) {
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
     confidence = 0.99;
@@ -662,11 +711,11 @@ export function classifyNyraIntent({
     route = "CORE_HOLD_THEN_NYRA";
     confidence = 0.99;
     reason = "work_create_and_action_require_separation";
-  } else if (workBootstrap || workCreateRequested) {
+  } else if (workCreateRequested) {
     intent = "work_create";
     route = "CORE_CONTEXT_THEN_NYRA";
-    confidence = workBootstrap ? 1 : 0.94;
-    reason = workBootstrap ? "typed_work_bootstrap" : "work_create_language";
+    confidence = 0.94;
+    reason = "work_create_language";
   } else if (WORK_RESUME.test(normalized)) {
     intent = "work_resume";
     route = "CORE_CONTEXT_THEN_NYRA";
@@ -731,7 +780,8 @@ export function classifyNyraIntent({
 
   const canonicalIntent = materializeCanonicalIntent({
     text, intent, route, confidence, reason, clauses, semanticIntake,
-    semanticAssessment, workBootstrap, forceReadOnly: explicitReadOnlyFence && !workBootstrap,
+    semanticAssessment, workBootstrap, ticketPreparationOnly,
+    forceReadOnly: explicitReadOnlyFence && !workBootstrap,
   });
   return Object.freeze({
     schema_version: "nyra_intent_route_v2",

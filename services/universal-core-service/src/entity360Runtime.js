@@ -770,7 +770,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
   }
 
   async function assemble(identity, input, { requireReadyBeforePersist = false,
-    persistenceRequestDigest = null } = {}) {
+    persistenceRequestDigest = null, bootstrapServerOwnedLinkage = false } = {}) {
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
     requireCanonicalWorkBinding(workId, input.identity);
@@ -857,7 +857,15 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       entity_type: input.entity_type,
       entity_id: resolved.entity_id,
       identity: input.identity,
-      project_work_linkage: discovery.project_work_linkage || {},
+      // A normal assembly retains a caller selector and verifies it against
+      // the adapter discovery.  The first-snapshot bootstrap has no caller
+      // selector: its linkage is wholly server-owned.  Feeding the adapter's
+      // preliminary projection back as though it were caller input creates a
+      // false 409 when the qualified temporal cut canonicalises an otherwise
+      // identical Work differently (for example while legacy lineage is
+      // being reconciled).  The canonical Work binding and qualified facts
+      // are still checked above and by assembleEntity360Snapshot.
+      project_work_linkage: bootstrapServerOwnedLinkage ? {} : (discovery.project_work_linkage || {}),
       as_of: asOf,
       snapshot_version: expectedRevision + 1,
       previous_snapshot_digest: previousSnapshot?.deterministic_immutable_digest || null,
@@ -970,7 +978,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     // clock, while retaining the immutable caller request as the replay key.
     assemblyInput.as_of = asOf;
     const assembled = await assemble(identity, assemblyInput,
-      { requireReadyBeforePersist: true, persistenceRequestDigest: requestDigest });
+      { requireReadyBeforePersist: true, persistenceRequestDigest: requestDigest,
+        bootstrapServerOwnedLinkage: true });
     const snapshot = assembled?.snapshot;
     if (!snapshot || snapshot.tenant_scope !== identity.tenant_id
       || snapshot.entity_type !== "work"

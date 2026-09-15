@@ -1782,6 +1782,32 @@ test("Work snapshot bootstrap uses a server-owned current cut after canonical Wo
   assert.deepEqual(replay.dedicated_core_gate, first.dedicated_core_gate);
 });
 
+test("Work snapshot bootstrap does not treat a server-derived preliminary linkage as caller input", async () => {
+  const dependencies = await enforcedRuntimeFixture();
+  const assembleContext = dependencies.adapterRegistry.assembleContext;
+  dependencies.adapterRegistry.assembleContext = async (input) => {
+    const discovered = await assembleContext(input);
+    // Reproduce a reconciliation window: the adapter has a preliminary
+    // project projection while the qualified Work facts remain canonical.
+    // This is server evidence, never an assertion supplied by the caller.
+    return {
+      ...discovered,
+      project_work_linkage: {
+        ...discovered.project_work_linkage,
+        project_id: "preliminary-reconciled-project",
+      },
+    };
+  };
+  const result = await dependencies.runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "entity360-bootstrap-server-owned-linkage",
+  });
+  assert.equal(result.snapshot.project_work_linkage.work_id, WORK_ID);
+  assert.equal(result.snapshot.project_work_linkage.project_id, PROJECT_ID);
+  assert.equal(result.snapshot.context_status, "READY");
+  assert.equal(result.dedicated_core_gate.execution_authorized, false);
+});
+
 test("Work snapshot bootstrap rejects non-initial, caller-expanded and cross-Work requests", async () => {
   const { runtime } = await enforcedRuntimeFixture();
   await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {

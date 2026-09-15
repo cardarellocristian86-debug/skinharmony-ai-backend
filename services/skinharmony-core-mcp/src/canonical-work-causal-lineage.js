@@ -12,6 +12,19 @@ function isCausalNotFound(error) {
   const code = String(error?.code || error?.message || "").toLowerCase();
   return code === "causal_not_found" || code === "causal_causal_not_found";
 }
+function causalProjectResolutionFailure(error) {
+  const code = String(error?.code || error?.message || "").toLowerCase();
+  // A missing project is the only condition that may enter server-owned
+  // project materialization.  A missing/invalid transport-bound identity is
+  // a distinct caller binding failure, never evidence that a project is
+  // absent.  Keep the public code bounded without exposing the DTT details.
+  if (code.includes("host_transport_session_fingerprint") ||
+      code.includes("agent_presence") ||
+      code.includes("causal_agent_identity")) {
+    return "canonical_work_causal_presence_binding_invalid";
+  }
+  return "canonical_work_causal_project_resolution_failed";
+}
 
 function lineageKey(identity, projectAlias, suffix) {
   return `canonical-work-${suffix}-${digest({
@@ -182,7 +195,7 @@ export async function ensureCanonicalWorkProjectDecisionPath({ handlers, identit
   if (!projectAlias) fail("canonical_work_causal_lineage_source_invalid");
   let project = null;
   try { project = payload(await handlers.project_identity_resolve({ alias: projectAlias }, identity)); }
-  catch (error) { if (!isCausalNotFound(error)) fail("canonical_work_causal_project_missing"); }
+  catch (error) { if (!isCausalNotFound(error)) fail(causalProjectResolutionFailure(error)); }
   const materialized = await materializeProjectDecisionPath({ handlers, identity, work, projectAlias, project });
   project = materialized.project;
   const decisionPath = materialized.decisionPath;

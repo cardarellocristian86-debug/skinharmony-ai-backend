@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeConnectedAiTypedRequest } from "../../shared/connected-ai-typed-request.mjs";
-import { createCoreTypedRequestHandler } from "../src/core-typed-request.js";
+import {
+  canonicalWorkBindingFromDirectiveContext,
+  createCoreTypedRequestHandler,
+} from "../src/core-typed-request.js";
 import { createNyraGovernedContinueHandler } from "../src/nyra-governed-continue.js";
 
 const D = "a".repeat(64);
@@ -13,6 +16,22 @@ const identity = { tenantId: "tenant-a", subject: "owner-a", authenticatedHostPr
 test("shared typed contract rejects lexical and unknown operations", () => {
   assert.throws(() => normalizeConnectedAiTypedRequest({ schema_version: "connected_ai_typed_request_v1",
     operation: "CHAT", request: {} }), /connected_ai_typed_request_invalid/);
+});
+
+test("extracts the exact canonical Work binding from a V2 directive envelope", () => {
+  const work = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    intent_digest: D,
+  };
+  assert.deepEqual(canonicalWorkBindingFromDirectiveContext({
+    schema_version: "nyra_directive_context_v2",
+    work,
+    work_id: "22222222-2222-4222-8222-222222222222",
+    intent_digest: "f".repeat(64),
+  }), work);
+  assert.deepEqual(canonicalWorkBindingFromDirectiveContext({
+    schema_version: "nyra_directive_context_v2",
+  }), { work_id: undefined, intent_digest: undefined });
 });
 
 test("core_typed_request authorizes the exact operation capability without governed_continue", async () => {

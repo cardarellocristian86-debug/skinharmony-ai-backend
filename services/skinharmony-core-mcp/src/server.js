@@ -126,7 +126,10 @@ import {
   createNyraGovernedContinueHandler,
 } from "./nyra-governed-continue.js";
 import { createNyraGovernedContinuationStore } from "./nyra-governed-continuation-store.js";
-import { createCoreTypedRequestHandler } from "./core-typed-request.js";
+import {
+  canonicalWorkBindingFromDirectiveContext,
+  createCoreTypedRequestHandler,
+} from "./core-typed-request.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
@@ -1370,6 +1373,22 @@ function withTenantWorkAcl(identity) {
   return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
 }
 
+function withServerOwnedCausalLineageRecovery(identity) {
+  // This marker is created only after the authenticated caller has passed
+  // exact Work visibility, host capability, presence and Airlock checks.  It
+  // lets the durable store record its narrowly bounded recovery transition
+  // even when the caller is an assigned collaborator rather than the owner.
+  // It is never derived from tool arguments or exposed by an MCP schema.
+  const recoveryIdentity = withTenantWorkAcl(identity);
+  Object.defineProperty(recoveryIdentity, "serverOwnedCausalLineageRecovery", {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return Object.freeze(recoveryIdentity);
+}
+
 function legacyWorkAclError(code, status = 403) {
   const error = new Error(code);
   error.code = code;
@@ -1557,18 +1576,22 @@ async function reviewCanonicalWorkCreation(args, identity) {
 }
 
 async function reconcileCanonicalWorkCausalLineage(identity, work) {
+  const recoveryIdentity = withServerOwnedCausalLineageRecovery(identity);
   try {
     const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
       identity, work });
     const state = await workContinuityV2Store.recordCausalLineageState(
-      withTenantWorkAcl(identity), { work_id: work.work_id, state: "READY" });
-    return { state: "READY", binding, lineage_digest: state.lineage_digest };
+      recoveryIdentity, { work_id: work.work_id, state: "READY", server_owned_recovery: true });
+    return { state: state.state, binding, lineage_digest: state.lineage_digest };
   } catch (error) {
     const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
     const state = await workContinuityV2Store.recordCausalLineageState(
-      withTenantWorkAcl(identity), { work_id: work.work_id, state: "PENDING",
-        reason_code: reasonCode });
-    return { state: "PENDING", reason_code: reasonCode,
+      recoveryIdentity, { work_id: work.work_id, state: "PENDING",
+        reason_code: reasonCode, server_owned_recovery: true });
+    // A competing recovery can make the Work READY between the failed causal
+    // attempt and this fallback. Preserve the store's effective state instead
+    // of returning a false PENDING result to the losing caller.
+    return { state: state.state, ...(state.state === "PENDING" ? { reason_code: reasonCode } : {}),
       lineage_digest: state.lineage_digest };
   }
 }
@@ -2146,7 +2169,11 @@ const coreTypedRequestHandler = nyraGovernedContinuationStore
       reviewWorkBootstrap: (args, identity) => reviewCanonicalWorkCreation(args, identity),
       resolveWorkBinding: async (workId, identity) => {
         const value = await readNyraDirectiveContext(identity, { work_id: workId });
-        return { work_id: value?.work_id, intent_digest: value?.intent_digest };
+        // readNyraDirectiveContext returns the canonical V2 envelope. Its
+        // immutable identity is nested under `work`; reading fields from the
+        // envelope root made every direct Core delegation/action request look
+        // unbound even though Nyra and Gallery could read the same Work.
+        return canonicalWorkBindingFromDirectiveContext(value);
       } })
   : null;
 
@@ -2908,8 +2935,8 @@ const baseHandlers = {
         .digest("hex");
       await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.precommit.reconcile",
-        `precommit_reconcile:${args.work_id}:${reconciliationRequestDigest}`,
+        "work.continuity.precommit.reconcile.persisted",
+        `precommit_reconcile_persisted:${args.work_id}:${reconciliationRequestDigest}`,
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -3010,7 +3037,17 @@ const baseHandlers = {
       });
     },
     nyra_autopilot_reconcile: async (args, identity) => {
-      await requireOwnerGovernance(identity, "nyra.autopilot.reconcile", args.work_id);
+      // Reconciliation restores only the server-derived, zero-privilege Nyra
+      // plan for one existing tenant Work.  Enabling Autopilot remains
+      // Owner-gated; a second Owner elevation here stranded active Work when a
+      // connected AI needed to resume it.  The exact Work ID, authenticated
+      // tenant and idempotency key remain Core-gated before materialization.
+      const coreGate = await requireBoundedTenantCoordination(
+        identity,
+        "work.autopilot.reconcile",
+        args.work_id,
+        args.idempotency_key,
+      );
       const result = await nyraAutopilotRuntime.reconcile(identity, {
         ...args,
         trigger_type: "reconcile",
@@ -3022,6 +3059,12 @@ const baseHandlers = {
       return continuityTextResult({
         ok: true,
         result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) },
+        dedicated_core_gate: {
+          authorized: coreGate.allowed === true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        },
         execution_authorized: false,
       });
     },
@@ -3090,6 +3133,7 @@ const baseHandlers = {
 function internalCoordinationActionType(toolName) {
   const tenantWorkActionType = tenantWorkCoordinationActionType(toolName);
   if (tenantWorkActionType) return tenantWorkActionType;
+  if (toolName === "nyra_autopilot_reconcile") return "work.autopilot.reconcile";
   if (toolName === "agent_heartbeat") return "agent.heartbeat";
   if (toolName.includes("native_plan")) return "native_agent.plan";
   if (toolName.includes("native_bind")) return "native_agent.bind";
@@ -3180,6 +3224,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
     }, identity);
   }
 });
+const prevalidateDynamicCapabilityInvoke = dynamicHandlers.prevalidateInvoke;
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
@@ -3332,10 +3377,21 @@ const app = createApp(config, {
     // calls, ledger writes and continuity session bindings. A generic or
     // dynamic tool must not use preflight as a tenant-only read oracle for a
     // private canonical Work.
+    let pendingCausalLineageMutation = null;
     if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
         await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
+        const targetDefinition = TOOLS.find((item) => item.name === authorizationTarget.toolName);
+        // Retain the exact known mutating target, but do not repair yet.
+        // Presence and Research Airlock must authorize this request first.
+        // Unknown dynamic capability ids have no definition and cannot cause
+        // a durable side effect before the router rejects them.
+        if (targetDefinition && targetDefinition.annotations?.readOnlyHint !== true) {
+          pendingCausalLineageMutation = Object.freeze({
+            work_id: authorizationTarget.args.work_id,
+          });
+        }
       }
     }
     // Native reports are authenticated by the child transport binding plus the
@@ -3380,6 +3436,43 @@ const app = createApp(config, {
         error.status = 403;
         throw error;
       }
+    }
+    // A previous bootstrap can leave its Work in PENDING after a transient
+    // causal failure.  Only now—after authenticated Work visibility,
+    // transport presence and Airlock authorization—may a known mutating
+    // capability repair server-owned lineage.  This remains before generic
+    // Work preflight and the handler, so neither can hit the store guard.
+    if (pendingCausalLineageMutation) {
+      // `core_capability_invoke` normally validates its exact target after
+      // this hook. A PENDING Work cannot first complete generic preflight, so
+      // recover only after the same non-effectful catalog/scope/schema/owner
+      // and idempotency validation plus a separate bounded Core decision. The
+      // requested target still traverses its normal exact Core gate once the
+      // lineage is READY; this recovery grants no target authority.
+      if (toolName === "core_capability_invoke") {
+        const validated = prevalidateDynamicCapabilityInvoke(args, identity);
+        if (validated.tool.name !== dynamicInvocationTarget(toolName, args, identity).toolName) {
+          const error = new Error("dynamic_capability_target_mismatch");
+          error.code = "dynamic_capability_target_mismatch";
+          throw error;
+        }
+        await requireBoundedTenantCoordination(
+          identity,
+          "canonical_work.causal_lineage.recover",
+          `causal_lineage_recover:${pendingCausalLineageMutation.work_id}:${crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical({
+              schema_version: "canonical_work_causal_lineage_recovery_target_v1",
+              work_id: pendingCausalLineageMutation.work_id,
+              target_capability: validated.tool.name,
+            })))
+            .digest("hex")}`,
+          args.idempotency_key,
+        );
+      }
+      await readNyraDirectiveContext(identity, {
+        work_id: pendingCausalLineageMutation.work_id,
+        read_only: false,
+      });
     }
     // The exact positive read matrix skips presence, ledger, continuity and
     // post-call writes only after Airlock applies the same active-phase policy

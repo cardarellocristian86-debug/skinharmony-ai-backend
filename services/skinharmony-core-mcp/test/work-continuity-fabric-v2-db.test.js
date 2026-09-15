@@ -449,6 +449,15 @@ class ContinuityPool {
         rowCount: 1,
       };
     }
+    if (q.startsWith("UPDATE core_continuity_session_bindings")) {
+      const [tenantId, projectId, sessionId, workId, createRequestDigest, previousWorkId] = parameters;
+      const bindingKey = key(tenantId, projectId, sessionId);
+      const current = this.bindings.get(bindingKey);
+      if (!current || current.work_id !== previousWorkId) return { rows: [], rowCount: 0 };
+      const row = { work_id: workId, create_request_digest: createRequestDigest };
+      this.bindings.set(bindingKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
 
     if (q.startsWith("SELECT sequence_number,event_hash FROM core_continuity_events")) {
       const rows = this.events.get(key(parameters[0], parameters[1])) || [];
@@ -1677,6 +1686,47 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("reviewed child creation rebinds only its current parent session", async () => {
+  const pool = new ContinuityPool(() => new Date("2026-09-14T12:00:00.000Z"));
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const parent = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+  const childId = "f1111111-1111-4111-8111-111111111111";
+
+  await assert.rejects(runtime.ensure(identity, {
+    ...initialInput,
+    work_id: childId,
+    parent_work_id: parent.work_id,
+    idea: "Unreviewed child",
+    objective: "Must not replace the parent session binding",
+  }, { creationAuthorized: true }), /continuity_session_intent_conflict/);
+
+  const child = await runtime.ensure(identity, {
+    ...initialInput,
+    work_id: childId,
+    parent_work_id: parent.work_id,
+    idea: "Reviewed child",
+    objective: "Publish the bounded task binding correction",
+  }, {
+    creationAuthorized: true,
+    trustedReviewedChildCreation: true,
+  });
+  assert.equal(child.work_id, childId);
+  assert.equal(pool.bindings.get(key("tenant-a", initialInput.project_id, initialInput.session_id)).work_id, childId);
+  assert.equal(pool.works.get(key("tenant-a", childId)).parent_work_id, parent.work_id);
+
+  await assert.rejects(runtime.ensure(identity, {
+    ...initialInput,
+    work_id: "f2222222-2222-4222-8222-222222222222",
+    parent_work_id: parent.work_id,
+    idea: "Stale parent",
+    objective: "Cannot rebind from a parent no longer current",
+  }, {
+    creationAuthorized: true,
+    trustedReviewedChildCreation: true,
+  }), /continuity_session_intent_conflict/);
 });
 
 test("Nyra persists one compact control context per Work without prompt-shaped ledger data", async () => {

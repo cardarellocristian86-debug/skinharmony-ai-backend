@@ -1174,6 +1174,7 @@ test("injects only the server-issued Gallery preflight into action mediation", a
 test("mutations fail closed unless owner confirmation, Core gate, and safe arguments agree", async () => {
   const tool = writeTool();
   let writes = 0;
+  let gateCalls = 0;
   let gateAllowed = true;
   let receivedGatePreflight;
   const handlers = {
@@ -1187,6 +1188,7 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     handlers,
     semanticSelect: async () => ({}),
     gateAction: async ({ workPreflight }) => {
+      gateCalls += 1;
       receivedGatePreflight = workPreflight;
       return {
       structuredContent: { authorization: { allowed: gateAllowed } },
@@ -1210,8 +1212,31 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     },
   };
 
+  // The server uses this no-effect prevalidation before repairing a pending
+  // causal lineage.  It must reject every caller-controlled invalid form
+  // without dispatching the capability or entering its normal Core gate.
+  assert.throws(
+    () => router.prevalidateInvoke({ ...args, catalog_revision: "0".repeat(64) }, identity),
+    /dynamic_capability_catalog_revision_mismatch/,
+  );
+  assert.throws(
+    () => router.prevalidateInvoke({ ...args, arguments: { value: "safe", nested: { tenant_id: "tenant-b" } } }, identity),
+    /dynamic_capability_reserved_argument/,
+  );
+  assert.throws(
+    () => router.prevalidateInvoke(args, { ...identity, ownerConfirmed: false }),
+    /owner_confirmation_required/,
+  );
+  assert.throws(
+    () => router.prevalidateInvoke({ ...args, idempotency_key: "" }, identity),
+    /idempotency_key_required/,
+  );
+  assert.equal(writes, 0);
+  assert.equal(gateCalls, 0);
+
   await router.core_capability_invoke(args, identity);
   assert.equal(writes, 1);
+  assert.equal(gateCalls, 1);
   assert.equal(receivedGatePreflight.preflight_id, "preflight-router-gate-binding");
 
   gateAllowed = false;

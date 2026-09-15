@@ -150,6 +150,7 @@ test("Nyra turns a materialized Autopilot proposal into one idempotent native bu
   });
   assert.equal(request.host_type, "codex_native");
   assert.deepEqual(request.tasks.map((task) => task.task_id), ["build", "verify"]);
+  assert.equal(request.v2_task_binding_mode, "server_next_required_v1");
   assert.deepEqual(request.tasks[1].dependencies, ["build"]);
   assert.match(request.tasks[1].instruction, /distinct native agent session/);
   assert.deepEqual(request.launch_request, {

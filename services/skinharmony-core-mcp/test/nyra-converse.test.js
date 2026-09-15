@@ -2236,6 +2236,21 @@ test("classifies live, production and distribution wording as governed release w
   }
 });
 
+test("prepares an exact push-ticket candidate without treating the prohibited push as execution", async () => {
+  const payload = (await harness().handler({
+    message: "Nyra, prepara esclusivamente la richiesta tipizzata a Universal Core per il ticket di push del ramo fix/universal-bootstrap; non eseguire push, PR, merge o deploy.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  assert.deepEqual(payload.intent_routing.route.canonical_intent.requested_now, ["ticket_push"]);
+  assert.ok(payload.intent_routing.route.canonical_intent.prohibited_actions.includes("push"));
+  assert.equal(payload.action_policy.action_class, "GIT_PUSH");
+  assert.equal(payload.action_policy.consequential_request_detected, true);
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
+  assert.equal(payload.orchestration_directive.execution_authorized, false);
+});
+
 test("keeps read-only architecture questions advisory when they mention production or denied external actions", async () => {
   for (const message of [
     "Nyra, in sola lettura indica cosa è già operativo in produzione e cosa serve per orchestrare una AI. Non creare o modificare Work, ticket, branch, PR, merge, deploy o permessi.",

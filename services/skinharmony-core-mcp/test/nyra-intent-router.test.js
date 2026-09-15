@@ -74,6 +74,42 @@ test("routes explicit consequential language while preserving diagnostic and cla
   }
 });
 
+test("does not turn an explicit no-new-Work resume/read request into bootstrap", () => {
+  const route = classify(
+    "Riprendi il Work esistente senza crearne uno nuovo. Leggi il checkpoint e il task successivo.",
+  );
+  assert.notEqual(route.intent, "work_create");
+  assert.equal(route.canonical_intent.work_requirement, "NONE");
+  assert.deepEqual(route.canonical_intent.requested_now, []);
+
+  const positive = classify("Crea un nuovo Work per la migrazione.");
+  assert.equal(positive.intent, "work_create");
+  assert.equal(positive.canonical_intent.work_requirement, "NEW");
+});
+
+test("keeps desire-style Work creation bounded by object negation, quotation and time", () => {
+  for (const message of [
+    "Voglio un Work nuovo per la correzione.",
+    "Serve un lavoro nuovo per la correzione.",
+  ]) {
+    const route = classify(message);
+    assert.equal(route.intent, "work_create", message);
+    assert.equal(route.canonical_intent.work_requirement, "NEW", message);
+  }
+  for (const message of [
+    "Voglio non un nuovo Work ma quello esistente.",
+    "I need no new Work; resume the existing Work.",
+    'La frase "Serve un nuovo Work" compare nel manuale.',
+    'The document says "need a new Work".',
+    "Più avanti voglio un nuovo Work.",
+    "I need a new Work later.",
+  ]) {
+    const route = classify(message);
+    assert.notEqual(route.intent, "work_create", message);
+    assert.equal(route.canonical_intent.work_requirement, "NONE", message);
+  }
+});
+
 test("routes global runtime status to Control Room and keeps Work or mutation scope out", () => {
   for (const message of [
     "Nyra, che funzioni sono attive?",
@@ -323,6 +359,36 @@ test("requires affirmative prose Work creation while retaining typed bootstrap",
     "work_create");
 });
 
+test("keeps a typed bootstrap read-only when its prose names prohibited release actions", () => {
+  const route = classify(
+    "Crea il Work tipizzato. Non eseguire push, merge, deploy o effetti esterni in questo turno.",
+    { workBootstrap: true },
+  );
+  assert.equal(route.intent, "work_create");
+  assert.deepEqual(route.canonical_intent.requested_now, ["work_bootstrap"]);
+  assert.equal(route.canonical_intent.operation_class, "READ_ONLY");
+  assert.equal(route.canonical_intent.consequential_intent, false);
+  assert.equal(route.canonical_intent.work_requirement, "NEW");
+});
+
+test("keeps a valid typed bootstrap when explanatory prose exceeds clause analysis", () => {
+  const route = classify([
+    "Crea il Work tipizzato per correggere la causal lineage",
+    "conserva il gate Core",
+    "non eseguire deploy",
+    "registra i test",
+    "mantieni il Work esistente come dipendenza se necessario",
+    "non eseguire push",
+    "prepara il readback",
+    "mantieni i tenant binding",
+    "chiudi solo dopo verifica",
+  ].join(". "), { workBootstrap: true });
+  assert.equal(route.intent, "work_create");
+  assert.equal(route.reason, "typed_work_bootstrap");
+  assert.deepEqual(route.canonical_intent.requested_now, ["work_bootstrap"]);
+  assert.equal(route.canonical_intent.work_requirement, "NEW");
+});
+
 test("shares all consequential categories and holds unsafe modality without losing affirmative intent", () => {
   const matrix = [
     ["release", "Esegui il deploy", "Non fare deploy", "Se approvato, esegui il deploy", "Spiega perché il deploy manca"],
@@ -497,6 +563,15 @@ test("materializes canonical intent before Work and preserves temporal and owner
   assert.equal(newWork.canonical_intent.work_requirement, "NEW");
   assert.match(newWork.canonical_intent.intent_digest, /^[a-f0-9]{64}$/);
 
+  for (const message of [
+    "Crea un Work senza avviare il lavoro.",
+    "Crea un Work senza creare un nuovo ticket.",
+  ]) {
+    const result = classify(message);
+    assert.equal(result.canonical_intent.work_requirement, "NEW", message);
+    assert.ok(result.canonical_intent.requested_now.includes("work_bootstrap"), message);
+  }
+
   const ownerAuthorizedWork = classify("Confermo come Owner la creazione di un nuovo Work canonico separato. Autorizzo esclusivamente la creazione del Work e il readback finale. Non autorizzo modifiche, commit, push, PR, merge o deploy.");
   assert.equal(ownerAuthorizedWork.intent, "work_create");
   assert.deepEqual(ownerAuthorizedWork.canonical_intent.requested_now, ["work_bootstrap"]);
@@ -508,6 +583,17 @@ test("materializes canonical intent before Work and preserves temporal and owner
   const currentMerge = classify("Crea la PR e poi fai merge.");
   assert.ok(currentMerge.canonical_intent.requested_now.length > 0);
   assert.equal(currentMerge.canonical_intent.consequential_intent, true);
+
+  const ticketPreparation = classify(
+    "Prepara esclusivamente la richiesta tipizzata a Universal Core per il ticket di push del ramo fix/universal-bootstrap; non eseguire push, PR, merge o deploy.",
+  );
+  assert.equal(ticketPreparation.intent, "ticket_or_action");
+  assert.equal(ticketPreparation.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.deepEqual(ticketPreparation.canonical_intent.requested_now, ["ticket_push"]);
+  assert.ok(ticketPreparation.canonical_intent.referenced_actions.includes("push"));
+  assert.ok(ticketPreparation.canonical_intent.prohibited_actions.includes("push"));
+  assert.equal(ticketPreparation.canonical_intent.operation_class, "EXTERNAL_MUTATION");
+  assert.equal(ticketPreparation.canonical_intent.ambiguity, false);
 });
 
 test("routes horizontal global reads without manufacturing a Work requirement", () => {

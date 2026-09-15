@@ -1903,7 +1903,11 @@ export function createWorkContinuityV2Store({
   async function recordCausalLineageState(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
-    if (!isAdmin(actor)) fail("work_creation_owner_required");
+    const serverOwnedRecovery = input?.server_owned_recovery === true;
+    if (serverOwnedRecovery && identity?.serverOwnedCausalLineageRecovery !== true) {
+      fail("causal_lineage_server_owned_recovery_required");
+    }
+    if (!isAdmin(actor) && !serverOwnedRecovery) fail("work_creation_owner_required");
     const workId = uuid(input.work_id);
     const state = String(input.state || "").toUpperCase();
     if (!new Set(["READY", "PENDING"]).has(state)) fail("causal_lineage_state_invalid");
@@ -2273,7 +2277,10 @@ export function createWorkContinuityV2Store({
       stale: related.some((work) => ["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"]
         .includes(classifyStaleWork(work, now()).classification)),
       priority: related.some((work) => ["P0", "P1"].includes(work.priority)),
-      dependency: Boolean(input.parent_work_id && related.some((work) =>
+      // A parent selected from the already-reviewed candidate set is a
+      // relationship created by the approved decision, not a newly discovered
+      // conflict.  It is still verified explicitly below.
+      dependency: Boolean(!input.review_parent_selected && input.parent_work_id && related.some((work) =>
         work.work_id === input.parent_work_id && OPERATIONAL_STATUSES.has(work.status))),
       invisible_conflict: currentResolution.hidden_conflict === true,
     };
@@ -2316,6 +2323,37 @@ export function createWorkContinuityV2Store({
     }
   }
 
+  // A child parent can be selected only after the anti-duplicate review has
+  // exposed its server-derived candidates.  It is therefore a review
+  // decision input, not part of the immutable bootstrap request that was
+  // originally digested.  Convert it to the operational parent only after
+  // the immutable request binding has been checked; the fresh review below
+  // still proves that it is an eligible visible candidate, and the consumed
+  // decision digest binds the selection for idempotent replay.
+  function withReviewedChildParent(input, effectiveDecision) {
+    const lateParent = input.review_parent_work_id;
+    if (lateParent === undefined || lateParent === null) return input;
+    if (effectiveDecision !== "CREATE_CHILD_WORK") {
+      fail("open_work_review_child_parent_unexpected");
+    }
+    const selectedParent = uuid(lateParent, "open_work_review_child_parent_required");
+    const declaredParent = input.parent_work_id === undefined || input.parent_work_id === null
+      ? null
+      : uuid(input.parent_work_id, "open_work_review_child_parent_invalid");
+    if (declaredParent && declaredParent !== selectedParent) {
+      fail("open_work_review_child_parent_conflict");
+    }
+    const { review_parent_work_id: _reviewParentWorkId, ...request } = input;
+    const effectiveInput = { ...request, parent_work_id: selectedParent };
+    // Internal, non-serializable provenance used only while fresh-review
+    // conflict flags are recalculated. It must not become a client-controlled
+    // field or an input to canonical request hashing.
+    Object.defineProperty(effectiveInput, "review_parent_selected", {
+      value: true, enumerable: false, configurable: false, writable: false,
+    });
+    return Object.freeze(effectiveInput);
+  }
+
   async function consumeOpenReviewWithClient(client, actor, input, workId) {
     const reviewId = uuid(input.review_id, "open_work_review_id_required");
     const reviewDigest = digest(input.review_digest, "open_work_review_digest_required");
@@ -2351,9 +2389,18 @@ export function createWorkContinuityV2Store({
         fail("open_work_review_proceed_decision_required");
       }
     }
-    const decisionDigest = objectDigest({ tenant_id: actor.tenant_id, review_id: reviewId,
+    const effectiveInput = withReviewedChildParent(input, effectiveDecision);
+    const decisionMaterial = { tenant_id: actor.tenant_id, review_id: reviewId,
       review_digest: reviewDigest, request_digest: requestDigest, subject_user_id: actor.user_id,
-      decision: effectiveDecision, work_id: workId });
+      decision: effectiveDecision, work_id: workId };
+    // Preserve exact replay compatibility for decisions consumed before the
+    // late-parent extension. A new late parent is explicitly covered by the
+    // V2 decision digest, while parents declared before review remain bound by
+    // the immutable canonical request digest as before.
+    if (input.review_parent_work_id !== undefined && input.review_parent_work_id !== null) {
+      decisionMaterial.parent_work_id = effectiveInput.parent_work_id || null;
+    }
+    const decisionDigest = objectDigest(decisionMaterial);
     // A consumed review is a durable request-to-Work identity. Exact replay
     // remains valid after the short review TTL; expiry only limits unconsumed
     // owner decisions and must never mint a replacement Work.
@@ -2362,13 +2409,14 @@ export function createWorkContinuityV2Store({
           review.decision !== effectiveDecision || review.decision_digest !== decisionDigest) {
         fail("open_work_review_replay_denied");
       }
-      return { review, decision: effectiveDecision, decision_digest: decisionDigest, idempotent_replay: true };
+      return { review, decision: effectiveDecision, decision_digest: decisionDigest,
+        effective_input: effectiveInput, idempotent_replay: true };
     }
     if (Date.parse(review.expires_at) <= now().getTime()) fail("open_work_review_expired");
     // A fresh review is revalidated while holding the tenant+project bootstrap
     // lock. The state-pure prevalidation uses this exact same function before
     // causal mutations, then this locked recheck closes the race before create.
-    await validateFreshOpenReviewWithClient(client, actor, input, review, effectiveDecision);
+    await validateFreshOpenReviewWithClient(client, actor, effectiveInput, review, effectiveDecision);
     const consumed = await client.query(`UPDATE tenant_work_open_review SET
         consumed_at=now(),consumed_by_user_id=$3,decision=$4,decision_digest=$5,consumed_work_id=$6
       WHERE tenant_id=$1 AND review_id=$2 AND consumed_at IS NULL
@@ -2380,7 +2428,8 @@ export function createWorkContinuityV2Store({
         AND request_digest=$5 AND review_id=$6 AND consumed_work_id IS NULL
       RETURNING *`, [actor.tenant_id, actor.user_id, requestId, workId, requestDigest, reviewId]);
     if (!consumedBinding.rows[0]) fail("open_work_review_request_binding_invalid");
-    return { review: consumed.rows[0], decision: effectiveDecision, decision_digest: decisionDigest, idempotent_replay: false };
+    return { review: consumed.rows[0], decision: effectiveDecision, decision_digest: decisionDigest,
+      effective_input: effectiveInput, idempotent_replay: false };
   }
   async function validateCanonicalWorkBootstrapReview(identity, input = {}) {
     await initialize();
@@ -2431,7 +2480,8 @@ export function createWorkContinuityV2Store({
       } else if (Date.parse(review.expires_at) <= now().getTime()) {
         fail("open_work_review_expired");
       } else {
-        await validateFreshOpenReviewWithClient(client, actor, input, review, effectiveDecision);
+        await validateFreshOpenReviewWithClient(client, actor,
+          withReviewedChildParent(input, effectiveDecision), review, effectiveDecision);
       }
       return Object.freeze({ review_id: reviewId, request_id: requestId,
         idempotent_replay: Boolean(review.consumed_at), valid: true });
@@ -2467,14 +2517,20 @@ export function createWorkContinuityV2Store({
       // time here: application clocks must not be able to extend a receipt.
       await requireCurrentCoreAuthorizationReceipt(client, coreAuthorizationReceipt);
       const review = await consumeOpenReviewWithClient(client, actor, input, workId);
+      const effectiveInput = review.effective_input || input;
       await injectFailure("review_consumed", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
-      const legacy = await legacyRuntime.ensureWithClient(client, identity, { ...input, work_id: workId }, {
+      const legacy = await legacyRuntime.ensureWithClient(client, identity, { ...effectiveInput, work_id: workId }, {
         creationAuthorized: true,
+        // The review was consumed above in this same transaction. Only that
+        // server-owned CREATE_CHILD_WORK decision may rebind the active
+        // session from the reviewed parent to its child during creation.
+        trustedReviewedChildCreation: review.decision === "CREATE_CHILD_WORK" &&
+          Boolean(effectiveInput.parent_work_id),
       });
       if (legacy.work_id !== workId) fail("legacy_work_identity_mismatch");
       await injectFailure("legacy_created", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
       const v2 = await createWorkWithClient(client, actor, {
-        ...input,
+        ...effectiveInput,
         work_id: workId,
         intent_digest: input.intent_digest || legacy.intent_digest || null,
       }, { legacyWorkId: workId, promoteLegacyProjection: true });
@@ -2653,8 +2709,9 @@ export function createWorkContinuityV2Store({
     const workId = input.work_id ? uuid(input.work_id) : deterministicWorkId(actor.tenant_id, reviewId, requestDigest);
     return transaction(async (client) => {
       const review = await consumeOpenReviewWithClient(client, actor, input, workId);
+      const effectiveInput = review.effective_input || input;
       const queued = await createWorkWithClient(client, actor, {
-        ...input,
+        ...effectiveInput,
         work_id: workId,
       }, { initialStatus: "PLANNED" });
       // A caller-selected work_id is never a convenient alias for an
@@ -4891,7 +4948,7 @@ export function createWorkContinuityV2Store({
     if (!closureRevalidation && !taskId) fail("native_v2_task_binding_task_invalid");
     let linkedWork = null;
     if (closureRevalidation) {
-      const linked = await client.query(`SELECT work_id,work_type FROM tenant_work
+      const linked = await client.query(`SELECT work_id,work_type,next_action FROM tenant_work
         WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2 FOR UPDATE`,
       [tenantId, workId]);
       if (!linked.rows[0]) fail("native_v2_task_binding_work_invalid");
@@ -5109,6 +5166,7 @@ export function createWorkContinuityV2Store({
       binding.v2_task_governed = !(
         binding.work_type === "legacy" && result.rows.length === 0
       );
+      binding.next_action = String(linkedWork.next_action || "").slice(0, 4_000);
       binding.work_task_bindings = Object.freeze(result.rows.map((candidate) =>
         Object.freeze({
           ...buildNativeV2TaskBinding({

@@ -157,6 +157,86 @@ test("binds only owner-bound verified finalization to its signed logical presenc
   }
 });
 
+test("binds only a registered owner bootstrap continuation to its signed logical presence", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "oauth-owner-bootstrap",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const rotatedTransportPresence = Object.freeze({
+    agent_id: "oauth-owner-bootstrap",
+    session_fingerprint: "c".repeat(24),
+    signature: `ags_${"d".repeat(32)}`,
+  });
+  const owner = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    oauthOwnerBound: true,
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "tenant_owner",
+    },
+    authenticatedHostPrincipal: {
+      registered: true,
+      capabilities: [
+        HOST_APP_CAPABILITIES.GOVERNED_CONTINUE,
+        HOST_APP_CAPABILITIES.WORK_CREATE,
+      ],
+    },
+  };
+  for (const operation of ["review_work_bootstrap", "create_work"]) {
+    const resolved = resolveHostTransportPresence({
+      identity: owner,
+      toolName: "nyra_continue",
+      operation,
+      declaredSessionId: "logical-owner-bootstrap-session",
+      agentPresence,
+      transportAgentPresence: rotatedTransportPresence,
+    });
+    assert.equal(resolved.presence, agentPresence, operation);
+    assert.equal(resolved.binding_source, "oauth_declared_work_bootstrap", operation);
+  }
+  for (const [label, identity] of [
+    ["missing-create", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal,
+      capabilities: [HOST_APP_CAPABILITIES.GOVERNED_CONTINUE],
+    } }],
+    ["missing-governed-continue", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal,
+      capabilities: [HOST_APP_CAPABILITIES.WORK_CREATE],
+    } }],
+    ["unregistered", { ...owner, authenticatedHostPrincipal: {
+      ...owner.authenticatedHostPrincipal, registered: false,
+    } }],
+    ["not-owner-bound", { ...owner, oauthOwnerBound: false }],
+    ["tenant-mismatch", { ...owner, authenticatedTenantMembership: {
+      ...owner.authenticatedTenantMembership, tenant_id: "tenant-b",
+    } }],
+  ]) {
+    const rejected = resolveHostTransportPresence({
+      identity,
+      toolName: "nyra_continue",
+      operation: "create_work",
+      declaredSessionId: "logical-owner-bootstrap-session",
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(rejected.presence, null, label);
+    assert.equal(rejected.binding_source, null, label);
+  }
+  const unrelated = resolveHostTransportPresence({
+    identity: owner,
+    toolName: "nyra_continue",
+    operation: "authorize_action",
+    declaredSessionId: "logical-owner-bootstrap-session",
+    agentPresence,
+    transportAgentPresence: rotatedTransportPresence,
+  });
+  assert.equal(unrelated.presence, rotatedTransportPresence);
+  assert.equal(unrelated.binding_source, "transport");
+});
+
 test("does not promote caller-declared sessions without an authenticated OAuth owner binding", () => {
   const agentPresence = Object.freeze({
     agent_id: "untrusted-agent",
@@ -1034,6 +1114,45 @@ test("a governed mutating resume repairs pending canonical causal lineage before
   assert.match(handler, /reconciliation\.state !== "READY"/);
   assert.match(handler, /context = await workContinuityV2Store\.readWork/);
   assert.match(handler, /canonical_work_causal_lineage_pending/);
+});
+
+test("every Work-bound dynamic mutation repairs pending causal lineage after presence and Airlock but before preflight or handler", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const hookStart = serverSource.indexOf("beforeToolCall: async");
+  const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);
+  const gate = serverSource.slice(hookStart, hookEnd);
+  assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true/);
+  assert.match(gate, /pendingCausalLineageMutation = Object\.freeze/);
+  assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
+  assert.match(gate, /prevalidateDynamicCapabilityInvoke\(args, identity\)/);
+  assert.match(gate, /await requireBoundedTenantCoordination\(/);
+  assert.match(gate, /read_only: false/);
+  assert.ok(gate.indexOf("await registerAuthenticatedPresence(identity)") <
+    gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
+  assert.ok(gate.indexOf("nyra_research_airlock_session_tool_authorize") <
+    gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
+  assert.ok(gate.lastIndexOf("await readNyraDirectiveContext(identity, {") <
+    gate.indexOf("const ledgerContext = decisionLedger"));
+  assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);
+});
+
+test("causal lineage fallback returns a concurrent READY state instead of inventing PENDING", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
+  const end = serverSource.indexOf("async function createCanonicalWorkGoverned", start);
+  const helper = serverSource.slice(start, end);
+  assert.match(helper, /return \{ state: state\.state, binding/);
+  assert.match(helper, /state\.state === "PENDING"/);
+});
+
+test("causal lineage recovery is server-owned and never caller-provided", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const storeSource = fs.readFileSync(new URL("../src/work-continuity-v2-store.js", import.meta.url), "utf8");
+  assert.match(serverSource, /function withServerOwnedCausalLineageRecovery\(identity\)/);
+  assert.match(serverSource, /serverOwnedCausalLineageRecovery/);
+  assert.match(serverSource, /server_owned_recovery: true/);
+  assert.match(storeSource, /serverOwnedRecovery && identity\?\.serverOwnedCausalLineageRecovery !== true/);
+  assert.match(storeSource, /!isAdmin\(actor\) && !serverOwnedRecovery/);
 });
 
 test("legacy Work reads and auto-resume use canonical V2 visibility", () => {
@@ -3431,7 +3550,7 @@ test("server resolves inner arguments for dynamic reads before exact Work prefli
   assert.match(target, /toolName: capabilityId \|\| toolName/);
 });
 
-test("requires generic preflight for dynamic invoke except signed presence and Work bootstrap", () => {
+test("requires generic preflight for dynamic invoke except signed presence, Work bootstrap and exact Work recovery", () => {
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
     true,
@@ -3440,6 +3559,7 @@ test("requires generic preflight for dynamic invoke except signed presence and W
     "tenant_work_open_review",
     "work_continuity_v2_create",
     "tenant_work_queue_create_v3",
+    "nyra_autopilot_reconcile",
   ]) {
     assert.equal(
       requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),
@@ -3468,6 +3588,33 @@ test("requires generic preflight for dynamic invoke except signed presence and W
     }),
     true,
   );
+  assert.equal(
+    requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+      capability_id: "nyra_autopilot_reconcile",
+      arguments: { work_id: "740915b2-a259-4cd9-b9c7-053854aeb3a5" },
+    }),
+    true,
+  );
+});
+
+test("direct Core typed requests take Work identity and Intent from the canonical V2 envelope", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const typedStart = serverSource.indexOf("const coreTypedRequestHandler");
+  const typedEnd = serverSource.indexOf("const baseHandlers", typedStart);
+  const typed = serverSource.slice(typedStart, typedEnd);
+  assert.ok(typedStart >= 0);
+  assert.ok(typedEnd > typedStart);
+  assert.match(typed, /canonicalWorkBindingFromDirectiveContext\(value\)/);
+  assert.doesNotMatch(typed, /work_id: value\?\.work_id/);
+  assert.doesNotMatch(typed, /intent_digest: value\?\.intent_digest/);
+});
+
+test("pending causal lineage and public precommit repair use exact allowlisted Core coordination shapes", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /"work\.continuity\.precommit\.reconcile\.persisted"/);
+  assert.match(serverSource, /precommit_reconcile_persisted:\$\{args\.work_id\}/);
+  assert.doesNotMatch(serverSource, /"work\.continuity\.precommit\.reconcile",\n\s*`precommit_reconcile:/);
+  assert.match(serverSource, /causal_lineage_recover:\$\{pendingCausalLineageMutation\.work_id\}:\$\{crypto\.createHash/);
 });
 
 test("terminal closure entrypoints bypass only generic continuity preflight", () => {
