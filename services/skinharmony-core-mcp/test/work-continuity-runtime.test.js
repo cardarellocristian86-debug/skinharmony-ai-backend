@@ -152,7 +152,7 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
     v2_task_governed: true,
     pending_required_task_ids: [ticketTaskId, otherTaskId],
     task_bindings: [{ native_bindings: [{ native_task_id: "build" }] }],
-  }), true);
+  }), false);
 
   const evaluation = {
     closed: false,

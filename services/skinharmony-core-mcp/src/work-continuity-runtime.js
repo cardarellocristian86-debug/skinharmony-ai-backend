@@ -1240,15 +1240,6 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
 
 export function nativeV2PrecommitPendingTaskAllowed(snapshot) {
   if (!snapshot || snapshot.scope_valid !== true) return false;
-  // Precommit proves the server-bound native task cohort, not the final
-  // outcome of every required Work task. Requiring later deploy/readback
-  // tasks before a commit ticket exists creates a circular gate. Those tasks
-  // remain visible in work_valid and still block final closure.
-  if (snapshot.v2_task_governed === true &&
-      Array.isArray(snapshot.task_bindings) &&
-      snapshot.task_bindings.some((binding) => binding.native_bindings?.length > 0)) {
-    return true;
-  }
   const pending = Array.isArray(snapshot.pending_required_task_ids)
     ? [...new Set(snapshot.pending_required_task_ids.map((value) =>
       String(value || "").trim().toLowerCase()).filter(Boolean))]
