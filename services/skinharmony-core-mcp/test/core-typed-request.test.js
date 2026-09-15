@@ -186,8 +186,22 @@ test("typed delegation rejects contract drift before Work lookup or Core", async
 });
 
 test("core_typed_request fails closed for mismatched Core tenant", async () => {
+  let released = false;
   const handler = createCoreTypedRequestHandler({
-    store: { recordConnectedAiTypedRequest: async () => assert.fail("must not persist") },
+    store: {
+      recordConnectedAiTypedRequest: async () => ({
+        canonical_request_ref: `cair1_${"c".repeat(40)}`,
+        continuation_ref: `nyc1_${"d".repeat(40)}`,
+        expires_at: "2030-01-01T00:00:00.000Z",
+      }),
+      consumeConnectedAiTypedRequest: async () => ({
+        continuation_ref: `nyc1_${"d".repeat(40)}`, request_digest: D,
+        server_idempotency_key: "server-action-tenant", issued_at: new Date().toISOString(),
+        replay: false,
+      }),
+      completeConnectedAiTypedRequest: async () => assert.fail("must not complete"),
+      releaseConnectedAiTypedRequest: async () => { released = true; },
+    },
     issueDelegation: async () => ({ structuredContent: { ok: true, tenant_id: "other" } }),
     authorizeAction: async () => ({ structuredContent: { ok: true, tenant_id: "other" } }),
     reviewWorkBootstrap: async () => ({ structuredContent: { ok: true, tenant_id: "other" } }),
@@ -198,6 +212,109 @@ test("core_typed_request fails closed for mismatched Core tenant", async () => {
       delegation_id: "hnd_x", repository: "owner/repo", action: { kind: "git.commit" },
       evidence_digest: D, idempotency_key: "typed-test-2" } }, identity),
   /core_typed_request_core_result_invalid/);
+  assert.equal(released, true);
+});
+
+test("typed action persists a server-owned pending record and exact replay does not reauthorize", async () => {
+  const continuation_ref = `nyc1_${"e".repeat(40)}`;
+  let finalResult = null;
+  let authorizeCalls = 0;
+  let pendingRecord;
+  const store = {
+    recordConnectedAiTypedRequest: async (input) => {
+      pendingRecord ||= input;
+      return { canonical_request_ref: `cair1_${"f".repeat(40)}`,
+        continuation_ref, expires_at: "2030-01-01T00:00:00.000Z" };
+    },
+    consumeConnectedAiTypedRequest: async () => ({
+      continuation_ref, request_digest: D, server_idempotency_key: "server-action-replay",
+      issued_at: new Date().toISOString(), replay: finalResult !== null, final_result: finalResult,
+    }),
+    completeConnectedAiTypedRequest: async ({ final_result }) => { finalResult = final_result; },
+    releaseConnectedAiTypedRequest: async () => assert.fail("must not release"),
+  };
+  const handler = createCoreTypedRequestHandler({
+    store,
+    issueDelegation: async () => assert.fail("wrong_route"),
+    reviewWorkBootstrap: async () => assert.fail("wrong_route"),
+    resolveWorkBinding: async (work_id) => ({ work_id, intent_digest: D,
+      directive_context: { available: true } }),
+    authorizeAction: async (request, _identity, context) => {
+      authorizeCalls += 1;
+      assert.equal(context.typed_record.continuation_ref, continuation_ref);
+      assert.equal(context.work_binding.intent_digest, D);
+      assert.equal(request.intent_anchor_digest, D);
+      return { structuredContent: { ok: true, tenant_id: "tenant-a",
+        action_ticket: { ticket: { ticket_id: "hnt_server_owned" } } } };
+    },
+  });
+  const input = { schema_version: "connected_ai_typed_request_v1",
+    operation: "ACTION_TICKET_REQUEST", request: {
+      work_id: "11111111-1111-4111-8111-111111111111", delegation_id: "hnd_x",
+      repository: "owner/repo", action: { kind: "git.commit", repository: "owner/repo" },
+      evidence_digest: D, idempotency_key: "typed-action-replay",
+    } };
+  const first = await handler(input, identity);
+  const replay = await handler(input, identity);
+  assert.equal(authorizeCalls, 1);
+  assert.equal(first.structuredContent.continuation_ref, continuation_ref);
+  assert.equal(replay.structuredContent.continuation_ref, continuation_ref);
+  assert.equal(pendingRecord.core_result.schema_version, "connected_ai_core_pending_v1");
+  assert.equal(pendingRecord.core_result.state, "PENDING");
+});
+
+test("typed action releases the pending record when authorization fails", async () => {
+  let released = 0;
+  const handler = createCoreTypedRequestHandler({
+    store: {
+      recordConnectedAiTypedRequest: async () => ({
+        canonical_request_ref: `cair1_${"a".repeat(40)}`,
+        continuation_ref: `nyc1_${"b".repeat(40)}`,
+        expires_at: "2030-01-01T00:00:00.000Z",
+      }),
+      consumeConnectedAiTypedRequest: async () => ({
+        continuation_ref: `nyc1_${"b".repeat(40)}`, request_digest: D,
+        server_idempotency_key: "server-action-failure", issued_at: new Date().toISOString(),
+        replay: false,
+      }),
+      completeConnectedAiTypedRequest: async () => assert.fail("must not complete"),
+      releaseConnectedAiTypedRequest: async () => { released += 1; },
+    },
+    issueDelegation: async () => assert.fail("wrong_route"),
+    reviewWorkBootstrap: async () => assert.fail("wrong_route"),
+    resolveWorkBinding: async (work_id) => ({ work_id, intent_digest: D }),
+    authorizeAction: async () => { throw Object.assign(new Error("core_denied"), { status: 403 }); },
+  });
+  await assert.rejects(handler({ schema_version: "connected_ai_typed_request_v1",
+    operation: "ACTION_TICKET_REQUEST", request: {
+      work_id: "11111111-1111-4111-8111-111111111111", delegation_id: "hnd_x",
+      repository: "owner/repo", action: { kind: "git.commit", repository: "owner/repo" },
+      evidence_digest: D, idempotency_key: "typed-action-failure",
+    } }, identity), /core_denied/);
+  assert.equal(released, 1);
+});
+
+test("Nyra refuses to expose a pending typed Core request", async () => {
+  let released = 0;
+  const store = {
+    claim: async () => assert.fail("legacy claim must not run"), complete: async () => {},
+    readCompletedOperation: async () => {},
+    consumeConnectedAiTypedRequest: async () => ({
+      operation: "ACTION_TICKET_REQUEST", replay: false,
+      core_result: { schema_version: "connected_ai_core_pending_v1", state: "PENDING" },
+    }),
+    completeConnectedAiTypedRequest: async () => assert.fail("must not complete"),
+    releaseConnectedAiTypedRequest: async () => { released += 1; },
+  };
+  const handler = createNyraGovernedContinueHandler({ store,
+    readDirectiveContext: async () => ({}), normalizeDirectiveContext: () => ({}),
+    issueDelegation: async () => {}, authorizeAction: async () => {},
+    reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+  });
+  await assert.rejects(handler({ operation: "consume_core_typed_request",
+    continuation_ref: `nyc1_${"c".repeat(40)}`, idempotency_key: "pending-consume" }, identity),
+  /connected_ai_core_request_pending/);
+  assert.equal(released, 1);
 });
 
 test("WORK_CREATE_OR_RECONCILE reaches Core review without host provenance fields", async () => {
