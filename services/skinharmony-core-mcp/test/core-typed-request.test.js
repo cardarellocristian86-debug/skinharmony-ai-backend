@@ -6,8 +6,23 @@ import {
   createCoreTypedRequestHandler,
 } from "../src/core-typed-request.js";
 import { createNyraGovernedContinueHandler } from "../src/nyra-governed-continue.js";
+import { TOOLS } from "../src/tool-definitions.js";
 
 const D = "a".repeat(64);
+const delegationGovernance = {
+  budget: {
+    max_agents: 1, max_parallel: 1, max_commits: 1, max_pushes: 1,
+    max_deploys: 1, max_total_actions: 1,
+  },
+  release_policy: {
+    manifest_required_for_protected_push: true,
+    manifest_required_for_induced_deploy: true,
+    manifest_required_for_deploy: true,
+    independent_verifier_required: true,
+    rollback_required: true,
+    required_checks: ["core-mcp"],
+  },
+};
 const identity = { tenantId: "tenant-a", subject: "owner-a", authenticatedHostPrincipal: {
   registered: true, app_id: "codex", host_kind: "codex_native", registry_revision: "r1",
   capabilities: ["governed_continue", "work.create", "host_native.delegate", "host_native.authorize"],
@@ -16,6 +31,20 @@ const identity = { tenantId: "tenant-a", subject: "owner-a", authenticatedHostPr
 test("shared typed contract rejects lexical and unknown operations", () => {
   assert.throws(() => normalizeConnectedAiTypedRequest({ schema_version: "connected_ai_typed_request_v1",
     operation: "CHAT", request: {} }), /connected_ai_typed_request_invalid/);
+});
+
+test("published typed delegation schema matches the shared Core boundary", () => {
+  const schema = TOOLS.find((tool) => tool.name === "core_typed_request").inputSchema;
+  const delegation = schema.properties.request.oneOf.find((candidate) =>
+    candidate.required.includes("release_policy"));
+  assert.equal(delegation.properties.ttl_seconds.maximum, 3_600);
+  assert.equal(delegation.properties.allowed_branches.maxItems, 30);
+  assert.equal(delegation.properties.protected_branches.minItems, 1);
+  assert.equal(delegation.properties.allowed_actions.maxItems, 50);
+  assert.deepEqual([...delegation.properties.budget.required].sort(),
+    Object.keys(delegationGovernance.budget).sort());
+  assert.deepEqual([...delegation.properties.release_policy.required].sort(),
+    Object.keys(delegationGovernance.release_policy).sort());
 });
 
 test("extracts the exact canonical Work binding from a V2 directive envelope", () => {
@@ -62,13 +91,15 @@ test("core_typed_request authorizes the exact operation capability without gover
 
 test("core_typed_request persists an opaque server-owned Core result", async () => {
   let persisted;
+  let issued;
   const handler = createCoreTypedRequestHandler({
     store: { recordConnectedAiTypedRequest: async (value) => (persisted = value, {
       canonical_request_ref: `cair1_${"c".repeat(40)}`, continuation_ref: `nyc1_${"d".repeat(40)}`,
       expires_at: "2030-01-01T00:00:00.000Z",
     }) },
-    issueDelegation: async () => ({ structuredContent: { ok: true, tenant_id: "tenant-a",
-      delegation: { delegation_id: "secret-server-result" } } }),
+    issueDelegation: async (request) => (issued = request,
+      { structuredContent: { ok: true, tenant_id: "tenant-a",
+        delegation: { delegation_id: "secret-server-result" } } }),
     authorizeAction: async () => { throw new Error("wrong_route"); },
     reviewWorkBootstrap: async () => { throw new Error("wrong_route"); },
     resolveWorkBinding: async (work_id) => ({ work_id, intent_digest: D }),
@@ -76,12 +107,82 @@ test("core_typed_request persists an opaque server-owned Core result", async () 
   const result = await handler({ schema_version: "connected_ai_typed_request_v1",
     operation: "DELEGATION_REQUEST", request: { work_id: "11111111-1111-4111-8111-111111111111",
       repository: "owner/repo", audience: ["agent-a"], allowed_branches: ["feature/x"],
-      protected_branches: [], allowed_path_prefixes: ["services/"],
-      allowed_actions: ["git.commit"], ttl_seconds: 300, idempotency_key: "typed-test-1" } }, identity);
+      protected_branches: ["main"], allowed_path_prefixes: ["services/"],
+      allowed_actions: ["git.commit"], ...delegationGovernance,
+      ttl_seconds: 300, idempotency_key: "typed-test-1" } }, identity);
   assert.equal(result.structuredContent.authority, "UNIVERSAL_CORE");
   assert.equal(result.structuredContent.requester, "AI_HOST");
   assert.equal(JSON.stringify(result).includes("secret-server-result"), false);
   assert.equal(persisted.core_result.delegation.delegation_id, "secret-server-result");
+  assert.deepEqual(issued.budget, delegationGovernance.budget);
+  assert.deepEqual(issued.release_policy, delegationGovernance.release_policy);
+  assert.equal(issued.intent_anchor_digest, D);
+});
+
+test("typed delegation fails before Core when budget or release policy is omitted", async () => {
+  const base = { schema_version: "connected_ai_typed_request_v1",
+    operation: "DELEGATION_REQUEST", request: {
+      work_id: "11111111-1111-4111-8111-111111111111", repository: "owner/repo",
+      audience: ["codex_native"], allowed_branches: ["feature/x"], protected_branches: ["main"],
+      allowed_path_prefixes: ["services/"], allowed_actions: ["git.commit"],
+      ttl_seconds: 300, idempotency_key: "typed-missing-governance",
+    } };
+  assert.throws(() => normalizeConnectedAiTypedRequest(base),
+    /connected_ai_delegation_request_invalid/);
+  assert.throws(() => normalizeConnectedAiTypedRequest({
+    ...base, request: { ...base.request, budget: delegationGovernance.budget },
+  }), /connected_ai_delegation_request_invalid/);
+  assert.throws(() => normalizeConnectedAiTypedRequest({
+    ...base, request: { ...base.request, ...delegationGovernance,
+      budget: { ...delegationGovernance.budget, max_pushes: 0 } },
+  }), /connected_ai_delegation_request_invalid/);
+  assert.throws(() => normalizeConnectedAiTypedRequest({
+    ...base, request: { ...base.request, ...delegationGovernance,
+      release_policy: { ...delegationGovernance.release_policy,
+        independent_verifier_required: "yes" } },
+  }), /connected_ai_delegation_request_invalid/);
+});
+
+test("typed delegation rejects contract drift before Work lookup or Core", async () => {
+  let downstreamCalls = 0;
+  const handler = createCoreTypedRequestHandler({
+    store: { recordConnectedAiTypedRequest: async () => { downstreamCalls += 1; } },
+    issueDelegation: async () => { downstreamCalls += 1; },
+    authorizeAction: async () => { downstreamCalls += 1; },
+    reviewWorkBootstrap: async () => { downstreamCalls += 1; },
+    resolveWorkBinding: async () => { downstreamCalls += 1; },
+  });
+  const valid = {
+    schema_version: "connected_ai_typed_request_v1", operation: "DELEGATION_REQUEST",
+    request: {
+      work_id: "11111111-1111-4111-8111-111111111111", repository: "owner/repo",
+      audience: ["codex_native"], allowed_branches: ["feature/x"],
+      protected_branches: ["main"], allowed_path_prefixes: ["services/"],
+      allowed_actions: ["git.commit"], ...delegationGovernance,
+      ttl_seconds: 300, idempotency_key: "typed-contract-drift",
+    },
+  };
+  const invalidRequests = [
+    { ...valid.request, ttl_seconds: 3_601 },
+    { ...valid.request, allowed_branches: Array.from({ length: 31 }, (_, i) => `branch-${i}`) },
+    { ...valid.request, allowed_actions: Array.from({ length: 51 }, (_, i) => `action.${i}`) },
+    { ...valid.request, allowed_path_prefixes: "services/" },
+    { ...valid.request, protected_branches: ["main", " main "] },
+    { ...valid.request, audience: [" codex_native "] },
+    { ...valid.request, allowed_actions: [" git.commit "] },
+    { ...valid.request, release_policy: { ...valid.request.release_policy,
+      required_checks: [" core-mcp "] } },
+    { ...valid.request, release_policy: { ...valid.request.release_policy,
+      required_checks: ["core-mcp", "core-mcp"] } },
+    { ...valid.request, release_policy: { ...valid.request.release_policy,
+      required_checks: ["x".repeat(241)] } },
+    { ...valid.request, unexpected_client_field: true },
+  ];
+  for (const request of invalidRequests) {
+    await assert.rejects(handler({ ...valid, request }, identity),
+      /connected_ai_delegation_request_invalid/);
+  }
+  assert.equal(downstreamCalls, 0);
 });
 
 test("core_typed_request fails closed for mismatched Core tenant", async () => {

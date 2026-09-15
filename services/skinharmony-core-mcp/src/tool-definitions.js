@@ -1647,6 +1647,32 @@ const nyraChatGptWorkBootstrapReviewInputSchema = Object.freeze({
   additionalProperties: false,
 });
 
+const coreTypedDelegationBudget = object({
+  max_agents: { type: "integer", minimum: 1, maximum: 3 },
+  max_parallel: { type: "integer", minimum: 1, maximum: 2 },
+  max_commits: { type: "integer", minimum: 1, maximum: 100 },
+  max_pushes: { type: "integer", minimum: 1, maximum: 100 },
+  max_deploys: { type: "integer", minimum: 1, maximum: 100 },
+  max_total_actions: { type: "integer", minimum: 1, maximum: 1_000 },
+}, [
+  "max_agents", "max_parallel", "max_commits", "max_pushes", "max_deploys",
+  "max_total_actions",
+]);
+const coreTypedDelegationReleasePolicy = object({
+  manifest_required_for_protected_push: { type: "boolean" },
+  manifest_required_for_induced_deploy: { type: "boolean" },
+  manifest_required_for_deploy: { type: "boolean" },
+  independent_verifier_required: { type: "boolean" },
+  rollback_required: { type: "boolean" },
+  required_checks: {
+    type: "array", minItems: 1, maxItems: 100, uniqueItems: true,
+    items: { type: "string", minLength: 1, maxLength: 240 },
+  },
+}, [
+  "manifest_required_for_protected_push", "manifest_required_for_induced_deploy",
+  "manifest_required_for_deploy", "independent_verifier_required", "rollback_required",
+  "required_checks",
+]);
 const coreTypedRequestPayloadSchema = Object.freeze({ oneOf: [
   object({
     create_request: object({
@@ -1660,14 +1686,17 @@ const coreTypedRequestPayloadSchema = Object.freeze({ oneOf: [
     work_id: { type: "string", format: "uuid" },
     repository: nyraContinueRepository,
     audience: { type: "array", minItems: 1, maxItems: 1, items: identifier },
-    allowed_branches: { type: "array", maxItems: 100, uniqueItems: true, items: identifier },
-    protected_branches: { type: "array", maxItems: 100, uniqueItems: true, items: identifier },
-    allowed_path_prefixes: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
-    allowed_actions: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: identifier },
+    allowed_branches: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: nyraContinueBranch },
+    protected_branches: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: nyraContinueBranch },
+    allowed_path_prefixes: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+    allowed_actions: { type: "array", minItems: 1, maxItems: 50, uniqueItems: true, items: identifier },
+    budget: coreTypedDelegationBudget,
+    release_policy: coreTypedDelegationReleasePolicy,
     ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 },
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
   }, ["work_id", "repository", "audience", "allowed_branches", "protected_branches",
-    "allowed_path_prefixes", "allowed_actions", "ttl_seconds", "idempotency_key"]),
+    "allowed_path_prefixes", "allowed_actions", "budget", "release_policy", "ttl_seconds",
+    "idempotency_key"]),
   object({
     work_id: { type: "string", format: "uuid" },
     delegation_id: { type: "string", pattern: "^hnd_[A-Za-z0-9._-]{8,160}$" },
