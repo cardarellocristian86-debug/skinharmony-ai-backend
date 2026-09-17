@@ -404,6 +404,8 @@ function verifiedClosureFixture() {
 test("v2 store schema is additive and preserves legacy tables", () => {
   assert.match(ADDITIVE_SCHEMA_SQL, /CREATE TABLE IF NOT EXISTS tenant_work/);
   assert.match(ADDITIVE_SCHEMA_SQL, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id/);
+  assert.match(ADDITIVE_SCHEMA_SQL,
+    /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_session_fingerprint/);
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_code_sequence/);
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_core_join/);
   assert.doesNotMatch(ADDITIVE_SCHEMA_SQL, /DROP\s+TABLE|DELETE\s+FROM/i);

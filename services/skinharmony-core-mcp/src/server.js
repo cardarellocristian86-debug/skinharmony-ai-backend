@@ -1469,6 +1469,89 @@ async function ensureNativePlanLegacyBridge(identity, workId) {
   return workContinuityV2Store.ensureLegacyBridge(withTenantWorkAcl(identity), { work_id: workId });
 }
 
+async function activateAcceptedQueuedWorkContinuity(identity, workId) {
+  requireTenantWorkCapability(identity, "operate");
+  if (typeof workContinuityV2Store?.activateAcceptedQueuedWorkContinuity !== "function") {
+    throw legacyWorkAclError("continuity_accepted_queue_activation_unavailable", 503);
+  }
+  return workContinuityV2Store.activateAcceptedQueuedWorkContinuity(
+    withTenantWorkAcl(identity),
+    { server_owned: true, work_id: workId },
+  );
+}
+
+function acceptedQueuedContinuityBinding(identity, canonicalWork) {
+  const presence = identity?.agentPresence || {};
+  const sessionFingerprint = String(
+    presence.transport_bound === true
+      ? presence.host_transport_session_fingerprint || ""
+      : presence.session_fingerprint || "",
+  ).trim();
+  const exactAcceptedSession = canonicalWork?.assignment_status === "ACCEPTED" &&
+    canonicalWork.assignment_target_agent_id === presence.agent_id &&
+    canonicalWork.assignment_target_client_type === presence.client_type &&
+    canonicalWork.assignment_accepted_session_fingerprint === sessionFingerprint;
+  return {
+    activation_required: !canonicalWork?.legacy_work_id,
+    activation_replay_available: Boolean(canonicalWork?.legacy_work_id && exactAcceptedSession),
+    exact_accepted_session: exactAcceptedSession,
+  };
+}
+
+function continuityResumeCoreTarget(canonicalWork, sessionId) {
+  return [
+    "work_resume_v2",
+    canonicalWork.work_id,
+    canonicalWork.intent_digest || "no_intent",
+    canonicalWork.assignment_status || "unassigned",
+    canonicalWork.assignment_target_agent_id || "no_agent",
+    canonicalWork.assignment_target_client_type || "no_host",
+    canonicalWork.project_id,
+    sessionId,
+  ].join(":");
+}
+
+function requireActivatedCanonicalContinuity(canonical) {
+  const work = canonical?.work || canonical;
+  if (!work?.work_id || work.legacy_work_id !== work.work_id) {
+    const error = new Error("canonical_work_continuity_not_activated");
+    error.code = "canonical_work_continuity_not_activated";
+    error.status = 409;
+    throw error;
+  }
+  return work;
+}
+
+async function joinAcceptedQueuedWorkParticipant(identity, canonicalWork, idempotencyKey) {
+  const presence = identity?.agentPresence || {};
+  if (!presence.session_id || !presence.agent_id || !presence.client_type) {
+    throw new Error("work_assignment_host_identity_required");
+  }
+  const presenceWindow = Math.floor(Date.now() / 3_600_000);
+  const joinIdempotencyKey = `work_join_${crypto.createHash("sha256")
+    .update(`${idempotencyKey}:${canonicalWork.work_id}:${presence.session_id}:${presenceWindow}`)
+    .digest("hex").slice(0, 40)}`;
+  await requireBoundedTenantCoordination(
+    identity,
+    "work.participant.join",
+    `${canonicalWork.work_id}:${canonicalWork.intent_digest}:${presence.session_id}`,
+    joinIdempotencyKey,
+  );
+  return workContinuityRuntime.join(identity, {
+    work_id: canonicalWork.work_id,
+    session_id: presence.session_id,
+    agent_id: presence.agent_id,
+    client_type: presence.client_type,
+    ttl_seconds: 3_600,
+    metadata: {
+      profile: "accepted_assignment_onboarding_v1",
+      assignment_status: "ACCEPTED",
+      presence_window: presenceWindow,
+    },
+    idempotency_key: joinIdempotencyKey,
+  });
+}
+
 async function listLegacyWorksAuthorized(identity, args = {}) {
   if (typeof workContinuityRuntime?.listWorksAuthorized !== "function") {
     throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
@@ -1879,16 +1962,41 @@ async function resumeExistingContinuityWork(args, identity) {
   const authorization = await requireBoundedTenantCoordination(
     identity,
     "work.continuity.resume_or_bind",
-    `${canonicalWork.project_id}:${sessionId}`,
+    continuityResumeCoreTarget(canonicalWork, sessionId),
     args.idempotency_key,
   );
+  const activationBinding = acceptedQueuedContinuityBinding(identity, canonicalWork);
+  const continuityActivation = activationBinding.activation_required ||
+      activationBinding.activation_replay_available
+    ? await activateAcceptedQueuedWorkContinuity(identity, canonicalWork.work_id)
+    : null;
+  const result = continuityActivation
+    ? await workContinuityRuntime.ensure(identity, {
+        ...args,
+        project_id: canonicalWork.project_id,
+        session_id: sessionId,
+        resume_existing: true,
+      }, {
+        creationAuthorized: false,
+        trustedSessionFollowup: true,
+        authorizedResumeWorkIds: [canonicalWork.work_id],
+        allowAuthorizedSessionRebind: true,
+      })
+    : await workContinuityRuntime.resume(
+        identity,
+        { ...args, session_id: sessionId },
+        authorization,
+      );
+  const participant = continuityActivation
+    ? await joinAcceptedQueuedWorkParticipant(
+        identity, canonicalWork, args.idempotency_key,
+      )
+    : null;
   const payload = {
     ok: true,
-    result: await workContinuityRuntime.resume(
-      identity,
-      { ...args, session_id: sessionId },
-      authorization,
-    ),
+    result,
+    continuity_activation: continuityActivation,
+    participant_onboarding: participant,
   };
   payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
   payload.result.nyra_control_context = await materializeNyraControlContext(
@@ -2309,7 +2417,8 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
+      const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+      requireActivatedCanonicalContinuity(canonical);
       await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
       // requireOwnerGovernance above is the server-owned Universal Core decision
       // for this exact checkpoint. Do not invoke the generic gate again: the
@@ -2494,7 +2603,8 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
+      const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+      requireActivatedCanonicalContinuity(canonical);
       await requireBoundedTenantCoordination(
         identity,
         "work.participant.join",
@@ -2560,7 +2670,8 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
+      const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+      requireActivatedCanonicalContinuity(canonical);
       await requireBoundedTenantCoordination(
         identity,
         "work.message.post",
@@ -2571,7 +2682,8 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_inbox: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
+      const canonical = await requireCanonicalWorkRead(identity, args.work_id);
+      requireActivatedCanonicalContinuity(canonical);
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -2599,24 +2711,41 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.continuity.resume_or_bind",
-        `${projectId}:${sessionId}`,
+        canonicalWork
+          ? continuityResumeCoreTarget(canonicalWork, sessionId)
+          : `work_resume_v2:auto:${projectId}:${sessionId}`,
         resumeIdempotencyKey,
       );
+      const activationBinding = canonicalWork
+        ? acceptedQueuedContinuityBinding(identity, canonicalWork)
+        : null;
+      const continuityActivation = canonicalWork &&
+          (activationBinding.activation_required || activationBinding.activation_replay_available)
+        ? await activateAcceptedQueuedWorkContinuity(identity, canonicalWork.work_id)
+        : null;
+      const result = await workContinuityRuntime.ensure(identity, {
+        ...args,
+        project_id: projectId,
+        session_id: sessionId,
+        resume_existing: true,
+      }, {
+        creationAuthorized: false,
+        trustedSessionFollowup: true,
+        authorizedResumeWorkIds,
+        // Exact canonical visibility was proved above; an explicit Work may
+        // therefore replace a stale binding left by this transport session.
+        allowAuthorizedSessionRebind: Boolean(args.work_id),
+      });
+      const participant = continuityActivation
+        ? await joinAcceptedQueuedWorkParticipant(
+            identity, canonicalWork, resumeIdempotencyKey,
+          )
+        : null;
       return continuityTextResult({
         ok: true,
-        result: await workContinuityRuntime.ensure(identity, {
-          ...args,
-          project_id: projectId,
-          session_id: sessionId,
-          resume_existing: true,
-        }, {
-          creationAuthorized: false,
-          trustedSessionFollowup: true,
-          authorizedResumeWorkIds,
-          // Exact canonical visibility was proved above; an explicit Work may
-          // therefore replace a stale binding left by this transport session.
-          allowAuthorizedSessionRebind: Boolean(args.work_id),
-        }),
+        result,
+        continuity_activation: continuityActivation,
+        participant_onboarding: participant,
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",

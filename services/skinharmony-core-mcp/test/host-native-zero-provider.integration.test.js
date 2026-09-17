@@ -60,7 +60,7 @@ class EphemeralContinuityPool {
         rowCount: work ? 1 : 0,
       };
     }
-    if (query.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+    if (query.startsWith("SELECT work_id,legacy_work_id,work_type")) {
       return { rows: [], rowCount: 0 };
     }
     if (query.startsWith("SELECT project_id,status,next_action FROM core_continuity_works")) {

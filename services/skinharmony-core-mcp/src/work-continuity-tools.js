@@ -301,7 +301,7 @@ export const WORK_CONTINUITY_TOOLS = [
       limit: { type: "integer", minimum: 1, maximum: 200 }, ...outcomeExpectation,
     }, ["work_id", "session_id", "agent_id"]), true),
   tool("work_continuity_start_or_resume", "Anchor or resume governed work",
-    "Resume an existing tenant-scoped Work Identity only. It never creates; absence requires Nyra's duplicate-reviewed canonical V2 bootstrap.",
+    "Resume an existing tenant-scoped Work Identity only. For an exactly accepted queued assignment, the server atomically activates its existing continuity bridge before resume; it never creates a second Work. Absence requires Nyra's duplicate-reviewed canonical V2 bootstrap.",
     object({
       work_id: uuid, parent_work_id: uuid, project_id: identifier, session_id: identifier,
       initial_message: text(20_000), idea: text(8_000), objective: text(8_000),

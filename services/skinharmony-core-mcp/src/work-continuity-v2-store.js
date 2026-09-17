@@ -215,6 +215,7 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_client_type v
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_status varchar(24);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_offered_at timestamptz;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_session_fingerprint varchar(128);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_sequence bigint NOT NULL DEFAULT 0;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_event_hash char(64);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_updated_at timestamptz;
@@ -2694,20 +2695,30 @@ export function createWorkContinuityV2Store({
       client_type: "canonical_v2_bridge",
     };
   }
-  async function ensureLegacyBridge(identity, { work_id }) {
-    if (!legacyRuntime || typeof legacyRuntime.ensureWithClient !== "function") {
-      fail("legacy_work_transaction_bridge_unavailable");
+  function isExactAcceptedHostAssignment(work, actor) {
+    return Boolean(
+      actor?.agent_id && actor?.client_type &&
+      work?.assignment_status === "ACCEPTED" &&
+      work.assignment_target_agent_id === actor.agent_id &&
+      work.assignment_target_client_type === actor.client_type &&
+      work.assignment_accepted_session_fingerprint === actor.session_fingerprint &&
+      (work.agent_ids || []).includes(actor.agent_id)
+    );
+  }
+  function assertLegacyBridgeAdministrator(work, actor) {
+    assertPermission(canAdminister, work, actor);
+  }
+  function assertAcceptedQueueBridgeActivation(work, actor) {
+    if (!isExactAcceptedHostAssignment(work, actor)) {
+      fail("work_assignment_activation_denied");
     }
-    await Promise.all([initialize(), legacyRuntime.initialize()]);
-    const actor = actorFromIdentity(identity);
-    if (!isAdmin(actor)) fail("legacy_bridge_owner_required");
-    const workId = uuid(work_id);
-    return transaction(async (client) => {
+  }
+  async function ensureLegacyBridgeWithClient(client, identity, actor, workId, authorizeWork) {
       // Cross-fabric transactions always acquire Core before the V2 Work row.
       // Read the candidate first without a lock, then revalidate it after the
       // Core row has been locked or created in this same transaction.
       const observedWork = await loadWork(client, actor, workId, false);
-      assertPermission(canAdminister, observedWork, actor);
+      authorizeWork(observedWork, actor);
       if (observedWork.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
       const observedBridgeInput = legacyBridgeInput(observedWork);
       const observedBridgeDigest = objectDigest(observedBridgeInput);
@@ -2720,7 +2731,7 @@ export function createWorkContinuityV2Store({
       const legacy = existing.rows[0];
       if (legacy) {
         const work = await loadWork(client, actor, workId, true);
-        assertPermission(canAdminister, work, actor);
+        authorizeWork(work, actor);
         if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
         if (legacy.project_id !== work.project_id || !plainRecord(legacy.anchor) ||
             legacy.anchor.schema_version !== "intent_anchor_v1" || legacy.anchor.immutable !== true ||
@@ -2739,9 +2750,11 @@ export function createWorkContinuityV2Store({
           execution_authorized: false,
         };
       }
-      const reconstructed = await legacyRuntime.ensureWithClient(client, identity, observedBridgeInput, {
-        creationAuthorized: true,
-      });
+      const reconstructed = await legacyRuntime.materializeV2LegacyBridgeWithClient(
+        client,
+        identity,
+        observedBridgeInput,
+      );
       const projectedEvent = reconstructed.intent_event || reconstructed.event;
       if (reconstructed.work_id !== workId || !HASH.test(String(reconstructed.intent_digest || "")) ||
           !Number.isSafeInteger(Number(projectedEvent?.sequence_number)) ||
@@ -2749,7 +2762,7 @@ export function createWorkContinuityV2Store({
         fail("legacy_bridge_reconstruction_invalid");
       }
       const work = await loadWork(client, actor, workId, true);
-      assertPermission(canAdminister, work, actor);
+      authorizeWork(work, actor);
       if (work.legacy_work_id !== workId ||
           objectDigest(legacyBridgeInput(work)) !== observedBridgeDigest) {
         fail("legacy_bridge_source_changed");
@@ -2774,6 +2787,101 @@ export function createWorkContinuityV2Store({
         v2_intent_digest: work.intent_digest,
         legacy_intent_digest: reconstructed.intent_digest,
         state: "reconstructed",
+        event,
+        idempotent_replay: false,
+        execution_authorized: false,
+      };
+  }
+  async function ensureLegacyBridge(identity, { work_id }) {
+    if (!legacyRuntime || typeof legacyRuntime.materializeV2LegacyBridgeWithClient !== "function") {
+      fail("legacy_work_transaction_bridge_unavailable");
+    }
+    await Promise.all([initialize(), legacyRuntime.initialize()]);
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("legacy_bridge_owner_required");
+    const workId = uuid(work_id);
+    return transaction(async (client) => ensureLegacyBridgeWithClient(
+      client, identity, actor, workId, assertLegacyBridgeAdministrator,
+    ));
+  }
+  function queuedWorkActivationPayload(work, bridge) {
+    return {
+      schema_version: "queued_work_continuity_activation_v1",
+      legacy_work_id: work.work_id,
+      v2_intent_digest: work.intent_digest,
+      legacy_intent_digest: bridge.legacy_intent_digest,
+      assignment_target_agent_id: work.assignment_target_agent_id,
+      assignment_target_client_type: work.assignment_target_client_type,
+      assignment_accepted_session_digest: objectDigest({
+        session_fingerprint: work.assignment_accepted_session_fingerprint,
+      }),
+    };
+  }
+  function queuedWorkActivationPayloadMatches(payload, expected) {
+    return plainRecord(payload) &&
+      payload.schema_version === expected.schema_version &&
+      payload.legacy_work_id === expected.legacy_work_id &&
+      payload.v2_intent_digest === expected.v2_intent_digest &&
+      payload.legacy_intent_digest === expected.legacy_intent_digest &&
+      payload.assignment_target_agent_id === expected.assignment_target_agent_id &&
+      payload.assignment_target_client_type === expected.assignment_target_client_type &&
+      payload.assignment_accepted_session_digest === expected.assignment_accepted_session_digest;
+  }
+  async function activateAcceptedQueuedWorkContinuity(identity, { server_owned, work_id }) {
+    if (server_owned !== true) fail("queued_work_continuity_server_authority_required");
+    if (!legacyRuntime || typeof legacyRuntime.materializeV2LegacyBridgeWithClient !== "function") {
+      fail("legacy_work_transaction_bridge_unavailable");
+    }
+    await Promise.all([initialize(), legacyRuntime.initialize()]);
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(work_id);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertOperationalWorkMutation(work);
+      if (work.assignment_status !== "ACCEPTED") fail("work_assignment_activation_denied");
+      if (!HASH.test(String(work.intent_digest || ""))) {
+        fail("queued_work_continuity_intent_invalid");
+      }
+      assertAcceptedQueueBridgeActivation(work, actor);
+      if (work.legacy_work_id && work.legacy_work_id !== workId) {
+        fail("queued_work_continuity_bridge_conflict");
+      }
+      if (!work.legacy_work_id) {
+        const linked = await client.query(`UPDATE tenant_work SET legacy_work_id=$3,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id IS NULL
+            AND assignment_status='ACCEPTED' AND status=$4::varchar
+          RETURNING *`, [actor.tenant_id, workId, workId, work.status]);
+        if (!linked.rows[0]) fail("work_assignment_activation_conflict");
+      }
+      const bridge = await ensureLegacyBridgeWithClient(
+        client, identity, actor, workId, assertAcceptedQueueBridgeActivation,
+      );
+      const linkedWork = await loadWork(client, actor, workId, true);
+      assertAcceptedQueueBridgeActivation(linkedWork, actor);
+      const payload = queuedWorkActivationPayload(linkedWork, bridge);
+      const prior = await client.query(`SELECT sequence_number,event_type,event_hash,payload
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type='queued_work_continuity_activated_v1'
+        ORDER BY sequence_number ASC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (prior.rows[0]) {
+        if (!queuedWorkActivationPayloadMatches(prior.rows[0].payload, payload)) {
+          fail("queued_work_continuity_activation_replay_invalid");
+        }
+        return {
+          schema_version: "queued_work_continuity_activation_v1",
+          work: linkedWork,
+          bridge,
+          event: prior.rows[0],
+          idempotent_replay: true,
+          execution_authorized: false,
+        };
+      }
+      const event = await appendV2Event(client, actor, workId,
+        "queued_work_continuity_activated_v1", payload);
+      return {
+        schema_version: "queued_work_continuity_activation_v1",
+        work: linkedWork,
+        bridge,
         event,
         idempotent_replay: false,
         execution_authorized: false,
@@ -3289,8 +3397,26 @@ export function createWorkContinuityV2Store({
       trajectory_digest: row.trajectory_digest || null,
       authority_granted: false,
     }]));
-    const withContinuity = visible.map((work) => ({ ...work,
-      governed_continuity: continuityByWork.get(String(work.work_id)) || null }));
+    const withContinuity = visible.map((work) => {
+      const collaborationActive = work.legacy_work_id === work.work_id;
+      const acceptedAssignmentActive = collaborationActive &&
+        work.assignment_status === "ACCEPTED" &&
+        Boolean(work.assignment_accepted_session_fingerprint);
+      return { ...work,
+        governed_continuity: continuityByWork.get(String(work.work_id)) || null,
+        collaboration_surface: {
+          schema_version: "gallery_collaboration_surface_v1",
+          state: acceptedAssignmentActive
+            ? "ACTIVE_ACCEPTED_ASSIGNMENT"
+            : collaborationActive ? "ACTIVE_CANONICAL" : "PENDING_ACTIVATION",
+          checkpoint_available: collaborationActive,
+          handoff_available: collaborationActive,
+          activation_requirement: collaborationActive
+            ? null
+            : "accepted_assignment_resume",
+        },
+      };
+    });
     if (view !== "archive") return withContinuity;
     const reportRows = await query(`SELECT work_id,report_digest,created_at,
         report->>'final_status' AS final_status,
@@ -3324,7 +3450,8 @@ export function createWorkContinuityV2Store({
       if (!OPERATIONAL_STATUSES.has(work.status)) fail("work_assignment_status_invalid");
       const assigned = await client.query(`UPDATE tenant_work SET
           assignment_target_agent_id=$3,assignment_target_client_type=$4,assignment_status='OFFERED',
-          assignment_offered_at=now(),assignment_accepted_at=NULL,updated_at=now()
+          assignment_offered_at=now(),assignment_accepted_at=NULL,
+          assignment_accepted_session_fingerprint=NULL,updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
         RETURNING *`, [actor.tenant_id, workId, targetAgentId, targetClientType, work.status]);
       if (!assigned.rows[0]) fail("work_assignment_status_conflict");
@@ -3340,7 +3467,9 @@ export function createWorkContinuityV2Store({
     await initialize();
     const actor = actorFromIdentity(identity);
     const workId = uuid(input.work_id);
-    if (!actor.agent_id || !actor.client_type) fail("work_assignment_host_identity_required");
+    if (!actor.agent_id || !actor.client_type || !actor.session_fingerprint) {
+      fail("work_assignment_host_identity_required");
+    }
     return transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       if (!sameTenant(work, actor) || work.legacy_work_id || !OPERATIONAL_STATUSES.has(work.status) ||
@@ -3351,14 +3480,17 @@ export function createWorkContinuityV2Store({
       }
       const agentIds = [...new Set([...(work.agent_ids || []), actor.agent_id])];
       const accepted = await client.query(`UPDATE tenant_work SET
-          agent_ids=$3::jsonb,assignment_status='ACCEPTED',assignment_accepted_at=now(),updated_at=now()
+          agent_ids=$3::jsonb,assignment_status='ACCEPTED',assignment_accepted_at=now(),
+          assignment_accepted_session_fingerprint=$6,updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND assignment_status='OFFERED'
           AND assignment_target_agent_id=$4 AND assignment_target_client_type=$5
-        RETURNING *`, [actor.tenant_id, workId, JSON.stringify(agentIds), actor.agent_id, actor.client_type]);
+        RETURNING *`, [actor.tenant_id, workId, JSON.stringify(agentIds), actor.agent_id,
+        actor.client_type, actor.session_fingerprint]);
       if (!accepted.rows[0]) fail("work_assignment_acceptance_conflict");
       const event = await appendV2Event(client, actor, workId, "work_assignment_accepted_v3", {
         target_agent_id: actor.agent_id,
         target_client_type: actor.client_type,
+        accepted_session_digest: objectDigest({ session_fingerprint: actor.session_fingerprint }),
         status: "ACCEPTED",
       });
       return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(accepted.rows[0]), event };
@@ -4011,6 +4143,7 @@ export function createWorkContinuityV2Store({
           status='PLANNED',archived_at=NULL,archived_from_status=NULL,archived_reason=NULL,
           assignment_target_agent_id=NULL,assignment_target_client_type=NULL,assignment_status=NULL,
           assignment_offered_at=NULL,assignment_accepted_at=NULL,
+          assignment_accepted_session_fingerprint=NULL,
           reopened_at=now(),reopen_count=reopen_count+1,next_action=$3,updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND status='ARCHIVED'
         RETURNING *`, [actor.tenant_id, workId, resumedNextAction]);
@@ -8924,6 +9057,7 @@ export function createWorkContinuityV2Store({
     queueNewWork,
     materializeQueuedWorkIntent,
     ensureLegacyBridge: guardPendingWorkMutation(ensureLegacyBridge),
+    activateAcceptedQueuedWorkContinuity: guardPendingWorkMutation(activateAcceptedQueuedWorkContinuity),
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
     readWork, previewNativePlanMerge,
     alignNativePlanStatus: guardPendingWorkMutation(alignNativePlanStatus), verifyWorkClosure, listWorks,

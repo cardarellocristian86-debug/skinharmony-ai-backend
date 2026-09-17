@@ -394,6 +394,104 @@ test("legacy resume rejects an unauthorized session binding before persisting a 
   assert.equal(calls.some((call) => /INSERT INTO core_continuity_session_bindings/.test(call.sql)), false);
 });
 
+function v2LegacyBridgeRuntimeFixture({
+  legacyWorkId = WORK_ID,
+  projectId = "project-a",
+  workType = "software_git",
+} = {}) {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}] };
+      if (/SELECT work_id,create_request_digest\s+FROM core_continuity_session_bindings/.test(sql)) {
+        return { rows: [] };
+      }
+      if (/SELECT work_id,legacy_work_id,work_type,project_id\s+FROM tenant_work/.test(sql)) {
+        return { rows: [{
+          work_id: WORK_ID,
+          legacy_work_id: legacyWorkId,
+          work_type: workType,
+          project_id: projectId,
+        }] };
+      }
+      if (/SELECT sequence_number,event_hash FROM core_continuity_events/.test(sql)) {
+        return { rows: [] };
+      }
+      if (/^\s*INSERT INTO /.test(sql)) return { rows: [] };
+      throw new Error(`unexpected_v2_legacy_bridge_query:${sql.slice(0, 80)}`);
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const input = {
+    work_id: WORK_ID,
+    project_id: "project-a",
+    session_id: `v2bridge-${digest({
+      schema_version: "legacy_work_bridge_session_v1",
+      work_id: WORK_ID,
+    }).slice(0, 48)}`,
+    initial_message: "Canonical V2 bridge reconstruction",
+    idea: "Preserve one canonical Work identity",
+    objective: "Activate durable checkpoints and handoffs",
+    acceptance_criteria: ["The legacy continuity identity equals the V2 Work identity"],
+    constraints: ["No client-controlled bridge authority"],
+    architecture: {},
+    next_action: "Resume the accepted assignment",
+    client_type: "canonical_v2_bridge",
+  };
+  return { calls, pool, runtime, input };
+}
+
+test("only the internal V2 bridge entrypoint materializes legacy continuity for the same Work UUID", async () => {
+  const fixture = v2LegacyBridgeRuntimeFixture();
+  const identity = { tenantId: "tenant-a", subject: "accepted-agent" };
+  const result = await fixture.runtime.materializeV2LegacyBridgeWithClient(
+    fixture.pool,
+    identity,
+    fixture.input,
+  );
+
+  assert.equal(result.work_id, WORK_ID);
+  assert.equal(result.project_id, "project-a");
+  assert.equal(result.schema_version, WORK_CONTINUITY_SCHEMA_VERSION);
+  assert.equal(fixture.calls.some((call) =>
+    /INSERT INTO core_continuity_works/.test(call.sql)), true);
+
+  const publicFixture = v2LegacyBridgeRuntimeFixture();
+  await assert.rejects(publicFixture.runtime.ensureWithClient(
+    publicFixture.pool,
+    identity,
+    { ...publicFixture.input, server_owned_v2_bridge: true },
+    { creationAuthorized: true, v2LegacyBridgeAuthority: true },
+  ), /continuity_work_v2_id_collision/);
+  assert.equal(publicFixture.calls.some((call) =>
+    /INSERT INTO core_continuity_works/.test(call.sql)), false);
+});
+
+test("the internal V2 bridge fails closed on source, project and canonical session mismatches", async () => {
+  const identity = { tenantId: "tenant-a", subject: "accepted-agent" };
+
+  const unlinked = v2LegacyBridgeRuntimeFixture({ legacyWorkId: null });
+  await assert.rejects(unlinked.runtime.materializeV2LegacyBridgeWithClient(
+    unlinked.pool, identity, unlinked.input,
+  ), /continuity_v2_bridge_source_invalid/);
+
+  const wrongProject = v2LegacyBridgeRuntimeFixture({ projectId: "project-b" });
+  await assert.rejects(wrongProject.runtime.materializeV2LegacyBridgeWithClient(
+    wrongProject.pool, identity, wrongProject.input,
+  ), /continuity_v2_bridge_source_invalid/);
+
+  const wrongSession = v2LegacyBridgeRuntimeFixture();
+  await assert.rejects(wrongSession.runtime.materializeV2LegacyBridgeWithClient(
+    wrongSession.pool,
+    identity,
+    { ...wrongSession.input, session_id: "v2bridge-client-supplied" },
+  ), /continuity_v2_bridge_input_invalid/);
+  assert.equal(wrongSession.calls.length, 0);
+});
+
 test("explicit V2-authorized resume replaces only the stale binding for the current session", async () => {
   const staleWorkId = "22222222-2222-4222-8222-222222222222";
   const targetDigest = "b".repeat(64);
@@ -487,6 +585,11 @@ test("legacy Gallery prompt fields and blockers are restricted to canonical visi
         idea: "authorized idea", objective: "authorized objective", status: "active",
         current_version: 1, next_action: "continue", updated_at: "2026-08-25T10:00:00.000Z",
         active_participants: 0, active_leases: 0, active_branches: 0,
+        latest_checkpoint_id: "12121212-1212-4121-8121-121212121212",
+        latest_checkpoint_digest: "a".repeat(64),
+        latest_checkpoint_at: "2026-08-25T09:59:00.000Z",
+        message_count: 3, handoff_count: 1,
+        latest_handoff_at: "2026-08-25T09:58:00.000Z",
       }] };
       if (/FROM core_continuity_remediations/.test(sql)) return { rows: [{
         work_id: WORK_ID, remediation_id: "rem-1", status: "open", block_class: "policy",
@@ -508,7 +611,11 @@ test("legacy Gallery prompt fields and blockers are restricted to canonical visi
   const workRead = calls.find((call) => /count\(DISTINCT p\.session_id\)/.test(call.sql));
   const blockerRead = calls.find((call) => /FROM core_continuity_remediations/.test(call.sql));
   assert.match(workRead.sql, /w\.work_id = ANY\(\$5::uuid\[\]\)/);
+  assert.match(workRead.sql, /AS latest_checkpoint_id/);
+  assert.match(workRead.sql, /AS handoff_count/);
   assert.deepEqual(workRead.params[4], [WORK_ID]);
+  assert.equal(result.works[0].latest_checkpoint_digest, "a".repeat(64));
+  assert.equal(result.works[0].handoff_count, 1);
   assert.match(blockerRead.sql, /work_id = ANY\(\$3::text\[\]\)/);
   assert.deepEqual(blockerRead.params[2], [WORK_ID]);
 });

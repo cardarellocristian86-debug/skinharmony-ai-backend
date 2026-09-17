@@ -654,6 +654,16 @@ class AtomicWorkPool {
       });
       return { rows: [{ work_id: row.work_id }], rowCount: 1 };
     }
+    if (q.startsWith("UPDATE tenant_work SET legacy_work_id=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.legacy_work_id || row.assignment_status !== "ACCEPTED" ||
+          row.status !== parameters[3]) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.legacy_work_id = parameters[2];
+      row.updated_at = "2026-08-08T10:00:03.000Z";
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
     if (q.startsWith("UPDATE tenant_work SET intent_digest=$3")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
       if (!row || row.legacy_work_id || row.status !== "PLANNED" ||
@@ -681,6 +691,7 @@ class AtomicWorkPool {
         assignment_status: "OFFERED",
         assignment_offered_at: "2026-08-08T10:00:02.000Z",
         assignment_accepted_at: null,
+        assignment_accepted_session_fingerprint: null,
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
@@ -693,6 +704,7 @@ class AtomicWorkPool {
         agent_ids: JSON.parse(parameters[2]),
         assignment_status: "ACCEPTED",
         assignment_accepted_at: "2026-08-08T10:00:03.000Z",
+        assignment_accepted_session_fingerprint: parameters[5],
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
@@ -722,6 +734,7 @@ class AtomicWorkPool {
         assignment_status: null,
         assignment_offered_at: null,
         assignment_accepted_at: null,
+        assignment_accepted_session_fingerprint: null,
         reopened_at: "2026-08-08T10:00:03.000Z",
         reopen_count: Number(row.reopen_count || 0) + 1,
         next_action: parameters[2],
@@ -979,6 +992,14 @@ class AtomicWorkPool {
         event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
         event.event_type === "queued_work_intent_materialized" &&
         event.payload?.intent_digest === parameters[2])
+        .sort((left, right) => left.sequence_number - right.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_type,event_hash,payload FROM tenant_work_event") &&
+        q.includes("event_type='queued_work_continuity_activated_v1'")) {
+      const row = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "queued_work_continuity_activated_v1")
         .sort((left, right) => left.sequence_number - right.sequence_number)[0];
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
@@ -1276,7 +1297,7 @@ function legacyRuntime(pool) {
 }
 
 function bridgeLegacyRuntime(pool, calls) {
-  return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
+  return { initialize: async () => {}, materializeV2LegacyBridgeWithClient: async (client, who, input) => {
     calls.push(structuredClone(input));
     const row = client.insertLegacy(who, input);
     const anchor = {
@@ -2103,7 +2124,15 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   assert.deepEqual(queued.work.architecture, input.architecture);
   assert.notEqual(queued.work.intent_digest, input.intent_digest);
   assert.equal(queued.work.causal_lineage_state, "PENDING");
-  assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 1);
+  const queuedGallery = await store.listWorks(identity(), { view: "operational" });
+  assert.equal(queuedGallery.length, 1);
+  assert.deepEqual(queuedGallery[0].collaboration_surface, {
+    schema_version: "gallery_collaboration_surface_v1",
+    state: "PENDING_ACTIVATION",
+    checkpoint_available: false,
+    handoff_available: false,
+    activation_requirement: "accepted_assignment_resume",
+  });
 
   await store.recordCausalLineageState(identity(), {
     work_id: queued.work.work_id, state: "READY",
@@ -2415,6 +2444,129 @@ test("an exact Codex agent can accept a Gallery offer, but an impersonating host
   assert.equal(accepted.work.assignment_status, "ACCEPTED");
   assert.deepEqual(accepted.work.agent_ids.sort(), ["agent-codex", "agent-owner"]);
   assert.equal(accepted.work.status, "PLANNED");
+});
+
+test("only the exact accepted host session can atomically activate queued Work continuity", async () => {
+  const pool = new AtomicWorkPool();
+  const bridgeCalls = [];
+  const store = createWorkContinuityV2Store({ pool,
+    legacyRuntime: bridgeLegacyRuntime(pool, bridgeCalls),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const workId = queued.work.work_id;
+  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(identity(), {
+    work_id: workId,
+  }), /queued_work_continuity_server_authority_required/);
+  await store.assignQueuedWork(identity(), {
+    work_id: workId, target_agent_id: "agent-codex", target_client_type: "codex",
+  });
+
+  const impersonator = identity("wrong-host");
+  impersonator.agentPresence.client_type = "codex";
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(impersonator, {
+    server_owned: true, work_id: workId,
+  }),
+    /work_assignment_activation_denied/);
+  assert.equal(pool.works.get(key("tenant-a", workId)).legacy_work_id, null);
+
+  const codex = identity("codex", "member");
+  codex.agentPresence.client_type = "codex";
+  await store.acceptQueuedWorkAssignment(codex, { work_id: workId });
+  const wrongSession = identity("codex", "member");
+  wrongSession.agentPresence.client_type = "codex";
+  wrongSession.agentPresence.session_fingerprint = "e".repeat(64);
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(wrongSession, {
+    server_owned: true, work_id: workId,
+  }), /work_assignment_activation_denied/);
+
+  const first = await store.activateAcceptedQueuedWorkContinuity(codex, {
+    server_owned: true, work_id: workId,
+  });
+  assert.equal(first.idempotent_replay, false);
+  assert.equal(first.work.legacy_work_id, workId);
+  assert.equal(first.bridge.state, "reconstructed");
+  assert.equal(first.event.event_type, "queued_work_continuity_activated_v1");
+  assert.equal(pool.legacy.size, 1);
+  assert.equal(bridgeCalls.length, 1);
+  const activeGallery = await store.listWorks(codex, { view: "operational" });
+  assert.equal(activeGallery[0].collaboration_surface.state, "ACTIVE_ACCEPTED_ASSIGNMENT");
+  assert.equal(activeGallery[0].collaboration_surface.checkpoint_available, true);
+  assert.equal(activeGallery[0].collaboration_surface.handoff_available, true);
+  const activation = [...pool.events.values()].find((event) =>
+    event.event_type === "queued_work_continuity_activated_v1");
+  assert.deepEqual(activation.payload, {
+    schema_version: "queued_work_continuity_activation_v1",
+    legacy_work_id: workId,
+    v2_intent_digest: first.work.intent_digest,
+    legacy_intent_digest: first.bridge.legacy_intent_digest,
+    assignment_target_agent_id: "agent-codex",
+    assignment_target_client_type: "codex",
+    assignment_accepted_session_digest: stableDigest({ session_fingerprint: "f".repeat(64) }),
+  });
+
+  const replay = await store.activateAcceptedQueuedWorkContinuity(codex, {
+    server_owned: true, work_id: workId,
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(bridgeCalls.length, 1);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "queued_work_continuity_activated_v1").length, 1);
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(identity(), {
+    server_owned: true, work_id: workId,
+  }), /work_assignment_activation_denied/);
+});
+
+test("queued continuity activation rejects unaccepted Work and rolls back a failed bridge", async () => {
+  const pool = new AtomicWorkPool();
+  const failingBridge = {
+    initialize: async () => {},
+    materializeV2LegacyBridgeWithClient: async (client, who, input) => {
+      client.insertLegacy(who, input);
+      throw new Error("injected_queued_bridge_failure");
+    },
+  };
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: failingBridge,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const workId = queued.work.work_id;
+  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
+  const codex = identity("codex", "member");
+  codex.agentPresence.client_type = "codex";
+
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(identity(), {
+    server_owned: true, work_id: workId,
+  }),
+    /work_assignment_activation_denied/);
+  await store.assignQueuedWork(identity(), {
+    work_id: workId, target_agent_id: "agent-codex", target_client_type: "codex",
+  });
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(codex, {
+    server_owned: true, work_id: workId,
+  }),
+    /work_assignment_activation_denied/);
+  await store.acceptQueuedWorkAssignment(codex, { work_id: workId });
+  const queuedRow = pool.works.get(key("tenant-a", workId));
+  const persistedIntentDigest = queuedRow.intent_digest;
+  queuedRow.intent_digest = null;
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(codex, {
+    server_owned: true, work_id: workId,
+  }),
+    /queued_work_continuity_intent_invalid/);
+  assert.equal(queuedRow.legacy_work_id, null);
+  // The rejected transaction restores the pool snapshot, so restore the
+  // canonical current row rather than the stale object captured above.
+  pool.works.get(key("tenant-a", workId)).intent_digest = persistedIntentDigest;
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(codex, {
+    server_owned: true, work_id: workId,
+  }),
+    /injected_queued_bridge_failure/);
+  assert.equal(pool.works.get(key("tenant-a", workId)).legacy_work_id, null,
+    "a bridge failure must roll back the queued-to-legacy link");
+  assert.equal(pool.legacy.size, 0,
+    "a bridge failure must roll back the reconstructed legacy Work");
+  assert.equal([...pool.events.values()].some((event) =>
+    event.event_type === "queued_work_continuity_activated_v1"), false);
 });
 
 test("a blocked Work requires a review decision but does not prevent an independent queued Work", async () => {
