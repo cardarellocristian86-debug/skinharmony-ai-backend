@@ -1086,7 +1086,9 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(queueHandler, /requireHostWorkCreateCapability\(identity\)/);
   assert.match(queueHandler, /const request = bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
   assert.match(queueHandler, /tenantWorkCoordinationTarget\("tenant_work_queue_create_v3", request\)/);
-  assert.match(queueHandler, /queueNewWork\(withTenantWorkAcl\(identity\), request\)/);
+  assert.match(queueHandler, /queueNewWork\([\s\S]{0,80}withTenantWorkAcl\(identity\), request/);
+  assert.match(queueHandler, /reconcileCanonicalWorkCausalLineage\(identity, queued\.work\)/);
+  assert.match(queueHandler, /work_ready: causalLineage\.state === "READY"/);
   const createStart = serverSource.indexOf("async function createCanonicalWorkGoverned");
   const createEnd = serverSource.indexOf("async function readNyraDirectiveContext", createStart);
   const createHandler = serverSource.slice(createStart, createEnd);
@@ -1106,6 +1108,13 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
 
 test("a governed mutating resume repairs pending canonical causal lineage before continuing", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const recoveryStart = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
+  const recoveryEnd = serverSource.indexOf("async function createCanonicalWorkGoverned", recoveryStart);
+  const recovery = serverSource.slice(recoveryStart, recoveryEnd);
+  assert.match(recovery, /materializeQueuedWorkIntent\(/);
+  assert.match(recovery, /work: canonicalWork/);
+  assert.ok(recovery.indexOf("materializeQueuedWorkIntent(") <
+    recovery.indexOf("ensureCanonicalWorkCausalLineage("));
   const start = serverSource.indexOf("async function readNyraDirectiveContext");
   const end = serverSource.indexOf("async function", start + 1);
   const handler = serverSource.slice(start, end);
@@ -1121,11 +1130,19 @@ test("every Work-bound dynamic mutation repairs pending causal lineage after pre
   const hookStart = serverSource.indexOf("beforeToolCall: async");
   const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);
   const gate = serverSource.slice(hookStart, hookEnd);
-  assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true/);
+  assert.match(gate, /dynamicMutationCandidate = toolName === "core_capability_invoke"/);
+  assert.match(gate, /Boolean\(authorizationTarget\.capabilityId\)/);
+  assert.match(gate, /canonicalRead\?\.work\?\.causal_lineage_state === "PENDING"/);
+  assert.match(gate, /targetDefinition && targetDefinition\.annotations\?\.readOnlyHint !== true\) \|\|[\s\S]{0,80}dynamicMutationCandidate/);
   assert.match(gate, /pendingCausalLineageMutation = Object\.freeze/);
   assert.match(gate, /await readNyraDirectiveContext\(identity, \{/);
   assert.match(gate, /prevalidateDynamicCapabilityInvoke\(args, identity\)/);
+  assert.match(gate, /const recoveryTargetDigest = crypto\.createHash\("sha256"\)/);
+  assert.match(gate, /const recoveryIdempotencyKey = `causal_lineage_recover_core_/);
+  assert.match(gate, /\.update\(`\$\{args\.idempotency_key\}:\$\{recoveryTargetDigest\}`\)/);
   assert.match(gate, /await requireBoundedTenantCoordination\(/);
+  assert.match(gate, /recoveryIdempotencyKey,/);
+  assert.doesNotMatch(gate, /"canonical_work\.causal_lineage\.recover",[\s\S]{0,500}\n\s*args\.idempotency_key,/);
   assert.match(gate, /read_only: false/);
   assert.ok(gate.indexOf("await registerAuthenticatedPresence(identity)") <
     gate.lastIndexOf("await readNyraDirectiveContext(identity, {"));
@@ -3614,7 +3631,8 @@ test("pending causal lineage and public precommit repair use exact allowlisted C
   assert.match(serverSource, /"work\.continuity\.precommit\.reconcile\.persisted"/);
   assert.match(serverSource, /precommit_reconcile_persisted:\$\{args\.work_id\}/);
   assert.doesNotMatch(serverSource, /"work\.continuity\.precommit\.reconcile",\n\s*`precommit_reconcile:/);
-  assert.match(serverSource, /causal_lineage_recover:\$\{pendingCausalLineageMutation\.work_id\}:\$\{crypto\.createHash/);
+  assert.match(serverSource, /causal_lineage_recover:\$\{pendingCausalLineageMutation\.work_id\}:\$\{recoveryTargetDigest\}/);
+  assert.match(serverSource, /causal_lineage_recover_core_\$\{crypto\.createHash/);
 });
 
 test("terminal closure entrypoints bypass only generic continuity preflight", () => {
@@ -3664,7 +3682,7 @@ test("legacy reconciliation keeps exact Work ACL while bypassing continuity pref
   assert.ok(hookEnd > hookStart);
   assert.match(hook, /requiresCanonicalWorkReadAuthorization\(toolName, args\)/);
   assert.match(hook, /dynamicInvocationTarget\(toolName, args, identity\)/);
-  assert.match(hook, /await requireCanonicalWorkRead\(identity, authorizationTarget\.args\.work_id\)/);
+  assert.match(hook, /await requireCanonicalWorkRead\([\s\S]{0,80}identity, authorizationTarget\.args\.work_id/);
 });
 
 test("dispatches only exact Work bootstrap invokes without injecting generic preflight", async () => {

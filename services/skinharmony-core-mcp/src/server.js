@@ -36,6 +36,7 @@ import {
   createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
+  mapV2StatusToLegacy,
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { agentFactoryCatalog, compileAgentManifest } from "./agent-manifest-factory.js";
@@ -1500,13 +1501,51 @@ async function galleryLegacyWorksAuthorized(identity, args = {}) {
   if (typeof workContinuityRuntime?.galleryAuthorized !== "function") {
     throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
   }
-  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
-  return workContinuityRuntime.galleryAuthorized(identity, args, {
+  const aclIdentity = withTenantWorkAcl(identity);
+  const [operational, archive] = await Promise.all([
+    workContinuityV2Store.listWorks(aclIdentity, { view: "operational", project_id: args.project_id }),
+    workContinuityV2Store.listWorks(aclIdentity, { view: "archive", project_id: args.project_id }),
+  ]);
+  const canonicalWorks = [...operational, ...archive];
+  const canonicalById = new Map(canonicalWorks.map((work) => [String(work.work_id), work]));
+  const requestedLimit = Number.isInteger(args.limit) ? Math.min(args.limit, 200) : 50;
+  const requestedStatus = String(args.status || "").trim().toLowerCase();
+  const workIds = canonicalWorks
+    .filter((work) => !requestedStatus || mapV2StatusToLegacy(work.status) === requestedStatus)
+    .map((work) => String(work.work_id));
+  if (workIds.length > 10_000) {
+    throw legacyWorkAclError("continuity_work_acl_scope_too_large", 503);
+  }
+  const legacy = await workContinuityRuntime.galleryAuthorized(identity, {
+    ...args,
+    // Status belongs to the canonical V2 Work. Applying the legacy status in
+    // SQL can hide the correct row before the authoritative state is joined.
+    status: undefined,
+    limit: requestedLimit,
+  }, {
     schema_version: "legacy_work_read_authorization_v1",
     server_derived: true,
     tenant_id: identity.tenantId,
     work_ids: workIds,
   });
+  const works = (legacy.works || []).map((work) => {
+    const canonical = canonicalById.get(String(work.work_id));
+    if (!canonical) return null;
+    const canonicalStatus = mapV2StatusToLegacy(canonical.status);
+    return {
+      ...work,
+      status: canonicalStatus,
+      canonical_status: canonical.status,
+      next_action: canonical.next_action,
+      canonical_state_source: "tenant_work_v2",
+      canonical_work_revision: canonical.governed_continuity?.work_revision || null,
+    };
+  }).filter(Boolean);
+  return {
+    ...legacy,
+    filters: { ...legacy.filters, status: requestedStatus || null },
+    works,
+  };
 }
 
 async function coordinationOverviewAuthorized(identity, args = {}) {
@@ -1576,10 +1615,18 @@ async function reviewCanonicalWorkCreation(args, identity) {
 async function reconcileCanonicalWorkCausalLineage(identity, work) {
   const recoveryIdentity = withServerOwnedCausalLineageRecovery(identity);
   try {
+    let canonicalWork = work;
+    if (!/^[a-f0-9]{64}$/u.test(String(canonicalWork?.intent_digest || "")) &&
+        typeof workContinuityV2Store.materializeQueuedWorkIntent === "function") {
+      const repairedIntent = await workContinuityV2Store.materializeQueuedWorkIntent(
+        recoveryIdentity, { work_id: canonicalWork.work_id },
+      );
+      canonicalWork = repairedIntent.work;
+    }
     const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
-      identity, work });
+      identity, work: canonicalWork });
     const state = await workContinuityV2Store.recordCausalLineageState(
-      recoveryIdentity, { work_id: work.work_id, state: "READY", server_owned_recovery: true });
+      recoveryIdentity, { work_id: canonicalWork.work_id, state: "READY", server_owned_recovery: true });
     return { state: state.state, binding, lineage_digest: state.lineage_digest };
   } catch (error) {
     const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
@@ -2597,8 +2644,20 @@ const baseHandlers = {
         tenantWorkCoordinationTarget("tenant_work_queue_create_v3", request),
         request.idempotency_key,
       );
+      const queued = await workContinuityV2Store.queueNewWork(
+        withTenantWorkAcl(identity), request,
+      );
+      const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, queued.work);
+      const result = causalLineage.state === "READY"
+        ? { ...queued, work: (await workContinuityV2Store.readWork(
+          withTenantWorkAcl(identity), { work_id: queued.work.work_id },
+        )).work }
+        : queued;
       return continuityTextResult({ ok: true,
-        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), request),
+        result,
+        causal_lineage: causalLineage,
+        work_ready: causalLineage.state === "READY",
+        continuation_allowed: causalLineage.state === "READY",
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",
@@ -3350,13 +3409,26 @@ const app = createApp(config, {
     if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
-        await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
+        const canonicalRead = await requireCanonicalWorkRead(
+          identity, authorizationTarget.args.work_id,
+        );
         const targetDefinition = TOOLS.find((item) => item.name === authorizationTarget.toolName);
+        // Dynamic capabilities are intentionally absent from the compact MCP
+        // surface. `core_capability_invoke` itself is mutation-only and the
+        // exact catalog revision, capability, scopes, schema, owner proof and
+        // idempotency key are validated below (after presence and Airlock)
+        // before recovery can write anything. Treating only compact tools as
+        // known mutations left every dynamic Work mutation unable to repair a
+        // freshly queued Work whose causal lineage was still PENDING.
+        const dynamicMutationCandidate = toolName === "core_capability_invoke" &&
+          Boolean(authorizationTarget.capabilityId);
         // Retain the exact known mutating target, but do not repair yet.
         // Presence and Research Airlock must authorize this request first.
         // Unknown dynamic capability ids have no definition and cannot cause
         // a durable side effect before the router rejects them.
-        if (targetDefinition && targetDefinition.annotations?.readOnlyHint !== true) {
+        if (canonicalRead?.work?.causal_lineage_state === "PENDING" &&
+            ((targetDefinition && targetDefinition.annotations?.readOnlyHint !== true) ||
+              dynamicMutationCandidate)) {
           pendingCausalLineageMutation = Object.freeze({
             work_id: authorizationTarget.args.work_id,
           });
@@ -3425,17 +3497,25 @@ const app = createApp(config, {
           error.code = "dynamic_capability_target_mismatch";
           throw error;
         }
+        const recoveryTargetDigest = crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical({
+            schema_version: "canonical_work_causal_lineage_recovery_target_v1",
+            work_id: pendingCausalLineageMutation.work_id,
+            target_capability: validated.tool.name,
+          })))
+          .digest("hex");
+        // Recovery and the requested dynamic capability are distinct Core
+        // decisions.  Preserve the caller key for the target gate and derive
+        // a server-owned key for recovery, otherwise the decision ledger sees
+        // the second target as a conflicting replay of the first one.
+        const recoveryIdempotencyKey = `causal_lineage_recover_core_${crypto.createHash("sha256")
+          .update(`${args.idempotency_key}:${recoveryTargetDigest}`)
+          .digest("hex")}`;
         await requireBoundedTenantCoordination(
           identity,
           "canonical_work.causal_lineage.recover",
-          `causal_lineage_recover:${pendingCausalLineageMutation.work_id}:${crypto.createHash("sha256")
-            .update(JSON.stringify(stableCanonical({
-              schema_version: "canonical_work_causal_lineage_recovery_target_v1",
-              work_id: pendingCausalLineageMutation.work_id,
-              target_capability: validated.tool.name,
-            })))
-            .digest("hex")}`,
-          args.idempotency_key,
+          `causal_lineage_recover:${pendingCausalLineageMutation.work_id}:${recoveryTargetDigest}`,
+          recoveryIdempotencyKey,
         );
       }
       await readNyraDirectiveContext(identity, {

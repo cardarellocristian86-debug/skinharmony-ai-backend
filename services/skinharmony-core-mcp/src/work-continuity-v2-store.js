@@ -1397,7 +1397,7 @@ function mapLegacyStatus(status) {
   if (value === "release_ready") return "HANDOFF";
   return null;
 }
-function mapV2StatusToLegacy(status) {
+export function mapV2StatusToLegacy(status) {
   if (["PLANNED", "ACTIVE", "PAUSED"].includes(status)) return "active";
   if (status === "BLOCKED") return "blocked";
   if (status === "HANDOFF") return "release_ready";
@@ -1898,6 +1898,89 @@ export function createWorkContinuityV2Store({
     // Keep the established public event receipt stable. Projection catch-up
     // reads the full row transactionally from the Ledger when needed.
     return { sequence_number: sequence, event_type: eventType, event_hash: eventHash };
+  }
+
+  async function materializeQueuedWorkIntentWithClient(client, actor, workId) {
+    const locked = await client.query(`SELECT * FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+    if (locked.rowCount !== 1) fail("work_not_found");
+    const work = normalizeWork(locked.rows[0]);
+    const priorIntentEvent = HASH.test(String(work.intent_digest || ""))
+      ? await client.query(`SELECT sequence_number,event_type,event_hash,payload
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type='queued_work_intent_materialized'
+          AND payload->>'intent_digest'=$3
+        ORDER BY sequence_number ASC LIMIT 1`, [actor.tenant_id, workId, work.intent_digest])
+      : { rows: [], rowCount: 0 };
+    if (priorIntentEvent.rowCount === 1) {
+      return { work, intent_digest: work.intent_digest,
+        event: priorIntentEvent.rows[0], idempotent_replay: true };
+    }
+    // Queue-only Work identities deliberately have no legacy execution Work,
+    // but still need an immutable Intent before any actor can resume them.
+    // Repair is limited to the original untouched PLANNED queue shape; a
+    // mutated or bridged Work cannot acquire a synthesized intent later.
+    if (work.legacy_work_id || work.status !== "PLANNED" ||
+        work.causal_lineage_state !== "PENDING") {
+      fail("queued_work_intent_materialization_invalid");
+    }
+    const queuedEvent = await client.query(`SELECT sequence_number,event_hash,payload
+      FROM tenant_work_event
+      WHERE tenant_id=$1 AND work_id=$2 AND event_type='work_queued_v3'
+      ORDER BY sequence_number ASC LIMIT 1`, [actor.tenant_id, workId]);
+    if (queuedEvent.rowCount !== 1) fail("queued_work_intent_source_missing");
+    const taskRows = await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified,revision
+      FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 ORDER BY task_id`,
+    [actor.tenant_id, workId]);
+    if (!taskRows.rows.length || taskRows.rows.some((task) =>
+      task.status !== "planned" || task.acceptance_verified === true || Number(task.revision) !== 1)) {
+      fail("queued_work_intent_task_state_invalid");
+    }
+    const intentDigest = objectDigest({
+      schema_version: "tenant_work_queued_intent_v1",
+      tenant_id: actor.tenant_id,
+      work_id: work.work_id,
+      project_id: work.project_id,
+      parent_work_id: work.parent_work_id,
+      work_name: work.work_name,
+      work_type: work.work_type,
+      idea: work.idea,
+      objective: work.objective,
+      architecture: work.architecture,
+      acceptance_criteria: work.acceptance_criteria,
+      tasks: taskRows.rows.map((task) => ({
+        task_id: task.task_id,
+        title: task.title,
+        weight: Number(task.weight),
+        required: task.required === true,
+      })),
+      queue_event_hash: queuedEvent.rows[0].event_hash,
+    });
+    const updated = await client.query(`UPDATE tenant_work SET intent_digest=$3,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2
+        AND legacy_work_id IS NULL AND status='PLANNED' AND causal_lineage_state='PENDING'
+      RETURNING *`, [actor.tenant_id, workId, intentDigest]);
+    if (updated.rowCount !== 1) fail("queued_work_intent_materialization_conflict");
+    const event = await appendV2Event(client, actor, workId, "queued_work_intent_materialized", {
+      schema_version: "tenant_work_queued_intent_v1",
+      intent_digest: intentDigest,
+      queue_event_hash: queuedEvent.rows[0].event_hash,
+      server_derived: true,
+    });
+    return { work: normalizeWork(updated.rows[0]), intent_digest: intentDigest,
+      event, idempotent_replay: false };
+  }
+
+  async function materializeQueuedWorkIntent(identity, input = {}) {
+    await initialize();
+    if (identity?.serverOwnedCausalLineageRecovery !== true) {
+      fail("causal_lineage_server_owned_recovery_required");
+    }
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    return transaction((client) => materializeQueuedWorkIntentWithClient(
+      client, actor, workId,
+    ));
   }
 
   async function recordCausalLineageState(identity, input = {}) {
@@ -2730,9 +2813,10 @@ export function createWorkContinuityV2Store({
           status: "PLANNED",
         });
       }
+      const intent = await materializeQueuedWorkIntentWithClient(client, actor, workId);
       return {
         schema_version: "tenant_work_gallery_v3",
-        work: queued.work,
+        work: intent.work,
         review: { review_id: reviewId, decision: review.decision, consumed: true },
         idempotent_replay: review.idempotent_replay && !queued.created,
       };
@@ -6253,6 +6337,12 @@ export function createWorkContinuityV2Store({
       mapping_count: mappings.length, target_commit: batch.target_commit });
   }
   async function readPrecommitTicketGateWithClient(client, actor, workId, { lock = false } = {}) {
+    const workStateResult = await client.query(`SELECT status FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2${lock ? " FOR UPDATE" : ""}`,
+    [actor.tenant_id, workId]);
+    const workStatus = workStateResult.rows[0]
+      ? String(workStateResult.rows[0].status || "").toUpperCase()
+      : null;
     const supersedingGateResult = await client.query(`SELECT *
       FROM tenant_work_precommit_ticket_gate_supersession
       WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
@@ -6336,6 +6426,9 @@ export function createWorkContinuityV2Store({
     const currentSupersessionDigest = nativePlanSupersessionDigest(planRows);
     const driftCodes = [];
     const drift = (code) => { if (!driftCodes.includes(code)) driftCodes.push(code); };
+    if (!workStatus) drift("precommit_gate_work_missing");
+    else if (ARCHIVE_STATUSES.has(workStatus)) drift("precommit_gate_work_terminal");
+    else if (!OPERATIONAL_STATUSES.has(workStatus)) drift("precommit_gate_work_not_operational");
     let v2TaskScope = null;
     if (nativeGate) {
       try {
@@ -7074,25 +7167,24 @@ export function createWorkContinuityV2Store({
     }
     const existing = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
     if (existing) {
-      if (existing.schema_version === "precommit_ticket_gate_v2" && existing.gate_source === "native_closure_evaluation" &&
+      const exactNativeGate = existing.schema_version === "precommit_ticket_gate_v2" &&
+          existing.gate_source === "native_closure_evaluation" &&
           existing.plan_id === planId && existing.evaluation_id === evaluationId &&
           existing.evaluation_digest === evaluationDigest && existing.workspace_digest === workspaceDigest &&
           existing.v2_scope_snapshot_digest === v2TaskScope.scope_snapshot_digest &&
           objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks) &&
-          existing.supersession_digest === supersessionDigest) {
-        return Object.freeze({ ...existing, idempotent_replay: true });
-      }
+          existing.supersession_digest === supersessionDigest;
       if (existing.schema_version !== "precommit_ticket_gate_v2" ||
           existing.gate_source !== "native_closure_evaluation" || existing.fulfilled === true ||
-          existing.fresh === true) fail("native_precommit_gate_conflict");
+          (existing.fresh === true && !exactNativeGate)) fail("native_precommit_gate_conflict");
       const allowedSupersessionDrift = new Set([
         "precommit_gate_plan_drift",
         "precommit_gate_supersession_drift",
         "precommit_gate_evaluation_drift",
         "precommit_gate_v2_scope_drift",
       ]);
-      if (!Array.isArray(existing.drift_codes) || existing.drift_codes.length === 0 ||
-          existing.drift_codes.some((code) => !allowedSupersessionDrift.has(code))) {
+      if (!exactNativeGate && (!Array.isArray(existing.drift_codes) || existing.drift_codes.length === 0 ||
+          existing.drift_codes.some((code) => !allowedSupersessionDrift.has(code)))) {
         fail("native_precommit_gate_drift_not_supersedable");
       }
       // A claim can have crossed the provider boundary before the gate-level
@@ -7100,8 +7192,9 @@ export function createWorkContinuityV2Store({
       // durable ticket-locator reconciliation as proof that a ticket exists;
       // never mint a newer gate in either state.  Only a claim with an
       // append-only abandonment and no ticket is safe to leave behind.
-      const claimStates = await client.query(`SELECT c.claim_id,
+      const claimStates = await client.query(`SELECT c.claim_id,c.gate_projection_digest,
           f.ticket_id AS fulfilled_ticket_id,a.claim_id AS abandoned_claim_id,
+          a.abandonment_digest,
           EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation r
             WHERE r.tenant_id=c.tenant_id AND r.work_id=c.work_id
               AND r.claim_id=c.claim_id AND r.ticket_id IS NOT NULL) AS reconciled_ticket_present
@@ -7121,6 +7214,21 @@ export function createWorkContinuityV2Store({
       if (claimStates.rows.some((row) => !row.abandoned_claim_id)) {
         fail("native_precommit_gate_claim_active");
       }
+      const recoveryClaims = claimStates.rows.filter((row) =>
+        row.gate_projection_digest === existing.projection_digest);
+      if (exactNativeGate && recoveryClaims.length === 0) {
+        return Object.freeze({ ...existing, idempotent_replay: true });
+      }
+      if (exactNativeGate && (recoveryClaims.length !== 1 ||
+          !HASH.test(String(recoveryClaims[0].abandonment_digest || "")))) {
+        fail("native_precommit_gate_claim_recovery_invalid");
+      }
+      const claimRecovery = exactNativeGate ? Object.freeze({
+        schema_version: "native_precommit_gate_claim_recovery_v1",
+        claim_id: recoveryClaims[0].claim_id,
+        gate_projection_digest: recoveryClaims[0].gate_projection_digest,
+        abandonment_digest: recoveryClaims[0].abandonment_digest,
+      }) : null;
       const latest = await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate_supersession
         WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
           AND gate_kind='ticket_acquisition' ORDER BY gate_version DESC LIMIT 1 FOR UPDATE`,
@@ -7132,7 +7240,8 @@ export function createWorkContinuityV2Store({
         v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
         v2_scope_tasks: v2TaskScope.tasks,
         supersession_digest: supersessionDigest, gate_source: "native_closure_evaluation", mappings: [],
-        gate_version: nextVersion, supersedes_reconciliation_digest: existing.reconciliation_digest };
+        gate_version: nextVersion, supersedes_reconciliation_digest: existing.reconciliation_digest,
+        ...(claimRecovery ? { claim_recovery: claimRecovery } : {}) };
       const reconciliationDigest = objectDigest(material);
       await client.query(`INSERT INTO tenant_work_precommit_ticket_gate_supersession
         (tenant_id,work_id,gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
@@ -7151,6 +7260,7 @@ export function createWorkContinuityV2Store({
         superseded_projection_digest: existing.projection_digest,
         supersedes_reconciliation_digest: existing.reconciliation_digest,
         superseded_drift_codes: [...existing.drift_codes].sort(),
+        claim_recovery: claimRecovery,
         plan_id: planId,
         evaluation_id: evaluationId,
         evaluation_digest: evaluationDigest,
@@ -8808,7 +8918,11 @@ export function createWorkContinuityV2Store({
   return Object.freeze({ initialize, createWork: guardPendingWorkMutation(createWork), createNewWork,
     validateCanonicalWorkBootstrapReview,
     readCreatedWorkByBootstrapRequest, recordCausalLineageState,
-    queueNewWork: guardPendingWorkMutation(queueNewWork),
+    // Creation/replay performs its own authoritative collision checks. A
+    // caller-supplied UUID that already names a PENDING Work must reach those
+    // checks instead of being misreported as a mutation of that Work.
+    queueNewWork,
+    materializeQueuedWorkIntent,
     ensureLegacyBridge: guardPendingWorkMutation(ensureLegacyBridge),
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
     readWork, previewNativePlanMerge,

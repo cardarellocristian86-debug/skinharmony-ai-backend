@@ -154,6 +154,10 @@ class PrecommitPool {
       const row = this.works.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT status FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ status: row.status }] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate") &&
         !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession") &&
         !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_claim")) {
@@ -425,7 +429,7 @@ class PrecommitPool {
       this.claimReconciliations.set(key(row.tenant_id, row.work_id, row.claim_id, row.stage), row);
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("SELECT c.claim_id, f.ticket_id AS fulfilled_ticket_id")) {
+    if (q.startsWith("SELECT c.claim_id,c.gate_projection_digest,")) {
       const rows = [...this.claims.values()].filter((claim) =>
         claim.tenant_id === parameters[0] && claim.work_id === parameters[1]).map((claim) => {
         const fulfillment = this.claimFulfillments.get(key(
@@ -438,8 +442,10 @@ class PrecommitPool {
           row.tenant_id === claim.tenant_id && row.work_id === claim.work_id &&
           row.claim_id === claim.claim_id && row.ticket_id);
         return { claim_id: claim.claim_id,
+          gate_projection_digest: claim.gate_projection_digest,
           fulfilled_ticket_id: fulfillment?.ticket_id || null,
           abandoned_claim_id: abandonment?.claim_id || null,
+          abandonment_digest: abandonment?.abandonment_digest || null,
           reconciled_ticket_present: reconciledTicketPresent };
       });
       return { rows: structuredClone(rows), rowCount: rows.length };
@@ -736,6 +742,16 @@ test("projection detects plan/evaluation drift and ticket fulfillment accepts on
   assert.equal(gate.fresh, false);
   assert(gate.drift_codes.includes("precommit_gate_plan_drift"));
   assert(gate.drift_codes.includes("precommit_gate_supersession_drift"));
+});
+
+test("terminal Work makes a structurally valid precommit gate stale", async () => {
+  const { pool, store, input } = fixture();
+  await store.reconcilePrecommitTicketGate(identity(), input);
+  pool.works.get(key("tenant-a", WORK_ID)).status = "ARCHIVED";
+  const gate = await store.readPrecommitTicketGate(identity(), { work_id: WORK_ID });
+  assert.equal(gate.fresh, false);
+  assert(gate.drift_codes.includes("precommit_gate_work_terminal"));
+  assert.equal(gate.fulfilled, false);
 });
 
 test("appends a fresh superseding gate after plan drift and preserves replay and fulfillment isolation", async () => {
@@ -1076,9 +1092,55 @@ test("materializes one server-owned native closure gate for a canonical promoted
   assert.equal(serverDerivedReplay.execution_authorized, false);
   assert.equal(serverDerivedReplay.provider_execution, false);
 
+  // An append-only abandonment also rolls an otherwise fresh, semantically
+  // identical gate.  The new projection lets a different bound host/session
+  // claim the work without weakening replay checks on the abandoned claim.
+  const abandonedFreshClaim = await claimGate(store, superseding);
+  const freshAbandonmentDigest = digest({ abandoned: abandonedFreshClaim.claim_id });
+  pool.claimAbandonments.set(key("tenant-a", WORK_ID, superseding.projection_digest), {
+    tenant_id: "tenant-a", work_id: WORK_ID,
+    gate_projection_digest: superseding.projection_digest,
+    claim_id: abandonedFreshClaim.claim_id,
+    abandonment_digest: freshAbandonmentDigest,
+  });
+  const recoveredFresh = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(nextEvaluation), workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+  });
+  assert.equal(recoveredFresh.fresh, true);
+  assert.equal(recoveredFresh.idempotent_replay, false);
+  assert.notEqual(recoveredFresh.projection_digest, superseding.projection_digest);
+  assert.deepEqual(pool.events.at(-1).payload.claim_recovery, {
+    schema_version: "native_precommit_gate_claim_recovery_v1",
+    claim_id: abandonedFreshClaim.claim_id,
+    gate_projection_digest: superseding.projection_digest,
+    abandonment_digest: freshAbandonmentDigest,
+  });
+  const recoveredFreshReplay = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(nextEvaluation), workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+  });
+  assert.equal(recoveredFreshReplay.idempotent_replay, true);
+  assert.equal(recoveredFreshReplay.projection_digest, recoveredFresh.projection_digest);
+
   // An unresolved claim is a live execution lease.  A subsequent evaluation
   // must not replace its gate until the claim has an append-only abandonment.
-  const firstClaim = await claimGate(store, superseding);
+  const firstClaim = await claimGate(store, recoveredFresh, {
+    continuation_ref: "continuation-2",
+    request_digest: "2".repeat(64),
+    delegation_id: "delegation-2",
+    idempotency_key: "claim-2",
+  });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(nextEvaluation), workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+  }), /native_precommit_gate_claim_active/);
+  await assert.rejects(claimGate(store, superseding, {
+    continuation_ref: "foreign-session-continuation",
+    request_digest: "f".repeat(64),
+    delegation_id: "foreign-delegation",
+    idempotency_key: "foreign-old-projection",
+  }), /precommit_gate_claim_replay_conflict/);
   const driftedEvaluationId = crypto.randomUUID();
   const driftedWorkspaceDigest = digest({ kind: "native-gate-task-drift" });
   const driftedEvaluation = { ...nextEvaluation,
@@ -1091,9 +1153,9 @@ test("materializes one server-owned native closure gate for a canonical promoted
     ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: driftedEvaluationId,
     evaluation_digest: digest(driftedEvaluation), workspace_digest: driftedWorkspaceDigest,
   }), /native_precommit_gate_claim_active/);
-  pool.claimAbandonments.set(key("tenant-a", WORK_ID, superseding.projection_digest), {
+  pool.claimAbandonments.set(key("tenant-a", WORK_ID, recoveredFresh.projection_digest), {
     tenant_id: "tenant-a", work_id: WORK_ID,
-    gate_projection_digest: superseding.projection_digest,
+    gate_projection_digest: recoveredFresh.projection_digest,
     claim_id: firstClaim.claim_id, abandonment_digest: digest({ abandoned: firstClaim.claim_id }),
   });
   const third = await store.materializeNativePrecommitTicketGateWithClient(client, {
@@ -1101,9 +1163,9 @@ test("materializes one server-owned native closure gate for a canonical promoted
     evaluation_digest: digest(driftedEvaluation), workspace_digest: driftedWorkspaceDigest,
   });
   assert.equal(third.fresh, true);
-  assert.equal(pool.supersedingGates.length, 2);
-  assert.equal(pool.supersedingGates[1].supersedes_reconciliation_digest,
-    superseding.reconciliation_digest);
+  assert.equal(pool.supersedingGates.length, 3);
+  assert.equal(pool.supersedingGates[2].supersedes_reconciliation_digest,
+    recoveredFresh.reconciliation_digest);
 
   // Only drift caused by a newer authoritative plan/evaluation/supersession
   // or V2 scope may advance the immutable gate chain.  A mutated gate task is
@@ -1132,7 +1194,8 @@ test("materializes one server-owned native closure gate for a canonical promoted
   // A durable ticket locator means the provider boundary was crossed even if
   // gate fulfillment has not yet been appended.  It must block supersession.
   const secondClaim = await claimGate(store, fourth, {
-    continuation_ref: "continuation-2", idempotency_key: "claim-2",
+    continuation_ref: "continuation-3", request_digest: "3".repeat(64),
+    delegation_id: "delegation-3", idempotency_key: "claim-3",
   });
   const secondClaimKey = key("tenant-a", WORK_ID, fourth.projection_digest);
   pool.claimFulfillments.set(secondClaimKey, {
@@ -1140,6 +1203,10 @@ test("materializes one server-owned native closure gate for a canonical promoted
     gate_projection_digest: fourth.projection_digest,
     claim_id: secondClaim.claim_id, ticket_id: "ticket-fulfilled-before-gate-row",
   });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: ticketEvaluationId,
+    evaluation_digest: digest(ticketEvaluation), workspace_digest: ticketWorkspaceDigest,
+  }), /native_precommit_gate_ticket_exists/);
   const finalEvaluationId = crypto.randomUUID();
   const finalWorkspaceDigest = digest({ kind: "native-gate-after-ticket" });
   const finalEvaluation = { ...nextEvaluation,

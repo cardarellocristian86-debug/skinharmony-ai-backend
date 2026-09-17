@@ -196,6 +196,29 @@ test("direct typed commit rejects repository drift before claiming", async () =>
   assert.equal(claims, 0);
 });
 
+test("direct typed commit maps a terminal Work claim race to bounded 409 before Core", async () => {
+  const gate = nativeGate();
+  const req = request(gate);
+  let coreCalls = 0;
+  const runtime = authorizer({
+    store: {
+      claimPrecommitTicketGate: async () => {
+        throw new Error("tenant_work_terminal");
+      },
+    },
+    core: {
+      host_native_action_authorize: async () => { coreCalls += 1; },
+      host_native_action_read: async () => { coreCalls += 1; },
+    },
+  });
+  await assert.rejects(runtime.authorize(req, identity(), typedContext(gate)), (error) => {
+    assert.equal(error.code, "core_typed_request_work_state_invalid");
+    assert.equal(error.status, 409);
+    return true;
+  });
+  assert.equal(coreCalls, 0);
+});
+
 test("fulfilled typed gate requires recovery bound to the same opaque continuation", async () => {
   const original = nativeGate();
   const fulfilled = nativeGate({ fulfilled: true, ticket_id: TICKET_ID });
