@@ -1008,6 +1008,12 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
 // read lease, making an otherwise stale Work look active to the reconciliation
 // gate. They still require an exact canonical-Work ACL check in server.js.
 const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
+  // Queue creation has no legacy Work by design. Offering and accepting that
+  // queued V2 identity must therefore use their native Gallery ACL plus the
+  // server-owned bounded Core coordination gate; a legacy Intent preflight
+  // here is circular because the legacy bridge is activated only afterwards.
+  "tenant_work_assign_v3",
+  "tenant_work_assignment_accept_v3",
   "tenant_work_legacy_reconcile_close",
   "tenant_work_historical_archive_v3",
   // An existing Work must be recoverable even when an optional Entity360

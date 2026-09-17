@@ -568,6 +568,62 @@ test("Airlock controls never invoke generic preflight before the public plan is 
   ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must remain isolated from generic preflight`);
 });
 
+test("queued Gallery assignment uses its native gate without requiring a legacy Intent anchor", () => {
+  for (const capability_id of [
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight(capability_id, { work_id: "queued-work" }),
+      false,
+      `${capability_id} must reach its native V2 lifecycle gate`,
+    );
+    assert.equal(
+      requiresCanonicalWorkReadAuthorization(capability_id, { work_id: "queued-work" }),
+      true,
+      `${capability_id} must retain exact canonical Work authorization`,
+    );
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_invoke", {
+        capability_id,
+        arguments: { work_id: "queued-work" },
+      }),
+      false,
+      `${capability_id} must behave identically through the dynamic capability surface`,
+    );
+    assert.equal(
+      requiresCanonicalWorkReadAuthorization("core_capability_invoke", {
+        capability_id,
+        arguments: { work_id: "queued-work" },
+      }),
+      true,
+      `${capability_id} must retain exact canonical Work authorization through the dynamic surface`,
+    );
+  }
+
+  for (const capability_id of [
+    "work_continuity_checkpoint",
+    "tenant_work_message_post",
+    "tenant_work_task_record",
+    "tenant_work_branch_open",
+    "tenant_work_lease_acquire",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight(capability_id, { work_id: "queued-work" }),
+      true,
+      `${capability_id} must remain fail-closed until continuity is activated`,
+    );
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_invoke", {
+        capability_id,
+        arguments: { work_id: "queued-work" },
+      }),
+      true,
+      `${capability_id} must remain fail-closed through the dynamic surface`,
+    );
+  }
+});
+
 test("does not expose client-selectable product packs on horizontal Core tools", () => {
   for (const name of ["work_preflight", "nyra_runtime_context", "nyra_interpret_request"]) {
     const definition = TOOLS.find((tool) => tool.name === name);
