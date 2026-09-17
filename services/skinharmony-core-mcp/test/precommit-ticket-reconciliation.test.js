@@ -1131,6 +1131,16 @@ test("materializes one server-owned native closure gate for a canonical promoted
     delegation_id: "delegation-2",
     idempotency_key: "claim-2",
   });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(nextEvaluation), workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+  }), /native_precommit_gate_claim_active/);
+  await assert.rejects(claimGate(store, superseding, {
+    continuation_ref: "foreign-session-continuation",
+    request_digest: "f".repeat(64),
+    delegation_id: "foreign-delegation",
+    idempotency_key: "foreign-old-projection",
+  }), /precommit_gate_claim_replay_conflict/);
   const driftedEvaluationId = crypto.randomUUID();
   const driftedWorkspaceDigest = digest({ kind: "native-gate-task-drift" });
   const driftedEvaluation = { ...nextEvaluation,
@@ -1193,6 +1203,10 @@ test("materializes one server-owned native closure gate for a canonical promoted
     gate_projection_digest: fourth.projection_digest,
     claim_id: secondClaim.claim_id, ticket_id: "ticket-fulfilled-before-gate-row",
   });
+  await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, {
+    ...input, plan_id: SUPERSEDING_PLAN_ID, evaluation_id: ticketEvaluationId,
+    evaluation_digest: digest(ticketEvaluation), workspace_digest: ticketWorkspaceDigest,
+  }), /native_precommit_gate_ticket_exists/);
   const finalEvaluationId = crypto.randomUUID();
   const finalWorkspaceDigest = digest({ kind: "native-gate-after-ticket" });
   const finalEvaluation = { ...nextEvaluation,
