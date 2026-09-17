@@ -142,9 +142,19 @@ export function createCoreTypedActionAuthorizer({
       payload, request, gate, identity, typedRecord.continuation_ref,
       typedRecord.request_digest, typedRecord.server_idempotency_key,
     );
-    const nativeClaim = trustedNativePrecommitClaim(
-      await workStore.claimPrecommitTicketGate(tenantAcl(identity), claimBinding), claimBinding,
-    );
+    let nativeClaim;
+    try {
+      nativeClaim = trustedNativePrecommitClaim(
+        await workStore.claimPrecommitTicketGate(tenantAcl(identity), claimBinding), claimBinding,
+      );
+    } catch (error) {
+      const code = String(error?.code || error?.message || "");
+      if (["tenant_work_terminal", "tenant_work_not_operational", "tenant_work_not_found"]
+        .includes(code)) {
+        fail("core_typed_request_work_state_invalid", 409);
+      }
+      throw error;
+    }
     let ticketId = null;
     let recovery = null;
     let recoveredTicketId = null;

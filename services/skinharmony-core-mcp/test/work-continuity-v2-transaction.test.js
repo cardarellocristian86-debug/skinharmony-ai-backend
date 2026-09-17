@@ -6,6 +6,7 @@ import {
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
   deriveTenantWorkClosureVerification,
+  mapV2StatusToLegacy,
 } from "../src/work-continuity-v2-store.js";
 import {
   createHostNativeFinalizeAuthorizationProof,
@@ -27,6 +28,18 @@ function stable(value) {
 function stableDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
+
+test("canonical V2 states preserve the legacy Gallery status vocabulary", () => {
+  assert.equal(mapV2StatusToLegacy("PLANNED"), "active");
+  assert.equal(mapV2StatusToLegacy("ACTIVE"), "active");
+  assert.equal(mapV2StatusToLegacy("PAUSED"), "active");
+  assert.equal(mapV2StatusToLegacy("BLOCKED"), "blocked");
+  assert.equal(mapV2StatusToLegacy("HANDOFF"), "release_ready");
+  assert.equal(mapV2StatusToLegacy("COMPLETED"), "completed");
+  assert.equal(mapV2StatusToLegacy("ARCHIVED"), "completed");
+  assert.equal(mapV2StatusToLegacy("CANCELLED"), "cancelled");
+  assert.equal(mapV2StatusToLegacy("SUPERSEDED"), "superseded");
+});
 
 test("completed V2 task revalidation is limited to one exact stale native gate lineage", async () => {
   const tenantId = "tenant-a";
@@ -93,6 +106,9 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
         }
         if (q.startsWith("SELECT work_id,work_type FROM tenant_work")) {
           return { rows: [{ work_id: workId, work_type: "software_git" }], rowCount: 1 };
+        }
+        if (q.startsWith("SELECT status FROM tenant_work")) {
+          return { rows: [{ status: "ACTIVE" }], rowCount: 1 };
         }
         if (q.startsWith("SELECT plan_id,supersedes_plan_id,status,plan,plan_digest FROM core_continuity_native_plans")) {
           return { rows: plans, rowCount: plans.length };
@@ -558,6 +574,7 @@ class AtomicWorkPool {
           created_by_agent_id: agentId, created_by_session_fingerprint: sessionFingerprint,
           acceptance_criteria: JSON.parse(criteria), idea, architecture: JSON.parse(architecture),
           parent_work_id: parentWorkId,
+          causal_lineage_state: "PENDING", causal_lineage_reason: "CAUSAL_BINDING_PENDING",
           progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
           updated_at: "2026-08-08T10:00:00.000Z" };
       } else {
@@ -636,6 +653,24 @@ class AtomicWorkPool {
         updated_at: "2026-08-08T10:00:02.000Z",
       });
       return { rows: [{ work_id: row.work_id }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET intent_digest=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.legacy_work_id || row.status !== "PLANNED" ||
+          row.causal_lineage_state !== "PENDING") return { rows: [], rowCount: 0 };
+      row.intent_digest = parameters[2];
+      row.updated_at = "2026-08-08T10:00:01.000Z";
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET causal_lineage_state=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || (parameters[5] !== true && row.causal_lineage_state !== "PENDING")) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.causal_lineage_state = parameters[2];
+      row.causal_lineage_reason = parameters[3];
+      row.causal_lineage_digest = parameters[4];
+      return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work SET assignment_target_agent_id=$3")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
@@ -723,6 +758,13 @@ class AtomicWorkPool {
     if (q.startsWith("SELECT work_id,title,weight,status,required FROM tenant_work_task")) {
       const row = this.tasks.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT task_id,title,weight,required,status,acceptance_verified,revision FROM tenant_work_task")) {
+      const rows = [...this.tasks.values()].filter((task) =>
+        task.tenant_id === parameters[0] && task.work_id === parameters[1])
+        .map((task) => ({ ...structuredClone(task), revision: Number(task.revision || 1) }))
+        .sort((left, right) => left.task_id.localeCompare(right.task_id));
+      return { rows, rowCount: rows.length };
     }
     if (q.startsWith("INSERT INTO tenant_work_task")) {
       const taskKey = key(parameters[0], parameters[1]);
@@ -920,6 +962,32 @@ class AtomicWorkPool {
       const row = [...this.events.values()]
         .filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
           event.event_type === "work_archived_v3" && event.payload?.idempotency_key_digest === parameters[2])
+        .sort((left, right) => right.sequence_number - left.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_hash,payload FROM tenant_work_event") &&
+        q.includes("event_type='work_queued_v3'")) {
+      const row = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "work_queued_v3")
+        .sort((left, right) => left.sequence_number - right.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_type,event_hash,payload FROM tenant_work_event") &&
+        q.includes("event_type='queued_work_intent_materialized'")) {
+      const row = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "queued_work_intent_materialized" &&
+        event.payload?.intent_digest === parameters[2])
+        .sort((left, right) => left.sequence_number - right.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_type,event_hash,payload FROM tenant_work_event") &&
+        q.includes("event_type='canonical_causal_lineage_state'")) {
+      const row = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "canonical_causal_lineage_state" &&
+        event.payload?.lineage_digest === parameters[2])
         .sort((left, right) => right.sequence_number - left.sequence_number)[0];
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
@@ -1437,7 +1505,7 @@ test("PENDING causal lineage blocks every Work mutation family while Gallery rem
   row.causal_lineage_state = "PENDING";
   row.causal_lineage_reason = "CAUSAL_BINDING_PENDING";
   const guarded = [
-    "createWork", "queueNewWork", "ensureLegacyBridge", "alignNativePlanStatus", "assignQueuedWork", "acceptQueuedWorkAssignment", "archiveWork",
+    "createWork", "ensureLegacyBridge", "alignNativePlanStatus", "assignQueuedWork", "acceptQueuedWorkAssignment", "archiveWork",
     "archiveHistoricalBridgedWork", "reopenWork", "reconcilePrecommitTicketGate",
     "reconcilePersistedPrecommitTicketGate", "claimPrecommitTicketGate",
     "reconcilePrecommitTicketGateClaim", "abandonInactivePrecommitTicketGateClaim",
@@ -2033,7 +2101,13 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   assert.equal(queued.work.legacy_work_id, null);
   assert.equal(queued.work.idea, input.idea);
   assert.deepEqual(queued.work.architecture, input.architecture);
+  assert.notEqual(queued.work.intent_digest, input.intent_digest);
+  assert.equal(queued.work.causal_lineage_state, "PENDING");
   assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 1);
+
+  await store.recordCausalLineageState(identity(), {
+    work_id: queued.work.work_id, state: "READY",
+  });
 
   const archived = await store.archiveWork(identity(), {
     work_id: queued.work.work_id,
@@ -2057,14 +2131,56 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   assert.equal(reopened.work.reopen_count, 1);
   assert.equal(reopened.work.next_action, "Assegna il Work a Codex per il piano.");
   assert.deepEqual([...pool.events.values()].map((event) => event.event_type), [
-    "work_queued_v3", "work_archived_v3", "work_reopened_v3",
+    "work_queued_v3", "queued_work_intent_materialized", "canonical_causal_lineage_state",
+    "work_archived_v3", "work_reopened_v3",
   ]);
+});
+
+test("Gallery V3 materializes a server-derived immutable Intent before exposing a queued Work", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const reviewedInput = await reviewed(store, { ...createInput(),
+    request_id: "request-queued-intent", intent_digest: "f".repeat(64) });
+
+  const queued = await store.queueNewWork(identity(), reviewedInput);
+  assert.match(queued.work.intent_digest, /^[a-f0-9]{64}$/);
+  assert.notEqual(queued.work.intent_digest, reviewedInput.intent_digest);
+  assert.equal(queued.work.causal_lineage_state, "PENDING");
+  const intentEvents = [...pool.events.values()].filter((event) =>
+    event.work_id === queued.work.work_id &&
+    event.event_type === "queued_work_intent_materialized");
+  assert.equal(intentEvents.length, 1);
+  assert.equal(intentEvents[0].payload.intent_digest, queued.work.intent_digest);
+  assert.equal(intentEvents[0].payload.server_derived, true);
+
+  const queueReplay = await store.queueNewWork(identity(), reviewedInput);
+  assert.equal(queueReplay.work.intent_digest, queued.work.intent_digest);
+  assert.equal(queueReplay.idempotent_replay, true);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "queued_work_intent_materialized").length, 1);
+
+  await assert.rejects(store.materializeQueuedWorkIntent(identity(), {
+    work_id: queued.work.work_id,
+  }), /causal_lineage_server_owned_recovery_required/);
+  const recoveryIdentity = identity();
+  Object.defineProperty(recoveryIdentity, "serverOwnedCausalLineageRecovery", {
+    value: true, enumerable: false,
+  });
+  const replay = await store.materializeQueuedWorkIntent(recoveryIdentity, {
+    work_id: queued.work.work_id,
+  });
+  assert.equal(replay.intent_digest, queued.work.intent_digest);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "queued_work_intent_materialized").length, 1);
 });
 
 test("Gallery V3 archive replays one committed archive and rejects key reuse with a different reason", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id, state: "READY" });
   const request = {
     work_id: queued.work.work_id,
     reason: "Archiviato in attesa della nuova priorità.",
@@ -2127,6 +2243,7 @@ test("a private Gallery assignment loses agent read access on archive, reopen, a
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
   const workId = queued.work.work_id;
+  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
   const codex = identity("codex", "member");
   codex.agentPresence.client_type = "codex";
   await store.assignQueuedWork(identity(), {
@@ -2276,6 +2393,7 @@ test("an exact Codex agent can accept a Gallery offer, but an impersonating host
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id, state: "READY" });
   const offer = await store.assignQueuedWork(identity(), {
     work_id: queued.work.work_id,
     target_agent_id: "agent-codex",
