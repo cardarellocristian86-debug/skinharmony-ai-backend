@@ -1032,6 +1032,25 @@ const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
   "work_continuity_closure_finalize",
 ]);
 
+// An explicit resume of an already accepted queued Work must reach the
+// handler that atomically materializes its legacy continuity bridge. Generic
+// preflight cannot run first because that bridge owns the Intent anchor it
+// would try to read. Implicit/project-wide resume remains on generic preflight.
+const EXACT_WORK_RESUME_TOOLS = new Set([
+  "work_continuity_resume",
+  "work_continuity_start_or_resume",
+]);
+
+function isExactWorkResumeRequest(toolName, args = {}) {
+  const requestedTool = String(toolName || "");
+  const targetTool = requestedTool === "core_capability_invoke"
+    ? String(args?.capability_id || "")
+    : requestedTool;
+  const targetArgs = requestedTool === "core_capability_invoke" ? args?.arguments : args;
+  return EXACT_WORK_RESUME_TOOLS.has(targetTool) &&
+    typeof targetArgs?.work_id === "string" && targetArgs.work_id.trim().length > 0;
+}
+
 // These exact read-only capabilities issue a tenant-and-Work-bound DTT
 // context downstream. Stateless OAuth hosts must first establish the same
 // bounded Work continuity/read binding as an MCP-transport caller. Keep this
@@ -1134,6 +1153,7 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(String(args?.capability_id || ""))) {
       return false;
     }
+    if (isExactWorkResumeRequest(requestedTool, args)) return false;
     return !metadataFreeHeartbeatBootstrap;
   }
   if (
@@ -1144,6 +1164,7 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     )
   ) return true;
   if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(requestedTool)) return false;
+  if (isExactWorkResumeRequest(requestedTool, args)) return false;
   if (qualifiesForStatePureReadPath(requestedTool)) return false;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(requestedTool);
 }
@@ -1173,8 +1194,10 @@ export function requiresCanonicalWorkReadAuthorization(toolName, args = {}) {
   if (requiresGenericWorkPreflight(toolName, args)) return true;
   const requestedTool = String(toolName || "");
   if (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(requestedTool)) return true;
+  if (isExactWorkResumeRequest(requestedTool, args)) return true;
   return requestedTool === "core_capability_invoke" &&
-    PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(String(args?.capability_id || ""));
+    (PREFLIGHT_FREE_EXACT_WORK_MUTATIONS.has(String(args?.capability_id || "")) ||
+      isExactWorkResumeRequest(requestedTool, args));
 }
 
 function serverIssuedWorkPreflight(preflight, identity) {

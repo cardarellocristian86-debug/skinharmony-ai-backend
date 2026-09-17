@@ -624,6 +624,34 @@ test("queued Gallery assignment uses its native gate without requiring a legacy 
   }
 });
 
+test("an exact accepted Gallery Work reaches server-owned continuity activation before legacy preflight", () => {
+  for (const capability_id of [
+    "work_continuity_resume",
+    "work_continuity_start_or_resume",
+  ]) {
+    const directArgs = { work_id: "accepted-work", project_id: "project-a" };
+    assert.equal(requiresGenericWorkPreflight(capability_id, directArgs), false, capability_id);
+    assert.equal(requiresCanonicalWorkReadAuthorization(capability_id, directArgs), true, capability_id);
+    const dynamicArgs = { capability_id, arguments: directArgs };
+    assert.equal(requiresGenericWorkPreflight("core_capability_invoke", dynamicArgs), false, capability_id);
+    assert.equal(requiresCanonicalWorkReadAuthorization("core_capability_invoke", dynamicArgs), true, capability_id);
+  }
+
+  assert.equal(
+    requiresGenericWorkPreflight("work_continuity_start_or_resume", { project_id: "project-a" }),
+    true,
+    "implicit project-wide resume must retain generic preflight",
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "work_continuity_start_or_resume",
+      arguments: { project_id: "project-a" },
+    }),
+    true,
+    "dynamic implicit resume must retain generic preflight",
+  );
+});
+
 test("does not expose client-selectable product packs on horizontal Core tools", () => {
   for (const name of ["work_preflight", "nyra_runtime_context", "nyra_interpret_request"]) {
     const definition = TOOLS.find((tool) => tool.name === name);
