@@ -7394,6 +7394,12 @@ export function createUniversalCoreService(options = {}) {
         mode: entity360Mode,
         qualificationSigner: entity360QualificationSigner,
         qualificationVerifier: entity360QualificationVerifier,
+        initialIcfSeed: typeof options.icfStore?.ensureInitialWorkGovernanceSeed === "function"
+          ? (input) => options.icfStore.ensureInitialWorkGovernanceSeed({
+            tenantId: input.tenant_id,
+            workId: input.work_id,
+          })
+          : null,
         bitemporalMode: options.entity360BitemporalMode ||
           process.env.CORE_ENTITY360_BITEMPORAL_MODE || "OFF",
       })

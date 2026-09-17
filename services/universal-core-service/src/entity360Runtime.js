@@ -319,7 +319,7 @@ function publicMetrics(counter, storeMetrics, mode, policy, ontology) {
 
 export function createEntity360Runtime({ store, adapterRegistry, policy, ontology, mode = "OFF",
   enforcementPolicy, qualificationSigner, qualificationVerifier,
-  bitemporalMode = "OFF", now = () => Date.now() } = {}) {
+  bitemporalMode = "OFF", initialIcfSeed, now = () => Date.now() } = {}) {
   if (!store || typeof store.writeSnapshot !== "function"
     || typeof store.readSnapshotWriteReplay !== "function"
     || typeof store.registerDefinition !== "function" || typeof store.readRegistry !== "function"
@@ -941,6 +941,45 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       production_decision_changed: false, execution_authorized: false });
   }
 
+  async function initialIcfSeedForWork(identity, workId) {
+    if (typeof initialIcfSeed !== "function") {
+      fail("entity360_initial_icf_seed_unavailable", 503);
+    }
+    let receipt;
+    try {
+      receipt = await initialIcfSeed({ tenant_id: identity.tenant_id, work_id: workId });
+    } catch (error) {
+      const code = String(error?.code || error?.message || "icf_initial_seed_unavailable");
+      if (["icf_initial_seed_canonical_binding_missing",
+        "icf_initial_seed_canonical_binding_ambiguous",
+        "icf_initial_seed_binding_mismatch",
+        "icf_initial_seed_existing_head_invalid",
+        "icf_initial_seed_event_missing",
+        "icf_initial_seed_head_event_missing",
+        "icf_initial_seed_head_mismatch"].includes(code)) {
+        fail(code, 409);
+      }
+      fail("entity360_initial_icf_seed_unavailable", 503, { reason: code.slice(0, 160) });
+    }
+    if (!receipt || receipt.schema_version !== "icf_initial_work_governance_seed_receipt_v1"
+      || !["seeded", "present"].includes(receipt.state)
+      || receipt.tenant_id !== identity.tenant_id
+      || String(receipt.work_id || "").toLowerCase() !== workId.toLowerCase()
+      || !String(receipt.causal_work_id || "").trim()
+      || !Number.isSafeInteger(Number(receipt.icf_version)) || Number(receipt.icf_version) < 1
+      || !/^[a-f0-9]{64}$/u.test(String(receipt.ledger_head_digest || ""))
+      || !/^[a-f0-9]{64}$/u.test(String(receipt.seed_payload_digest || ""))) {
+      fail("entity360_initial_icf_seed_readback_invalid", 503);
+    }
+    return Object.freeze({
+      state: receipt.state,
+      causal_work_id: String(receipt.causal_work_id || ""),
+      icf_version: Number(receipt.icf_version),
+      ledger_head_digest: receipt.ledger_head_digest,
+      seed_payload_digest: receipt.seed_payload_digest,
+    });
+  }
+
   async function bootstrapInitialWorkSnapshot(identity, input = {}) {
     const allowedInput = new Set([
       "tenant_id", "work_id", "as_of", "expected_revision", "idempotency_key",
@@ -957,6 +996,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const idempotencyKey = text(input.idempotency_key,
       "entity360_idempotency_key_required", 240);
     const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
+    const initialIcfSeed = await initialIcfSeedForWork(identity, workId);
     const assemblyInput = {
       work_id: workId,
       entity_type: "work",
@@ -1015,6 +1055,12 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       tenant_feature_revision: Number(featureAfter.revision),
       policy_digest: featureAfter.policy_digest,
       enforcement_authority_digest: featureAfter.enforcement_authority_digest,
+      icf_governance_seed: Object.freeze({
+        causal_work_id: initialIcfSeed.causal_work_id,
+        icf_version: initialIcfSeed.icf_version,
+        ledger_head_digest: initialIcfSeed.ledger_head_digest,
+        seed_payload_digest: initialIcfSeed.seed_payload_digest,
+      }),
       context_only: true,
       execution_authorized: false,
       provider_execution: false,
