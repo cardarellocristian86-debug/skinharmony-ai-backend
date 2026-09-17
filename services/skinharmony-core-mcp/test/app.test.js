@@ -970,7 +970,7 @@ test("capsule resume and start-or-resume use only the bounded Core resume-or-bin
   ]) {
     assert.match(handler, /requireCanonicalWorkRead|canonicalVisibleWorkIds/);
     assert.match(handler, /"work\.continuity\.resume_or_bind"/);
-    assert.match(handler, /continuityResumeCoreTarget\(canonicalWork, sessionId\)|work_resume_v2:auto/);
+    assert.match(handler, /continuityResumeCoreTarget\(canonicalWork, sessionId\)|continuityProjectResumeCoreTarget\(projectId, sessionId\)/);
     assert.match(handler, /identity\.agentPresence\?\.session_id/);
     assert.doesNotMatch(handler, /"work\.continuity\.resume"/);
     assert.doesNotMatch(handler, /owner_confirmed|confirmation_reference|owner_confirmed_governed_action/);
@@ -994,6 +994,16 @@ test("capsule resume and start-or-resume use only the bounded Core resume-or-bin
   const binding = serverSource.slice(bindingStart, bindingEnd);
   assert.match(binding, /activation_required: !canonicalWork\?\.legacy_work_id/);
   assert.match(binding, /assignment_accepted_session_fingerprint === sessionFingerprint/);
+
+  const targetStart = serverSource.indexOf("function continuityResumeCoreTarget");
+  const targetEnd = serverSource.indexOf("function requireActivatedCanonicalContinuity", targetStart);
+  const target = serverSource.slice(targetStart, targetEnd);
+  assert.ok(targetStart >= 0 && targetEnd > targetStart);
+  assert.match(target, /work_continuity_resume_core_target_v1/);
+  assert.match(target, /work_resume_v2:\$\{digest\}/);
+  assert.match(target, /crypto\.createHash\("sha256"\)/);
+  assert.doesNotMatch(target, /\.join\(":"\)/,
+    "Core target must remain bounded while its digest binds every resume field");
 });
 
 test("accepted queued Work activation is server-owned and never runs from Gallery reads", () => {
