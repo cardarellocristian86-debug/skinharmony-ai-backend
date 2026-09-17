@@ -1030,12 +1030,12 @@ test("Gallery and continuity status divergence remains an explicit current-state
   assert.deepEqual(snapshot.core_review_requirement.admissible_outcomes, ["HOLD"]);
 });
 
-test("Work state reconciliation preserves independent Gallery and continuity timestamps", async () => {
+test("fresh Work read preserves recorded validity without expiring unchanged authoritative state", async () => {
   const staleAt = "2026-08-25T08:00:00.000Z";
   const fake = createFakePool((sql) => {
     const response = workRows(sql);
     if (/FROM core_continuity_works/u.test(sql)) {
-      return result(response.rows.map((row) => ({ ...row, status: "BLOCKED", updated_at: staleAt })));
+      return result(response.rows.map((row) => ({ ...row, status: "ACTIVE", updated_at: staleAt })));
     }
     return response;
   });
@@ -1046,12 +1046,34 @@ test("Work state reconciliation preserves independent Gallery and continuity tim
     entity_type: "work", identity, as_of: AT });
   const currentClaims = discovery.source_contributions.flatMap((item) => item.facts || [])
     .filter((fact) => fact.fact_id === "work.current_state")
-    .sort((left, right) => left.value.status.localeCompare(right.value.status));
+    .sort((left, right) => left.recorded_at.localeCompare(right.recorded_at));
   assert.deepEqual(currentClaims.map((fact) => ({ status: fact.value.status,
-    observed_at: fact.observed_at, recorded_at: fact.recorded_at })), [
-    { status: "ACTIVE", observed_at: AT, recorded_at: AT },
-    { status: "BLOCKED", observed_at: staleAt, recorded_at: staleAt },
+    observed_at: fact.observed_at, recorded_at: fact.recorded_at,
+    valid_from: fact.valid_from })), [
+    { status: "ACTIVE", observed_at: AT, recorded_at: staleAt, valid_from: staleAt },
+    { status: "ACTIVE", observed_at: AT, recorded_at: AT, valid_from: AT },
   ]);
+  const identityClaims = discovery.source_contributions.flatMap((item) => item.facts || [])
+    .filter((fact) => fact.fact_id === "work.identity");
+  assert.ok(identityClaims.every((fact) => fact.observed_at === AT));
+  assert.ok(identityClaims.some((fact) => fact.recorded_at === staleAt
+    && fact.valid_from === staleAt));
+  const factsById = new Map(discovery.source_contributions.flatMap((item) => item.facts || [])
+    .map((fact) => [fact.fact_id, fact]));
+  assert.deepEqual(["work.gallery_state_details", "work.acceptance_criteria"]
+    .map((factId) => ({ fact_id: factId, observed_at: factsById.get(factId)?.observed_at,
+      recorded_at: factsById.get(factId)?.recorded_at,
+      valid_from: factsById.get(factId)?.valid_from })), [
+    { fact_id: "work.gallery_state_details", observed_at: AT,
+      recorded_at: AT, valid_from: AT },
+    { fact_id: "work.acceptance_criteria", observed_at: AT,
+      recorded_at: AT, valid_from: AT },
+  ]);
+  assert.deepEqual({
+    observed_at: factsById.get("work.continuity_state_details")?.observed_at,
+    recorded_at: factsById.get("work.continuity_state_details")?.recorded_at,
+    valid_from: factsById.get("work.continuity_state_details")?.valid_from,
+  }, { observed_at: AT, recorded_at: staleAt, valid_from: staleAt });
 
   const snapshot = assembleEntity360Snapshot({ tenant_id: TENANT, entity_type: "work",
     entity_id: entityId, identity, resolution_candidates: discovery.candidates,
@@ -1063,7 +1085,7 @@ test("Work state reconciliation preserves independent Gallery and continuity tim
     qualification_signer: QUALIFICATION_SIGNER });
   assert.equal(snapshot.context_status, "READY");
   assert.equal(snapshot.contradictions.some((item) => item.fact_id === "work.current_state"), false);
-  assert.ok(snapshot.stale_state_references.some((item) => item.fact_id === "work.current_state"));
+  assert.equal(snapshot.stale_state_references.some((item) => item.fact_id === "work.current_state"), false);
   assert.equal(snapshot.current_state["work.current_state"].value.status, "ACTIVE");
 });
 

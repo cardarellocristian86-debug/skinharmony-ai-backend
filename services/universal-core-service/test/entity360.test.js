@@ -1499,7 +1499,7 @@ function memoryRuntimeDependencies() {
     setFeatureFlag(value) { featureFlag = value; } };
 }
 
-async function enforcedRuntimeFixture({ now = () => Date.parse(AT) } = {}) {
+async function enforcedRuntimeFixture({ now = () => Date.parse(AT), initialIcfSeed = null } = {}) {
   const dependencies = memoryRuntimeDependencies();
   const { store, adapterRegistry } = dependencies;
   store.kind = "entity360_postgres_append_only_v1";
@@ -1525,14 +1525,25 @@ async function enforcedRuntimeFixture({ now = () => Date.parse(AT) } = {}) {
     provider_mutation: false,
     execution_authorized: false,
   });
+  const seeded = new Set();
+  const seedInitialIcf = initialIcfSeed || (async ({ tenant_id, work_id }) => {
+    const key = `${tenant_id}:${work_id}`;
+    const state = seeded.has(key) ? "present" : "seeded";
+    seeded.add(key);
+    return {
+      schema_version: "icf_initial_work_governance_seed_receipt_v1", state,
+      tenant_id, work_id, causal_work_id: work_id, project_id: PROJECT_UUID,
+      icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+    };
+  });
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
     ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
-    bitemporalMode: "ENFORCE", now });
+    bitemporalMode: "ENFORCE", initialIcfSeed: seedInitialIcf, now });
   await runtime.initialize();
   const feature = await runtime.invoke("entity_360_feature_flag_write",
     CORE_OPERATOR_IDENTITY, { mode: "ENFORCE", enabled: true, expected_revision: 1,
       idempotency_key: "entity360-bootstrap-enforce" });
-  return { ...dependencies, runtime, feature };
+  return { ...dependencies, runtime, feature, seeded };
 }
 
 const DTT_IDENTITY = Object.freeze({ tenant_id: TENANT, work_id: WORK_ID, actor_id: "agent:test",
@@ -1749,6 +1760,12 @@ test("ENFORCED first Work snapshot bootstrap is READY, replay-stable and context
     tenant_feature_revision: feature.revision,
     policy_digest: feature.policy_digest,
     enforcement_authority_digest: feature.enforcement_authority_digest,
+    icf_governance_seed: {
+      causal_work_id: WORK_ID,
+      icf_version: 1,
+      ledger_head_digest: DIGEST_D,
+      seed_payload_digest: DIGEST_C,
+    },
     context_only: true,
     execution_authorized: false,
     provider_execution: false,
@@ -1759,6 +1776,69 @@ test("ENFORCED first Work snapshot bootstrap is READY, replay-stable and context
   assert.match(first.dedicated_core_gate.request_digest, /^[a-f0-9]{64}$/u);
   assert.match(first.dedicated_core_gate.idempotency_digest, /^[a-f0-9]{64}$/u);
   assert.match(first.dedicated_core_gate.gate_digest, /^[a-f0-9]{64}$/u);
+});
+
+test("Work snapshot bootstrap seeds missing ICF from a server-owned receipt and replays without a second seed", async () => {
+  const seeded = new Set();
+  const calls = [];
+  const initialIcfSeed = async ({ tenant_id, work_id }) => {
+    calls.push({ tenant_id, work_id });
+    const key = `${tenant_id}:${work_id}`;
+    const state = seeded.has(key) ? "present" : "seeded";
+    seeded.add(key);
+    return {
+      schema_version: "icf_initial_work_governance_seed_receipt_v1", state,
+      tenant_id, work_id, causal_work_id: work_id, project_id: PROJECT_UUID,
+      icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+    };
+  };
+  const { runtime } = await enforcedRuntimeFixture({ initialIcfSeed });
+  const input = { work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "entity360-server-owned-icf-seed" };
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  const replay = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  assert.equal(seeded.size, 1);
+  assert.deepEqual(calls, [
+    { tenant_id: TENANT, work_id: WORK_ID },
+    { tenant_id: TENANT, work_id: WORK_ID },
+  ]);
+  assert.equal(first.snapshot.context_status, "READY");
+  assert.equal(replay.persistence.replayed, true);
+  assert.deepEqual(first.dedicated_core_gate.icf_governance_seed, {
+    causal_work_id: WORK_ID,
+    icf_version: 1,
+    ledger_head_digest: DIGEST_D,
+    seed_payload_digest: DIGEST_C,
+  });
+  assert.deepEqual(replay.dedicated_core_gate.icf_governance_seed,
+    first.dedicated_core_gate.icf_governance_seed);
+});
+
+test("Work snapshot bootstrap fails closed before assembly when the server-owned ICF seed mismatches", async () => {
+  const mismatch = Object.assign(new Error("icf_initial_seed_binding_mismatch"), {
+    code: "icf_initial_seed_binding_mismatch",
+  });
+  const { runtime, store, adapterRegistry } = await enforcedRuntimeFixture({
+    initialIcfSeed: async () => { throw mismatch; },
+  });
+  let assemblyCalls = 0;
+  let snapshotWrites = 0;
+  const assembleContext = adapterRegistry.assembleContext;
+  const writeSnapshot = store.writeSnapshot;
+  adapterRegistry.assembleContext = async (...args) => {
+    assemblyCalls += 1;
+    return assembleContext(...args);
+  };
+  store.writeSnapshot = async (...args) => {
+    snapshotWrites += 1;
+    return writeSnapshot(...args);
+  };
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "entity360-icf-seed-mismatch",
+  }), (error) => error.code === "icf_initial_seed_binding_mismatch" && error.status === 409);
+  assert.equal(assemblyCalls, 0);
+  assert.equal(snapshotWrites, 0);
 });
 
 test("Work snapshot bootstrap uses a server-owned current cut after canonical Work commit", async () => {
@@ -1816,6 +1896,10 @@ test("Work snapshot bootstrap rejects non-initial, caller-expanded and cross-Wor
   await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
     work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-expanded",
     entity_type: "agent",
+  }), (error) => error.code === "entity360_bootstrap_input_not_allowed" && error.status === 403);
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-client-icf",
+    icf_seed: { ledger_head_digest: "f".repeat(64) },
   }), (error) => error.code === "entity360_bootstrap_input_not_allowed" && error.status === 403);
   await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
     work_id: UNRELATED_WORK_ID, as_of: AT, expected_revision: 0,

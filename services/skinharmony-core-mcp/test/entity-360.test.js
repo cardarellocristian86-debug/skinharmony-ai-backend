@@ -89,6 +89,12 @@ function bootstrapCoreResponse(args, identityContext, {
     snapshot_version: 1,
     previous_snapshot_digest: null,
     context_status: "READY",
+    current_state: {
+      "governance.icf.binding": { value: {
+        version: 1,
+        ledger_head_digest: "6".repeat(64),
+      } },
+    },
     deterministic_immutable_digest: "2".repeat(64),
     execution_authorized: false,
     production_decision_mutation: false,
@@ -123,6 +129,12 @@ function bootstrapCoreResponse(args, identityContext, {
     tenant_feature_revision: 7,
     policy_digest: "3".repeat(64),
     enforcement_authority_digest: "4".repeat(64),
+    icf_governance_seed: {
+      causal_work_id: args.work_id,
+      icf_version: 1,
+      ledger_head_digest: "6".repeat(64),
+      seed_payload_digest: "7".repeat(64),
+    },
     context_only: true,
     execution_authorized: false,
     provider_execution: false,
@@ -532,6 +544,7 @@ test("Entity 360 Work snapshot bootstrap accepts only an exact dedicated Core ga
   assert.equal(response.structuredContent.dedicated_core_gate.authorized, true);
   assert.equal(response.structuredContent.dedicated_core_gate.context_only, true);
   assert.equal(response.structuredContent.dedicated_core_gate.execution_authorized, false);
+  assert.equal(response.structuredContent.dedicated_core_gate.icf_governance_seed.icf_version, 1);
   assert.equal(response.structuredContent.result.dedicated_core_gate, undefined);
   assert.equal(response.structuredContent.result.entity_360_nyra_context.state,
     "READY_CONTEXT_ONLY");
@@ -558,6 +571,32 @@ test("Entity 360 Work snapshot bootstrap rejects self-consistent gate and snapsh
     ["feature revision", { gateOverrides: { tenant_feature_revision: 0 } }],
     ["extra gate authority", { gateOverrides: { merge: true } }],
     ["policy binding", { gateOverrides: { policy_digest: "f".repeat(64) } }],
+    ["missing ICF seed", { gateOverrides: { icf_governance_seed: null } }],
+    ["extra ICF seed field", { gateOverrides: { icf_governance_seed: {
+      causal_work_id: WORK_ID, icf_version: 1, ledger_head_digest: "6".repeat(64),
+      seed_payload_digest: "7".repeat(64), authority: "client" } } }],
+    ["ICF seed Work binding", { gateOverrides: { icf_governance_seed: {
+      causal_work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", icf_version: 1,
+      ledger_head_digest: "6".repeat(64), seed_payload_digest: "7".repeat(64) } } }],
+    ["ICF seed version", { gateOverrides: { icf_governance_seed: {
+      causal_work_id: WORK_ID, icf_version: 0, ledger_head_digest: "6".repeat(64),
+      seed_payload_digest: "7".repeat(64) } } }],
+    ["ICF seed ledger digest", { gateOverrides: { icf_governance_seed: {
+      causal_work_id: WORK_ID, icf_version: 1, ledger_head_digest: "invalid",
+      seed_payload_digest: "7".repeat(64) } } }],
+    ["ICF seed payload digest", { gateOverrides: { icf_governance_seed: {
+      causal_work_id: WORK_ID, icf_version: 1, ledger_head_digest: "6".repeat(64),
+      seed_payload_digest: "invalid" } } }],
+    ["snapshot ICF version binding", { snapshotOverrides: { current_state: {
+      "governance.icf.binding": { value: {
+        version: 2, ledger_head_digest: "6".repeat(64),
+      } },
+    } } }],
+    ["snapshot ICF digest binding", { snapshotOverrides: { current_state: {
+      "governance.icf.binding": { value: {
+        version: 1, ledger_head_digest: "8".repeat(64),
+      } },
+    } } }],
     ["feature mode", { resultOverrides: {
       feature_flag: { mode: "SHADOW", enabled: true, revision: 7 },
     } }],
