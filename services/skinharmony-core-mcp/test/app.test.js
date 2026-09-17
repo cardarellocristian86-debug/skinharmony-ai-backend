@@ -970,14 +970,73 @@ test("capsule resume and start-or-resume use only the bounded Core resume-or-bin
   ]) {
     assert.match(handler, /requireCanonicalWorkRead|canonicalVisibleWorkIds/);
     assert.match(handler, /"work\.continuity\.resume_or_bind"/);
-    assert.match(handler, /`\$\{(?:canonicalWork\.project_id|projectId)\}:\$\{sessionId\}`/);
+    assert.match(handler, /continuityResumeCoreTarget\(canonicalWork, sessionId\)|work_resume_v2:auto/);
     assert.match(handler, /identity\.agentPresence\?\.session_id/);
     assert.doesNotMatch(handler, /"work\.continuity\.resume"/);
     assert.doesNotMatch(handler, /owner_confirmed|confirmation_reference|owner_confirmed_governed_action/);
+    const coreGate = handler.indexOf('"work.continuity.resume_or_bind"');
+    const activation = handler.indexOf("activateAcceptedQueuedWorkContinuity(");
+    const runtimeEffect = Math.max(
+      handler.indexOf("workContinuityRuntime.resume("),
+      handler.indexOf("workContinuityRuntime.ensure("),
+    );
+    assert.ok(coreGate >= 0 && activation > coreGate,
+      "accepted queue activation must follow the exact bounded Core gate");
+    assert.ok(runtimeEffect > activation,
+      "continuity runtime mutation must follow accepted queue activation");
   }
   const direct = serverSource.slice(directStart, directEnd);
   assert.match(direct, /args\.idempotency_key/);
   assert.match(direct, /\{ \.\.\.args, session_id: sessionId \}/);
+  assert.match(direct, /const result = continuityActivation[\s\S]*?workContinuityRuntime\.ensure[\s\S]*?: await workContinuityRuntime\.resume/);
+  const bindingStart = serverSource.indexOf("function acceptedQueuedContinuityBinding");
+  const bindingEnd = serverSource.indexOf("function continuityResumeCoreTarget", bindingStart);
+  const binding = serverSource.slice(bindingStart, bindingEnd);
+  assert.match(binding, /activation_required: !canonicalWork\?\.legacy_work_id/);
+  assert.match(binding, /assignment_accepted_session_fingerprint === sessionFingerprint/);
+});
+
+test("accepted queued Work activation is server-owned and never runs from Gallery reads", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const helperStart = serverSource.indexOf("async function activateAcceptedQueuedWorkContinuity");
+  const helperEnd = serverSource.indexOf("function acceptedQueuedContinuityBinding", helperStart);
+  const helper = serverSource.slice(helperStart, helperEnd);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  assert.match(helper, /requireTenantWorkCapability\(identity, "operate"\)/);
+  assert.match(helper, /\{ server_owned: true, work_id: workId \}/);
+  assert.doesNotMatch(helper, /args|input|owner_confirmed|confirmation_reference/);
+
+  const joinStart = serverSource.indexOf("async function joinAcceptedQueuedWorkParticipant");
+  const joinEnd = serverSource.indexOf("async function listLegacyWorksAuthorized", joinStart);
+  const join = serverSource.slice(joinStart, joinEnd);
+  const joinCoreGate = join.indexOf("requireBoundedTenantCoordination(");
+  const joinMutation = join.indexOf("workContinuityRuntime.join(");
+  assert.ok(joinCoreGate >= 0 && joinMutation > joinCoreGate);
+  assert.match(join, /"work\.participant\.join"/);
+  assert.match(join, /assignment_status: "ACCEPTED"/);
+  assert.match(join, /Math\.floor\(Date\.now\(\) \/ 3_600_000\)/);
+  assert.match(join, /presenceWindow/);
+
+  for (const handlerName of [
+    "tenant_work_gallery_list", "tenant_work_gallery_read", "tenant_work_inbox",
+    "work_continuity_intent_read", "work_continuity_checkpoint_read",
+  ]) {
+    const start = serverSource.indexOf(`${handlerName}: async`);
+    if (start < 0) continue;
+    const end = serverSource.indexOf("},\n    ", start);
+    assert.doesNotMatch(serverSource.slice(start, end), /activateAcceptedQueuedWorkContinuity/,
+      `${handlerName} must remain a read-only path`);
+  }
+
+  for (const handlerName of [
+    "work_continuity_checkpoint", "tenant_work_gallery_join",
+    "tenant_work_message_post", "tenant_work_inbox",
+  ]) {
+    const start = serverSource.indexOf(`${handlerName}: async`);
+    const end = serverSource.indexOf("},\n    ", start);
+    assert.match(serverSource.slice(start, end), /requireActivatedCanonicalContinuity\(canonical\)/,
+      `${handlerName} must reject a queued but unactivated Work`);
+  }
 });
 
 test("exact Work resume establishes only the bounded Nyra read binding after ACL authorization", () => {

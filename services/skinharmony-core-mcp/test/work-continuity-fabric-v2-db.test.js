@@ -605,7 +605,7 @@ class ContinuityPool {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
     }
-    if (q.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+    if (q.startsWith("SELECT work_id,legacy_work_id,work_type")) {
       return { rows: [], rowCount: 0 };
     }
     if (q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
@@ -2910,7 +2910,7 @@ test("ensureWithClient preserves the legacy create contract inside a caller-owne
     call.sql.startsWith("SELECT pg_advisory_xact_lock") &&
     call.parameters[0] === "tenant-a" && call.parameters[1] === created.work_id);
   const v2CollisionRead = observed.findIndex((call) =>
-    call.sql.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work"));
+    call.sql.startsWith("SELECT work_id,legacy_work_id,work_type"));
   const coreInsert = observed.findIndex((call) =>
     call.sql.startsWith("INSERT INTO core_continuity_works"));
   assert.ok(namespaceLock >= 0 && namespaceLock < v2CollisionRead && v2CollisionRead < coreInsert,
@@ -2923,7 +2923,7 @@ test("Core creation rejects an unbridged V2 Work UUID under the shared namespace
   const collisionId = "56565656-5656-4565-8565-565656565656";
   pool.query = async (sql, parameters = []) => {
     const normalized = sql.replace(/\s+/g, " ").trim();
-    if (normalized.startsWith("SELECT work_id,legacy_work_id,work_type FROM tenant_work")) {
+    if (normalized.startsWith("SELECT work_id,legacy_work_id,work_type")) {
       return { rows: [{
         work_id: collisionId,
         legacy_work_id: null,

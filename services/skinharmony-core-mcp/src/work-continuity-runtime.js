@@ -2562,6 +2562,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
     pool,
     sql: WORK_CONTINUITY_SCHEMA_SQL,
   });
+  // This authority token never crosses the runtime boundary and cannot be
+  // represented in MCP/JSON input.  Only the dedicated V2 bridge entrypoint
+  // below can attach it to ensureWithClient.
+  const v2LegacyBridgeAuthority = Symbol("v2_legacy_bridge_authority");
 
   async function injectFailure(phase, context) {
     if (failureInjector) await failureInjector(phase, context);
@@ -3815,12 +3819,21 @@ export function createWorkContinuityRuntime(config, options = {}) {
         tenantId,
         workId,
       ]);
-      const tenantWorkCollision = await client.query(`SELECT work_id,legacy_work_id,work_type
+      const tenantWorkCollision = await client.query(`SELECT work_id,legacy_work_id,work_type,project_id
         FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`, [tenantId, workId]);
-      if (tenantWorkCollision.rows[0] && (
-        tenantWorkCollision.rows[0].legacy_work_id !== workId ||
-        tenantWorkCollision.rows[0].work_type !== "legacy"
-      )) {
+      const tenantWork = tenantWorkCollision.rows[0] || null;
+      const serverOwnedV2Bridge = options.v2LegacyBridgeAuthority === v2LegacyBridgeAuthority;
+      const existingLegacyProjection = Boolean(
+        tenantWork && tenantWork.legacy_work_id === workId && tenantWork.work_type === "legacy",
+      );
+      const exactV2BridgeSource = Boolean(
+        serverOwnedV2Bridge && tenantWork && tenantWork.legacy_work_id === workId &&
+        tenantWork.project_id === projectId,
+      );
+      if (serverOwnedV2Bridge && !exactV2BridgeSource) {
+        throw new Error("continuity_v2_bridge_source_invalid");
+      }
+      if (tenantWork && !existingLegacyProjection && !exactV2BridgeSource) {
         throw new Error("continuity_work_v2_id_collision");
       }
       const architectureDigest = digest(architecture);
@@ -4034,6 +4047,25 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function ensure(identity, input, options = {}) {
     return transaction((client) => ensureWithClient(client, identity, input, options));
+  }
+
+  async function materializeV2LegacyBridgeWithClient(client, identity, input = {}) {
+    const workId = uuid(input.work_id, "work_id");
+    const expectedSessionId = `v2bridge-${digest({
+      schema_version: "legacy_work_bridge_session_v1",
+      work_id: workId,
+    }).slice(0, 48)}`;
+    if (
+      input.client_type !== "canonical_v2_bridge" ||
+      input.session_id !== expectedSessionId ||
+      input.resume_existing === true
+    ) {
+      throw new Error("continuity_v2_bridge_input_invalid");
+    }
+    return ensureWithClient(client, identity, input, {
+      creationAuthorized: true,
+      v2LegacyBridgeAuthority,
+    });
   }
 
   async function create(identity, input) {
@@ -5045,7 +5077,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
         count(DISTINCT l.lease_id) FILTER (
           WHERE l.status='active' AND l.expires_at>now()
         )::int AS active_leases,
-        count(DISTINCT b.branch_id) FILTER (WHERE b.status='active')::int AS active_branches
+        count(DISTINCT b.branch_id) FILTER (WHERE b.status='active')::int AS active_branches,
+        (SELECT c.capsule_id FROM core_continuity_capsules c
+          WHERE c.tenant_id=w.tenant_id AND c.work_id=w.work_id
+          ORDER BY c.created_at DESC LIMIT 1) AS latest_checkpoint_id,
+        (SELECT c.capsule_digest FROM core_continuity_capsules c
+          WHERE c.tenant_id=w.tenant_id AND c.work_id=w.work_id
+          ORDER BY c.created_at DESC LIMIT 1) AS latest_checkpoint_digest,
+        (SELECT c.created_at FROM core_continuity_capsules c
+          WHERE c.tenant_id=w.tenant_id AND c.work_id=w.work_id
+          ORDER BY c.created_at DESC LIMIT 1) AS latest_checkpoint_at,
+        (SELECT count(*)::int FROM core_continuity_messages m
+          WHERE m.tenant_id=w.tenant_id AND m.work_id=w.work_id) AS message_count,
+        (SELECT count(*)::int FROM core_continuity_messages m
+          WHERE m.tenant_id=w.tenant_id AND m.work_id=w.work_id
+            AND m.message_type='handoff') AS handoff_count,
+        (SELECT max(m.created_at) FROM core_continuity_messages m
+          WHERE m.tenant_id=w.tenant_id AND m.work_id=w.work_id
+            AND m.message_type='handoff') AS latest_handoff_at
       FROM core_continuity_works w
       LEFT JOIN core_continuity_participants p
         ON p.tenant_id=w.tenant_id AND p.work_id=w.work_id
@@ -8962,6 +9011,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     create,
     ensure,
     ensureWithClient,
+    materializeV2LegacyBridgeWithClient,
     upsertControlContext,
     readControlContext,
     readNyraOperationalState,
