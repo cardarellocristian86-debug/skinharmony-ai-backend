@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import {
+  actorFromIdentity,
+  canRead,
   createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
@@ -2432,12 +2434,25 @@ test("an exact Codex agent can accept a Gallery offer, but an impersonating host
 
   const wrongHost = identity("wrong-host");
   wrongHost.agentPresence.client_type = "codex";
+  await assert.rejects(store.authorizeQueuedWorkAssignmentAccept(wrongHost, {
+    work_id: queued.work.work_id,
+  }), /work_assignment_acceptance_denied/);
   await assert.rejects(store.acceptQueuedWorkAssignment(wrongHost, {
     work_id: queued.work.work_id,
   }), /work_assignment_acceptance_denied/);
 
-  const codex = identity("codex");
+  const codex = identity("codex", "member");
   codex.agentPresence.client_type = "codex";
+  assert.equal(canRead(offer.work, actorFromIdentity(codex)), false,
+    "an offered assignment must not grant general Work read access");
+  const admission = await store.authorizeQueuedWorkAssignmentAccept(codex, {
+    work_id: queued.work.work_id,
+  });
+  assert.deepEqual(admission, {
+    schema_version: "tenant_work_assignment_accept_authorization_v1",
+    authorized: true,
+    work_id: queued.work.work_id,
+  });
   const accepted = await store.acceptQueuedWorkAssignment(codex, {
     work_id: queued.work.work_id,
   });
