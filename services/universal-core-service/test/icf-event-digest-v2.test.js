@@ -14,8 +14,19 @@ import {
 import {
   createIcfPostgresStore,
   ICF_EVENT_DIGEST_MIGRATION_ID,
+  ICF_INITIAL_WORK_GOVERNANCE_SEED_EVENT,
   ICF_POSTGRES_SCHEMA,
 } from "../src/icfPostgresStore.js";
+
+const INITIAL_SEED_RECORD = Object.freeze({
+  canonical_work_id: "11111111-1111-4111-8111-111111111111",
+  causal_work_id: "22222222-2222-4222-8222-222222222222",
+  project_id: "33333333-3333-4333-8333-333333333333",
+  genesis_intent_id: "44444444-4444-4444-8444-444444444444",
+  intent_revision_id: "55555555-5555-4555-8555-555555555555",
+  genesis_digest: "a".repeat(64),
+  intent_revision_digest: "b".repeat(64),
+});
 
 function fakePool(currentRow = null) {
   const queries = [];
@@ -44,11 +55,14 @@ function fakePool(currentRow = null) {
   };
 }
 
-function governedMigrationPool({ tamperTargetConstraint = false } = {}) {
+function governedMigrationPool({ tamperTargetConstraint = false, initialSeedRecord = null } = {}) {
   const queries = [];
   let released = false;
   let schemaApplied = false;
   let migration = null;
+  let icfHead = null;
+  const icfEvents = new Map();
+  let initialSeedEventInserts = 0;
   const compatibleRegistryColumns = [
     { column_name: "migration_id", data_type: "character varying", character_maximum_length: 160, is_nullable: "NO", column_default: null },
     { column_name: "applied_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "now()" },
@@ -114,6 +128,39 @@ function governedMigrationPool({ tamperTargetConstraint = false } = {}) {
       const normalized = statement.replace(/\s+/gu, " ").trim();
       queries.push({ sql: statement, normalized, values,
         query_timeout: typeof sql === "object" ? sql.query_timeout : null });
+      if (normalized.includes("FROM tenant_work w")
+        && normalized.includes("core_work_causal_bindings")) {
+        return { rows: initialSeedRecord ? [{ ...initialSeedRecord }] : [],
+          rowCount: initialSeedRecord ? 1 : 0 };
+      }
+      if (normalized.includes("FROM core_icf_work") && normalized.includes("FOR UPDATE")) {
+        return { rows: icfHead ? [{ ...icfHead }] : [], rowCount: icfHead ? 1 : 0 };
+      }
+      if (normalized.includes("FROM core_icf_event") && normalized.includes("seq=1")) {
+        const event = icfEvents.get(1);
+        return { rows: event ? [{ ...event }] : [], rowCount: event ? 1 : 0 };
+      }
+      if (normalized.includes("FROM core_icf_event") && normalized.includes("seq=$3")) {
+        const event = icfEvents.get(Number(values[2]));
+        return { rows: event ? [{ ...event }] : [], rowCount: event ? 1 : 0 };
+      }
+      if (normalized.startsWith("INSERT INTO core_icf_event")) {
+        const event = {
+          tenant_id: values[0], work_id: values[1], seq: values[2], event_type: values[3],
+          payload: values[4], previous_digest: values[5], digest: values[6],
+          digest_contract: values[7], canonicalization_version: values[8],
+          digest_algorithm: values[9], payload_digest: values[10],
+          previous_digest_contract: values[11],
+        };
+        icfEvents.set(Number(event.seq), event);
+        initialSeedEventInserts += 1;
+        return { rows: [], rowCount: 1 };
+      }
+      if (normalized.startsWith("INSERT INTO core_icf_work")) {
+        icfHead = { version: values[2], ledger_head_digest: values[4],
+          ledger_head_digest_contract: values[5] };
+        return { rows: [], rowCount: 1 };
+      }
       if (normalized.includes("FROM information_schema.columns")
         && normalized.includes("table_name='core_schema_migrations'")) {
         return { rows: compatibleRegistryColumns };
@@ -163,6 +210,13 @@ function governedMigrationPool({ tamperTargetConstraint = false } = {}) {
     },
     queries,
     released: () => released,
+    initialSeedState: () => ({ head: icfHead && { ...icfHead },
+      events: [...icfEvents.values()].map((event) => ({ ...event })), initialSeedEventInserts }),
+    replaceInitialSeedEvent(sequence, patch) {
+      const current = icfEvents.get(sequence);
+      icfEvents.set(sequence, { ...current, ...patch });
+    },
+    replaceInitialSeedHead(patch) { icfHead = { ...icfHead, ...patch }; },
   };
 }
 
@@ -203,6 +257,72 @@ test("ICF PostgreSQL writer persists only recalculable canonical-v2 metadata", a
   assert.equal(result.digest_contract, ICF_EVENT_DIGEST_CONTRACT_V2);
   assert.equal(result.previous_digest_contract, null);
   assert.equal(fake.released(), true);
+});
+
+async function readyInitialSeedStore(record = INITIAL_SEED_RECORD) {
+  const fake = governedMigrationPool({ initialSeedRecord: record });
+  const store = createIcfPostgresStore({ pool: fake.value });
+  await store.initialize();
+  return { fake, store };
+}
+
+test("initial Work governance seed is created once and exact replay is read-only", async () => {
+  const { fake, store } = await readyInitialSeedStore();
+  const first = await store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id });
+  const replay = await store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id });
+  const state = fake.initialSeedState();
+  assert.equal(first.state, "seeded");
+  assert.equal(replay.state, "present");
+  assert.equal(first.ledger_head_digest, replay.ledger_head_digest);
+  assert.equal(state.initialSeedEventInserts, 1);
+  assert.equal(state.events.length, 1);
+  assert.equal(state.events[0].event_type, ICF_INITIAL_WORK_GOVERNANCE_SEED_EVENT);
+  assert.equal(state.events[0].work_id, INITIAL_SEED_RECORD.causal_work_id);
+  assert.equal(state.events[0].payload.canonical_work.work_id,
+    INITIAL_SEED_RECORD.canonical_work_id);
+  assert.equal(state.events[0].payload.genesis.canonical_digest,
+    INITIAL_SEED_RECORD.genesis_digest);
+  assert.equal(state.events[0].payload.approved_intent.canonical_digest,
+    INITIAL_SEED_RECORD.intent_revision_digest);
+});
+
+test("initial Work governance seed rejects a non-seed first event", async () => {
+  const { fake, store } = await readyInitialSeedStore();
+  await store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id });
+  fake.replaceInitialSeedEvent(1, { event_type: "STATE_BOUND" });
+  await assert.rejects(() => store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id }),
+  (error) => error.code === "icf_initial_seed_binding_mismatch");
+});
+
+test("initial Work governance seed rejects a tampered first-event payload", async () => {
+  const { fake, store } = await readyInitialSeedStore();
+  await store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id });
+  fake.replaceInitialSeedEvent(1, { payload: { tampered: true } });
+  await assert.rejects(() => store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id }),
+  (error) => error.code === "icf_initial_seed_binding_mismatch");
+});
+
+test("initial Work governance seed rejects a missing canonical binding", async () => {
+  const { store } = await readyInitialSeedStore(null);
+  await assert.rejects(() => store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id }),
+  (error) => error.code === "icf_initial_seed_canonical_binding_missing");
+});
+
+test("initial Work governance seed rejects a head that is not its final event", async () => {
+  const { fake, store } = await readyInitialSeedStore();
+  await store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id });
+  fake.replaceInitialSeedHead({ ledger_head_digest: "f".repeat(64) });
+  await assert.rejects(() => store.ensureInitialWorkGovernanceSeed({ tenantId: "tenant-a",
+    workId: INITIAL_SEED_RECORD.canonical_work_id }),
+  (error) => error.code === "icf_initial_seed_head_mismatch");
 });
 
 test("legacy ICF head upgrades by forward append without rewriting prior events", async () => {
