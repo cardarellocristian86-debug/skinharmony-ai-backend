@@ -1058,6 +1058,22 @@ test("fresh Work read preserves recorded validity without expiring unchanged aut
   assert.ok(identityClaims.every((fact) => fact.observed_at === AT));
   assert.ok(identityClaims.some((fact) => fact.recorded_at === staleAt
     && fact.valid_from === staleAt));
+  const factsById = new Map(discovery.source_contributions.flatMap((item) => item.facts || [])
+    .map((fact) => [fact.fact_id, fact]));
+  assert.deepEqual(["work.gallery_state_details", "work.acceptance_criteria"]
+    .map((factId) => ({ fact_id: factId, observed_at: factsById.get(factId)?.observed_at,
+      recorded_at: factsById.get(factId)?.recorded_at,
+      valid_from: factsById.get(factId)?.valid_from })), [
+    { fact_id: "work.gallery_state_details", observed_at: AT,
+      recorded_at: AT, valid_from: AT },
+    { fact_id: "work.acceptance_criteria", observed_at: AT,
+      recorded_at: AT, valid_from: AT },
+  ]);
+  assert.deepEqual({
+    observed_at: factsById.get("work.continuity_state_details")?.observed_at,
+    recorded_at: factsById.get("work.continuity_state_details")?.recorded_at,
+    valid_from: factsById.get("work.continuity_state_details")?.valid_from,
+  }, { observed_at: AT, recorded_at: staleAt, valid_from: staleAt });
 
   const snapshot = assembleEntity360Snapshot({ tenant_id: TENANT, entity_type: "work",
     entity_id: entityId, identity, resolution_candidates: discovery.candidates,

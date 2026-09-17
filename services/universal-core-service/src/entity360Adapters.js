@@ -1107,16 +1107,20 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
         progress_bp: gallery.progress_bp ?? null,
         progress_version: gallery.progress_version ?? null,
         next_action: gallery.next_action || null,
-      }, criticality: "normal", evidence_class: "verified_observation" }] : []),
+      }, criticality: "normal", evidence_class: "verified_observation",
+      observed_at: observedAt, recorded_at: gallery.updated_at, valid_from: gallery.updated_at }] : []),
       ...(continuity ? [{ fact_id: "work.continuity_state_details", value: {
         current_version: continuity.current_version ?? null,
         next_action: continuity.next_action || null,
-      }, criticality: "normal", evidence_class: "verified_observation" }] : []),
+      }, criticality: "normal", evidence_class: "verified_observation",
+      observed_at: observedAt, recorded_at: continuity.updated_at,
+      valid_from: continuity.updated_at }] : []),
       { fact_id: "work.acceptance_criteria", value: {
         criteria_digest: entity360Digest(gallery?.acceptance_criteria || []),
         item_count: Array.isArray(gallery?.acceptance_criteria)
           ? gallery.acceptance_criteria.length : 0,
-      }, criticality: "critical" },
+      }, criticality: "critical", observed_at: observedAt,
+      recorded_at: gallery.updated_at, valid_from: gallery.updated_at },
     ] });
   contributions.push(workContribution);
   report.push({ source_id: "work_continuity", state: "accepted", evidence_digest: workDigest,
