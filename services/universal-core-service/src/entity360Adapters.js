@@ -1049,7 +1049,14 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       reason_code: continuity ? "CANONICAL_GALLERY_IDENTITY_REQUIRED" : "WORK_NOT_FOUND" });
     return contributions;
   }
-  const observedAt = gallery?.updated_at || continuity?.updated_at || scope.as_of;
+  // The adapter is performing a fresh, tenant-bound observation of the
+  // authoritative Work projections at the Entity360 cut.  Their updated_at
+  // values describe when the recorded state became valid; treating them as
+  // the observation time makes an unchanged Work disappear after the
+  // continuity freshness TTL even though it was just read and verified.
+  const observedAt = scope.as_of;
+  const recordedAt = [gallery?.updated_at, continuity?.updated_at]
+    .filter(Boolean).sort().at(-1) || scope.as_of;
   const workRecord = {
     gallery: gallery ? selectedRow(gallery, ["work_id", "legacy_work_id", "work_code", "work_name", "work_type",
       "project_id", "status", "progress_bp", "progress_version", "progress_source", "priority", "intent_digest",
@@ -1068,29 +1075,34 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
   };
   const workProjects = projectSlugs([gallery.project_id, continuity?.project_id]);
   const identityFacts = [
-    ...(gallery.project_id ? [{ project_id: gallery.project_id, observed_at: gallery.updated_at }] : []),
+    ...(gallery.project_id ? [{ project_id: gallery.project_id,
+      recorded_at: gallery.updated_at, valid_from: gallery.updated_at }] : []),
     ...(continuity?.project_id
-      ? [{ project_id: continuity.project_id, observed_at: continuity.updated_at }] : []),
+      ? [{ project_id: continuity.project_id,
+        recorded_at: continuity.updated_at, valid_from: continuity.updated_at }] : []),
   ];
-  if (!identityFacts.length) identityFacts.push({ project_id: null, observed_at: observedAt });
+  if (!identityFacts.length) identityFacts.push({ project_id: null,
+    recorded_at: recordedAt, valid_from: recordedAt });
   const workContribution = contribution({ scope, sourceId: "work_continuity",
-    adapterVersion: "work_continuity_entity360_adapter_v1", observedAt,
+    adapterVersion: "work_continuity_entity360_adapter_v1", observedAt, recordedAt,
     watermark: `work:${gallery?.work_id || continuity?.work_id}:${continuity?.current_version || gallery?.progress_version || 1}`,
     evidenceClass: "authoritative_record", evidenceDigest: workDigest,
     evidenceRef: workEvidenceRef,
     facts: [
       ...identityFacts.map((fact) => ({ fact_id: "work.identity", value: {
         ...identityBase, project_id: fact.project_id,
-      }, criticality: "high_impact", observed_at: fact.observed_at, recorded_at: fact.observed_at,
+      }, criticality: "high_impact", observed_at: observedAt, recorded_at: fact.recorded_at,
+      valid_from: fact.valid_from,
       state: resolutionProjectConflict || workProjects.length > 1 ? "conflicting" : "current" })),
       ...(gallery?.status ? [{ fact_id: "work.current_state", value: {
         status: String(gallery.status).trim().toUpperCase(),
       }, criticality: "high_impact", evidence_class: "verified_observation",
-      observed_at: gallery.updated_at, recorded_at: gallery.updated_at }] : []),
+      observed_at: observedAt, recorded_at: gallery.updated_at, valid_from: gallery.updated_at }] : []),
       ...(continuity?.status ? [{ fact_id: "work.current_state", value: {
         status: String(continuity.status).trim().toUpperCase(),
       }, criticality: "high_impact", evidence_class: "verified_observation",
-      observed_at: continuity.updated_at, recorded_at: continuity.updated_at }] : []),
+      observed_at: observedAt, recorded_at: continuity.updated_at,
+      valid_from: continuity.updated_at }] : []),
       ...(gallery ? [{ fact_id: "work.gallery_state_details", value: {
         progress_bp: gallery.progress_bp ?? null,
         progress_version: gallery.progress_version ?? null,
