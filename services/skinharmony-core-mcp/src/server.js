@@ -1523,6 +1523,7 @@ function continuityResumeCoreTarget(canonicalWork, sessionId) {
     .update(JSON.stringify(stableCanonical({
       schema_version: "work_continuity_resume_core_target_v1",
       mode: "exact_work",
+      tenant_id: canonicalWork.tenant_id,
       work_id: canonicalWork.work_id,
       intent_digest: canonicalWork.intent_digest || null,
       assignment_status: canonicalWork.assignment_status || null,
@@ -1535,11 +1536,12 @@ function continuityResumeCoreTarget(canonicalWork, sessionId) {
   return `work_resume_v2:${digest}`;
 }
 
-function continuityProjectResumeCoreTarget(projectId, sessionId) {
+function continuityProjectResumeCoreTarget(tenantId, projectId, sessionId) {
   const digest = crypto.createHash("sha256")
     .update(JSON.stringify(stableCanonical({
       schema_version: "work_continuity_resume_core_target_v1",
       mode: "project_visible_work",
+      tenant_id: tenantId,
       project_id: projectId,
       session_id: sessionId,
     })))
@@ -2749,7 +2751,7 @@ const baseHandlers = {
         "work.continuity.resume_or_bind",
         canonicalWork
           ? continuityResumeCoreTarget(canonicalWork, sessionId)
-          : continuityProjectResumeCoreTarget(projectId, sessionId),
+          : continuityProjectResumeCoreTarget(identity.tenantId, projectId, sessionId),
         resumeIdempotencyKey,
       );
       const activationBinding = canonicalWork

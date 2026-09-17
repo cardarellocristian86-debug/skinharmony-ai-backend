@@ -970,7 +970,7 @@ test("capsule resume and start-or-resume use only the bounded Core resume-or-bin
   ]) {
     assert.match(handler, /requireCanonicalWorkRead|canonicalVisibleWorkIds/);
     assert.match(handler, /"work\.continuity\.resume_or_bind"/);
-    assert.match(handler, /continuityResumeCoreTarget\(canonicalWork, sessionId\)|continuityProjectResumeCoreTarget\(projectId, sessionId\)/);
+    assert.match(handler, /continuityResumeCoreTarget\(canonicalWork, sessionId\)|continuityProjectResumeCoreTarget\(identity\.tenantId, projectId, sessionId\)/);
     assert.match(handler, /identity\.agentPresence\?\.session_id/);
     assert.doesNotMatch(handler, /"work\.continuity\.resume"/);
     assert.doesNotMatch(handler, /owner_confirmed|confirmation_reference|owner_confirmed_governed_action/);
