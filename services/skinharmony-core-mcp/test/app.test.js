@@ -3626,6 +3626,29 @@ test("server resolves inner arguments for dynamic reads before exact Work prefli
   assert.match(target, /toolName: capabilityId \|\| toolName/);
 });
 
+test("Gallery acceptance authorizes only the exact offered host before general Work visibility", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const hookStart = serverSource.indexOf("let pendingCausalLineageMutation = null");
+  const hookEnd = serverSource.indexOf("// Native reports are authenticated", hookStart);
+  const hook = serverSource.slice(hookStart, hookEnd);
+  assert.ok(hookStart >= 0);
+  assert.ok(hookEnd > hookStart);
+  assert.match(hook, /dynamicInvocationTarget\(toolName, args, identity\)/);
+  assert.match(hook, /authorizationTarget\.toolName === "tenant_work_assignment_accept_v3"/);
+  assert.match(hook, /requireQueuedWorkAssignmentAcceptance/);
+  assert.match(hook, /requireCanonicalWorkRead/);
+
+  const authorizationStart = serverSource.indexOf("async function requireQueuedWorkAssignmentAcceptance");
+  const authorizationEnd = serverSource.indexOf("async function canonicalVisibleWorkIds", authorizationStart);
+  const authorization = serverSource.slice(authorizationStart, authorizationEnd);
+  assert.ok(authorizationStart >= 0);
+  assert.ok(authorizationEnd > authorizationStart);
+  assert.match(authorization, /authorizeQueuedWorkAssignmentAccept/);
+  assert.match(authorization, /continuity_work_acl_denied/);
+  assert.doesNotMatch(authorization, /target_agent_id|target_client_type|session_fingerprint/,
+    "acceptance identity must come from authenticated transport state, never tool arguments");
+});
+
 test("requires generic preflight for dynamic invoke except signed presence, Work bootstrap and exact Work recovery", () => {
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),

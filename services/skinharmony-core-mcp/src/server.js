@@ -1412,6 +1412,26 @@ async function requireCanonicalWorkRead(identity, workId) {
   }
 }
 
+async function requireQueuedWorkAssignmentAcceptance(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (!workContinuityV2Store?.authorizeQueuedWorkAssignmentAccept) {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  try {
+    return await workContinuityV2Store.authorizeQueuedWorkAssignmentAccept(
+      withTenantWorkAcl(identity),
+      { work_id: workId },
+    );
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason === "work_assignment_acceptance_denied" ||
+        reason === "tenant_work_not_found" || reason.startsWith("tenant_work_membership_")) {
+      throw legacyWorkAclError("continuity_work_acl_denied");
+    }
+    throw error;
+  }
+}
+
 async function canonicalVisibleWorkIds(identity, { project_id } = {}) {
   requireTenantWorkCapability(identity, "read");
   if (!workContinuityV2Store?.listWorks) {
@@ -3538,9 +3558,13 @@ const app = createApp(config, {
     if (requiresCanonicalWorkReadAuthorization(toolName, args)) {
       const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
       if (authorizationTarget.args.work_id) {
-        const canonicalRead = await requireCanonicalWorkRead(
-          identity, authorizationTarget.args.work_id,
-        );
+        const assignmentAcceptance =
+          authorizationTarget.toolName === "tenant_work_assignment_accept_v3";
+        const canonicalRead = assignmentAcceptance
+          ? await requireQueuedWorkAssignmentAcceptance(
+            identity, authorizationTarget.args.work_id,
+          )
+          : await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
         const targetDefinition = TOOLS.find((item) => item.name === authorizationTarget.toolName);
         // Dynamic capabilities are intentionally absent from the compact MCP
         // surface. `core_capability_invoke` itself is mutation-only and the

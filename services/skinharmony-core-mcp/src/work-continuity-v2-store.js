@@ -3490,6 +3490,28 @@ export function createWorkContinuityV2Store({
       return { schema_version: "tenant_work_gallery_v3", work: publicWorkProjection(assigned.rows[0]), event };
     });
   }
+  async function authorizeQueuedWorkAssignmentAccept(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    if (!actor.agent_id || !actor.client_type || !actor.session_fingerprint) {
+      fail("work_assignment_acceptance_denied");
+    }
+    const result = await query(`SELECT * FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+    const work = result.rows[0];
+    if (!work || !sameTenant(work, actor) || work.legacy_work_id ||
+        !OPERATIONAL_STATUSES.has(work.status) || work.assignment_status !== "OFFERED" ||
+        work.assignment_target_agent_id !== actor.agent_id ||
+        work.assignment_target_client_type !== actor.client_type) {
+      fail("work_assignment_acceptance_denied");
+    }
+    return Object.freeze({
+      schema_version: "tenant_work_assignment_accept_authorization_v1",
+      authorized: true,
+      work_id: workId,
+    });
+  }
   async function acceptQueuedWorkAssignment(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -9089,6 +9111,7 @@ export function createWorkContinuityV2Store({
     readWork, previewNativePlanMerge,
     alignNativePlanStatus: guardPendingWorkMutation(alignNativePlanStatus), verifyWorkClosure, listWorks,
     assignQueuedWork: guardPendingWorkMutation(assignQueuedWork),
+    authorizeQueuedWorkAssignmentAccept,
     acceptQueuedWorkAssignment: guardPendingWorkMutation(acceptQueuedWorkAssignment),
     archiveWork: guardPendingWorkMutation(archiveWork),
     archiveHistoricalBridgedWork: guardPendingWorkMutation(archiveHistoricalBridgedWork),
