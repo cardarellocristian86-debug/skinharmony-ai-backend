@@ -1519,16 +1519,34 @@ function acceptedQueuedContinuityBinding(identity, canonicalWork) {
 }
 
 function continuityResumeCoreTarget(canonicalWork, sessionId) {
-  return [
-    "work_resume_v2",
-    canonicalWork.work_id,
-    canonicalWork.intent_digest || "no_intent",
-    canonicalWork.assignment_status || "unassigned",
-    canonicalWork.assignment_target_agent_id || "no_agent",
-    canonicalWork.assignment_target_client_type || "no_host",
-    canonicalWork.project_id,
-    sessionId,
-  ].join(":");
+  const digest = crypto.createHash("sha256")
+    .update(JSON.stringify(stableCanonical({
+      schema_version: "work_continuity_resume_core_target_v1",
+      mode: "exact_work",
+      tenant_id: canonicalWork.tenant_id,
+      work_id: canonicalWork.work_id,
+      intent_digest: canonicalWork.intent_digest || null,
+      assignment_status: canonicalWork.assignment_status || null,
+      assignment_target_agent_id: canonicalWork.assignment_target_agent_id || null,
+      assignment_target_client_type: canonicalWork.assignment_target_client_type || null,
+      project_id: canonicalWork.project_id,
+      session_id: sessionId,
+    })))
+    .digest("hex");
+  return `work_resume_v2:${digest}`;
+}
+
+function continuityProjectResumeCoreTarget(tenantId, projectId, sessionId) {
+  const digest = crypto.createHash("sha256")
+    .update(JSON.stringify(stableCanonical({
+      schema_version: "work_continuity_resume_core_target_v1",
+      mode: "project_visible_work",
+      tenant_id: tenantId,
+      project_id: projectId,
+      session_id: sessionId,
+    })))
+    .digest("hex");
+  return `work_resume_v2:${digest}`;
 }
 
 function requireActivatedCanonicalContinuity(canonical) {
@@ -2733,7 +2751,7 @@ const baseHandlers = {
         "work.continuity.resume_or_bind",
         canonicalWork
           ? continuityResumeCoreTarget(canonicalWork, sessionId)
-          : `work_resume_v2:auto:${projectId}:${sessionId}`,
+          : continuityProjectResumeCoreTarget(identity.tenantId, projectId, sessionId),
         resumeIdempotencyKey,
       );
       const activationBinding = canonicalWork

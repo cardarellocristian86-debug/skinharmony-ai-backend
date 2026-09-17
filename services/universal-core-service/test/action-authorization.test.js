@@ -76,6 +76,12 @@ test("resume-or-bind is autonomous only inside the closed bounded contract", () 
   assert.equal(allowed.allowed, true);
   assert.equal(allowed.scope, "bounded_internal_coordination_write");
   assert.equal(allowed.confirmation_required, false);
+  const exactBoundResume = buildActionAuthorization(contract(), {
+    ...resume,
+    target: `work_resume_v2:${"a".repeat(64)}`,
+  });
+  assert.equal(exactBoundResume.allowed, true,
+    "a server-digested exact Work resume target must satisfy the bounded Core contract");
   for (const unsafe of [
     { action_type: "work.continuity.resume" },
     { operation_class: "owner_confirmed_governed_action" },
@@ -84,6 +90,7 @@ test("resume-or-bind is autonomous only inside the closed bounded contract", () 
     { request_bound_owner_confirmation: true },
     { external_side_effect: true },
     { target: "render_service" },
+    { target: `work_resume_v2:${"a".repeat(64)}:client_material` },
     { idempotency_key: "" },
   ]) {
     assert.equal(buildActionAuthorization(contract(), { ...resume, ...unsafe }).allowed, false);
