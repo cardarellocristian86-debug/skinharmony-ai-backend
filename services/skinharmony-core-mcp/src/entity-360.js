@@ -269,9 +269,13 @@ function entity360Digest(value) {
 const BOOTSTRAP_GATE_KEYS = Object.freeze([
   "action", "authority", "authorized", "context_only", "enforcement_authority_digest",
   "entity_id", "execution_authorized", "gate_digest", "host_policy_override",
-  "idempotency_digest", "policy_digest", "production_decision_changed",
+  "icf_governance_seed", "idempotency_digest", "policy_digest", "production_decision_changed",
   "provider_execution", "request_digest", "route", "schema_version", "snapshot_digest",
   "snapshot_version", "tenant_feature_revision", "tenant_id", "work_id",
+]);
+
+const BOOTSTRAP_ICF_SEED_KEYS = Object.freeze([
+  "causal_work_id", "icf_version", "ledger_head_digest", "seed_payload_digest",
 ]);
 
 function validateBootstrapGate(value, identityContext, args, tenantId, workId) {
@@ -300,6 +304,10 @@ function validateBootstrapGate(value, identityContext, args, tenantId, workId) {
   const snapshotWorkBindings = [snapshot.project_work_linkage?.work_id,
     snapshot.project_work_linkage?.legacy_work_id]
     .filter(Boolean).map((candidate) => String(candidate).trim().toLowerCase());
+  const icfSeed = gate.icf_governance_seed;
+  const icfSeedKeys = icfSeed && typeof icfSeed === "object" && !Array.isArray(icfSeed)
+    ? Object.keys(icfSeed).sort() : [];
+  const snapshotIcfBinding = snapshot.current_state?.["governance.icf.binding"]?.value;
   if (value.ok !== true || gateKeys.length !== BOOTSTRAP_GATE_KEYS.length
     || gateKeys.some((key, index) => key !== BOOTSTRAP_GATE_KEYS[index])
     || gate.schema_version !== "entity_360_snapshot_bootstrap_gate_v1"
@@ -313,6 +321,14 @@ function validateBootstrapGate(value, identityContext, args, tenantId, workId) {
     || gate.idempotency_digest !== entity360Digest({ idempotency_key: canonicalIdempotencyKey })
     || !/^[a-f0-9]{64}$/u.test(String(gate.policy_digest || ""))
     || !/^[a-f0-9]{64}$/u.test(String(gate.enforcement_authority_digest || ""))
+    || icfSeedKeys.length !== BOOTSTRAP_ICF_SEED_KEYS.length
+    || icfSeedKeys.some((key, index) => key !== BOOTSTRAP_ICF_SEED_KEYS[index])
+    || !snapshotWorkBindings.includes(String(icfSeed?.causal_work_id || "").trim().toLowerCase())
+    || !Number.isSafeInteger(icfSeed?.icf_version) || icfSeed.icf_version < 1
+    || !/^[a-f0-9]{64}$/u.test(String(icfSeed?.ledger_head_digest || ""))
+    || !/^[a-f0-9]{64}$/u.test(String(icfSeed?.seed_payload_digest || ""))
+    || snapshotIcfBinding?.version !== icfSeed.icf_version
+    || snapshotIcfBinding?.ledger_head_digest !== icfSeed.ledger_head_digest
     || !Number.isSafeInteger(gate.tenant_feature_revision) || gate.tenant_feature_revision < 1
     || gate.context_only !== true || gate.execution_authorized !== false
     || gate.provider_execution !== false || gate.host_policy_override !== false
