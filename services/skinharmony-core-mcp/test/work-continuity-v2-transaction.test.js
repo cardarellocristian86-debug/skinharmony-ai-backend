@@ -2442,6 +2442,7 @@ test("an exact Codex agent can accept a Gallery offer, but an impersonating host
     work_id: queued.work.work_id,
   });
   assert.equal(accepted.work.assignment_status, "ACCEPTED");
+  assert.equal(Object.hasOwn(accepted.work, "assignment_accepted_session_fingerprint"), false);
   assert.deepEqual(accepted.work.agent_ids.sort(), ["agent-codex", "agent-owner"]);
   assert.equal(accepted.work.status, "PLANNED");
 });
@@ -2480,6 +2481,19 @@ test("only the exact accepted host session can atomically activate queued Work c
     server_owned: true, work_id: workId,
   }), /work_assignment_activation_denied/);
 
+  const acceptedRow = pool.works.get(key("tenant-a", workId));
+  const acceptedFingerprint = acceptedRow.assignment_accepted_session_fingerprint;
+  acceptedRow.assignment_accepted_session_fingerprint = null;
+  const emptyFingerprint = identity("codex", "member");
+  emptyFingerprint.agentPresence.client_type = "codex";
+  emptyFingerprint.agentPresence.session_fingerprint = "";
+  await assert.rejects(store.activateAcceptedQueuedWorkContinuity(emptyFingerprint, {
+    server_owned: true, work_id: workId,
+  }), /work_assignment_activation_denied/);
+  assert.equal(pool.works.get(key("tenant-a", workId)).legacy_work_id, null);
+  pool.works.get(key("tenant-a", workId)).assignment_accepted_session_fingerprint = acceptedFingerprint;
+
+  const activationQueryStart = pool.queryParameters.length;
   const first = await store.activateAcceptedQueuedWorkContinuity(codex, {
     server_owned: true, work_id: workId,
   });
@@ -2489,10 +2503,24 @@ test("only the exact accepted host session can atomically activate queued Work c
   assert.equal(first.event.event_type, "queued_work_continuity_activated_v1");
   assert.equal(pool.legacy.size, 1);
   assert.equal(bridgeCalls.length, 1);
+  const activationQueries = pool.queryParameters.slice(activationQueryStart);
+  const namespaceLockIndex = activationQueries.findIndex((call) =>
+    call.sql.startsWith("SELECT pg_advisory_xact_lock") &&
+    call.parameters[0] === "tenant-a" && call.parameters[1] === workId);
+  const coreRowLockIndex = activationQueries.findIndex((call) =>
+    call.sql.startsWith("SELECT work_id FROM core_continuity_works") &&
+    call.sql.endsWith("FOR UPDATE"));
+  const tenantWorkLockIndex = activationQueries.findIndex((call) =>
+    call.sql.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE"));
+  assert.ok(coreRowLockIndex >= 0 && coreRowLockIndex < namespaceLockIndex,
+    "activation must follow the legacy Core-row then advisory lock order");
+  assert.ok(namespaceLockIndex >= 0 && namespaceLockIndex < tenantWorkLockIndex,
+    "activation must serialize the Core namespace before locking tenant_work");
   const activeGallery = await store.listWorks(codex, { view: "operational" });
   assert.equal(activeGallery[0].collaboration_surface.state, "ACTIVE_ACCEPTED_ASSIGNMENT");
   assert.equal(activeGallery[0].collaboration_surface.checkpoint_available, true);
   assert.equal(activeGallery[0].collaboration_surface.handoff_available, true);
+  assert.equal(Object.hasOwn(activeGallery[0], "assignment_accepted_session_fingerprint"), false);
   const activation = [...pool.events.values()].find((event) =>
     event.event_type === "queued_work_continuity_activated_v1");
   assert.deepEqual(activation.payload, {

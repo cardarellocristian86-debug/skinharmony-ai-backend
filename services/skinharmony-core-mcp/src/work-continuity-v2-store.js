@@ -1319,6 +1319,16 @@ function normalizeWork(row) {
     agent_ids: Array.isArray(row.agent_ids) ? row.agent_ids : [],
   };
 }
+function publicWorkProjection(row) {
+  const normalized = normalizeWork(row);
+  // This value binds an accepted assignment to one authenticated transport
+  // session. It is authorization material, not Work/Gallery metadata.
+  const {
+    assignment_accepted_session_fingerprint: _acceptedSessionFingerprint,
+    ...visible
+  } = normalized;
+  return visible;
+}
 function normalizeResolutionWorks(rows) {
   // resolveWorkRequest intentionally preserves input order for equal scores.
   // Database row order is not stable without ORDER BY, so canonicalize on the
@@ -2210,7 +2220,7 @@ export function createWorkContinuityV2Store({
     }
     return {
       schema_version: "tenant_work_gallery_v3",
-      work: normalizeWork(payload.work),
+      work: publicWorkProjection(payload.work),
       released_lease_count: Number(payload.released_lease_count),
       event: {
         sequence_number: Number(row.sequence_number),
@@ -2696,12 +2706,16 @@ export function createWorkContinuityV2Store({
     };
   }
   function isExactAcceptedHostAssignment(work, actor) {
+    const actorSessionFingerprint = String(actor?.session_fingerprint || "").trim();
+    const acceptedSessionFingerprint = String(
+      work?.assignment_accepted_session_fingerprint || "",
+    ).trim();
     return Boolean(
-      actor?.agent_id && actor?.client_type &&
+      actor?.agent_id && actor?.client_type && actorSessionFingerprint && acceptedSessionFingerprint &&
       work?.assignment_status === "ACCEPTED" &&
       work.assignment_target_agent_id === actor.agent_id &&
       work.assignment_target_client_type === actor.client_type &&
-      work.assignment_accepted_session_fingerprint === actor.session_fingerprint &&
+      acceptedSessionFingerprint === actorSessionFingerprint &&
       (work.agent_ids || []).includes(actor.agent_id)
     );
   }
@@ -2836,6 +2850,16 @@ export function createWorkContinuityV2Store({
     const actor = actorFromIdentity(identity);
     const workId = uuid(work_id);
     return transaction(async (client) => {
+      // Cross-fabric mutations use the legacy runtime order: any existing
+      // Core row, then the shared tenant/Work advisory namespace, and only
+      // then tenant_work. Otherwise this activation path (V2 row first) can
+      // deadlock with legacy checkpoint/Gallery paths (Core first).
+      await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
+        actor.tenant_id,
+        workId,
+      ]);
       const work = await loadWork(client, actor, workId, true);
       assertOperationalWorkMutation(work);
       if (work.assignment_status !== "ACCEPTED") fail("work_assignment_activation_denied");
@@ -3223,7 +3247,7 @@ export function createWorkContinuityV2Store({
           }
         : null;
       const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
-      return { schema_version: "work_continuity_v2", work, tasks: tasks.rows, evidence: evidence.rows,
+      return { schema_version: "work_continuity_v2", work: publicWorkProjection(work), tasks: tasks.rows, evidence: evidence.rows,
         task_contracts: contracts.rows, committed_task_states: commits.rows,
         dependency_manifests: manifests.rows,
         effective_acceptance_contract: effectiveAcceptanceContract,
@@ -3402,7 +3426,10 @@ export function createWorkContinuityV2Store({
       const acceptedAssignmentActive = collaborationActive &&
         work.assignment_status === "ACCEPTED" &&
         Boolean(work.assignment_accepted_session_fingerprint);
-      return { ...work,
+      // The accepted transport fingerprint is an authorization binding, not
+      // Gallery metadata. It must remain available to the internal activation
+      // check above, but never cross the list/read boundary.
+      return { ...publicWorkProjection(work),
         governed_continuity: continuityByWork.get(String(work.work_id)) || null,
         collaboration_surface: {
           schema_version: "gallery_collaboration_surface_v1",
@@ -3460,7 +3487,7 @@ export function createWorkContinuityV2Store({
         target_client_type: targetClientType,
         status: "OFFERED",
       });
-      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(assigned.rows[0]), event };
+      return { schema_version: "tenant_work_gallery_v3", work: publicWorkProjection(assigned.rows[0]), event };
     });
   }
   async function acceptQueuedWorkAssignment(identity, input = {}) {
@@ -3493,7 +3520,7 @@ export function createWorkContinuityV2Store({
         accepted_session_digest: objectDigest({ session_fingerprint: actor.session_fingerprint }),
         status: "ACCEPTED",
       });
-      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(accepted.rows[0]), event };
+      return { schema_version: "tenant_work_gallery_v3", work: publicWorkProjection(accepted.rows[0]), event };
     });
   }
   async function archiveWork(identity, input = {}) {
@@ -3546,12 +3573,12 @@ export function createWorkContinuityV2Store({
         reason,
         request_digest: requestDigest,
         idempotency_key_digest: idempotencyKeyDigest,
-        work: normalizeWork(archived.rows[0]),
+        work: publicWorkProjection(archived.rows[0]),
         released_lease_count: releasedLeaseCount,
       });
       return {
         schema_version: "tenant_work_gallery_v3",
-        work: normalizeWork(archived.rows[0]),
+        work: publicWorkProjection(archived.rows[0]),
         released_lease_count: releasedLeaseCount,
         event,
         idempotent_replay: false,
@@ -4154,7 +4181,7 @@ export function createWorkContinuityV2Store({
         next_action: resumedNextAction,
         status: "PLANNED",
       });
-      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(reopened.rows[0]), event };
+      return { schema_version: "tenant_work_gallery_v3", work: publicWorkProjection(reopened.rows[0]), event };
     });
   }
   async function openWorkReview(identity, input = {}) {
