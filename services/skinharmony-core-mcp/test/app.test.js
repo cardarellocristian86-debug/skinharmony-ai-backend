@@ -1019,6 +1019,9 @@ test("accepted queued Work activation is server-owned and never runs from Galler
   const joinStart = serverSource.indexOf("async function joinAcceptedQueuedWorkParticipant");
   const joinEnd = serverSource.indexOf("async function listLegacyWorksAuthorized", joinStart);
   const join = serverSource.slice(joinStart, joinEnd);
+  assert.match(join, /"work\.participant\.join",\s*canonicalWork\.work_id,/,
+    "automatic onboarding must use the exact Core-allowlisted Work target");
+  assert.doesNotMatch(join, /canonicalWork\.work_id\}:\$\{canonicalWork\.intent_digest/);
   const joinCoreGate = join.indexOf("requireBoundedTenantCoordination(");
   const joinMutation = join.indexOf("workContinuityRuntime.join(");
   assert.ok(joinCoreGate >= 0 && joinMutation > joinCoreGate);
