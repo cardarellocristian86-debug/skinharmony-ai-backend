@@ -1572,7 +1572,7 @@ async function joinAcceptedQueuedWorkParticipant(identity, canonicalWork, idempo
   await requireBoundedTenantCoordination(
     identity,
     "work.participant.join",
-    `${canonicalWork.work_id}:${canonicalWork.intent_digest}:${presence.session_id}`,
+    canonicalWork.work_id,
     joinIdempotencyKey,
   );
   return workContinuityRuntime.join(identity, {
