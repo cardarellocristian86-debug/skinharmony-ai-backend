@@ -65,6 +65,9 @@ function targetMatchesAction(actionType, value) {
   if (actionType === "task.claim" || actionType === "task.update") return target.includes("task");
   if (actionType === "message.acknowledge") return target.includes("message");
   if (actionType === "continuity.update") {
+    if (target.startsWith("work_continuity_entity_360_snapshot:")) {
+      return /^work_continuity_entity_360_snapshot:[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(target);
+    }
     return target.startsWith("work_continuity_") ||
       /^[a-z0-9][a-z0-9._/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }

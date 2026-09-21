@@ -65,6 +65,30 @@ test("authorizes a bounded repository Atlas bootstrap only for its Work-derived 
   assert.equal(denied.allowed, false);
 });
 
+test("authorizes Entity360 snapshot refresh only for a Work-derived coordination target", () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const allowed = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "continuity.update",
+    target: `work_continuity_entity_360_snapshot:${workId}`,
+    idempotency_key: "entity360-snapshot-refresh-0001",
+  });
+  assert.equal(allowed.allowed, true);
+  for (const target of [
+    "entity_360_snapshot_assemble",
+    "work_continuity_entity_360_snapshot:not-a-work-id",
+    `work_continuity_entity_360_snapshot:${workId}:client-supplied`,
+  ]) {
+    const denied = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: "continuity.update",
+      target,
+      idempotency_key: `entity360-snapshot-refresh-denied-${target}`,
+    });
+    assert.equal(denied.allowed, false, target);
+  }
+});
+
 test("resume-or-bind is autonomous only inside the closed bounded contract", () => {
   const resume = {
     ...boundedCoordinationWrite,

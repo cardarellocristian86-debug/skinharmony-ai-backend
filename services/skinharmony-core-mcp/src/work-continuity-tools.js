@@ -122,6 +122,9 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
   // public capability name intentionally does not contain `atlas`, so derive
   // the Core-recognised Atlas target from the validated Work identifier.
   if (name === "software_cognition_repository_bootstrap") return `work_atlas:${workId}`;
+  if (name === "entity_360_snapshot_assemble") {
+    return `work_continuity_entity_360_snapshot:${workId}`;
+  }
   if (["tenant_work_task_record", "tenant_work_task_contract_record",
     "tenant_work_dependency_manifest_record", "tenant_work_trajectory_evaluate",
     "tenant_work_task_commit", "tenant_work_task_invalidate"].includes(name)) return `task:${workId}`;

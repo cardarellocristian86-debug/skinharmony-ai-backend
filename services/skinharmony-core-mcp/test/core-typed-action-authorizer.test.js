@@ -94,7 +94,7 @@ function claim(binding, replay = false) {
   return { ...material, claim_digest: digest(material) };
 }
 
-function ticketRecord(req, gate) {
+function ticketRecord(req, gate, overrides = {}) {
   return {
     schema_version: "host_native_action_ticket_record_v1",
     tenant_id: "tenant-a",
@@ -102,7 +102,7 @@ function ticketRecord(req, gate) {
     uses: 0,
     ticket: {
       schema_version: "host_native_action_ticket_v1",
-      ticket_id: TICKET_ID,
+      ticket_id: overrides.ticket_id || TICKET_ID,
       delegation_id: req.delegation_id,
       tenant_id: "tenant-a",
       work_id: WORK_ID,
@@ -112,8 +112,8 @@ function ticketRecord(req, gate) {
       host_session_fingerprint: SESSION,
       action: req.action,
       evidence_digest: req.evidence_digest,
-      issued_at: "2026-09-15T18:00:10.000Z",
-      expires_at: "2026-09-15T18:05:10.000Z",
+      issued_at: overrides.issued_at || "2026-09-15T18:00:10.000Z",
+      expires_at: overrides.expires_at || "2026-09-15T18:05:10.000Z",
       max_uses: 1,
       provider_execution: false,
       host_policy_override: false,
@@ -121,6 +121,47 @@ function ticketRecord(req, gate) {
       signature: `hnt_${"f".repeat(64)}`,
     },
   };
+}
+
+function lifecycleUnsigned(record) {
+  return {
+    schema_version: record.lifecycle_schema_version || "host_native_action_lifecycle_v1",
+    ticket_id: record.ticket.ticket_id,
+    ticket_digest: digest(record.ticket),
+    state: record.state,
+    uses: record.uses,
+    reservation_id: record.reservation_id ?? null,
+    reserved_at: record.reserved_at ?? null,
+    reservation_expires_at: record.reservation_expires_at ?? null,
+    outcome: record.outcome ?? null,
+    observed_outcome: record.observed_outcome ?? null,
+    result_digest: record.result_digest ?? null,
+    result_commit: record.result_commit ?? null,
+    result_pull_request: record.result_pull_request ?? null,
+    observed_commit: record.observed_commit ?? null,
+    observed_pull_request: record.observed_pull_request ?? null,
+    host_readback_digest: record.host_readback_digest ?? null,
+    completed_at: record.completed_at ?? null,
+    reconciled_at: record.reconciled_at ?? null,
+    pre_merge_readback_digest: record.pre_merge_readback_digest ?? null,
+    quarantined_at: record.quarantined_at ?? null,
+    quarantine_reason_digest: record.quarantine_reason_digest ?? null,
+    semantic_scope_reservation_digest:
+      record.semantic_scope_at_reservation?.decision_digest ?? null,
+    superseded_by_ticket_id: record.superseded_by_ticket_id ?? null,
+    superseded_at: record.superseded_at ?? null,
+  };
+}
+
+function supersededTicketRecord(record, successorTicketId, supersededAt) {
+  const superseded = structuredClone(record);
+  superseded.state = "superseded";
+  superseded.lifecycle_schema_version = "host_native_action_lifecycle_v2";
+  superseded.superseded_by_ticket_id = successorTicketId;
+  superseded.superseded_at = supersededAt;
+  superseded.lifecycle_digest = digest(lifecycleUnsigned(superseded));
+  superseded.lifecycle_signature = `hnl_${"6".repeat(64)}`;
+  return superseded;
 }
 
 function authorizer({ core = {}, store = {} } = {}) {
@@ -281,6 +322,216 @@ test("fulfilled typed gate reads the exact recovered ticket without a second aut
   const result = await runtime.authorize(req, identity(), typedContext(fulfilled));
   assert.equal(result.structuredContent.action_ticket.ticket.ticket_id, TICKET_ID);
   assert.equal(reads, 1);
+});
+
+test("fulfilled typed gate renews an expired root only through its exact replay claim", async () => {
+  const original = nativeGate();
+  const fulfilled = nativeGate({ fulfilled: true, ticket_id: TICKET_ID });
+  const req = request(original);
+  const expiredRecord = ticketRecord(req, original, {
+    issued_at: "2026-09-15T17:50:00.000Z",
+    expires_at: "2026-09-15T17:55:00.000Z",
+  });
+  const successorId = `hnt_${"7".repeat(32)}`;
+  const successorRecord = ticketRecord(req, original, {
+    ticket_id: successorId,
+    issued_at: "2026-09-15T18:00:20.000Z",
+    expires_at: "2026-09-15T18:05:20.000Z",
+  });
+  const supersededRoot = supersededTicketRecord(
+    expiredRecord, successorId, "2026-09-15T18:00:20.000Z",
+  );
+  let rootRecord = expiredRecord;
+  const binding = {
+    work_id: WORK_ID,
+    continuation_ref: CONTINUATION,
+    request_digest: REQUEST_DIGEST,
+    delegation_id: req.delegation_id,
+    action_digest: digest(req.action),
+    gate_projection_digest: original.projection_digest,
+    host_session_fingerprint: SESSION,
+    idempotency_key: "server-idempotency",
+  };
+  const recoveredClaim = claim(binding, true);
+  const order = [];
+  let fulfillments = 0;
+  const runtime = authorizer({
+    store: {
+      readPrecommitTicketGateClaimRecovery: async () => {
+        order.push("recover");
+        return {
+          schema_version: "precommit_ticket_gate_recovery_v1",
+          recovery_source: "fulfillment",
+          ticket_id: TICKET_ID,
+          gate_claim: recoveredClaim,
+        };
+      },
+      fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
+    },
+    core: {
+      host_native_action_read: async ({ ticket_id }) => {
+        order.push(ticket_id === TICKET_ID ? "read-root" : "read-successor");
+        assert.ok([TICKET_ID, successorId].includes(ticket_id));
+        return { structuredContent: {
+          ok: true,
+          tenant_id: "tenant-a",
+          action_ticket: ticket_id === TICKET_ID ? rootRecord : successorRecord,
+        } };
+      },
+      host_native_action_authorize: async (input, caller, boundClaim) => {
+        order.push("authorize");
+        assert.equal(input.idempotency_key, "server-idempotency");
+        assert.equal(caller.nativePrecommitClaimIssuer, true);
+        assert.deepEqual(boundClaim, recoveredClaim);
+        rootRecord = supersededRoot;
+        return { structuredContent: { action_ticket: successorRecord } };
+      },
+    },
+  });
+  const first = await runtime.authorize(req, identity(), typedContext(fulfilled));
+  const retry = await runtime.authorize(req, identity(), typedContext(fulfilled));
+  assert.equal(first.structuredContent.action_ticket.ticket.ticket_id, successorId);
+  assert.equal(retry.structuredContent.action_ticket.ticket.ticket_id, successorId);
+  assert.equal(fulfillments, 0);
+  assert.deepEqual(order, [
+    "recover", "read-root", "authorize", "read-successor",
+    "recover", "read-root", "authorize", "read-successor",
+  ]);
+});
+
+test("fulfilled typed gate rejects tampered superseded root lineage before replay", async () => {
+  const original = nativeGate();
+  const fulfilled = nativeGate({ fulfilled: true, ticket_id: TICKET_ID });
+  const req = request(original);
+  const successorId = `hnt_${"7".repeat(32)}`;
+  const root = supersededTicketRecord(ticketRecord(req, original, {
+    issued_at: "2026-09-15T17:50:00.000Z",
+    expires_at: "2026-09-15T17:55:00.000Z",
+  }), successorId, "2026-09-15T18:00:19.000Z");
+  root.superseded_by_ticket_id = `hnt_${"8".repeat(32)}`;
+  const binding = {
+    work_id: WORK_ID,
+    continuation_ref: CONTINUATION,
+    request_digest: REQUEST_DIGEST,
+    delegation_id: req.delegation_id,
+    action_digest: digest(req.action),
+    gate_projection_digest: original.projection_digest,
+    host_session_fingerprint: SESSION,
+    idempotency_key: "server-idempotency",
+  };
+  let authorizations = 0;
+  const runtime = authorizer({
+    store: {
+      readPrecommitTicketGateClaimRecovery: async () => ({
+        schema_version: "precommit_ticket_gate_recovery_v1",
+        recovery_source: "fulfillment",
+        ticket_id: TICKET_ID,
+        gate_claim: claim(binding, true),
+      }),
+    },
+    core: {
+      host_native_action_read: async () => ({ structuredContent: {
+        ok: true, tenant_id: "tenant-a", action_ticket: root,
+      } }),
+      host_native_action_authorize: async () => { authorizations += 1; },
+    },
+  });
+  await assert.rejects(runtime.authorize(req, identity(), typedContext(fulfilled)),
+    /core_typed_request_precommit_claim_recovery_invalid/);
+  assert.equal(authorizations, 0);
+});
+
+test("fulfilled typed gate rejects expired root binding drift before reauthorization", async () => {
+  const original = nativeGate();
+  const fulfilled = nativeGate({ fulfilled: true, ticket_id: TICKET_ID });
+  const req = request(original);
+  const expiredRecord = ticketRecord(req, original, {
+    issued_at: "2026-09-15T17:50:00.000Z",
+    expires_at: "2026-09-15T17:55:00.000Z",
+  });
+  expiredRecord.ticket.repository = "other/repo";
+  const binding = {
+    work_id: WORK_ID,
+    continuation_ref: CONTINUATION,
+    request_digest: REQUEST_DIGEST,
+    delegation_id: req.delegation_id,
+    action_digest: digest(req.action),
+    gate_projection_digest: original.projection_digest,
+    host_session_fingerprint: SESSION,
+    idempotency_key: "server-idempotency",
+  };
+  let authorizations = 0;
+  const runtime = authorizer({
+    store: {
+      readPrecommitTicketGateClaimRecovery: async () => ({
+        schema_version: "precommit_ticket_gate_recovery_v1",
+        recovery_source: "fulfillment",
+        ticket_id: TICKET_ID,
+        gate_claim: claim(binding, true),
+      }),
+    },
+    core: {
+      host_native_action_read: async () => ({ structuredContent: {
+        ok: true, tenant_id: "tenant-a", action_ticket: expiredRecord,
+      } }),
+      host_native_action_authorize: async () => { authorizations += 1; },
+    },
+  });
+  await assert.rejects(runtime.authorize(req, identity(), typedContext(fulfilled)),
+    /nyra_continue_commit_ticket_readback_invalid/);
+  assert.equal(authorizations, 0);
+});
+
+test("fulfilled typed gate rejects a renewed ticket with binding drift", async () => {
+  const original = nativeGate();
+  const fulfilled = nativeGate({ fulfilled: true, ticket_id: TICKET_ID });
+  const req = request(original);
+  const expiredRecord = ticketRecord(req, original, {
+    issued_at: "2026-09-15T17:50:00.000Z",
+    expires_at: "2026-09-15T17:55:00.000Z",
+  });
+  const successorId = `hnt_${"7".repeat(32)}`;
+  const driftedSuccessor = ticketRecord(req, original, {
+    ticket_id: successorId,
+    issued_at: "2026-09-15T18:00:20.000Z",
+    expires_at: "2026-09-15T18:05:20.000Z",
+  });
+  driftedSuccessor.ticket.host_session_fingerprint = "9".repeat(64);
+  const binding = {
+    work_id: WORK_ID,
+    continuation_ref: CONTINUATION,
+    request_digest: REQUEST_DIGEST,
+    delegation_id: req.delegation_id,
+    action_digest: digest(req.action),
+    gate_projection_digest: original.projection_digest,
+    host_session_fingerprint: SESSION,
+    idempotency_key: "server-idempotency",
+  };
+  let fulfillments = 0;
+  const runtime = authorizer({
+    store: {
+      readPrecommitTicketGateClaimRecovery: async () => ({
+        schema_version: "precommit_ticket_gate_recovery_v1",
+        recovery_source: "fulfillment",
+        ticket_id: TICKET_ID,
+        gate_claim: claim(binding, true),
+      }),
+      fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
+    },
+    core: {
+      host_native_action_read: async ({ ticket_id }) => ({ structuredContent: {
+        ok: true,
+        tenant_id: "tenant-a",
+        action_ticket: ticket_id === TICKET_ID ? expiredRecord : driftedSuccessor,
+      } }),
+      host_native_action_authorize: async () => ({ structuredContent: {
+        action_ticket: driftedSuccessor,
+      } }),
+    },
+  });
+  await assert.rejects(runtime.authorize(req, identity(), typedContext(fulfilled)),
+    /nyra_continue_commit_ticket_readback_invalid/);
+  assert.equal(fulfillments, 0);
 });
 
 test("reconciled claim rejects a different ticket returned by Core before fulfillment", async () => {

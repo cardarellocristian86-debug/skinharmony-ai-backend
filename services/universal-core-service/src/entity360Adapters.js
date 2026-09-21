@@ -1518,7 +1518,11 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       evidenceRefs: [eventEvidenceRef,
         `causal_event_request:${causalObservation.request_digest}`,
         `causal_event_provenance:${causalObservation.actor_provenance_digest}`],
-      facts: [{ fact_id: "work.event_ledger_head", value: {
+      // WORK_OPENED/work_bind_intent is the immutable event that attests the
+      // causal binding. It is not the mutable ledger head at the snapshot cut.
+      // Classify it as historical at the contributor boundary so it remains
+      // audit evidence without ever being promoted to current and later stale.
+      facts: [{ fact_id: "work.event_ledger_head", state: "historical", value: {
         event_id: causalObservation.event_id,
         sequence_number: causalObservation.sequence_number,
         event_type: causalObservation.event_type,

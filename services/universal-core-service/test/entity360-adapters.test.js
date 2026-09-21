@@ -597,6 +597,8 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
     actor_provenance_digest: causalEvent.actor_provenance_digest,
     idempotency_key_digest: causalDigest(causalEvent.idempotency_key),
   }]);
+  assert.deepEqual(eventLedgerContribution.facts.map((fact) => fact.state), ["historical"],
+    "the immutable binding event is audit history, not the current ledger head");
   assert.equal(eventLedgerContribution.adapter_version, "event_ledger_entity360_adapter_v2");
   assert.equal(JSON.stringify(eventLedgerContribution).includes("agent:entity360-test"), false,
     "only the causal actor provenance digest may leave the ledger boundary");
@@ -609,6 +611,12 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
   const verification = verifyEntity360Snapshot(snapshot, { policy: POLICY, ontology: ONTOLOGY,
     verification_time: snapshot.created_at, qualification_verifier: QUALIFICATION_VERIFIER });
   assert.equal(verification.valid, true, JSON.stringify(verification));
+  assert.equal(Object.hasOwn(snapshot.current_state, "work.event_ledger_head"), false);
+  assert.ok(snapshot.historical_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"
+    && item.evidence_digests.includes(causalEvent.event_hash)));
+  assert.equal(snapshot.stale_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"), false);
 
   const domainQueries = fake.queries.filter(({ sql }) =>
     /^\s*(?:SELECT|WITH entity360_raw_rows)/u.test(sql));
@@ -687,13 +695,19 @@ test("causal event observation claims are deterministic under read replay", asyn
   }
 });
 
-test("causal event evidence becomes stale at the event-ledger freshness boundary", async () => {
+test("causal binding event remains auditable history beyond the event-ledger freshness boundary", async () => {
   const asOf = "2026-08-25T11:00:00.001Z";
   const assembled = await assembleWork(workRows, asOf);
   const snapshot = snapshotFor(assembled, asOf, {});
-  assert.ok(snapshot.stale_state_references.some((item) =>
-    item.fact_id === "work.event_ledger_head"));
+  const causalEvent = causalBindingEvent();
+  assert.ok(snapshot.historical_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"
+    && item.evidence_digests.includes(causalEvent.event_hash)));
+  assert.equal(snapshot.stale_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"), false);
   assert.equal(Object.hasOwn(snapshot.current_state, "work.event_ledger_head"), false);
+  assert.ok(snapshot.evidence_references.includes(
+    `causal_event:${CAUSAL_EVENT_ID}:${CAUSAL_EVENT_SEQUENCE}`));
 });
 
 test("NSCT v1 uses verified legacy Work heads while preserving the canonical Entity 360 identity", async () => {
@@ -1881,7 +1895,13 @@ test("a tampered causal event payload is quarantined before Entity 360 claim ass
   assert.ok(assembled.discovery.source_discovery.some((item) => item.source_id === "event_ledger"
     && item.state === "rejected" && item.reason_code === "CAUSAL_BINDING_EVENT_MISMATCH"));
   assert.equal(JSON.stringify(assembled.discovery).includes("POISONED"), false);
-  assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+  const snapshot = snapshotFor(assembled);
+  assert.equal(snapshot.context_status, "INCOMPLETE");
+  assert.equal(snapshot.historical_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"), false,
+    "an unverified event cannot enter the immutable audit history");
+  assert.equal(snapshot.evidence_references.includes(
+    `causal_event:${CAUSAL_EVENT_ID}:${CAUSAL_EVENT_SEQUENCE}`), false);
 });
 
 for (const invalidIcf of [

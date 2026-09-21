@@ -24,6 +24,69 @@ function fail(code, status) {
   throw Object.assign(new Error(code), { code, status });
 }
 
+function actionTicketLifecycleUnsigned(record) {
+  const schemaVersion = record?.lifecycle_schema_version || "host_native_action_lifecycle_v1";
+  return {
+    schema_version: schemaVersion,
+    ticket_id: record?.ticket?.ticket_id,
+    ticket_digest: digest(record?.ticket),
+    state: record?.state,
+    uses: record?.uses,
+    reservation_id: record?.reservation_id ?? null,
+    reserved_at: record?.reserved_at ?? null,
+    reservation_expires_at: record?.reservation_expires_at ?? null,
+    outcome: record?.outcome ?? null,
+    observed_outcome: record?.observed_outcome ?? null,
+    result_digest: record?.result_digest ?? null,
+    result_commit: record?.result_commit ?? null,
+    result_pull_request: record?.result_pull_request ?? null,
+    observed_commit: record?.observed_commit ?? null,
+    observed_pull_request: record?.observed_pull_request ?? null,
+    host_readback_digest: record?.host_readback_digest ?? null,
+    completed_at: record?.completed_at ?? null,
+    reconciled_at: record?.reconciled_at ?? null,
+    pre_merge_readback_digest: record?.pre_merge_readback_digest ?? null,
+    quarantined_at: record?.quarantined_at ?? null,
+    quarantine_reason_digest: record?.quarantine_reason_digest ?? null,
+    semantic_scope_reservation_digest:
+      record?.semantic_scope_at_reservation?.decision_digest ?? null,
+    ...(schemaVersion === "host_native_action_lifecycle_v2" ? {
+      superseded_by_ticket_id: record?.superseded_by_ticket_id ?? null,
+      superseded_at: record?.superseded_at ?? null,
+    } : {}),
+  };
+}
+
+function trustedFulfilledRootLifecycle(record, currentTime) {
+  const ticket = record?.ticket;
+  const expiresAt = Date.parse(String(ticket?.expires_at || ""));
+  if (!Number.isFinite(currentTime) || !Number.isFinite(expiresAt) || expiresAt > currentTime) {
+    fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+  }
+  if (record?.state === "issued") {
+    if (record.superseded_by_ticket_id !== undefined || record.superseded_at !== undefined ||
+        record.lifecycle_schema_version === "host_native_action_lifecycle_v2") {
+      fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+    }
+    return Object.freeze({ expires_at: expiresAt, successor_ticket_id: null });
+  }
+  const supersededAt = Date.parse(String(record?.superseded_at || ""));
+  if (record?.state !== "superseded" ||
+      record.lifecycle_schema_version !== "host_native_action_lifecycle_v2" ||
+      !/^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(String(record.superseded_by_ticket_id || "")) ||
+      record.superseded_by_ticket_id === ticket?.ticket_id ||
+      !Number.isFinite(supersededAt) || supersededAt < expiresAt || supersededAt > currentTime + 30_000 ||
+      !/^[a-f0-9]{64}$/.test(String(record.lifecycle_digest || "")) ||
+      !/^hnl_[a-f0-9]{64}$/.test(String(record.lifecycle_signature || "")) ||
+      digest(actionTicketLifecycleUnsigned(record)) !== record.lifecycle_digest) {
+    fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+  }
+  return Object.freeze({
+    expires_at: expiresAt,
+    successor_ticket_id: record.superseded_by_ticket_id,
+  });
+}
+
 export function createCoreTypedActionAuthorizer({
   coreHandlers,
   workStore,
@@ -128,13 +191,69 @@ export function createCoreTypedActionAuthorizer({
           recovery.ticket_id !== fulfilled.gate.ticket_id) {
         fail("core_typed_request_precommit_claim_recovery_invalid", 502);
       }
-      trustedRecoveredNativePrecommitClaim(recovery.gate_claim, recoveryBinding);
+      const recoveredClaim = trustedRecoveredNativePrecommitClaim(recovery.gate_claim, recoveryBinding);
       const readback = await coreHandlers.host_native_action_read({ ticket_id: fulfilled.gate.ticket_id }, identity);
-      trustedIssuedActionTicket(readback, payload, request, identity, Object.freeze({
+      const recoveredTicket = readback?.structuredContent?.action_ticket?.ticket;
+      if (recoveredTicket?.ticket_id !== fulfilled.gate.ticket_id) {
+        fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+      }
+      const currentTime = Number(now());
+      const expiresAt = Date.parse(String(recoveredTicket?.expires_at || ""));
+      const gateBinding = Object.freeze({
         schema_version: "precommit_ticket_gate_v2",
         projection_digest: fulfilled.original_projection_digest,
-      }), Number(now()), { allowPriorIssuedAt: true });
-      return readback;
+      });
+      if (Number.isFinite(expiresAt) && expiresAt > currentTime) {
+        if (readback?.structuredContent?.action_ticket?.state !== "issued" ||
+            readback.structuredContent.action_ticket.superseded_by_ticket_id !== undefined ||
+            readback.structuredContent.action_ticket.superseded_at !== undefined ||
+            readback.structuredContent.action_ticket.lifecycle_schema_version ===
+              "host_native_action_lifecycle_v2") {
+          fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+        }
+        trustedIssuedActionTicket(
+          readback, payload, request, identity, gateBinding, currentTime,
+          { allowPriorIssuedAt: true },
+        );
+        return readback;
+      }
+      const lifecycle = trustedFulfilledRootLifecycle(
+        readback?.structuredContent?.action_ticket, currentTime,
+      );
+      // Validate every immutable binding on the recovered root before deciding that
+      // expiry alone permits a replay. Moving the validation clock just inside the
+      // original lifetime does not forgive malformed timestamps, drift or tampering.
+      const historicalReadback = readback?.structuredContent?.action_ticket?.state === "superseded"
+        ? { ...readback, structuredContent: { ...readback.structuredContent,
+          action_ticket: { ...readback.structuredContent.action_ticket, state: "issued" } } }
+        : readback;
+      trustedIssuedActionTicket(
+        historicalReadback, payload, request, identity, gateBinding,
+        lifecycle.expires_at - 1, { allowPriorIssuedAt: true },
+      );
+
+      // A fulfilled locator is immutable audit evidence. Renew only through the
+      // exact server-issued replay claim; never claim or fulfill the gate again.
+      const issued = await coreHandlers.host_native_action_authorize({
+        ...request,
+        idempotency_key: recoveredClaim.idempotency_key,
+      }, { ...identity, nativePrecommitClaimIssuer: true }, recoveredClaim);
+      const issuedRecord = issued?.structuredContent?.action_ticket;
+      const issuedTicket = issuedRecord?.ticket || issuedRecord?.action_ticket?.ticket;
+      const successorTicketId = issuedTicket?.ticket_id || null;
+      if (!/^hnt_(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(String(successorTicketId || "")) ||
+          successorTicketId === fulfilled.gate.ticket_id ||
+          (lifecycle.successor_ticket_id && successorTicketId !== lifecycle.successor_ticket_id)) {
+        fail("core_typed_request_precommit_claim_recovery_invalid", 502);
+      }
+      const successorReadback = await coreHandlers.host_native_action_read(
+        { ticket_id: successorTicketId }, identity,
+      );
+      trustedIssuedActionTicket(
+        successorReadback, payload, request, identity, gateBinding, Number(now()),
+        { allowPriorIssuedAt: true },
+      );
+      return successorReadback;
     }
 
     const gate = commitPrecommitGate(workContext, payload, request);
