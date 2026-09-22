@@ -208,10 +208,10 @@ test("Nyra Autopilot keeps activation owner-gated while bounded reconciliation c
   const tools = Object.fromEntries(NYRA_AUTOPILOT_TOOLS.map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), [
     "nyra_autopilot_enable", "nyra_autopilot_reconcile", "nyra_autopilot_status", "nyra_autopilot_work_read",
-    "nyra_work_assignment_claim", "nyra_work_assignment_inbox", "nyra_work_assignment_submit",
+    "nyra_work_assignment_claim", "nyra_work_assignment_inbox", "nyra_work_assignment_reissue", "nyra_work_assignment_submit",
   ]);
   assert.equal(tools.nyra_autopilot_enable._meta["skinharmony/ownerConfirmationRequired"], true);
-  for (const name of ["nyra_autopilot_reconcile", "nyra_work_assignment_claim", "nyra_work_assignment_submit"]) {
+  for (const name of ["nyra_autopilot_reconcile", "nyra_work_assignment_claim", "nyra_work_assignment_reissue", "nyra_work_assignment_submit"]) {
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
     assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
   }

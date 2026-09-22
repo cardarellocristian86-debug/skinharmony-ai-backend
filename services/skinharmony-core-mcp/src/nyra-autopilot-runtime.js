@@ -509,6 +509,36 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           updated_at: isoTimestamp(row.updated_at, "nyra_autopilot_run_updated_at"),
           execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
     },
+    async reissueQuarantinedAssignment(identity, input = {}) {
+      const tenantId = tenant(identity?.tenantId);
+      const workId = uuid(input.work_id, "work_id");
+      const assignmentId = uuid(input.assignment_id, "assignment_id");
+      idempotency(input.idempotency_key);
+      await initialize();
+      return transaction(async (client) => {
+        const selected = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
+          WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`, [tenantId, workId, assignmentId]);
+        const prior = selected.rows[0];
+        if (!prior) throw new Error("nyra_assignment_not_found");
+        if (prior.status !== "quarantined") throw new Error("nyra_assignment_reissue_not_applicable");
+        const replacementId = crypto.randomUUID();
+        const taskContract = { ...clone(prior.task_contract), reissue: {
+          schema_version: "nyra_assignment_reissue_v1", source_assignment_id: assignmentId,
+          reason: "quarantined_submission_requires_fresh_bounded_evidence",
+        } };
+        const inserted = await client.query(`INSERT INTO core_nyra_autopilot_assignments
+          (tenant_id,work_id,run_id,assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb) RETURNING *`, [tenantId, workId,
+          prior.run_id, replacementId, `${prior.assignment_key}_reissue_${replacementId.slice(0, 8)}`,
+          prior.agent_instance_id, prior.blueprint_id, prior.role, JSON.stringify(taskContract),
+          JSON.stringify(prior.dependencies || []), JSON.stringify(prior.eligible_client_types || [...CLIENT_TYPES])]);
+        const receipt = await appendReceipt(client, tenantId, workId, "nyra_assignment_reissued", {
+          source_assignment_id: assignmentId, replacement_assignment_id: replacementId, run_id: prior.run_id,
+          execution_authorized: false,
+        });
+        return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(inserted.rows[0]), receipt, execution_authorized: false };
+      });
+    },
     async remediateRejectedVerification(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
       const workId = uuid(input.work_id, "work_id");
