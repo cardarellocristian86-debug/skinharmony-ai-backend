@@ -1383,6 +1383,53 @@ async function checkpointNyraAssignmentProgress(identity, result, phase) {
   }
 }
 
+// Gallery and connected AIs must not infer continuity from a transient chat
+// reply.  Project the durable Work Continuity capsule and the relevant event
+// lineage next to the Autopilot plan that produced the assignment.  This is a
+// read-only projection: it never changes a lease, a Work state, or the
+// completion contract.
+async function readNyraAutopilotContinuity(identity, workId) {
+  try {
+    const readback = await readLegacyWorkAuthorized(identity, {
+      work_id: workId,
+      event_limit: 50,
+    });
+    const timeline = (readback.events || [])
+      .filter((event) => ["checkpoint_created", "handoff_created", "work_resumed"].includes(event?.event_type))
+      .map((event) => ({
+        event_id: event.event_id,
+        sequence_number: event.sequence_number,
+        event_type: event.event_type,
+        created_at: event.created_at,
+        capsule_id: event.payload?.capsule_id || null,
+        capsule_digest: event.payload?.capsule_digest || null,
+        handoff_to: event.payload?.handoff_to || null,
+      }));
+    const capsule = readback.latest_capsule || null;
+    return {
+      state: "AVAILABLE",
+      latest_checkpoint: capsule ? {
+        capsule_id: capsule.capsule_id,
+        capsule_digest: capsule.capsule_digest,
+        architecture_version: capsule.architecture_version,
+        created_at: capsule.created_at,
+        next_action: capsule.capsule?.next_action || null,
+      } : null,
+      timeline,
+    };
+  } catch (error) {
+    // Preserve the Autopilot read even for an older Work which does not yet
+    // have activated continuity.  The state is explicit so callers cannot
+    // mistake an unavailable durable handoff for an empty one.
+    return {
+      state: "UNAVAILABLE",
+      code: String(error?.code || error?.message || "continuity_readback_unavailable").slice(0, 160),
+      latest_checkpoint: null,
+      timeline: [],
+    };
+  }
+}
+
 // A canonical Work is not operational until Nyra has materialized (or
 // deterministically recovered) its bounded orchestration context.  Keep this
 // bridge next to Work creation so exact retries repair a crash between the
@@ -3274,10 +3321,17 @@ const baseHandlers = {
       ok: true,
       result: await nyraAutopilotRuntime.status(identity),
     }),
-    nyra_autopilot_work_read: async (args, identity) => continuityTextResult({
-      ok: true,
-      result: await nyraAutopilotRuntime.readWork(identity, args),
-    }),
+    nyra_autopilot_work_read: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      const [autopilot, continuity] = await Promise.all([
+        nyraAutopilotRuntime.readWork(identity, args),
+        readNyraAutopilotContinuity(identity, args.work_id),
+      ]);
+      return continuityTextResult({
+        ok: true,
+        result: { ...autopilot, continuity },
+      });
+    },
     nyra_autopilot_enable: async (args, identity) => {
       await requireOwnerGovernance(identity, "nyra.autopilot.enable", "nyra_autopilot");
       return continuityTextResult({
