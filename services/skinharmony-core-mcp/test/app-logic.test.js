@@ -473,6 +473,7 @@ test("routes normal actions through generic preflight without deadlocking Work b
     "tenant_work_open_review",
     "work_continuity_v2_create",
     "tenant_work_queue_create_v3",
+    "nyra_work_assignment_reissue",
   ]) {
     assert.equal(
       requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),

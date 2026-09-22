@@ -1021,6 +1021,11 @@ const PREFLIGHT_FREE_EXACT_WORK_MUTATIONS = new Set([
   // projection has not yet been materialized. The reconciliation handler
   // retains the exact canonical Work ACL and its own bounded Core gate.
   "nyra_autopilot_reconcile",
+  // Reissuing a quarantined assignment is a narrow server-owned recovery of
+  // an exact Work/assignment pair. Generic preflight would attempt to create
+  // the continuity state that the recovery is specifically restoring, so it
+  // must reach its native ACL, lease and idempotency checks unchanged.
+  "nyra_work_assignment_reissue",
   // Terminal replay must be reachable without trying to recreate a read
   // lease or participant on a Work that is already closed. These entrypoints
   // retain exact Work ACL, presence, Airlock, ledger and their dedicated Core
