@@ -9,6 +9,7 @@ import {
   TOOLS,
 } from "../src/app.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { attachObservedContinuity } from "../src/work-preflight-observation.js";
 import { createResearchAirlockRuntime } from "../../universal-core-service/src/researchAirlock.js";
 import { createMemoryResearchAirlockStore } from "../../universal-core-service/src/researchAirlockStore.js";
@@ -27,6 +28,7 @@ const PURE_READ_CASES = Object.freeze([
   ["decision_ledger_report", {}],
   ["agent_list", {}],
   ["message_inbox", { agent_id: "codex-reader" }],
+  ["nyra_work_assignment_inbox", { work_id: WORK_ID }],
 ]);
 
 function mcpConfig() {
@@ -46,7 +48,8 @@ function mcpConfig() {
 test("gateway pure-read lifecycle performs only handler SELECTs and no wrapper mutations", async () => {
   for (const [name] of PURE_READ_CASES) {
     const definition = TOOLS.find((tool) => tool.name === name)
-      || WORK_CONTINUITY_TOOLS.find((tool) => tool.name === name);
+      || WORK_CONTINUITY_TOOLS.find((tool) => tool.name === name)
+      || NYRA_AUTOPILOT_TOOLS.find((tool) => tool.name === name);
     assert.ok(definition, `missing definition for ${name}`);
     assert.equal(definition.annotations.readOnlyHint, true, `${name} must be declared read-only`);
     assert.notEqual(definition.annotations.openWorldHint, true,
