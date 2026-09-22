@@ -143,6 +143,42 @@ test("Autopilot public readback canonicalizes PostgreSQL timestamps and rejects 
     /nyra_autopilot_run_updated_at_invalid/);
 });
 
+test("independent verifier cannot claim a run where the same agent submitted a producer assignment", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const verifierId = "33333333-3333-4333-8333-333333333333";
+  let mutationAttempted = false;
+  const verifier = {
+    assignment_id: verifierId,
+    run_id: "22222222-2222-4222-8222-222222222222",
+    assignment_key: "verify",
+    role: "independent_verifier",
+    blueprint_id: "independent_verifier",
+    eligible_client_types: ["codex"],
+    status: "offered",
+    dependencies: [],
+    plan: { activation: { max_parallel: 2 } },
+  };
+  const client = { async query(sql) {
+    const statement = String(sql);
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim()) || statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+    if (statement.includes("JOIN core_nyra_autopilot_runs")) return { rows: [verifier] };
+    if (statement.includes("role<>'independent_verifier'")) return { rows: [{ assignment_id: "44444444-4444-4444-8444-444444444444" }] };
+    if (statement.includes("SET status='claimed'")) mutationAttempted = true;
+    return { rows: [] };
+  }, release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const identity = { tenantId: "codexai", agentPresence: {
+    transport_bound: true, agent_id: "codex-producer", client_type: "codex",
+    signature: "ags_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    host_transport_session_fingerprint: "a".repeat(32),
+  } };
+  await assert.rejects(runtime.claim(identity, {
+    work_id: workId, assignment_id: verifierId, idempotency_key: "reject-self-verifier-v1",
+  }), (error) => error?.code === "nyra_assignment_independent_verifier_conflict");
+  assert.equal(mutationAttempted, false);
+});
+
 test("quarantined assignment reissue exposes a stable fail-closed reason", async () => {
   const workId = "11111111-1111-4111-8111-111111111111";
   const assignmentId = "33333333-3333-4333-8333-333333333333";
