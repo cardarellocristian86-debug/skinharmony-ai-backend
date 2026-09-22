@@ -179,6 +179,39 @@ test("independent verifier cannot claim a run where the same agent submitted a p
   assert.equal(mutationAttempted, false);
 });
 
+test("inbox withholds a verifier from its producer and explains the distinct-host handoff", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  let offeredQuery = 0;
+  const pool = { async query(sql) {
+    const statement = String(sql);
+    if (statement.includes("SELECT a.assignment_id,a.role FROM core_nyra_autopilot_assignments a")) {
+      return { rows: [{ assignment_id: "33333333-3333-4333-8333-333333333333", role: "independent_verifier" }] };
+    }
+    if (statement.includes("FROM core_nyra_autopilot_assignments a WHERE")) {
+      offeredQuery += 1;
+      assert.match(statement, /NOT \(a\.role='independent_verifier' AND EXISTS/);
+      assert.match(statement, /producer\.claimed_agent_id=\$3/);
+      return { rows: [] };
+    }
+    return { rows: [] };
+  }, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const identity = { tenantId: "codexai", agentPresence: {
+    transport_bound: true, agent_id: "codex-producer", client_type: "codex",
+    signature: "ags_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    host_transport_session_fingerprint: "a".repeat(32),
+  } };
+  const result = await runtime.inbox(identity, { work_id: workId });
+  assert.equal(offeredQuery, 1);
+  assert.deepEqual(result.assignments, []);
+  assert.deepEqual(result.withheld_assignments, [{
+    assignment_id: "33333333-3333-4333-8333-333333333333",
+    role: "independent_verifier",
+    code: "nyra_assignment_independent_verifier_conflict",
+    next_action: "request_distinct_connected_ai",
+  }]);
+});
+
 test("quarantined assignment reissue exposes a stable fail-closed reason", async () => {
   const workId = "11111111-1111-4111-8111-111111111111";
   const assignmentId = "33333333-3333-4333-8333-333333333333";
