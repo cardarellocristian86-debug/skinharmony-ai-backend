@@ -62,7 +62,21 @@ test("Nyra Autopilot creates a deterministic zero-privilege plan from one Work",
   assert.equal(plan.execution.tool_invocation_allowed, false);
   assert.equal(plan.execution.external_action_allowed, false);
   assert.equal(plan.core_join.required, true);
+  assert.equal(plan.final_outcome.objective, "Organizza il prossimo appuntamento");
+  assert.equal(plan.final_outcome.closure_rule, "ect_verified_only");
+  assert.equal(plan.final_outcome.closure_verified, false);
+  assert.match(plan.final_outcome.outcome_digest, /^[a-f0-9]{64}$/);
   assert.match(plan.plan_digest, /^[a-f0-9]{64}$/);
+});
+
+test("the final outcome is revision-bound and changes only with canonical Work data", () => {
+  const first = compileNyraAutopilotPlan({ ...SCOPE, objective: "Correggi il bridge", intent_digest: "a".repeat(64), work_revision: 3 });
+  const same = compileNyraAutopilotPlan({ ...SCOPE, objective: "Correggi il bridge", intent_digest: "a".repeat(64), work_revision: 3 });
+  const expanded = compileNyraAutopilotPlan({ ...SCOPE, objective: "Correggi il bridge e verifica live", intent_digest: "b".repeat(64), work_revision: 4 });
+  assert.deepEqual(same.final_outcome, first.final_outcome);
+  assert.notEqual(expanded.final_outcome.outcome_digest, first.final_outcome.outcome_digest);
+  assert.equal(expanded.final_outcome.outcome_revision, 4);
+  assert.equal(expanded.final_outcome.closure_verified, false);
 });
 
 test("Nyra Autopilot adds only the specialists justified by the Work", () => {
