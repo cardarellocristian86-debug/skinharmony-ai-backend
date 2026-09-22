@@ -1328,6 +1328,61 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
+// Claim and submit are already tenant-, Work-, transport- and Core-bounded.
+// Their progress record must therefore be durable without asking a human to
+// repeat Owner confirmation after every worker turn. This writes only a
+// server-derived capsule/event: it never grants execution, changes the Work
+// outcome, or marks closure verified.
+async function checkpointNyraAssignmentProgress(identity, result, phase) {
+  const assignment = result?.assignment;
+  const workId = result?.work_id;
+  if (!workContinuityRuntime || !assignment?.assignment_id || !workId) return null;
+  try {
+    const canonical = await requireCanonicalWorkRead(identity, workId);
+    requireActivatedCanonicalContinuity(canonical);
+    const outcome = assignment.task_contract?.final_outcome || null;
+    const claimed = phase === "claimed";
+    const checkpoint = await workContinuityRuntime.checkpoint(identity, {
+      work_id: workId,
+      evidence: result.receipt?.receipt_hash ? [{
+        evidence_id: result.receipt.receipt_id,
+        digest: result.receipt.receipt_hash,
+        independently_verified: false,
+      }] : [],
+      tests: [],
+      authorizations: [{
+        type: `nyra_assignment_${phase}`,
+        assignment_id: assignment.assignment_id,
+        receipt_hash: result.receipt?.receipt_hash || null,
+        server_derived: true,
+      }],
+      rollback: { mode: "assignment_evidence_only_no_external_effect" },
+      next_action: claimed
+        ? `Assignment ${assignment.assignment_key} is claimed; submit bounded evidence for the persistent Work outcome.`
+        : `Assignment ${assignment.assignment_key} submitted; reconcile its evidence before advancing the persistent Work outcome.`,
+      provenance: {
+        source: `nyra_work_assignment_${phase}`,
+        assignment_id: assignment.assignment_id,
+        assignment_key: assignment.assignment_key,
+        role: assignment.role,
+        final_outcome_digest: outcome?.outcome_digest || null,
+        final_outcome_revision: outcome?.outcome_revision || null,
+        server_derived: true,
+      },
+      handoff_to: claimed ? assignment.blueprint_id : "nyra_coordinator",
+      idempotency_key: `nyra_assignment_${phase}_checkpoint_${assignment.assignment_id}`,
+    });
+    return { state: "PERSISTED", checkpoint };
+  } catch (error) {
+    // The append-only assignment receipt remains available for reconciliation.
+    // Never disguise a missing capsule as a completed cross-host handoff.
+    return {
+      state: "PENDING_RECOVERY",
+      code: String(error?.code || error?.message || "continuity_checkpoint_failed").slice(0, 160),
+    };
+  }
+}
+
 // A canonical Work is not operational until Nyra has materialized (or
 // deterministically recovered) its bounded orchestration context.  Keep this
 // bridge next to Work creation so exact retries repair a crash between the
@@ -3270,6 +3325,7 @@ const baseHandlers = {
     nyra_work_assignment_claim: async (args, identity) => {
       requireBoundedAssignmentCollaboration(identity);
       const result = await nyraAutopilotRuntime.claim(identity, args);
+      const continuity = await checkpointNyraAssignmentProgress(identity, result, "claimed");
       const nyraVerifierScope = await nyraVerifierAssignmentScope(identity, {
         ...result.assignment,
         work_id: result.work_id,
@@ -3277,6 +3333,7 @@ const baseHandlers = {
       const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_claim", { force: true });
       return continuityTextResult({ ok: true, result: {
         ...result,
+        ...(continuity ? { continuity } : {}),
         ...(nyraVerifierScope ? { nyra_verifier_scope: nyraVerifierScope } : {}),
         ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
       } });
@@ -3314,9 +3371,11 @@ const baseHandlers = {
             evidence_digest: nyraWorkProjection.evidence_digest,
           })
         : null;
+      const continuity = await checkpointNyraAssignmentProgress(identity, result, "submitted");
       const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_submit", { force: true });
       return continuityTextResult({ ok: true, result: {
         ...result,
+        ...(continuity ? { continuity } : {}),
         ...(nyraWorkProjection ? { nyra_work_projection: nyraWorkProjection } : {}),
         ...(remediation ? { nyra_remediation: remediation } : {}),
         ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
