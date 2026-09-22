@@ -37,6 +37,7 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // never turn them into unbounded Work discovery or release tooling.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  "nyra_work_assignment_reissue",
   "core_capability_catalog",
   "core_branch_registry",
   // The connected AI performs language understanding, while this bounded
@@ -915,6 +916,19 @@ export function compactMcpTools(tools, handlers) {
       scopes: tool.scopes,
       annotations: tool.annotations,
       ...(tool._meta ? { _meta: tool._meta } : {}),
+    } : tool.name === "nyra_work_assignment_reissue" ? {
+      // This terminal repair command is published only after Nyra has named
+      // an exact quarantined assignment.  Transport identity is derived by
+      // the gateway; retaining it in the compact schema wastes the limited
+      // connected-host import budget without adding a client obligation.
+      name: tool.name,
+      inputSchema: {
+        type: "object",
+        // The exact three-field schema is validated server-side. Keeping its
+        // UUID/presence definitions out of tools/list preserves the strict
+        // import budget shared by every connected host.
+        additionalProperties: true,
+      },
     } : tool);
 }
 
