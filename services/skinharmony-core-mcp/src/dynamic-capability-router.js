@@ -964,8 +964,11 @@ export function compactMcpTools(tools, handlers) {
       name: tool.name,
       inputSchema: {
         type: "object",
-        properties: { work_id: { type: "string", minLength: 36, maxLength: 36 } },
-        required: ["work_id"],
+        properties: {
+          work_id: { type: "string", minLength: 36, maxLength: 36 },
+          environment: { type: "string", enum: ["production", "staging"] },
+        },
+        required: ["work_id", "environment"],
         additionalProperties: false,
       },
       scopes: tool.scopes,
