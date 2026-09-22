@@ -3006,6 +3006,7 @@ export function createApp(config, options = {}) {
       : filterToolsForClient(baseVisibleTools, identity, config.nyraDialogueEnabled);
     let activeToolCall = null;
     let afterToolCallAttempted = false;
+    let assignmentReissuePhase = null;
     try {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
@@ -3076,6 +3077,7 @@ export function createApp(config, options = {}) {
             resolveNyraConnectorFrontDoorFallback(params.name, baseVisibleTools, {
               dialogueEnabled: config.nyraDialogueEnabled,
             }));
+        if (canonicalToolName === "nyra_work_assignment_reissue") assignmentReissuePhase = "tool_resolution";
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
           (NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(canonicalToolName)
             ? baseVisibleTools.find((item) => item.name === canonicalToolName)
@@ -3087,6 +3089,7 @@ export function createApp(config, options = {}) {
             )
             : null);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
+        if (assignmentReissuePhase) assignmentReissuePhase = "scope";
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
         // Both legacy Codex preflight descriptors and stale ChatGPT read
@@ -3119,6 +3122,7 @@ export function createApp(config, options = {}) {
             enumerable: true,
           });
         }
+        if (assignmentReissuePhase) assignmentReissuePhase = "host_capability";
         // The server-side app grant is an upper bound independent of OAuth,
         // tenant ownership and Core scopes. Resolve dynamic wrappers to their
         // exact target and reject before consuming an owner confirmation or
@@ -3132,6 +3136,7 @@ export function createApp(config, options = {}) {
           tools: TOOLS,
           platformOwnerAdminRequired: config.platformOwnerAdminEnforced === true,
         });
+        if (assignmentReissuePhase) assignmentReissuePhase = "owner_elevation";
         if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
           identity.environmentDelegationBound !== true &&
           supportsOAuthOwnerElevation(tool.name) && rawArgs.owner_confirmed === true) {
@@ -3231,6 +3236,7 @@ export function createApp(config, options = {}) {
           if (upstreamSession) res.set("Mcp-Session-Id", upstreamSession);
           return res.status(upstream.status).json(body);
         }
+        if (assignmentReissuePhase) assignmentReissuePhase = "session_binding";
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
         const transportPresence = transportSessionId
@@ -3491,7 +3497,7 @@ export function createApp(config, options = {}) {
       if (assignmentReissueCall && (!error?.code || error.code === "tool_execution_failed")) {
         error = withToolFailureCode(error, activeToolCall
           ? "nyra_assignment_reissue_gateway_failed"
-          : "nyra_assignment_reissue_prebind_failed");
+          : `nyra_assignment_reissue_${assignmentReissuePhase || "prebind"}_failed`);
       }
       if (assignmentReissueCall) {
         console.warn("[nyra-autopilot] assignment_reissue_gateway_failed", JSON.stringify({
