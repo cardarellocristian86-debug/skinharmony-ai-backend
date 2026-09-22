@@ -38,6 +38,11 @@ function normalizeId(value, name, pattern) {
 }
 function asRecord(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
 function asText(value) { return typeof value === "string" ? value.replaceAll("\u0000", " ").trim().slice(0, 12_000) : ""; }
+function positiveRevision(value, field) {
+  const revision = Number(value ?? 1);
+  if (!Number.isInteger(revision) || revision < 1) throw new Error(`${field}_invalid`);
+  return revision;
+}
 function textValues(input, work) {
   const fields = [input.intent, input.objective, input.idea, input.summary, input.request, input.description,
     work.intent, work.objective, work.idea, work.summary, work.request, work.description];
@@ -62,6 +67,34 @@ function activeWave(id, blueprintIds, reasonCode) {
   return Object.freeze({ wave_id: id, active_blueprint_ids: Object.freeze(unique), max_parallel: Math.min(NYRA_AUTOPILOT_MAX_PARALLEL, unique.length), reason_code: reasonCode });
 }
 function role(blueprintId) { return Object.freeze({ blueprint_id: blueprintId, ...ROLE_DETAILS[blueprintId] }); }
+
+// This lives in the durable, server-owned plan—not dialogue state. A host may
+// phrase a task differently on every turn but cannot replace the canonical
+// Work outcome, its revision, or the ECT-only closure rule.
+function finalOutcome(source, work, scope) {
+  const objective = asText(source.objective || work.objective);
+  const intentDigest = String(source.canonical_intent_digest || source.intent_digest || work.intent_digest || "").trim();
+  if (intentDigest && !/^[a-f0-9]{64}$/i.test(intentDigest)) throw new Error("nyra_autopilot_final_outcome_intent_invalid");
+  const outcomeRevision = positiveRevision(source.work_revision ?? source.workRevision ?? work.current_version, "nyra_autopilot_final_outcome_revision");
+  // A Core-blocked historical proposal may intentionally have no materialised
+  // objective. Preserve it as unavailable rather than fabricating one; such a
+  // plan has no activation waves and can never close.
+  const targetDigest = objective ? digest(objective) : null;
+  return Object.freeze({
+    schema_version: "nyra_autopilot_final_outcome_v1",
+    work_id: scope.work_id,
+    project_id: scope.project_id,
+    outcome_revision: outcomeRevision,
+    objective: objective || null,
+    objective_available: Boolean(objective),
+    target_digest: targetDigest,
+    ...(intentDigest ? { intent_digest: intentDigest } : {}),
+    closure_rule: "ect_verified_only",
+    closure_verified: false,
+    intermediate_goal_policy: "assignment_contract_server_derived",
+    outcome_digest: digest({ work_id: scope.work_id, project_id: scope.project_id, outcome_revision: outcomeRevision, target_digest: targetDigest || null, intent_digest: intentDigest || null, closure_rule: "ect_verified_only" }),
+  });
+}
 
 function authoritativeVerdict(value, expectedIntentDigest) {
   if (value === undefined || value === null) return null;
@@ -93,6 +126,7 @@ export function compileNyraAutopilotPlan(input = {}) {
     source.canonical_intent_digest ? String(source.canonical_intent_digest) : null,
   );
   const text = textValues(source, work);
+  const outcome = finalOutcome(source, work, scope);
   const authoritativeRoles = new Set(coreVerdict?.required_role_ids || []);
   const needsResearch = coreVerdict ? authoritativeRoles.has("researcher") : truthyIntent(source, work, "research") || INTENT_PATTERNS.research.test(text);
   const needsImplementation = coreVerdict ? authoritativeRoles.has("executor_specialist") : truthyIntent(source, work, "implementation") || INTENT_PATTERNS.implementation.test(text);
@@ -127,6 +161,7 @@ export function compileNyraAutopilotPlan(input = {}) {
     },
     execution: { execution_authorized: false, model_invocation_allowed: false, tool_invocation_allowed: false, external_action_allowed: false },
     core_join: { required: true, authority: "universal_core", required_before_external_action: true },
+    final_outcome: outcome,
   };
   return Object.freeze({ ...plan, plan_digest: digest(plan) });
 }

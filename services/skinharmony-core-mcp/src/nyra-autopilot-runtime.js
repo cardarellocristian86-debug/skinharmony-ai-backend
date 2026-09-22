@@ -319,6 +319,16 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           work_scope: { tenant_id: run.tenant_id, project_id: run.project_id, work_id: run.work_id },
           plan_digest: run.plan_digest, execution_authorized: false, tool_allowlist: [], model_invocation_allowed: false,
           external_action_allowed: false, core_gate_required: true,
+          // The assignment is always subordinate to the same persistent Work
+          // outcome. Reissue and remediation clone this contract, so a new
+          // host resumes the goal instead of only the last chat instruction.
+          final_outcome: clone(plan.final_outcome),
+          intermediate_goal: Object.freeze({
+            assignment_key: spec.key,
+            role: spec.role,
+            objective: spec.summary,
+            final_outcome_digest: plan.final_outcome.outcome_digest,
+          }),
           materialized_nyra_branches: branches,
           ...nyraAutopilotCoreEvidence(plan),
         };
@@ -427,7 +437,8 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           persistedCoreBinding.core_orchestration_verdict_digest !== persistedCoreVerdict?.verdict_digest
         )) throw new Error("nyra_autopilot_persisted_core_binding_invalid");
         const plan = compileNyraAutopilotPlan({ tenant_id: tenantId, project_id: row.project_id, work_id: workId,
-          idea: row.idea, objective: row.objective, work: row.anchor || {},
+          idea: row.idea, objective: row.objective, intent_digest: row.intent_digest,
+          work_revision: Number(row.current_version), work: row.anchor || {},
           ...(persistedCoreVerdict ? {
             core_orchestration_verdict: persistedCoreVerdict,
             canonical_intent_digest: persistedCoreBinding.canonical_intent_digest,
