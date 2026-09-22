@@ -298,7 +298,7 @@ test("binds a registered tenant member only for bounded Gallery assignment hand-
       capabilities: ["work.read"],
     },
   };
-  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit"]) {
+  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit", "nyra_work_assignment_reissue"]) {
     const resolved = resolveHostTransportPresence({
       identity: member, toolName, declaredSessionId: "gallery-logical-session",
       agentPresence, transportAgentPresence: null,

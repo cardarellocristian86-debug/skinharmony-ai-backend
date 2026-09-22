@@ -284,7 +284,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 18);
+  assert.equal(compact.length, 19);
   assert(compact.some((tool) => tool.name === "core_typed_request"));
   assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));

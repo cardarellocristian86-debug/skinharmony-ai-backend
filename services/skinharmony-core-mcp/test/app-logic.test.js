@@ -252,6 +252,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       "nyra_intent_bridge",
       "nyra_work_assignment_claim",
       "nyra_work_assignment_submit",
+      "nyra_work_assignment_reissue",
     ];
     assert.deepEqual(names, expected, clientType);
   }
@@ -271,6 +272,7 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
     "nyra_autopilot_enable",
     "nyra_work_assignment_claim",
     "nyra_work_assignment_submit",
+    "nyra_work_assignment_reissue",
   ]);
   assert.equal(filterToolsForClient(TOOLS, {
     ...identity,

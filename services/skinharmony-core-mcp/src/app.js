@@ -699,6 +699,7 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   // them to discover Work state, mint a ticket, or execute an external action.
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  "nyra_work_assignment_reissue",
   // Separate ChatGPT-only review entrypoint.  It can only consume an opaque
   // continuation issued by Nyra and runs the mandatory duplicate review.
   "nyra_chatgpt_work_bootstrap_review",
@@ -1500,6 +1501,7 @@ export function resolveHostTransportPresence({
   const oauthAssignmentCollaborationCall = [
     "nyra_work_assignment_claim",
     "nyra_work_assignment_submit",
+    "nyra_work_assignment_reissue",
   ].includes(toolName);
   const oauthAssignmentSessionBound = Boolean(
     oauthAssignmentCollaborationCall &&
