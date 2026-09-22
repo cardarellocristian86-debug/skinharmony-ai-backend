@@ -40,6 +40,10 @@ const WORK_COORDINATION_TOOLS = new Set([
 const WORK_ASSIGNMENT_COLLABORATION_TOOLS = new Set([
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  // Reissue is equally bounded: it can only replace one server-recorded
+  // quarantined assignment in its existing Work/run.  It neither creates a
+  // Work nor grants a branch, lease or external effect.
+  "nyra_work_assignment_reissue",
 ]);
 
 // Transport visibility only: a conversational Work reader may discover this
