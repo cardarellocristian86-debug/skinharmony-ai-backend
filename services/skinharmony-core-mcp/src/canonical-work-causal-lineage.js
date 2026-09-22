@@ -7,6 +7,14 @@ function payload(value) {
     ? structured.result : structured;
 }
 function digest(value) { return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 function fail(code) { const error = new Error(code); error.code = code; error.status = 409; throw error; }
 function isCausalNotFound(error) {
   const code = String(error?.code || error?.message || "").toLowerCase();
@@ -63,7 +71,10 @@ function bootstrapInitialProposal(revision, work, projectAlias) {
   return revision?.state === "PROPOSED" && revision.parent_revision_id == null &&
     revision.alias === "canonical-work-bootstrap-initial" &&
     revision.classification === "REFINEMENT" &&
-    JSON.stringify(revisionPayload) === JSON.stringify(expectedPayload);
+    // PostgreSQL JSONB preserves content but not object-key insertion order.
+    // Compare the immutable payload canonically, otherwise a valid server
+    // proposal read back from storage looks forged after key reordering.
+    stableJson(revisionPayload) === stableJson(expectedPayload);
 }
 
 async function readGenesisOrMaterialize({ handlers, identity, work, projectAlias, projectId }) {

@@ -212,6 +212,32 @@ test("canonical lineage resumes a tenant-project bootstrap across registered hos
   assert.equal(calls.filter((item) => item.name === "intent_revision_propose").length, 1);
 });
 
+test("canonical lineage accepts an exact bootstrap payload after JSONB key reordering", async () => {
+  const { handlers, calls } = fixture({
+    existing: true, genesisPresent: true, revisionPresent: false,
+    proposedRevision: {
+      intent_revision_id: "55555555-5555-4555-8555-555555555555", state: "PROPOSED",
+      alias: "canonical-work-bootstrap-initial", classification: "REFINEMENT", parent_revision_id: null,
+      revision_payload: {
+        risks: [], problem: WORK.objective,
+        invariants: ["Canonical Work lineage remains server-derived and effect-free at bootstrap."],
+        motivation: "Establish the initial approved causal decision path for canonical Work lineage.",
+        scope_added: [WORK.project_id], authorization: null, scope_removed: [], affected_work_ids: [],
+        chosen_alternative: null, obligations_replaced: [], rejected_alternatives: [],
+        obligations_maintained: [], alternatives_considered: [],
+      },
+    },
+  });
+  const result = await ensureCanonicalWorkProjectDecisionPath({
+    handlers, identity: OTHER_HOST_IDENTITY,
+    work: { project_id: WORK.project_id, objective: WORK.objective },
+  });
+  assert.equal(result.intent_revision_id, "55555555-5555-4555-8555-555555555555");
+  assert.equal(calls.some((item) => item.name === "intent_revision_propose"), false);
+  assert.equal(calls.find((item) => item.name === "intent_revision_approve").args.intent_revision_id,
+    result.intent_revision_id);
+});
+
 test("canonical lineage never approves a proposal that only imitates bootstrap fields", async () => {
   const { handlers, calls } = fixture({
     existing: true,
