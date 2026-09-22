@@ -2375,6 +2375,23 @@ function toolFailure(error) {
   };
 }
 
+// Third-party/runtime failures are not guaranteed to be Error instances. A
+// bounded recovery route must still return a stable, non-sensitive code; do
+// not mutate a primitive or frozen foreign error and accidentally replace it
+// with a generic gateway TypeError.
+function withToolFailureCode(error, code) {
+  if (error && typeof error === "object" && error.code) return error;
+  if (error && typeof error === "object") {
+    try {
+      error.code = code;
+      if (error.code === code) return error;
+    } catch {}
+  }
+  const wrapped = new Error(typeof error?.message === "string" ? error.message : code);
+  wrapped.code = code;
+  return wrapped;
+}
+
 function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
     POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name)) return tool;
@@ -3408,7 +3425,7 @@ export function createApp(config, options = {}) {
             hookContext = await beforeToolCall({ identity: callIdentity, toolName: tool.name, args });
           } catch (error) {
             if (tool.name === "nyra_work_assignment_reissue" && !error?.code) {
-              error.code = "nyra_assignment_reissue_prehandler_failed";
+              error = withToolFailureCode(error, "nyra_assignment_reissue_prehandler_failed");
             }
             if (error?.hookContext) activeToolCall.hookContext = error.hookContext;
             throw error;
@@ -3436,7 +3453,7 @@ export function createApp(config, options = {}) {
           rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         } catch (error) {
           if (tool.name === "nyra_work_assignment_reissue" && !error?.code) {
-            error.code = "nyra_assignment_reissue_handler_failed";
+            error = withToolFailureCode(error, "nyra_assignment_reissue_handler_failed");
           }
           throw error;
         }
@@ -3467,7 +3484,16 @@ export function createApp(config, options = {}) {
       // bounded production diagnostic for failures anywhere in the gateway
       // (including before the handler), without recording prompts, IDs,
       // tenant data, SQL or identity material.
-      if (method === "tools/call" && activeToolCall?.toolName === "nyra_work_assignment_reissue") {
+      const assignmentReissueCall = method === "tools/call" && (
+        activeToolCall?.toolName === "nyra_work_assignment_reissue" ||
+        connectorToolCandidate(params.name) === "nyra_work_assignment_reissue"
+      );
+      if (assignmentReissueCall && (!error?.code || error.code === "tool_execution_failed")) {
+        error = withToolFailureCode(error, activeToolCall
+          ? "nyra_assignment_reissue_gateway_failed"
+          : "nyra_assignment_reissue_prebind_failed");
+      }
+      if (assignmentReissueCall) {
         console.warn("[nyra-autopilot] assignment_reissue_gateway_failed", JSON.stringify({
           category: String(error?.code || error?.message || "runtime_error")
             .replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80),
