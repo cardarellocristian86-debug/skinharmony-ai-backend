@@ -3464,6 +3464,7 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
   "nyra_autopilot_reconcile",
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  "nyra_work_assignment_reissue",
   "work_continuity_atlas_upsert",
   "work_continuity_incident_record",
   "work_continuity_incident_verify",
