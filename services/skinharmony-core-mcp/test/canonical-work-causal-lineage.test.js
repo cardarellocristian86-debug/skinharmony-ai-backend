@@ -237,7 +237,6 @@ test("canonical lineage accepts an exact bootstrap payload after JSONB key reord
   assert.equal(calls.find((item) => item.name === "intent_revision_approve").args.intent_revision_id,
     result.intent_revision_id);
 });
-
 test("canonical lineage never approves a proposal that only imitates bootstrap fields", async () => {
   const { handlers, calls } = fixture({
     existing: true,
