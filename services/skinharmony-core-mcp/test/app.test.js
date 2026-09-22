@@ -3159,7 +3159,8 @@ test("production compact mode exposes only the stable connector surface", async 
       assert(compactConverse.outputSchema);
       assert.equal(compactConverse.outputSchema.additionalProperties, true);
       assert(Buffer.byteLength(JSON.stringify(compactConverse)) < 5 * 1024);
-      assert.equal(compactContinue.inputSchema.properties.action_request.additionalProperties, true);
+      assert.deepEqual(compactContinue.inputSchema.required, ["operation", "idempotency_key"]);
+      assert.equal(compactContinue.inputSchema.additionalProperties, false);
       assert.equal(
         TOOLS.find((tool) => tool.name === "nyra_continue")
           .inputSchema.properties.action_request.additionalProperties,

@@ -284,7 +284,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 19);
+  assert.equal(compact.length, 20);
   assert(compact.some((tool) => tool.name === "core_typed_request"));
   assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
@@ -294,6 +294,9 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   assert(compact.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
+  const inbox = compact.find((tool) => tool.name === "nyra_work_assignment_inbox");
+  assert.deepEqual(inbox.scopes, ["core:read"]);
+  assert.deepEqual(inbox.inputSchema.required, ["work_id"]);
   const reissue = compact.find((tool) => tool.name === "nyra_work_assignment_reissue");
   assert.deepEqual(reissue.scopes, ["core:read"]);
   assert.equal(Object.hasOwn(reissue, "annotations"), false);
