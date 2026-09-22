@@ -3324,7 +3324,18 @@ const baseHandlers = {
     },
     nyra_work_assignment_reissue: async (args, identity) => {
       requireBoundedAssignmentCollaboration(identity);
-      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.reissueQuarantinedAssignment(identity, args) });
+      try {
+        return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.reissueQuarantinedAssignment(identity, args) });
+      } catch (error) {
+        // This path handles only server-owned IDs and a bounded idempotency
+        // key.  Preserve actionable production observability without logging
+        // prompts, assignment results, identity material or SQL text.
+        console.warn("[nyra-autopilot] assignment_reissue_failed", JSON.stringify({
+          category: String(error?.code || "runtime_error").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80),
+          sqlstate: /^[A-Z0-9]{5}$/.test(String(error?.code || "")) ? String(error.code) : null,
+        }));
+        throw error;
+      }
     },
   } : {}),
 };
