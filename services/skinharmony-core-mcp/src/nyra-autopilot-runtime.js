@@ -651,11 +651,17 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const claimant = presence(identity);
       const workId = input.work_id ? uuid(input.work_id, "work_id") : null;
       await initialize();
-      const parameters = [tenantId, claimant.client_type];
+      const parameters = [tenantId, claimant.client_type, claimant.agent_id];
       const predicate = ["tenant_id=$1", "status='offered'", "eligible_client_types ? $2"];
       if (workId) { parameters.push(workId); predicate.push(`work_id=$${parameters.length}`); }
       const result = await pool.query(`SELECT a.assignment_id,a.run_id,a.assignment_key,a.agent_instance_id,a.blueprint_id,a.role,a.task_contract,a.dependencies,a.eligible_client_types,a.status,a.claim_expires_at,a.submitted_result,a.quarantine
         FROM core_nyra_autopilot_assignments a WHERE ${predicate.map((item) => `a.${item}`).join(" AND ")}
+        AND NOT (a.role='independent_verifier' AND EXISTS (
+          SELECT 1 FROM core_nyra_autopilot_assignments producer
+          WHERE producer.tenant_id=a.tenant_id AND producer.work_id=a.work_id AND producer.run_id=a.run_id
+            AND producer.role<>'independent_verifier' AND producer.claimed_agent_id=$3
+            AND producer.status IN ('submitted','verified')
+        ))
         AND NOT EXISTS (
           SELECT 1 FROM jsonb_array_elements_text(a.dependencies) required(assignment_key)
           LEFT JOIN core_nyra_autopilot_assignments dependency
@@ -663,7 +669,29 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
             AND dependency.assignment_key=required.assignment_key
           WHERE dependency.status IS NULL OR dependency.status NOT IN ('submitted','verified')
         ) ORDER BY a.created_at,a.assignment_key LIMIT 50`, parameters);
-      return { tenant_id: tenantId, agent_id: claimant.agent_id, assignments: result.rows.map(publicAssignment), execution_authorized: false };
+      // Do not offer a verifier the current producer cannot claim.  Preserve
+      // the reason as unprivileged coordination data so Nyra can request a
+      // distinct connected AI instead of sending the same host into a 409.
+      const withheld = await pool.query(`SELECT a.assignment_id,a.role FROM core_nyra_autopilot_assignments a
+        WHERE ${predicate.map((item) => `a.${item}`).join(" AND ")}
+          AND a.role='independent_verifier' AND EXISTS (
+            SELECT 1 FROM core_nyra_autopilot_assignments producer
+            WHERE producer.tenant_id=a.tenant_id AND producer.work_id=a.work_id AND producer.run_id=a.run_id
+              AND producer.role<>'independent_verifier' AND producer.claimed_agent_id=$3
+              AND producer.status IN ('submitted','verified')
+          ) ORDER BY a.created_at,a.assignment_key LIMIT 50`, parameters);
+      return {
+        tenant_id: tenantId,
+        agent_id: claimant.agent_id,
+        assignments: result.rows.map(publicAssignment),
+        withheld_assignments: withheld.rows.map((row) => ({
+          assignment_id: row.assignment_id,
+          role: row.role,
+          code: "nyra_assignment_independent_verifier_conflict",
+          next_action: "request_distinct_connected_ai",
+        })),
+        execution_authorized: false,
+      };
     },
     async claim(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
