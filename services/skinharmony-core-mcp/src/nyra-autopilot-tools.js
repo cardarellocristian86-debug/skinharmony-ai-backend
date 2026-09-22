@@ -20,6 +20,7 @@ function tool(name, title, description, inputSchema, {
   ownerRequired = false,
   bounded = false,
   dedicatedCoreGate = false,
+  collaborationReadScope = false,
 } = {}) {
   return {
     name, title, description,
@@ -27,7 +28,12 @@ function tool(name, title, description, inputSchema, {
       ...inputSchema,
       properties: { ...inputSchema.properties, ...presence, ...(ownerRequired ? owner : {}) },
     },
-    scopes: [readOnly ? "core:read" : "core:govern"],
+    // Assignment collaboration may mutate only one server-issued row under
+    // its tenant/Work/presence/idempotency contract. It never grants an
+    // external effect, a Core ticket or arbitrary Work authority, so a
+    // Gallery reader must not need the broad core:govern scope merely to
+    // resume, claim, submit or safely reissue that exact handoff.
+    scopes: [readOnly || collaborationReadScope ? "core:read" : "core:govern"],
     annotations: annotations(readOnly),
     ...(!readOnly ? { _meta: {
       "skinharmony/ownerConfirmationRequired": ownerRequired,
@@ -56,13 +62,13 @@ export const NYRA_AUTOPILOT_TOOLS = [
   tool("nyra_work_assignment_claim", "Claim a bounded Nyra assignment",
     "Claim one ready assignment with transport-bound AI presence.",
     object({ work_id: uuid, assignment_id: uuid, ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 }, idempotency_key: identifier }, ["work_id", "assignment_id", "idempotency_key"]),
-    { readOnly: false, bounded: true }),
+    { readOnly: false, bounded: true, collaborationReadScope: true }),
   tool("nyra_work_assignment_submit", "Submit bounded Nyra assignment evidence",
     "Submit bounded evidence for one claimed assignment.",
     object({ work_id: uuid, assignment_id: uuid, result: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["work_id", "assignment_id", "result", "idempotency_key"]),
-    { readOnly: false, bounded: true }),
+    { readOnly: false, bounded: true, collaborationReadScope: true }),
   tool("nyra_work_assignment_reissue", "Reissue quarantined Nyra assignment",
     "Create one fresh replacement for a quarantined assignment in the same Work without granting execution.",
     object({ work_id: uuid, assignment_id: uuid, idempotency_key: identifier }, ["work_id", "assignment_id", "idempotency_key"]),
-    { readOnly: false, bounded: true }),
+    { readOnly: false, bounded: true, collaborationReadScope: true }),
 ];

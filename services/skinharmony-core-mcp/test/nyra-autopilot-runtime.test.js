@@ -234,6 +234,10 @@ test("Nyra Autopilot keeps activation owner-gated while bounded reconciliation c
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
     assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
   }
+  for (const name of ["nyra_work_assignment_claim", "nyra_work_assignment_reissue", "nyra_work_assignment_submit"]) {
+    assert.deepEqual(tools[name].scopes, ["core:read"], `${name} is bounded Gallery collaboration, not broad Core governance`);
+  }
+  assert.deepEqual(tools.nyra_autopilot_reconcile.scopes, ["core:govern"]);
   assert.equal(tools.nyra_autopilot_reconcile._meta["skinharmony/dedicatedCoreGate"], true);
   assert.deepEqual(tools.nyra_autopilot_reconcile.inputSchema.required.sort(), ["idempotency_key", "work_id"]);
 });
