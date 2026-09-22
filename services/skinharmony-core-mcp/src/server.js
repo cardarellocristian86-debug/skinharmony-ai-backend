@@ -3322,6 +3322,10 @@ const baseHandlers = {
         ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
       } });
     },
+    nyra_work_assignment_reissue: async (args, identity) => {
+      requireBoundedAssignmentCollaboration(identity);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.reissueQuarantinedAssignment(identity, args) });
+    },
   } : {}),
 };
 
