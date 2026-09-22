@@ -686,6 +686,20 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(row), idempotent_replay: true, execution_authorized: false };
         }
         if (row.status !== "offered") throw new Error("nyra_assignment_not_claimable");
+        // A verifier must be independent of the producer.  Assignment role
+        // names alone are not separation of duties: the same authenticated
+        // agent could otherwise submit a candidate and then verify it from a
+        // second tab or a later session.  Bind this check to the durable
+        // run/Work and logical agent id (not the ephemeral session signature)
+        // so reconnecting cannot evade it.
+        if (row.role === "independent_verifier") {
+          const producer = await client.query(`SELECT assignment_id FROM core_nyra_autopilot_assignments
+            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3
+              AND role<>'independent_verifier' AND claimed_agent_id=$4
+              AND status IN ('submitted','verified') LIMIT 1 FOR UPDATE`,
+          [tenantId, workId, row.run_id, claimant.agent_id]);
+          if (producer.rows[0]) throw codedError("nyra_assignment_independent_verifier_conflict");
+        }
         const all = await client.query(`SELECT assignment_key,status FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`, [tenantId, workId, row.run_id]);
         const states = new Map(all.rows.map((item) => [item.assignment_key, item.status]));
         if ((row.dependencies || []).some((dependency) => !["submitted", "verified"].includes(states.get(dependency)))) throw new Error("nyra_assignment_dependency_not_ready");
