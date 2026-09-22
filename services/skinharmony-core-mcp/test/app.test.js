@@ -1313,6 +1313,22 @@ test("native planning repairs only the server-derived canonical legacy bridge be
     autopilot.indexOf("await readLegacyIntentAuthorized(identity, { work_id: work.work_id })"));
 });
 
+test("Nyra Autopilot Work read projects durable checkpoints and handoffs without mutating the Work", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const helperStart = serverSource.indexOf("async function readNyraAutopilotContinuity");
+  const helperEnd = serverSource.indexOf("// A canonical Work is not operational", helperStart);
+  const helper = serverSource.slice(helperStart, helperEnd);
+  assert.match(helper, /readLegacyWorkAuthorized\(identity, \{\s*work_id: workId/);
+  assert.match(helper, /\["checkpoint_created", "handoff_created", "work_resumed"\]/);
+  assert.match(helper, /state: "UNAVAILABLE"/);
+  const handlerStart = serverSource.indexOf("nyra_autopilot_work_read: async");
+  const handlerEnd = serverSource.indexOf("nyra_autopilot_enable: async", handlerStart);
+  const handler = serverSource.slice(handlerStart, handlerEnd);
+  assert.match(handler, /await requireCanonicalWorkRead\(identity, args\.work_id\)/);
+  assert.match(handler, /readNyraAutopilotContinuity\(identity, args\.work_id\)/);
+  assert.match(handler, /result: \{ \.\.\.autopilot, continuity \}/);
+});
+
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
   const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
   assert.ok(heartbeat);

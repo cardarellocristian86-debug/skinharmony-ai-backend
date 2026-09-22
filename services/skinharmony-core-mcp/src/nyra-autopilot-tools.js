@@ -47,7 +47,7 @@ export const NYRA_AUTOPILOT_TOOLS = [
   tool("nyra_autopilot_status", "Read Nyra Autopilot status",
     "Read the authenticated tenant's Nyra Autopilot configuration and its fixed zero-privilege limits.", object()),
   tool("nyra_autopilot_work_read", "Read a Nyra Autopilot Work",
-    "Read one tenant-scoped Nyra plan, materialized specialists and assignment states. It never exposes provider credentials or grants execution.",
+    "Read one tenant-scoped Nyra plan, materialized specialists, assignment states and durable checkpoint/handoff timeline. It never exposes provider credentials or grants execution.",
     object({ work_id: uuid }, ["work_id"])),
   tool("nyra_work_assignment_inbox", "Read claimable Nyra assignments",
     "List only the authenticated connected AI's tenant-scoped, zero-privilege assignment offers. An offer is not an executed task.",
