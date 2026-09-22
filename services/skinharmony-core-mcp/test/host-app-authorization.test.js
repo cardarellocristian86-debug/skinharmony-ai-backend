@@ -31,6 +31,7 @@ const TOOLS = [
   { name: "nyra_native_team_enable", annotations: { readOnlyHint: false } },
   { name: "nyra_autopilot_status", annotations: { readOnlyHint: true } },
   { name: "nyra_autopilot_reconcile", annotations: { readOnlyHint: false } },
+  { name: "nyra_work_assignment_reissue", annotations: { readOnlyHint: false } },
   { name: "memory_context", annotations: { readOnlyHint: true } },
   { name: "memory_checkpoint", annotations: { readOnlyHint: false } },
   { name: "task_update", annotations: { readOnlyHint: false } },
@@ -213,9 +214,9 @@ test("enforces work.read on direct and dynamic Work reads", () => {
   }));
 });
 
-test("Gallery readers can claim or submit only bounded assignments across sessions", () => {
+test("Gallery readers can claim, submit or safely reissue only bounded assignments across sessions", () => {
   const reader = identity(["work.read"]);
-  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit"]) {
+  for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit", "nyra_work_assignment_reissue"]) {
     assert.doesNotThrow(() => requireHostAppToolCapability({
       identity: reader, toolName, tools: TOOLS,
     }), toolName);

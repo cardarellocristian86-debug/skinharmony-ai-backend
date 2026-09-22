@@ -521,6 +521,25 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         const prior = selected.rows[0];
         if (!prior) throw new Error("nyra_assignment_not_found");
         if (prior.status !== "quarantined") throw new Error("nyra_assignment_reissue_not_applicable");
+        // A retry must return the same replacement.  The source assignment is
+        // immutable, so it is a stronger idempotency boundary than a caller
+        // supplied key and remains safe across reconnects.
+        const existing = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
+          WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3
+            AND task_contract->'reissue'->>'source_assignment_id'=$4
+          ORDER BY created_at LIMIT 1 FOR UPDATE`, [tenantId, workId, prior.run_id, assignmentId]);
+        if (existing.rows[0]) {
+          return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(existing.rows[0]),
+            receipt: null, idempotent_replay: true, execution_authorized: false };
+        }
+        // A dependent assignment identifies the original assignment key.  A
+        // one-off replacement would leave that dependency permanently
+        // unsatisfied, therefore require the existing remediation path rather
+        // than creating a misleading offer.
+        const dependents = await client.query(`SELECT assignment_id FROM core_nyra_autopilot_assignments
+          WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND dependencies ? $4 LIMIT 1 FOR UPDATE`,
+        [tenantId, workId, prior.run_id, prior.assignment_key]);
+        if (dependents.rows[0]) throw new Error("nyra_assignment_reissue_has_dependents");
         const replacementId = crypto.randomUUID();
         const taskContract = { ...clone(prior.task_contract), reissue: {
           schema_version: "nyra_assignment_reissue_v1", source_assignment_id: assignmentId,
