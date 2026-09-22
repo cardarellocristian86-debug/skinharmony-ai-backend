@@ -13,12 +13,13 @@ const WORK = Object.freeze({
   intent_digest: "b".repeat(64),
 });
 const IDENTITY = Object.freeze({ tenantId: "tenant-a" });
+const OTHER_HOST_IDENTITY = Object.freeze({ tenantId: "tenant-a", subject: "other-owner",
+  authenticatedHostPrincipal: { app_id: "codex" },
+  agentPresence: { session_fingerprint: "another-session" } });
 
 function bootstrapRevisionId(projectId) {
   const binding = crypto.createHash("sha256").update(JSON.stringify({
-    tenant_id: IDENTITY.tenantId,
-    project_alias: WORK.project_id,
-    subject: "", host_app_id: "", session_fingerprint: "",
+    tenant_id: IDENTITY.tenantId, project_alias: WORK.project_id,
   })).digest("hex").slice(0, 48);
   const key = `canonical-work-initial-revision-${binding}`;
   const bytes = crypto.createHash("sha256").update([
@@ -30,7 +31,8 @@ function bootstrapRevisionId(projectId) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function fixture({ existing = true, genesisPresent = true, revisionPresent = true, proposedRevision = null } = {}) {
+function fixture({ existing = true, genesisPresent = true, revisionPresent = true, proposedRevision = null,
+  extraRevisions = [] } = {}) {
   const calls = [];
   let project = existing ? { project_id: "22222222-2222-4222-8222-222222222222",
     active_intent_revision_id: "44444444-4444-4444-8444-444444444444" } : null;
@@ -51,7 +53,9 @@ function fixture({ existing = true, genesisPresent = true, revisionPresent = tru
       (project ||= { project_id: "22222222-2222-4222-8222-222222222222" })),
     project_decision_path_read: invoke("project_decision_path_read", async () => {
       if (!genesis) { const error = new Error("CAUSAL_NOT_FOUND"); error.code = "CAUSAL_NOT_FOUND"; throw error; }
-      return { project, genesis_intent: genesis, intent_revisions: revision ? [revision] : [] };
+      return { project, genesis_intent: genesis, intent_revisions: [
+        ...(revision ? [revision] : []), ...extraRevisions,
+      ] };
     }),
     genesis_intent_read: invoke("genesis_intent_read", async () => {
       if (!genesis) { const error = new Error("CAUSAL_NOT_FOUND"); error.code = "CAUSAL_NOT_FOUND"; throw error; }
@@ -151,19 +155,24 @@ test("canonical project bootstrap never materializes a project after a causal pr
   assert.equal(calls.some((item) => item.name === "genesis_intent_create"), false);
 });
 
-test("canonical lineage fails closed when existing causal history lacks an active approval", async () => {
-  const { handlers } = fixture({ existing: true, genesisPresent: true, revisionPresent: false });
-  handlers.intent_revision_propose = async () => ({ structuredContent: { ok: true, result: {
-    intent_revision_id: "44444444-4444-4444-8444-444444444444", state: "PROPOSED",
-  } } });
-  handlers.intent_revision_approve = async () => {
-    throw new Error("approval_must_not_be_invented_for_existing_history");
-  };
-  await assert.rejects(() => ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY, work: WORK }),
-    /canonical_work_causal_active_intent_missing/u);
+test("canonical lineage recovers a historical project with unrelated pending proposals", async () => {
+  const unrelatedId = "55555555-5555-4555-8555-555555555555";
+  const { handlers, calls } = fixture({
+    existing: true, genesisPresent: true, revisionPresent: false,
+    extraRevisions: [{
+      intent_revision_id: unrelatedId, state: "PROPOSED", alias: "operator-draft",
+      classification: "REFINEMENT", parent_revision_id: null, revision_payload: {},
+    }],
+  });
+  const result = await ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY, work: WORK });
+  const approval = calls.find((item) => item.name === "intent_revision_approve");
+  assert.equal(result.work_id, WORK.work_id);
+  assert.equal(approval.args.intent_revision_id, bootstrapRevisionId(result.project_id));
+  assert.notEqual(approval.args.intent_revision_id, unrelatedId);
+  assert.equal(approval.args.expected_no_active_intent, true);
 });
 
-test("canonical lineage resumes only its exact pending bootstrap proposal", async () => {
+test("canonical lineage resumes only its exact pending bootstrap payload", async () => {
   const { handlers, calls } = fixture({ existing: false, genesisPresent: false, revisionPresent: false });
   const approve = handlers.intent_revision_approve;
   let failFirstApproval = true;
@@ -181,6 +190,25 @@ test("canonical lineage resumes only its exact pending bootstrap proposal", asyn
     handlers, identity: IDENTITY, work: { project_id: WORK.project_id, objective: WORK.objective },
   });
   assert.equal(resumed.intent_revision_id, bootstrapRevisionId("22222222-2222-4222-8222-222222222222"));
+  assert.equal(calls.filter((item) => item.name === "intent_revision_propose").length, 1);
+});
+
+test("canonical lineage resumes a tenant-project bootstrap across registered hosts", async () => {
+  const { handlers, calls } = fixture({ existing: false, genesisPresent: false, revisionPresent: false });
+  const firstApproval = handlers.intent_revision_approve;
+  let interrupt = true;
+  handlers.intent_revision_approve = async (...args) => {
+    if (interrupt) { interrupt = false; throw new Error("lost_response_after_server_write"); }
+    return firstApproval(...args);
+  };
+  await assert.rejects(() => ensureCanonicalWorkProjectDecisionPath({
+    handlers, identity: IDENTITY, work: { project_id: WORK.project_id, objective: WORK.objective },
+  }), /canonical_work_causal_active_intent_missing/u);
+  const resumed = await ensureCanonicalWorkProjectDecisionPath({
+    handlers, identity: OTHER_HOST_IDENTITY,
+    work: { project_id: WORK.project_id, objective: WORK.objective },
+  });
+  assert.equal(resumed.intent_revision_id, bootstrapRevisionId(resumed.project_id));
   assert.equal(calls.filter((item) => item.name === "intent_revision_propose").length, 1);
 });
 
