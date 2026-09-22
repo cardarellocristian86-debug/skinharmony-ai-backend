@@ -1116,6 +1116,10 @@ const STATE_PURE_READ_TOOL_NAMES = new Set([
   "decision_ledger_report",
   "agent_list",
   "message_inbox",
+  // This is an exact tenant/Work-scoped projection of server-issued
+  // assignment offers.  It neither claims an assignment nor materializes a
+  // plan, so it must remain readable when Core has no effect verdict.
+  "nyra_work_assignment_inbox",
 ]);
 
 export function qualifiesForStatePureReadPath(toolName, tools = [...TOOLS, ...WORK_CONTINUITY_TOOLS]) {
