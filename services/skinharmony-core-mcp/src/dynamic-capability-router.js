@@ -899,11 +899,11 @@ export function compactMcpTools(tools, handlers) {
       ...(tool._meta ? { _meta: tool._meta } : {}),
     } : tool.name === "nyra_chatgpt_work_bootstrap_review" ? {
       // The gateway derives transport identity. Keep this ChatGPT-only
-      // compact contract to its two caller fields so it remains inside the
-      // connector import budget while server validation stays exact.
+      // compact contract to its two caller fields and canonical tool name so
+      // it remains inside the connector import budget while server validation
+      // stays exact. Human-facing title/description remain available from the
+      // canonical catalog and are not part of this terminal continuation.
       name: tool.name,
-      title: tool.title,
-      description: tool.description,
       inputSchema: {
         type: "object",
         properties: {
@@ -929,6 +929,13 @@ export function compactMcpTools(tools, handlers) {
         // import budget shared by every connected host.
         additionalProperties: true,
       },
+      // Preserve the authorization contract from the canonical tool. The
+      // compact schema intentionally hides repeated UUID/presence fields, but
+      // must never drop scopes: doing so passes `undefined` into the gateway
+      // scope check and turns a safe recovery into a 500. The remaining
+      // annotations are discovery hints, not authorization inputs, and stay
+      // out of this deliberately budgeted terminal descriptor.
+      scopes: tool.scopes,
     } : tool);
 }
 
