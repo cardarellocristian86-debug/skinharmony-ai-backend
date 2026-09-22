@@ -3452,6 +3452,17 @@ export function createApp(config, options = {}) {
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
+      // Assignment recovery is an exact, server-owned repair path. Keep a
+      // bounded production diagnostic for failures anywhere in the gateway
+      // (including before the handler), without recording prompts, IDs,
+      // tenant data, SQL or identity material.
+      if (method === "tools/call" && activeToolCall?.toolName === "nyra_work_assignment_reissue") {
+        console.warn("[nyra-autopilot] assignment_reissue_gateway_failed", JSON.stringify({
+          category: String(error?.code || error?.message || "runtime_error")
+            .replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80),
+          status: Number.isInteger(error?.status) ? error.status : null,
+        }));
+      }
       if (["agent_presence_session_required", "agent_presence_conflict", "agent_presence_registration_required", "agent_presence_registration_failed"].includes(error.code)) {
         return res.status(error.code === "agent_presence_conflict" ? 409 : error.code === "agent_presence_registration_failed" ? 503 : 400).json({
           jsonrpc: "2.0",
