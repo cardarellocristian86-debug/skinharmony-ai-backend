@@ -143,6 +143,25 @@ test("Autopilot public readback canonicalizes PostgreSQL timestamps and rejects 
     /nyra_autopilot_run_updated_at_invalid/);
 });
 
+test("quarantined assignment reissue exposes a stable fail-closed reason", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const assignmentId = "33333333-3333-4333-8333-333333333333";
+  const client = { async query(sql) {
+    const statement = String(sql);
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim())) return { rows: [] };
+    if (statement.includes("WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE")) return { rows: [] };
+    return { rows: [] };
+  }, release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  await assert.rejects(
+    runtime.reissueQuarantinedAssignment({ tenantId: "codexai" }, {
+      work_id: workId, assignment_id: assignmentId, idempotency_key: "reissue-not-found-v1",
+    }),
+    (error) => error?.code === "nyra_assignment_not_found" && error.message === "nyra_assignment_not_found",
+  );
+});
+
 test("a rejected verification atomically reoffers every assignment and replays the same remediation run", async () => {
   const workId = "11111111-1111-4111-8111-111111111111";
   const parentRunId = "22222222-2222-4222-8222-222222222222";

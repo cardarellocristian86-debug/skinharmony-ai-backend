@@ -3407,6 +3407,9 @@ export function createApp(config, options = {}) {
           try {
             hookContext = await beforeToolCall({ identity: callIdentity, toolName: tool.name, args });
           } catch (error) {
+            if (tool.name === "nyra_work_assignment_reissue" && !error?.code) {
+              error.code = "nyra_assignment_reissue_prehandler_failed";
+            }
             if (error?.hookContext) activeToolCall.hookContext = error.hookContext;
             throw error;
           }
@@ -3428,7 +3431,15 @@ export function createApp(config, options = {}) {
         const handlerArgs = serverIssuedPreflight
           ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
-        const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
+        let rawResult;
+        try {
+          rawResult = await handlers[tool.name](handlerArgs, callIdentity);
+        } catch (error) {
+          if (tool.name === "nyra_work_assignment_reissue" && !error?.code) {
+            error.code = "nyra_assignment_reissue_handler_failed";
+          }
+          throw error;
+        }
         const continuationAccepted = rawResult?.isError !== true &&
           rawResult?.structuredContent?.ok !== false;
         if (sessionResolution.continuation_rebind && continuationAccepted) {
