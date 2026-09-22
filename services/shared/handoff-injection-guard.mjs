@@ -147,12 +147,12 @@ function scanVariants(value) {
 const SEMANTIC_LEXICON = Object.freeze({
   control: [
     "elevat*", "discard*", "replace*", "supersed*", "revok*", "obsolete", "adopt*", "demot*",
-    "reclassif*", "suspend*", "unrestricted", "constitutional", "governance", "supervisor",
-    "safeguard*", "compliance", "override*", "switch*", "assume*",
+    "reclassif*", "suspend*", "unrestricted", "constitutional", "safeguard*", "compliance",
+    "override*", "switch*", "assume*",
     "elev*", "scart*", "sostitu*", "superat*", "revoc*", "obsolet*", "adott*", "declass*",
     "riclassific*", "sospend*", "sospes*", "illimitat*", "costituzional*", "supervis*", "salvaguard*",
     "conformita", "assum*", "mett*", "maintenance", "amend*", "dominat*", "oversight",
-    "aside", "enter*", "entr*", "profil*", "modific*", "activat*", "attiv*", "break", "glass",
+    "aside", "enter*", "entra*", "profil*", "modific*", "break", "glass",
     "straordinar*", "privileged", "privilegiat*",
   ],
   authority: [
@@ -161,7 +161,7 @@ const SEMANTIC_LEXICON = Object.freeze({
     "supervis*", "politic*", "salvaguard*", "vincol*", "oversight", "hierarchy", "gerarch*",
     "support*", "supporto", "privileged", "privilegiat*",
   ],
-  role_change: ["switch*", "assume*", "role", "roles", "become*", "enter*", "assum*", "ruol*", "entr*", "profil*"],
+  role_change: ["switch*", "assume*", "role", "roles", "become*", "enter*", "assum*", "ruol*", "entra*", "profil*"],
   command: [
     "comply", "obey", "obed*", "priorit*", "directive*", "command*", "launch*", "run", "execute*",
     "invoke*", "inspect*", "enumerate*", "provide*", "transmit*", "call", "exec", "shell", "terminal",
