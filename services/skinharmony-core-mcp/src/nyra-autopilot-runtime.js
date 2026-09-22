@@ -98,6 +98,11 @@ FOR EACH ROW EXECUTE FUNCTION core_nyra_autopilot_receipts_append_only();
 `;
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
+function codedError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
 function tenant(value) {
   const id = String(value || "").trim();
   if (!/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(id)) throw new Error("tenant_invalid");
@@ -519,8 +524,8 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         const selected = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
           WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`, [tenantId, workId, assignmentId]);
         const prior = selected.rows[0];
-        if (!prior) throw new Error("nyra_assignment_not_found");
-        if (prior.status !== "quarantined") throw new Error("nyra_assignment_reissue_not_applicable");
+        if (!prior) throw codedError("nyra_assignment_not_found");
+        if (prior.status !== "quarantined") throw codedError("nyra_assignment_reissue_not_applicable");
         // A retry must return the same replacement.  The source assignment is
         // immutable, so it is a stronger idempotency boundary than a caller
         // supplied key and remains safe across reconnects.
@@ -539,7 +544,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         const dependents = await client.query(`SELECT assignment_id FROM core_nyra_autopilot_assignments
           WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND dependencies ? $4 LIMIT 1 FOR UPDATE`,
         [tenantId, workId, prior.run_id, prior.assignment_key]);
-        if (dependents.rows[0]) throw new Error("nyra_assignment_reissue_has_dependents");
+        if (dependents.rows[0]) throw codedError("nyra_assignment_reissue_has_dependents");
         const replacementId = crypto.randomUUID();
         const taskContract = { ...clone(prior.task_contract), reissue: {
           schema_version: "nyra_assignment_reissue_v1", source_assignment_id: assignmentId,
