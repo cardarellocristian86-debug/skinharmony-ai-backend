@@ -3973,6 +3973,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         w.work_id,w.project_id,w.current_version,w.next_action,
         i.intent_digest,
         c.capsule_id,c.capsule_digest,
+        h.payload->>'handoff_to' AS latest_handoff_to,h.created_at AS latest_handoff_at,
         a.revision AS atlas_revision,a.source_hash AS atlas_source_hash,
         a.bootstrap_state AS atlas_bootstrap_state,a.bootstrap_next_cursor AS atlas_bootstrap_next_cursor,
         e.payload->>'fingerprint' AS incident_fingerprint,
@@ -3990,6 +3991,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=w.tenant_id AND work_id=w.work_id
         ORDER BY created_at DESC LIMIT 1
       ) c ON true
+      LEFT JOIN LATERAL (
+        SELECT payload,created_at FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id AND event_type='handoff_created'
+        ORDER BY sequence_number DESC LIMIT 1
+      ) h ON true
       LEFT JOIN core_continuity_atlas_state a
         ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
       -- A runbook can be reusable at project level, but the active incident
@@ -4020,6 +4026,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
       checkpoint: Object.freeze({
         capsule_id: row.capsule_id || null,
         capsule_digest: row.capsule_digest || null,
+      }),
+      handoff: Object.freeze({
+        available: Boolean(row.latest_handoff_to),
+        to: row.latest_handoff_to || null,
+        at: row.latest_handoff_at ? new Date(row.latest_handoff_at).toISOString() : null,
       }),
       gallery: Object.freeze({
         // Only the canonical V2 Gallery can apply operational-state and ACL

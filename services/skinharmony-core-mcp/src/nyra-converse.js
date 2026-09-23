@@ -296,6 +296,7 @@ function publicNyraDialogue(value) {
   const dialogue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const work = dialogue.work && typeof dialogue.work === "object" ? dialogue.work : {};
   const checkpoint = work.checkpoint && typeof work.checkpoint === "object" ? work.checkpoint : {};
+  const handoff = work.handoff && typeof work.handoff === "object" ? work.handoff : {};
   const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
   const software = work.software && typeof work.software === "object" ? work.software : {};
   const diagnosis = dialogue.self_diagnosis && typeof dialogue.self_diagnosis === "object" ? dialogue.self_diagnosis : {};
@@ -309,6 +310,8 @@ function publicNyraDialogue(value) {
     work_revision: Number.isSafeInteger(Number(work.work_revision)) ? Number(work.work_revision) : null,
     intent_digest: /^[a-f0-9]{64}$/.test(String(work.intent_digest || "")) ? work.intent_digest : null,
     checkpoint_available: checkpoint.available === true,
+    handoff_available: handoff.available === true,
+    handoff_to: boundedPublicText(handoff.to, 80) || null,
     gallery_work_count: boundedCount(gallery.work_count),
     software_state: boundedString(software.state, 40) || "not_indexed",
     atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
@@ -774,6 +777,8 @@ function unavailableWorkDirectiveContext(work, dialogue) {
     status: null,
     progress_bp: null,
     checkpoint_available: dialogue?.checkpoint_available === true,
+    handoff_available: dialogue?.handoff_available === true,
+    handoff_to: dialogue?.handoff_to || null,
     acceptance_criteria_count: 0,
     required_task_count: 0,
     pending_required_task_count: 0,
@@ -1088,6 +1093,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     throw fail("nyra_converse_directive_context_progress_invalid", 409);
   }
   const checkpointAvailable = dialogue?.checkpoint_available === true;
+  const handoffAvailable = dialogue?.handoff_available === true;
+  const handoffTo = boundedPublicText(dialogue?.handoff_to, 80) || null;
   if (!Array.isArray(work.acceptance_criteria) || work.acceptance_criteria.length > 250) {
     throw fail("nyra_converse_directive_context_acceptance_invalid", 409);
   }
@@ -1314,6 +1321,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     status,
     progress_bp: progressBp,
     checkpoint_available: checkpointAvailable,
+    handoff_available: handoffAvailable,
+    handoff_to: handoffTo,
     acceptance_criteria_count: acceptanceCriteria.length,
     required_task_count: requiredTasks.length,
     pending_required_task_count: pendingRequiredTasks.length,
@@ -1956,9 +1965,12 @@ function directiveObservationSummary(workContext, english) {
     ? (english ? "available" : "disponibile")
     : (english ? "not available" : "non disponibile");
   const closure = workContext.closure_verified === true ? (english ? "yes" : "sì") : "no";
+  const handoff = workContext.handoff_available === true && workContext.handoff_to
+    ? (english ? `; latest handoff ${workContext.handoff_to}` : `; ultimo handoff ${workContext.handoff_to}`)
+    : "";
   return english
-    ? `Readback: progress ${progress}; blockers ${blockerText}; checkpoint ${checkpoint}; verified closure ${closure}.`
-    : `Readback: progresso ${progress}; blocker ${blockerText}; checkpoint ${checkpoint}; closure verificata ${closure}.`;
+    ? `Readback: progress ${progress}; blockers ${blockerText}; checkpoint ${checkpoint}${handoff}; verified closure ${closure}.`
+    : `Readback: progresso ${progress}; blocker ${blockerText}; checkpoint ${checkpoint}${handoff}; closure verificata ${closure}.`;
 }
 
 function unboundReadSummary(message, english) {
