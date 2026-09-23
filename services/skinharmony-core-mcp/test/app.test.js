@@ -3181,6 +3181,13 @@ test("production compact mode exposes only the stable connector surface", async 
       assert(Buffer.byteLength(JSON.stringify(compactConverse)) < 5 * 1024);
       assert.deepEqual(compactContinue.inputSchema.required, ["operation", "idempotency_key"]);
       assert.equal(compactContinue.inputSchema.additionalProperties, false);
+      for (const field of [
+        "work_id", "agent_id", "client_type", "session_id",
+        "delegation_request", "action_request", "pull_request_materialization",
+        "resume_request", "native_plan_request", "native_bind_request",
+      ]) {
+        assert(Object.hasOwn(compactContinue.inputSchema.properties, field), field);
+      }
       assert.equal(
         TOOLS.find((tool) => tool.name === "nyra_continue")
           .inputSchema.properties.action_request.additionalProperties,
@@ -3218,6 +3225,28 @@ test("production compact mode exposes only the stable connector surface", async 
       }).then((result) => result.json());
       assert.equal(retiredTool.error.code, -32602);
       assert.equal(retiredTool.error.message, "Unknown tool");
+
+      const continuationCall = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-continuation-call-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 260 + index, method: "tools/call", params: {
+          name: "nyra_continue",
+          arguments: {
+            operation: "preview_native_plan_merge",
+            work_id: "00000000-0000-4000-8000-000000000001",
+            agent_id: "codex-worker",
+            client_type: "codex",
+            session_id: `compact-continuation-${index}`,
+            idempotency_key: `compact-continuation-preview-${index}`,
+          },
+        } }),
+      }).then((result) => result.json());
+      assert.equal(continuationCall.error, undefined, JSON.stringify(continuationCall.error));
+      assert.equal(continuationCall.result.content[0].text, "ok");
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));

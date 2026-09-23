@@ -537,14 +537,14 @@ test("keeps the conversational dynamic catalog truthful while preserving child-o
   }), true);
 });
 
-test("Nyra Native Team and Autopilot mutations require work.operate directly and dynamically", () => {
+test("Nyra Native Team mutation and bounded Autopilot recovery use distinct host grants", () => {
   const reader = identity(["work.read"]);
   for (const toolName of ["nyra_native_team_status", "nyra_autopilot_status"]) {
     assert.doesNotThrow(() => requireHostAppToolCapability({
       identity: reader, toolName, tools: TOOLS,
     }));
   }
-  for (const capability_id of ["nyra_native_team_enable", "nyra_autopilot_reconcile"]) {
+  for (const capability_id of ["nyra_native_team_enable"]) {
     assert.throws(() => requireHostAppToolCapability({
       identity: reader, toolName: capability_id, tools: TOOLS,
     }), /host_app_capability_required:work\.operate/);
@@ -556,6 +556,23 @@ test("Nyra Native Team and Autopilot mutations require work.operate directly and
     }), /host_app_capability_required:work\.operate/);
     assert.doesNotThrow(() => requireHostAppToolCapability({
       identity: identity(["work.operate"]), toolName: capability_id, tools: TOOLS,
+    }));
+  }
+  for (const invocation of [
+    ["nyra_autopilot_reconcile", {}],
+    ["core_capability_invoke", { capability_id: "nyra_autopilot_reconcile" }],
+  ]) {
+    assert.throws(() => requireHostAppToolCapability({
+      identity: reader,
+      toolName: invocation[0],
+      args: invocation[1],
+      tools: TOOLS,
+    }), /host_app_capability_required:work\.coordinate/);
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: identity(["work.coordinate"]),
+      toolName: invocation[0],
+      args: invocation[1],
+      tools: TOOLS,
     }));
   }
 });

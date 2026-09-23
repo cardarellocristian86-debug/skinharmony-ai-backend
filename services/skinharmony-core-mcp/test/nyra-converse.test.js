@@ -3549,12 +3549,13 @@ test("publishes nyra_converse as a direct compact resume tool without discovery"
   const allHandlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(availableTools, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 20);
+  assert.equal(compact.length, 21);
   assert.equal(compact.some((tool) => tool.name === "core_typed_request"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_control_room_status"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_autopilot_enable"), true);
+  assert.equal(compact.some((tool) => tool.name === "nyra_autopilot_reconcile"), true);
   assert.equal(compact.some((tool) => tool.name === "entity_360_shadow_enable"), true);
   assert.equal(compact.some((tool) => tool.name === "entity_360_shadow_disable"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_work_assignment_claim"), true);
