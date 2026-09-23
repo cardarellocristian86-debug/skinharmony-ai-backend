@@ -3025,11 +3025,19 @@ export function createApp(config, options = {}) {
         if (params.uri !== NYRA_DIALOGUE_WIDGET_RESOURCE.uri) {
           return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
         }
+        const widgetDomain = canonicalMcpPublicOrigin(config);
         return res.json({ jsonrpc: "2.0", id, result: { contents: [{
           uri: NYRA_DIALOGUE_WIDGET_RESOURCE.uri,
           mimeType: NYRA_DIALOGUE_WIDGET_RESOURCE.mimeType,
           text: NYRA_DIALOGUE_WIDGET_HTML,
-          _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } } },
+          _meta: {
+            ui: {
+              domain: widgetDomain,
+              prefersBorder: true,
+              csp: { connectDomains: [], resourceDomains: [] },
+            },
+            "openai/widgetDomain": widgetDomain,
+          },
         }] } });
       }
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: requestVisibleTools.map((runtimeTool) => {
