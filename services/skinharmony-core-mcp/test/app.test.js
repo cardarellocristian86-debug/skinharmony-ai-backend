@@ -5119,6 +5119,8 @@ test("publishes only the Nyra dialogue resource and keeps retired provider setup
   assert.equal(nyraRead.result.contents[0].mimeType, NYRA_DIALOGUE_WIDGET_MIME_TYPE);
   assert.match(nyraRead.result.contents[0].text, /ui\/notifications\/tool-result/);
   assert.equal(nyraRead.result.contents[0]._meta.ui.prefersBorder, true);
+  assert.equal(nyraRead.result.contents[0]._meta.ui.domain, "https://mcp.example.test");
+  assert.equal(nyraRead.result.contents[0]._meta["openai/widgetDomain"], "https://mcp.example.test");
 
   const read = await fetch(`${base}/mcp`, {
     method: "POST",
