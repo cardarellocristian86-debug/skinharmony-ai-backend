@@ -30,6 +30,16 @@ test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => 
   assert.equal(config.universalCoreUrl, "https://core.example.test");
 });
 
+test("preserves the canonical Auth0 issuer and derives endpoints without a double slash", () => {
+  const config = loadConfig({
+    AUTH0_ISSUER: "https://tenant.auth0.com",
+    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
+  });
+
+  assert.equal(config.auth0Issuer, "https://tenant.auth0.com/");
+  assert.equal(config.jwksUri, "https://tenant.auth0.com/.well-known/jwks.json");
+});
+
 test("keeps the legacy all-capability Codex principal code-dark by default", () => {
   assert.equal(loadConfig({}).legacyCodexHostPrincipalEnabled, false);
   assert.equal(loadConfig({

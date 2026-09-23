@@ -238,7 +238,7 @@ test("production to staging preserves owner/member/registered Codex and denies c
   const baseConfig = {
     publicUrl: "https://mcp.example.test",
     resource: "https://mcp.example.test/mcp",
-    auth0Issuer: "https://tenant.auth0.com",
+    auth0Issuer: "https://tenant.auth0.com/",
     auth0Audience: "https://core",
     jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
     tenantClaim: "https://skinharmony.it/tenant_id",
@@ -393,7 +393,7 @@ test("an OAuth owner confirmation is verified once in production and delegated t
   const baseConfig = {
     publicUrl: "https://mcp.example.test",
     resource: "https://mcp.example.test/mcp",
-    auth0Issuer: "https://tenant.auth0.com",
+    auth0Issuer: "https://tenant.auth0.com/",
     auth0Audience: "https://core",
     jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
     tenantClaim: "https://skinharmony.it/tenant_id",

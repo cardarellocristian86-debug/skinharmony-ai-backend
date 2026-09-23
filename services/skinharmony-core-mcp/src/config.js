@@ -15,6 +15,23 @@ function url(value, name) {
   }
 }
 
+function issuerUrl(value, name) {
+  if (!value) return "";
+  try {
+    // OAuth/OIDC issuer identifiers are exact URL values. Auth0 publishes a
+    // trailing slash for a tenant-root issuer, so it must not be removed.
+    return new URL(value).toString();
+  } catch {
+    throw new Error(`${name} must be an absolute URL`);
+  }
+}
+
+function issuerEndpoint(issuer, path) {
+  if (!issuer) return "";
+  const base = issuer.endsWith("/") ? issuer : `${issuer}/`;
+  return new URL(String(path || "").replace(/^\/+/, ""), base).toString();
+}
+
 function jsonObject(value, name) {
   if (!value) return {};
   try {
@@ -229,7 +246,7 @@ export function loadConfig(env = process.env) {
   const webAgentAllowedOrigins = csv(env.WEB_AGENT_ALLOWED_ORIGINS).map((value) => {
     try { return new URL(value).origin; } catch { throw new Error("WEB_AGENT_ALLOWED_ORIGINS contains an invalid URL"); }
   });
-  const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
+  const auth0Issuer = issuerUrl(env.AUTH0_ISSUER, "AUTH0_ISSUER");
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
   const legacyCodexHostPrincipalEnabledFlag = strictFlag(
@@ -623,7 +640,7 @@ export function loadConfig(env = process.env) {
     stagingMcpUrl,
     auth0Issuer,
     auth0Audience,
-    jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
+    jwksUri: issuerEndpoint(auth0Issuer, ".well-known/jwks.json"),
     codexKeys,
     legacyCodexHostPrincipalEnabled,
     legacyCodexHostPrincipalConfigurationValid: legacyCodexHostPrincipalEnabledFlag.valid,
