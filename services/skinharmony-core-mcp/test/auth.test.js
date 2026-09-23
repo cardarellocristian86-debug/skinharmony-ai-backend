@@ -22,13 +22,13 @@ function auth0Fixture(overrides = {}) {
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "test-key";
   const config = {
-    auth0Issuer: "https://tenant.auth0.com",
+    auth0Issuer: "https://tenant.auth0.com/",
     auth0Audience: "https://core",
     jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
     tenantClaim: "https://skinharmony.it/tenant_id",
   };
   const token = jwt(privateKey, jwk.kid, {
-    iss: `${config.auth0Issuer}/`,
+    iss: config.auth0Issuer,
     aud: config.auth0Audience,
     sub: "chatgpt",
     exp: Math.floor(Date.now() / 1000) + 60,

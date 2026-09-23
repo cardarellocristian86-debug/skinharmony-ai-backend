@@ -2917,8 +2917,8 @@ export function createApp(config, options = {}) {
     if (!config.auth0Issuer) return res.status(404).json({ error: "oauth_not_configured" });
     return res.json({
       issuer: config.auth0Issuer,
-      authorization_endpoint: `${config.auth0Issuer}/authorize`,
-      token_endpoint: `${config.auth0Issuer}/oauth/token`,
+      authorization_endpoint: new URL("authorize", config.auth0Issuer).toString(),
+      token_endpoint: new URL("oauth/token", config.auth0Issuer).toString(),
       jwks_uri: config.jwksUri,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],

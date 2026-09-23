@@ -244,7 +244,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   const valid = crypto.verify("RSA-SHA256", Buffer.from(`${parts[0]}.${parts[1]}`), crypto.createPublicKey({ key: jwk, format: "jwk" }), Buffer.from(parts[2], "base64url"));
   if (!valid) throw new Error("jwt_signature_invalid");
   const now = Math.floor(Date.now() / 1000);
-  if (payload.iss !== `${config.auth0Issuer}/`) throw new Error("jwt_issuer_invalid");
+  if (payload.iss !== config.auth0Issuer) throw new Error("jwt_issuer_invalid");
   const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!audiences.includes(config.auth0Audience)) throw new Error("jwt_audience_invalid");
   if (!Number.isFinite(payload.exp) || payload.exp <= now) {

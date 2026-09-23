@@ -30,7 +30,7 @@ import { validateToolArguments } from "../src/schema-validation.js";
 const config = {
   publicUrl: "https://mcp.example.test",
   resource: "https://mcp.example.test/mcp",
-  auth0Issuer: "https://tenant.auth0.com",
+  auth0Issuer: "https://tenant.auth0.com/",
   auth0Audience: "https://core",
   jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
   codexKeys: ["codex-key"],
@@ -1554,6 +1554,10 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(migrationResource.resource, config.resource);
   assert.deepEqual(migrationResource.authorization_servers, [config.auth0Issuer]);
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
+  assert.equal(oauth.issuer, "https://tenant.auth0.com/");
+  assert.equal(oauth.authorization_endpoint, "https://tenant.auth0.com/authorize");
+  assert.equal(oauth.token_endpoint, "https://tenant.auth0.com/oauth/token");
+  assert.equal(oauth.jwks_uri, "https://tenant.auth0.com/.well-known/jwks.json");
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
 }));
 
