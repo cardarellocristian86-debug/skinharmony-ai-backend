@@ -28,6 +28,9 @@ function normalizeOperationalState(operational = {}) {
   const gallery = operational?.gallery && typeof operational.gallery === "object"
     ? operational.gallery
     : {};
+  const handoff = operational?.handoff && typeof operational.handoff === "object"
+    ? operational.handoff
+    : {};
   const software = operational?.software && typeof operational.software === "object"
     ? operational.software
     : {};
@@ -41,6 +44,11 @@ function normalizeOperationalState(operational = {}) {
       capsule_id: clean(checkpoint.capsule_id, 64) || null,
       capsule_digest: clean(checkpoint.capsule_digest, 64) || null,
       available: Boolean(clean(checkpoint.capsule_id, 64) && clean(checkpoint.capsule_digest, 64)),
+    }),
+    handoff: Object.freeze({
+      available: handoff.available === true,
+      to: clean(handoff.to, 80) || null,
+      at: clean(handoff.at, 40) || null,
     }),
     gallery: Object.freeze({
       state: clean(gallery.state, 40) || "available",
@@ -191,6 +199,7 @@ export function buildNyraOperationalDialogue({ continuity = {}, operational = {}
       work_revision: normalized.work_revision,
       intent_digest: normalized.intent_digest,
       checkpoint: normalized.checkpoint,
+      handoff: normalized.handoff,
       gallery: normalized.gallery,
       software: normalized.software,
     },
