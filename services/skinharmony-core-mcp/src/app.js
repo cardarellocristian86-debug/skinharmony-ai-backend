@@ -1569,6 +1569,14 @@ export function resolveHostTransportPresence({
       binding_source: "oauth_declared_work_bootstrap",
     });
   }
+  // Assignment claim/submit must retain the same declared logical presence
+  // when ChatGPT rotates its physical MCP transport between tool calls.
+  if (oauthAssignmentSessionBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_assignment_collaboration",
+    });
+  }
   if (transportAgentPresence) {
     return Object.freeze({
       presence: transportAgentPresence,

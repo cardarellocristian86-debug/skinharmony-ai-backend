@@ -284,6 +284,11 @@ test("binds a registered tenant member only for bounded Gallery assignment hand-
     session_fingerprint: "a".repeat(24),
     signature: `ags_${"b".repeat(32)}`,
   });
+  const rotatingTransportPresence = Object.freeze({
+    agent_id: "chatgpt-gallery-agent",
+    session_fingerprint: "c".repeat(24),
+    signature: `ags_${"d".repeat(32)}`,
+  });
   const member = {
     kind: "oauth",
     tenantId: "tenant-a",
@@ -301,7 +306,7 @@ test("binds a registered tenant member only for bounded Gallery assignment hand-
   for (const toolName of ["nyra_work_assignment_claim", "nyra_work_assignment_submit", "nyra_work_assignment_reissue"]) {
     const resolved = resolveHostTransportPresence({
       identity: member, toolName, declaredSessionId: "gallery-logical-session",
-      agentPresence, transportAgentPresence: null,
+      agentPresence, transportAgentPresence: rotatingTransportPresence,
     });
     assert.equal(resolved.presence, agentPresence, toolName);
     assert.equal(resolved.binding_source, "oauth_assignment_collaboration", toolName);
