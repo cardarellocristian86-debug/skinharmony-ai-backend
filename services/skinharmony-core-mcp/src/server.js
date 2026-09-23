@@ -1024,6 +1024,22 @@ async function ensureContinuity(identity, args, toolName, preflightResult, {
         if (String(error?.code || error?.message || "") !== "continuity_work_not_found") throw error;
       }
     }
+    let autopilot = null;
+    if (nyraAutopilotRuntime && typeof nyraAutopilotRuntime.readWork === "function") {
+      try {
+        // This is a SELECT-only projection. A fresh conversation must see an
+        // already-offered assignment without creating a lease, participant,
+        // heartbeat or new Autopilot run.
+        autopilot = await nyraAutopilotRuntime.readWork(identity, {
+          work_id: work.work_id,
+        });
+      } catch {
+        // Conversation readback remains fail-closed and state-pure when the
+        // optional projection is unavailable. Explicit inbox/reconcile calls
+        // expose the actionable recovery error without corrupting continuity.
+        autopilot = { assignments: [] };
+      }
+    }
     const operationalRevision = Number(operational?.work_revision || 0);
     const continuity = Object.freeze({
       tenant_id: identity.tenantId,
@@ -1038,6 +1054,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, {
     });
     const controlContext = buildNyraControlContext({
       continuity,
+      autopilot,
       operational: {
         ...(operational || {}),
         ...(continuity.work_revision ? { work_revision: continuity.work_revision } : {}),
@@ -3374,7 +3391,16 @@ const baseHandlers = {
     },
     nyra_work_assignment_inbox: async (args, identity) => {
       requireTenantWorkIdentity(identity);
-      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.inbox(identity, args) });
+      const authorizedWorkIds = args.work_id
+        ? (await requireCanonicalWorkRead(identity, args.work_id), [args.work_id])
+        : await canonicalVisibleWorkIds(identity);
+      return continuityTextResult({
+        ok: true,
+        result: await nyraAutopilotRuntime.inbox(identity, {
+          ...args,
+          authorized_work_ids: authorizedWorkIds,
+        }),
+      });
     },
     nyra_work_assignment_claim: async (args, identity) => {
       requireBoundedAssignmentCollaboration(identity);

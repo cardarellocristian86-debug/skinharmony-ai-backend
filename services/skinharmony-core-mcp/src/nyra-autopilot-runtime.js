@@ -650,10 +650,25 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const tenantId = tenant(identity?.tenantId);
       const claimant = presence(identity);
       const workId = input.work_id ? uuid(input.work_id, "work_id") : null;
+      if (!Array.isArray(input.authorized_work_ids)) {
+        throw codedError("nyra_assignment_inbox_acl_scope_required");
+      }
+      const authorizedWorkIds = [...new Set(input.authorized_work_ids.map((item) =>
+        uuid(item, "authorized_work_id")))];
+      if (authorizedWorkIds.length > 10_000) {
+        throw codedError("nyra_assignment_inbox_acl_scope_too_large");
+      }
+      if (workId && !authorizedWorkIds.includes(workId)) {
+        throw codedError("nyra_assignment_work_acl_denied");
+      }
       await initialize();
-      const parameters = [tenantId, claimant.client_type, claimant.agent_id];
-      const predicate = ["tenant_id=$1", "status='offered'", "eligible_client_types ? $2"];
-      if (workId) { parameters.push(workId); predicate.push(`work_id=$${parameters.length}`); }
+      const parameters = [tenantId, claimant.client_type, claimant.agent_id, authorizedWorkIds];
+      const predicate = [
+        "tenant_id=$1",
+        "status='offered'",
+        "eligible_client_types ? $2",
+        "work_id = ANY($4::uuid[])",
+      ];
       const result = await pool.query(`SELECT a.assignment_id,a.run_id,a.assignment_key,a.agent_instance_id,a.blueprint_id,a.role,a.task_contract,a.dependencies,a.eligible_client_types,a.status,a.claim_expires_at,a.submitted_result,a.quarantine
         FROM core_nyra_autopilot_assignments a WHERE ${predicate.map((item) => `a.${item}`).join(" AND ")}
         AND NOT (a.role='independent_verifier' AND EXISTS (

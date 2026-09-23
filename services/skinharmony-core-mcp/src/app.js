@@ -693,6 +693,10 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "entity_360_shadow_enable",
   "entity_360_shadow_disable",
   "nyra_autopilot_enable",
+  // Recover one exact Work's zero-privilege orchestration plan. Host App
+  // authorization, canonical Work ACL and the dedicated Core gate still run
+  // before any plan materialization.
+  "nyra_autopilot_reconcile",
   // These two are Nyra's bounded worker handoff, not direct Core tooling.
   // Nyra exposes an exact assignment in the durable dialogue, then the
   // connected AI can only claim and submit that assignment.  It cannot use
@@ -700,6 +704,10 @@ const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
   "nyra_work_assignment_reissue",
+  // Discovery is itself a state-pure tenant projection. Without it a fresh
+  // conversational session can claim an assignment only if it already knows
+  // an opaque assignment id from an older session.
+  "nyra_work_assignment_inbox",
   // Separate ChatGPT-only review entrypoint.  It can only consume an opaque
   // continuation issued by Nyra and runs the mandatory duplicate review.
   "nyra_chatgpt_work_bootstrap_review",

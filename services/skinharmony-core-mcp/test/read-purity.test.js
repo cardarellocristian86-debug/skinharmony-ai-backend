@@ -190,6 +190,33 @@ test("production lifecycle bypass precedes every mutating hook and explicit pref
   assert.doesNotMatch(handler, /ensureNyraReadBinding\(/);
 });
 
+test("read-only Nyra resume projects persisted Autopilot assignments without reconciling", () => {
+  const source = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const ensureStart = source.indexOf("async function ensureContinuity");
+  const readOnlyStart = source.indexOf("if (readOnly) {", ensureStart);
+  const mutatingStart = source.indexOf("const initialMessage =", readOnlyStart);
+  const branch = source.slice(readOnlyStart, mutatingStart);
+  assert.ok(ensureStart >= 0);
+  assert.ok(readOnlyStart > ensureStart);
+  assert.ok(mutatingStart > readOnlyStart);
+  assert.match(branch, /nyraAutopilotRuntime\.readWork\(identity, \{[\s\S]*?work_id: work\.work_id/);
+  assert.match(branch, /buildNyraControlContext\(\{[\s\S]*?autopilot,/);
+  assert.doesNotMatch(branch, /nyraAutopilotRuntime\.reconcile\(/);
+  assert.doesNotMatch(branch, /nyraAutopilotRuntime\.claim\(/);
+});
+
+test("assignment inbox derives its scope from canonical Work ACLs", () => {
+  const source = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const handlerStart = source.indexOf("nyra_work_assignment_inbox: async");
+  const handlerEnd = source.indexOf("nyra_work_assignment_claim: async", handlerStart);
+  const handler = source.slice(handlerStart, handlerEnd);
+  assert.ok(handlerStart >= 0);
+  assert.ok(handlerEnd > handlerStart);
+  assert.match(handler, /args\.work_id[\s\S]*?requireCanonicalWorkRead\(identity, args\.work_id\)/);
+  assert.match(handler, /canonicalVisibleWorkIds\(identity\)/);
+  assert.match(handler, /authorized_work_ids: authorizedWorkIds/);
+});
+
 test("DISCOVERY_OPEN blocks private pure reads before their handlers run without mutating Airlock", async () => {
   const store = createMemoryResearchAirlockStore();
   const airlock = createResearchAirlockRuntime({

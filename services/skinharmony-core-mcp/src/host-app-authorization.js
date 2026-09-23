@@ -46,6 +46,16 @@ const WORK_ASSIGNMENT_COLLABORATION_TOOLS = new Set([
   "nyra_work_assignment_reissue",
 ]);
 
+// Reconciliation is recovery, not arbitrary Work operation: it can only
+// materialize the server-derived zero-privilege plan of one canonical Work.
+// The exact Work ACL and dedicated Universal Core coordination gate remain
+// mandatory in server.js. Mapping the Host App upper bound to work.coordinate
+// makes recovery reachable to a registered coordinator without granting the
+// broader work.operate capability or admitting an unregistered read client.
+const WORK_RECOVERY_TOOLS = new Set([
+  "nyra_autopilot_reconcile",
+]);
+
 // Transport visibility only: a conversational Work reader may discover this
 // exact terminal entrypoint, but its handler still requires the authenticated
 // OAuth owner, fresh request-bound confirmation and the dedicated Core gate.
@@ -301,6 +311,7 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   if (WORK_CREATE_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_CREATE;
   if (WORK_REVIEW_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_REVIEW;
   if (WORK_ASSIGNMENT_COLLABORATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_READ;
+  if (WORK_RECOVERY_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   if (WORK_OWNER_FINALIZATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_READ;
   if (WORK_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   if (CORE_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;

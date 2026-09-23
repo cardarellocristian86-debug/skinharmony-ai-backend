@@ -7,6 +7,7 @@ import { NYRA_WORK_AUTOMATION_TOOLS } from "../src/nyra-work-automation-tools.js
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 import { hostAppCanDiscoverDynamicCapability } from "../src/host-app-authorization.js";
+import { validateToolArguments } from "../src/schema-validation.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
   INTERNAL_ONLY_TOOL_NAMES,
@@ -284,19 +285,36 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 20);
+  assert.equal(compact.length, 21);
   assert(compact.some((tool) => tool.name === "core_typed_request"));
   assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
+  assert(compact.some((tool) => tool.name === "nyra_autopilot_reconcile"));
   assert(compact.some((tool) => tool.name === "entity_360_shadow_enable"));
   assert(compact.some((tool) => tool.name === "entity_360_shadow_disable"));
   assert(compact.some((tool) => tool.name === "nyra_continue"));
+  const continuation = compact.find((tool) => tool.name === "nyra_continue");
+  for (const field of [
+    "work_id", "agent_id", "client_type", "session_id",
+    "delegation_request", "action_request", "pull_request_materialization",
+    "resume_request", "native_plan_request", "native_bind_request",
+  ]) {
+    assert(Object.hasOwn(continuation.inputSchema.properties, field), field);
+  }
+  assert.deepEqual(validateToolArguments(continuation.inputSchema, {
+    operation: "preview_native_plan_merge",
+    work_id: "00000000-0000-4000-8000-000000000001",
+    agent_id: "codex-worker",
+    client_type: "codex",
+    session_id: "codex-session",
+    idempotency_key: "preview-native-plan-merge",
+  }), []);
   assert(compact.some((tool) => tool.name === "nyra_chatgpt_work_bootstrap_review"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
   const inbox = compact.find((tool) => tool.name === "nyra_work_assignment_inbox");
   assert.deepEqual(inbox.scopes, ["core:read"]);
-  assert.deepEqual(inbox.inputSchema.required, ["work_id", "environment"]);
+  assert.deepEqual(inbox.inputSchema.required, []);
   const reissue = compact.find((tool) => tool.name === "nyra_work_assignment_reissue");
   assert.deepEqual(reissue.scopes, ["core:read"]);
   assert.equal(Object.hasOwn(reissue, "annotations"), false);

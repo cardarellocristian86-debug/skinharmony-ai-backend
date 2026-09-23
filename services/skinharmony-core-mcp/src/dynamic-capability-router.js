@@ -20,6 +20,9 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // One explicit owner/Core-gated Nyra activation adopts existing active Work
   // records. It is a Nyra control-plane operation, not a generic Core tool.
   "nyra_autopilot_enable",
+  // Recovery materializes only the zero-privilege plan for one exact Work.
+  // It remains tenant/Work-bound and dedicated-Core-gated at invocation.
+  "nyra_autopilot_reconcile",
   // These are direct-only, tenant-wide SHADOW transitions.  Host capability,
   // fresh owner confirmation and their exact Universal Core route are still
   // enforced at invocation; compact publication grants none of those.
@@ -135,6 +138,18 @@ const NYRA_INTENT_BRIDGE_KEYS = new Set([
   // gateway. It is not part of the connected AI proposal.
   "work_preflight",
 ]);
+const COMPACT_CONTINUATION_OBJECT_FIELDS = new Set([
+  "delegation_request",
+  "action_request",
+  "pull_request_materialization",
+  "resume_request",
+  "native_plan_request",
+  "native_bind_request",
+]);
+const COMPACT_OPAQUE_BOUND_OBJECT = Object.freeze({
+  type: "object",
+  additionalProperties: true,
+});
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -901,24 +916,22 @@ export function compactMcpTools(tools, handlers) {
       annotations: tool.annotations,
       ...(tool._meta ? { _meta: tool._meta } : {}),
     } : tool.name === "nyra_continue" ? {
-      // The canonical continuation validator remains authoritative. The
-      // compact surface carries only client material permitted by the durable
-      // server record, avoiding repeated conditional schemas for every host.
-      name: tool.name,
+      ...tool,
+      // Preserve the canonical top-level wire contract mechanically so a new
+      // continuation field can never disappear from compact tools/call.
+      // Only large operation payloads become opaque here; the continuation
+      // handler validates their exact closed schemas before any effect.
       inputSchema: {
-        type: "object",
-        properties: {
-          operation: { type: "string" },
-          continuation_ref: { type: "string", minLength: 1, maxLength: 512 },
-          idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
-          owner_confirmed: { type: "boolean" },
-          confirmation_reference: { type: "string", minLength: 1, maxLength: 256 },
-          review_decision: { type: "string", maxLength: 80 },
-        },
-        required: ["operation", "idempotency_key"],
-        additionalProperties: false,
+        ...tool.inputSchema,
+        properties: Object.fromEntries(
+          Object.entries(tool.inputSchema?.properties || {}).map(([name, schema]) => [
+            name,
+            COMPACT_CONTINUATION_OBJECT_FIELDS.has(name)
+              ? COMPACT_OPAQUE_BOUND_OBJECT
+              : schema,
+          ]),
+        ),
       },
-      scopes: tool.scopes,
     } : tool.name === "nyra_chatgpt_work_bootstrap_review" ? {
       // The gateway derives transport identity. Keep this ChatGPT-only
       // compact contract to its two caller fields and canonical tool name so
@@ -957,20 +970,6 @@ export function compactMcpTools(tools, handlers) {
       // scope check and turns a safe recovery into a 500. The remaining
       // annotations are discovery hints, not authorization inputs, and stay
       // out of this deliberately budgeted terminal descriptor.
-      scopes: tool.scopes,
-    } : tool.name === "nyra_work_assignment_inbox" ? {
-      // Keep the Gallery inbox compact and explicit: transport identity is
-      // derived by the server and only the exact Work may be read.
-      name: tool.name,
-      inputSchema: {
-        type: "object",
-        properties: {
-          work_id: { type: "string", minLength: 36, maxLength: 36 },
-          environment: { type: "string", enum: ["production", "staging"] },
-        },
-        required: ["work_id", "environment"],
-        additionalProperties: false,
-      },
       scopes: tool.scopes,
     } : tool);
 }
