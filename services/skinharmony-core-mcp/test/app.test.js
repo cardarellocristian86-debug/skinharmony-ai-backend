@@ -1246,8 +1246,14 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(entityBootstrap, /source: "existing_verified"/);
   assert.match(entityBootstrap, /error\?\.code !== "entity360_snapshot_not_found"/,
     "only exact not-found may fall through to the initial bootstrap");
-  assert.match(createHandler, /route: "durable_work_bootstrap_readback"/);
-  assert.match(createHandler, /authorized: false/);
+  assert.match(createHandler, /"durable_work_bootstrap_readback"/);
+  assert.match(createHandler, /const recoveryDecision = await requireOwnerGovernance/,
+    "legacy attempt-bound bootstrap evidence must be reauthorized by Core");
+  assert.ok(createHandler.indexOf("readCreatedWorkByBootstrapRequest") <
+    createHandler.indexOf("const recoveryDecision = await requireOwnerGovernance"),
+  "the durable request and event chain must be verified before legacy target recovery");
+  assert.match(createHandler, /replayAuthorizationAttemptReceipt !== null/);
+  assert.match(createHandler, /authorized: replayAuthorizationAttemptReceipt !== null/);
   const causalBootstrap = createHandler.indexOf("await ensureCanonicalWorkProjectDecisionPath");
   const reviewValidation = createHandler.indexOf("validateCanonicalWorkBootstrapReview");
   const workCreate = createHandler.indexOf("workContinuityV2Store.createNewWork");

@@ -2102,11 +2102,59 @@ async function createCanonicalWorkGoverned(args, identity) {
       request,
     );
     if (persisted) {
+      let replayAuthorizationAttemptReceipt = null;
       if (persisted.persisted_core_authorization_receipt?.target !== authorizationTarget) {
-        const error = new Error("work_bootstrap_replay_evidence_invalid");
-        error.code = "work_bootstrap_replay_evidence_invalid";
-        error.status = 503;
-        throw error;
+        // Work created before canonical bootstrap idempotency was separated
+        // from continuation attempts carries the old attempt-bound target.
+        // Never accept that mismatch on trust: obtain a fresh Owner/Core
+        // authorization for the exact current canonical target, while the V2
+        // store has already verified the immutable request/review/event chain.
+        // This recovers the existing Work without creating or mutating one.
+        const recoveryDecision = await requireOwnerGovernance(
+          identity,
+          "work.continuity.v2.create",
+          authorizationTarget,
+          request.idempotency_key,
+        );
+        if (!recoveryDecision.core_authorization_receipt ||
+            recoveryDecision.core_authorization_receipt.authority !== "universal_core") {
+          const error = new Error("core_authorization_receipt_required");
+          error.code = "core_authorization_receipt_required";
+          error.status = 503;
+          throw error;
+        }
+        const recoveryReceiptMaterial = {
+          schema_version: "work_bootstrap_core_authorization_receipt_v2",
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          target: authorizationTarget,
+          decision_id: recoveryDecision.decision_id || null,
+          decision: recoveryDecision.decision,
+          mediation: recoveryDecision.mediation,
+          owner_confirmation_required: recoveryDecision.owner_confirmation_required === true,
+          confirmation_satisfied: recoveryDecision.confirmation_satisfied === true,
+          core_authorization_receipt: recoveryDecision.core_authorization_receipt,
+        };
+        const recoveryAuthorizationReceipt = Object.freeze({
+          ...recoveryReceiptMaterial,
+          receipt_digest: crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical(recoveryReceiptMaterial)))
+            .digest("hex"),
+        });
+        const recoveryAttemptMaterial = {
+          schema_version: "work_bootstrap_core_authorization_attempt_v1",
+          authority: "universal_core",
+          work_bootstrap_authorization_receipt: recoveryAuthorizationReceipt,
+          core_authorization_attempt_receipt:
+            recoveryDecision.core_authorization_attempt_receipt,
+          core_idempotent_replay: recoveryDecision.idempotent_replay === true,
+        };
+        replayAuthorizationAttemptReceipt = Object.freeze({
+          ...recoveryAttemptMaterial,
+          attempt_digest: crypto.createHash("sha256")
+            .update(JSON.stringify(stableCanonical(recoveryAttemptMaterial)))
+            .digest("hex"),
+        });
       }
       const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, persisted.work);
       const entity360Context = causalLineage.state === "READY"
@@ -2117,7 +2165,7 @@ async function createCanonicalWorkGoverned(args, identity) {
         result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
         legacy_work_id: persisted.legacy_work_id,
         core_authorization_receipt: null,
-        core_authorization_attempt_receipt: null,
+        core_authorization_attempt_receipt: replayAuthorizationAttemptReceipt,
         causal_lineage: causalLineage,
         entity360_context: entity360Context,
         work_ready: causalLineage.state === "READY" &&
@@ -2125,9 +2173,11 @@ async function createCanonicalWorkGoverned(args, identity) {
         continuation_allowed: causalLineage.state === "READY" &&
           canonicalWorkEntity360ContextReady(entity360Context),
         dedicated_core_gate: {
-          authorized: false,
+          authorized: replayAuthorizationAttemptReceipt !== null,
           authority: "universal_core",
-          route: "durable_work_bootstrap_readback",
+          route: replayAuthorizationAttemptReceipt
+            ? "/v1/action-evaluator"
+            : "durable_work_bootstrap_readback",
           server_owned: true,
           readback_only: true,
         },

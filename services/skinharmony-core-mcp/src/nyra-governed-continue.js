@@ -41,7 +41,7 @@ function fail(code, status = 422) {
   throw error;
 }
 
-function bootstrapCreateInput(request, review, args, idempotencyKey) {
+function bootstrapCreateInput(request, review, args) {
   const decision = args.review_decision;
   if (decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID", "CREATE_CHILD_WORK"].includes(decision)) {
     fail("nyra_continue_work_bootstrap_review_decision_invalid", 409);
@@ -54,11 +54,17 @@ function bootstrapCreateInput(request, review, args, idempotencyKey) {
   } else if (parentWorkId !== null) {
     fail("nyra_continue_work_bootstrap_parent_unexpected", 409);
   }
+  const { idempotency_key: _callerIdempotencyKey, ...canonicalRequest } = request;
   return Object.freeze({
-    ...request,
+    ...canonicalRequest,
     review_id: review.review_id,
     review_digest: review.review_digest,
-    idempotency_key: idempotencyKey,
+    // Caller and continuation keys are attempt-scoped. Derive the Work key
+    // only from the immutable semantic request projection, excluding either
+    // key, so a fresh typed record for the exact request keeps one Core target
+    // and one durable Work mapping.
+    idempotency_key:
+      `work_bootstrap_${governedWorkBootstrapDigest(canonicalRequest).slice(0, 48)}`,
     ...(decision ? { review_decision: decision } : {}),
     // The parent is selected after Core has published its candidate set.
     // Keep it out of the immutable bootstrap request digest; the V2 store
@@ -643,7 +649,7 @@ export function createNyraGovernedContinueHandler({
           }
           if (typed.replay === true && typed.final_result) return typed.final_result;
           const finalResult = await createWorkBootstrap(
-            bootstrapCreateInput(request, review, args, typed.server_idempotency_key), identity);
+            bootstrapCreateInput(request, review, args), identity);
           await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
             final_result: finalResult });
           return finalResult;
@@ -1037,7 +1043,7 @@ export function createNyraGovernedContinueHandler({
           operation: "review_work_bootstrap" });
         if (!review.review_id || !SHA256.test(String(review.review_digest || ""))) fail("nyra_continue_work_bootstrap_review_required", 409);
         outcome = coreOutcome(await createWorkBootstrap(
-          bootstrapCreateInput(request, review, args, claim.idempotency_key), identity));
+          bootstrapCreateInput(request, review, args), identity));
       }
     } else {
       if (bootstrapOperation || args.work_bootstrap !== undefined || args.review_id !== undefined || args.review_digest !== undefined ||

@@ -544,7 +544,7 @@ test("typed bootstrap crosses the signed store for review, create, replay and ex
       assert.equal(request.objective, spec.objective);
       assert.equal(request.review_id, review.review_id);
       assert.equal(request.review_digest, review.review_digest);
-      assert.match(request.idempotency_key, /^core_typed_[a-f0-9]{48}$/);
+      assert.match(request.idempotency_key, /^work_bootstrap_[a-f0-9]{48}$/);
       return { structuredContent: { ok: true, tenant_id: identity.tenantId, result: {
         work: { work_id: "11111111-1111-4111-8111-111111111111" },
         idempotent_replay: false,
@@ -645,4 +645,53 @@ test("typed Work creation releases its claim after a downstream failure", async 
     owner_confirmed: true, confirmation_reference: "owner-confirmed-bootstrap" },
   { ...identity, ownerConfirmed: true }), /transient/);
   assert.equal(releases, 1);
+});
+
+test("fresh typed continuations derive one Work key despite caller key drift", async () => {
+  const stableSpec = {
+    project_id: "project-a", request_id: "request-stable-replay",
+    work_name: "Stable replay", work_type: "software_git", idea: "Idea",
+    objective: "Recover the same canonical Work", architecture: {},
+    next_action: "Create", acceptance_criteria: ["One Work"], constraints: [],
+    tasks: [{ title: "Build", weight: 1, required: true }], parent_work_id: null,
+  };
+  const observed = [];
+  let attempt = 0;
+  const store = {
+    claim: async () => assert.fail("legacy claim must not run"), complete: async () => {},
+    readCompletedOperation: async () => {},
+    consumeConnectedAiTypedRequest: async ({ continuation_ref }) => ({
+      operation: "WORK_CREATE_OR_RECONCILE",
+      continuation_ref,
+      canonical_request: { request: { create_request: {
+        ...stableSpec,
+        idempotency_key: `caller-shaped-inner-key-${attempt + 1}`,
+      } } },
+      core_result: { result: { review_id: "review-stable", review_digest: "9".repeat(64) } },
+      replay: false,
+      server_idempotency_key: `core_typed_attempt_${++attempt}`,
+    }),
+    completeConnectedAiTypedRequest: async () => {},
+    releaseConnectedAiTypedRequest: async () => {},
+  };
+  const handler = createNyraGovernedContinueHandler({ store,
+    readDirectiveContext: async () => ({}), normalizeDirectiveContext: () => ({}),
+    issueDelegation: async () => {}, authorizeAction: async () => {},
+    reviewWorkBootstrap: async () => assert.fail("review is server-owned"),
+    createWorkBootstrap: async (request) => {
+      observed.push(request.idempotency_key);
+      return { structuredContent: { ok: true, result: {
+        work: { work_id: "11111111-1111-4111-8111-111111111111" },
+      } } };
+    },
+  });
+  const owner = { ...identity, ownerConfirmed: true };
+  for (const suffix of ["k", "l"]) {
+    await handler({ operation: "create_work", continuation_ref: `nyc1_${suffix.repeat(40)}`,
+      idempotency_key: `client-attempt-${suffix}`, owner_confirmed: true,
+      confirmation_reference: "owner-confirmed-stable-replay" }, owner);
+  }
+  assert.equal(observed.length, 2);
+  assert.match(observed[0], /^work_bootstrap_[a-f0-9]{48}$/);
+  assert.equal(observed[1], observed[0]);
 });
