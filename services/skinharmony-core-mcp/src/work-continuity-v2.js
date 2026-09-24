@@ -76,6 +76,7 @@ END $$;
 CREATE OR REPLACE FUNCTION tenant_work_task_advance_revision() RETURNS trigger AS $$
 DECLARE release_frozen boolean := false;
 DECLARE precommit_completion_authorized boolean := false;
+DECLARE deferred_settlement_authorized boolean := false;
 DECLARE material_change boolean := true;
 DECLARE target_tenant varchar(64);
 DECLARE target_work uuid;
@@ -142,7 +143,9 @@ BEGIN
           AND (SELECT count(*) FROM public.tenant_work_precommit_scope_freeze s
             WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
               AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
-              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest)
+              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                WHERE q->>''task_id''=s.task_id::text))
             = jsonb_array_length(g.v2_scope_tasks)
           AND NOT EXISTS (
             SELECT 1 FROM public.tenant_work_precommit_scope_freeze s
@@ -150,6 +153,8 @@ BEGIN
               ON st.tenant_id=s.tenant_id AND st.work_id=s.work_id AND st.task_id=s.task_id
             WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
               AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                WHERE q->>''task_id''=s.task_id::text)
               AND (s.scope_snapshot_digest<>g.v2_scope_snapshot_digest
                 OR st.task_id IS NULL OR st.revision<>s.revision
                 OR NOT EXISTS (
@@ -201,7 +206,9 @@ BEGIN
           AND (SELECT count(*) FROM public.tenant_work_precommit_scope_freeze s
             WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
               AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
-              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest)
+              AND s.scope_snapshot_digest=g.v2_scope_snapshot_digest
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                WHERE q->>''task_id''=s.task_id::text))
             = jsonb_array_length(g.v2_scope_tasks)
           AND NOT EXISTS (
             SELECT 1 FROM public.tenant_work_precommit_scope_freeze s
@@ -209,6 +216,8 @@ BEGIN
               ON st.tenant_id=s.tenant_id AND st.work_id=s.work_id AND st.task_id=s.task_id
             WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id
               AND s.gate_projection_digest=c.gate_projection_digest AND s.claim_id=c.claim_id
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.v2_scope_tasks) q
+                WHERE q->>''task_id''=s.task_id::text)
               AND (s.scope_snapshot_digest<>g.v2_scope_snapshot_digest
                 OR st.task_id IS NULL OR st.revision<>s.revision
                 OR NOT EXISTS (
@@ -221,30 +230,69 @@ BEGIN
       )' INTO precommit_completion_authorized USING target_tenant,target_work,
         OLD.task_id;
     END IF;
+    -- A release join normally freezes task mutation. The sole exception is
+    -- the exact planned -> verified transition for a frozen deferred task
+    -- after its own phase-compatible effect has a terminal Core settlement.
+    -- This lookup must precede the historical release freeze or POST_DEPLOY
+    -- can never record the evidence that makes final closure possible.
+    IF TG_OP = 'UPDATE' AND
+       ROW(NEW.title,NEW.weight,NEW.required) IS NOT DISTINCT FROM
+         ROW(OLD.title,OLD.weight,OLD.required) AND
+       OLD.status='planned' AND OLD.acceptance_verified=false AND OLD.completed_at IS NULL AND
+       NEW.status='completed' AND NEW.acceptance_verified=true AND NEW.completed_at IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_scope_freeze') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_effect_settlement') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_reconciliation') IS NOT NULL THEN
+      EXECUTE 'SELECT EXISTS (
+        SELECT 1 FROM public.tenant_work_precommit_scope_freeze f
+        JOIN public.tenant_work_precommit_effect_settlement s
+          ON s.tenant_id=f.tenant_id AND s.work_id=f.work_id
+            AND s.claim_id=f.claim_id AND s.terminal=true
+            AND ((f.governed_precommit_phase=''POST_COMMIT'' AND s.action_kind=''git.commit'')
+              OR (f.governed_precommit_phase=''POST_DEPLOY'' AND s.action_kind IN
+                (''render.deploy'',''render.promote'',''render.rollback'',''render.observe'')))
+        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_abandonment a
+          ON a.tenant_id=f.tenant_id AND a.work_id=f.work_id
+            AND a.gate_projection_digest=f.gate_projection_digest AND a.claim_id=f.claim_id
+        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_reconciliation d
+          ON d.tenant_id=f.tenant_id AND d.work_id=f.work_id AND d.claim_id=f.claim_id
+            AND d.stage=''deterministic_denial'' AND d.ticket_id IS NULL
+        WHERE f.tenant_id=$1 AND f.work_id=$2 AND f.task_id=$3
+          AND a.claim_id IS NULL AND d.claim_id IS NULL
+      )' INTO deferred_settlement_authorized USING target_tenant,target_work,OLD.task_id;
+    END IF;
     IF to_regclass('public.core_continuity_release_joins') IS NOT NULL THEN
       EXECUTE 'SELECT EXISTS (
         SELECT 1 FROM public.core_continuity_release_joins
         WHERE tenant_id=$1 AND work_id=$2
       )' INTO release_frozen USING target_tenant,target_work;
-      IF release_frozen AND NOT precommit_completion_authorized THEN
+      IF release_frozen AND NOT precommit_completion_authorized AND
+         NOT deferred_settlement_authorized THEN
         RAISE EXCEPTION 'tenant_work_task_release_frozen';
       END IF;
     END IF;
     IF to_regclass('public.tenant_work_precommit_scope_freeze') IS NOT NULL AND
-       to_regclass('public.tenant_work_precommit_ticket_gate_claim_fulfillment') IS NOT NULL AND
-       to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') IS NOT NULL THEN
+       to_regclass('public.tenant_work_precommit_effect_settlement') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') IS NOT NULL AND
+       to_regclass('public.tenant_work_precommit_ticket_gate_claim_reconciliation') IS NOT NULL THEN
       EXECUTE 'SELECT EXISTS (
         SELECT 1 FROM public.tenant_work_precommit_scope_freeze f
-        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_fulfillment u
-          ON u.tenant_id=f.tenant_id AND u.work_id=f.work_id
-            AND u.gate_projection_digest=f.gate_projection_digest
-            AND u.claim_id=f.claim_id
         LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_abandonment a
           ON a.tenant_id=f.tenant_id AND a.work_id=f.work_id
             AND a.gate_projection_digest=f.gate_projection_digest
             AND a.claim_id=f.claim_id
+        LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_reconciliation d
+          ON d.tenant_id=f.tenant_id AND d.work_id=f.work_id AND d.claim_id=f.claim_id
+            AND d.stage=''deterministic_denial'' AND d.ticket_id IS NULL
         WHERE f.tenant_id=$1 AND f.work_id=$2 AND f.task_id=$3
-          AND u.claim_id IS NULL AND a.claim_id IS NULL
+          AND a.claim_id IS NULL AND d.claim_id IS NULL AND NOT EXISTS (
+            SELECT 1 FROM public.tenant_work_precommit_effect_settlement s
+            WHERE s.tenant_id=f.tenant_id AND s.work_id=f.work_id
+              AND s.claim_id=f.claim_id AND s.terminal=true
+              AND ((f.governed_precommit_phase=''POST_COMMIT'' AND s.action_kind=''git.commit'')
+                OR (f.governed_precommit_phase=''POST_DEPLOY'' AND s.action_kind IN
+                  (''render.deploy'',''render.promote'',''render.rollback'',''render.observe''))))
       )' INTO release_frozen USING target_tenant,target_work,
         CASE WHEN TG_OP = 'INSERT' THEN NEW.task_id ELSE OLD.task_id END;
       IF release_frozen THEN
@@ -399,15 +447,237 @@ CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_claim_abandonment (
 CREATE TABLE IF NOT EXISTS tenant_work_precommit_scope_freeze (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL,
   gate_projection_digest char(64) NOT NULL, claim_id uuid NOT NULL,
-  task_id uuid NOT NULL, revision bigint NOT NULL CHECK (revision > 0),
+  task_id uuid NOT NULL, revision bigint NOT NULL
+    CONSTRAINT tw_precommit_freeze_revision_positive_ck CHECK (revision > 0),
   v2_task_digest char(64) NOT NULL, scope_snapshot_digest char(64) NOT NULL,
+  governed_precommit_phase varchar(16) NOT NULL DEFAULT 'POST_COMMIT'
+    CONSTRAINT tw_precommit_freeze_phase_ck
+      CHECK (governed_precommit_phase IN ('POST_COMMIT','POST_DEPLOY')),
+  task_contract_digest char(64), task_contract_revision bigint,
+  dependency_manifest_digest char(64), dependency_manifest_revision bigint,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id,work_id,claim_id,task_id),
   FOREIGN KEY (tenant_id,work_id,gate_projection_digest)
     REFERENCES tenant_work_precommit_ticket_gate_claim(tenant_id,work_id,gate_projection_digest),
   FOREIGN KEY (tenant_id,work_id,task_id)
-    REFERENCES tenant_work_task(tenant_id,work_id,task_id)
+    REFERENCES tenant_work_task(tenant_id,work_id,task_id),
+  CONSTRAINT tw_precommit_freeze_task_contract_pair_ck
+    CHECK ((task_contract_digest IS NULL)=(task_contract_revision IS NULL)),
+  CONSTRAINT tw_precommit_freeze_task_contract_revision_ck
+    CHECK (task_contract_revision IS NULL OR task_contract_revision>0),
+  CONSTRAINT tw_precommit_freeze_dependency_manifest_pair_ck
+    CHECK ((dependency_manifest_digest IS NULL)=(dependency_manifest_revision IS NULL)),
+  CONSTRAINT tw_precommit_freeze_dependency_manifest_revision_ck
+    CHECK (dependency_manifest_revision IS NULL OR dependency_manifest_revision>0)
 );
+CREATE TABLE IF NOT EXISTS tenant_work_precommit_effect_settlement (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, claim_id uuid NOT NULL,
+  gate_projection_digest char(64) NOT NULL, root_ticket_id varchar(160) NOT NULL,
+  ticket_id varchar(160) NOT NULL, predecessor_ticket_id varchar(160),
+  action_kind varchar(40) NOT NULL, lineage_kind varchar(24) NOT NULL,
+  settlement_source varchar(32) NOT NULL,
+  lifecycle_state varchar(32) NOT NULL CHECK (lifecycle_state IN
+    ('reserved','completed','reconciled','quarantined','observed','issued_expired','revoked')),
+  terminal boolean NOT NULL, effect_unknown boolean NOT NULL,
+  core_record_digest char(64) NOT NULL, settlement_digest char(64) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id,work_id,ticket_id,lifecycle_state),
+  UNIQUE (tenant_id,work_id,ticket_id,lifecycle_state),
+  FOREIGN KEY (tenant_id,work_id,gate_projection_digest)
+    REFERENCES tenant_work_precommit_ticket_gate_claim(tenant_id,work_id,gate_projection_digest),
+  CHECK (action_kind IN ('git.commit','git.push.branch','git.push.protected',
+    'github.draft_pr','github.ready','github.merge','render.deploy','render.promote',
+    'render.observe','render.rollback')),
+  CHECK (lineage_kind IN ('root','action','supersession','manual_merge')),
+  CHECK (settlement_source IN ('lifecycle_transition','core_terminal_readback')),
+  CHECK ((lifecycle_state='reserved' AND terminal=false AND effect_unknown=false) OR
+    (lifecycle_state='completed' AND
+      ((terminal=true AND effect_unknown=false) OR
+       (terminal=false AND effect_unknown=true))) OR
+    (lifecycle_state='reconciled' AND terminal=true AND effect_unknown=false) OR
+    (lifecycle_state='quarantined' AND terminal=true AND effect_unknown=true) OR
+    (lifecycle_state='observed' AND terminal=true AND effect_unknown=false) OR
+    (lifecycle_state IN ('issued_expired','revoked') AND
+      terminal=true AND effect_unknown=true))
+);
+ALTER TABLE tenant_work_precommit_scope_freeze
+  ADD COLUMN IF NOT EXISTS governed_precommit_phase varchar(16) NOT NULL DEFAULT 'POST_COMMIT';
+-- A historical fulfillment proves issuance, not effect. Existing freezes stay
+-- fail-closed until an idempotent terminal Core readback settles the effect, or
+-- the claim is atomically abandoned/reconciled as a deterministic denial.
+ALTER TABLE tenant_work_precommit_scope_freeze
+  ADD COLUMN IF NOT EXISTS task_contract_digest char(64);
+ALTER TABLE tenant_work_precommit_scope_freeze
+  ADD COLUMN IF NOT EXISTS task_contract_revision bigint;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  ADD COLUMN IF NOT EXISTS dependency_manifest_digest char(64);
+ALTER TABLE tenant_work_precommit_scope_freeze
+  ADD COLUMN IF NOT EXISTS dependency_manifest_revision bigint;
+DO $$
+DECLARE constraint_spec record;
+BEGIN
+  FOR constraint_spec IN SELECT * FROM (VALUES
+    ('tw_precommit_freeze_revision_positive_ck', 'revision > 0'),
+    ('tw_precommit_freeze_phase_ck',
+      'governed_precommit_phase IN (''POST_COMMIT'',''POST_DEPLOY'')'),
+    ('tw_precommit_freeze_task_contract_pair_ck',
+      '(task_contract_digest IS NULL)=(task_contract_revision IS NULL)'),
+    ('tw_precommit_freeze_task_contract_revision_ck',
+      'task_contract_revision IS NULL OR task_contract_revision > 0'),
+    ('tw_precommit_freeze_dependency_manifest_pair_ck',
+      '(dependency_manifest_digest IS NULL)=(dependency_manifest_revision IS NULL)'),
+    ('tw_precommit_freeze_dependency_manifest_revision_ck',
+      'dependency_manifest_revision IS NULL OR dependency_manifest_revision > 0')
+  ) AS constraints(name, expression)
+  LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+      WHERE conrelid='tenant_work_precommit_scope_freeze'::regclass
+        AND conname=constraint_spec.name) THEN
+      EXECUTE format('ALTER TABLE tenant_work_precommit_scope_freeze ADD CONSTRAINT %I CHECK (%s) NOT VALID',
+        constraint_spec.name, constraint_spec.expression);
+    END IF;
+  END LOOP;
+END $$;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_revision_positive_ck;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_phase_ck;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_task_contract_pair_ck;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_task_contract_revision_ck;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_dependency_manifest_pair_ck;
+ALTER TABLE tenant_work_precommit_scope_freeze
+  VALIDATE CONSTRAINT tw_precommit_freeze_dependency_manifest_revision_ck;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD COLUMN IF NOT EXISTS root_ticket_id varchar(160);
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD COLUMN IF NOT EXISTS predecessor_ticket_id varchar(160);
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD COLUMN IF NOT EXISTS action_kind varchar(40);
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD COLUMN IF NOT EXISTS lineage_kind varchar(24) NOT NULL DEFAULT 'action';
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD COLUMN IF NOT EXISTS settlement_source varchar(32) NOT NULL DEFAULT 'lifecycle_transition';
+ALTER TABLE tenant_work_precommit_effect_settlement
+  DROP CONSTRAINT IF EXISTS tenant_work_precommit_effect_settlement_lifecycle_state_check;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD CONSTRAINT tenant_work_precommit_effect_settlement_lifecycle_state_check
+  CHECK (lifecycle_state IN
+    ('reserved','completed','reconciled','quarantined','observed','issued_expired','revoked'));
+ALTER TABLE tenant_work_precommit_effect_settlement
+  DROP CONSTRAINT IF EXISTS tenant_work_precommit_effect_settlement_lineage_kind_check;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD CONSTRAINT tenant_work_precommit_effect_settlement_lineage_kind_check
+  CHECK (lineage_kind IN ('root','action','supersession','manual_merge'));
+ALTER TABLE tenant_work_precommit_effect_settlement
+  DROP CONSTRAINT IF EXISTS tenant_work_precommit_effect_settlement_settlement_source_check;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD CONSTRAINT tenant_work_precommit_effect_settlement_settlement_source_check
+  CHECK (settlement_source IN ('lifecycle_transition','core_terminal_readback'));
+ALTER TABLE tenant_work_precommit_effect_settlement
+  DROP CONSTRAINT IF EXISTS tenant_work_precommit_effect_settlement_check;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  DROP CONSTRAINT IF EXISTS tenant_work_precommit_effect_settlement_state_check;
+ALTER TABLE tenant_work_precommit_effect_settlement
+  ADD CONSTRAINT tenant_work_precommit_effect_settlement_state_check CHECK (
+    (lifecycle_state='reserved' AND terminal=false AND effect_unknown=false) OR
+    (lifecycle_state='completed' AND
+      ((terminal=true AND effect_unknown=false) OR
+       (terminal=false AND effect_unknown=true))) OR
+    (lifecycle_state='reconciled' AND terminal=true AND effect_unknown=false) OR
+    (lifecycle_state='quarantined' AND terminal=true AND effect_unknown=true) OR
+    (lifecycle_state='observed' AND terminal=true AND effect_unknown=false) OR
+    (lifecycle_state IN ('issued_expired','revoked') AND terminal=true AND effect_unknown=true));
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_work_precommit_effect_one_terminal_ticket_uidx
+  ON tenant_work_precommit_effect_settlement(tenant_id,work_id,ticket_id)
+  WHERE terminal=true;
+CREATE INDEX IF NOT EXISTS tenant_work_precommit_effect_lineage_idx
+  ON tenant_work_precommit_effect_settlement(tenant_id,work_id,root_ticket_id,created_at);
+CREATE OR REPLACE FUNCTION tenant_work_precommit_effect_settlement_guard() RETURNS trigger AS $$
+DECLARE fulfilled_ticket varchar(160);
+DECLARE predecessor_kind varchar(40);
+DECLARE predecessor_terminal boolean := false;
+DECLARE predecessor_any_kind varchar(40);
+DECLARE prior_count integer := 0;
+DECLARE prior_reserved boolean := false;
+DECLARE prior_uncertain boolean := false;
+DECLARE prior_terminal boolean := false;
+DECLARE prior_recovery_uncertain boolean := false;
+BEGIN
+  SELECT f.ticket_id INTO fulfilled_ticket
+  FROM tenant_work_precommit_ticket_gate_claim_fulfillment f
+  WHERE f.tenant_id=NEW.tenant_id AND f.work_id=NEW.work_id
+    AND f.gate_projection_digest=NEW.gate_projection_digest
+    AND f.claim_id=NEW.claim_id;
+  IF fulfilled_ticket IS NULL OR NEW.root_ticket_id<>fulfilled_ticket THEN
+    RAISE EXCEPTION 'tenant_work_precommit_settlement_ticket_binding_invalid';
+  END IF;
+  IF NEW.ticket_id=NEW.root_ticket_id THEN
+    IF NEW.predecessor_ticket_id IS NOT NULL OR NEW.action_kind<>'git.commit' OR
+        NEW.lineage_kind<>'root' THEN
+      RAISE EXCEPTION 'tenant_work_precommit_settlement_action_lineage_invalid';
+    END IF;
+  ELSE
+    IF NEW.predecessor_ticket_id IS NULL THEN
+      RAISE EXCEPTION 'tenant_work_precommit_settlement_action_lineage_invalid';
+    END IF;
+    SELECT s.action_kind,s.terminal INTO predecessor_kind,predecessor_terminal
+    FROM tenant_work_precommit_effect_settlement s
+    WHERE s.tenant_id=NEW.tenant_id AND s.work_id=NEW.work_id
+      AND s.root_ticket_id=NEW.root_ticket_id AND s.ticket_id=NEW.predecessor_ticket_id
+      AND s.terminal=true;
+    SELECT s.action_kind INTO predecessor_any_kind
+    FROM tenant_work_precommit_effect_settlement s
+    WHERE s.tenant_id=NEW.tenant_id AND s.work_id=NEW.work_id
+      AND s.root_ticket_id=NEW.root_ticket_id AND s.ticket_id=NEW.predecessor_ticket_id
+    ORDER BY s.created_at DESC LIMIT 1;
+    IF NOT (
+      (NEW.lineage_kind='action' AND predecessor_terminal AND (
+        (predecessor_kind='git.commit' AND NEW.action_kind IN ('git.push.branch','git.push.protected')) OR
+        (predecessor_kind IN ('git.push.branch','git.push.protected') AND
+          NEW.action_kind='github.draft_pr') OR
+        (predecessor_kind='github.draft_pr' AND NEW.action_kind IN ('github.ready','github.merge')) OR
+        (predecessor_kind='github.ready' AND NEW.action_kind='github.merge') OR
+        (predecessor_kind IN ('github.merge','git.push.protected') AND NEW.action_kind IN
+          ('render.deploy','render.promote','render.observe','render.rollback')))) OR
+      (NEW.lineage_kind='supersession' AND
+        (predecessor_any_kind IS NULL OR predecessor_any_kind=NEW.action_kind)) OR
+      (NEW.lineage_kind='manual_merge' AND NEW.action_kind='render.observe' AND
+        NEW.predecessor_ticket_id=NEW.root_ticket_id)
+    ) THEN
+      RAISE EXCEPTION 'tenant_work_precommit_settlement_action_lineage_invalid';
+    END IF;
+  END IF;
+  SELECT count(*)::integer,
+      coalesce(bool_or(s.lifecycle_state='reserved'),false),
+      coalesce(bool_or(s.lifecycle_state='completed' AND NOT s.terminal),false),
+      coalesce(bool_or(s.terminal),false),
+      coalesce(bool_or(s.lifecycle_state='completed' AND NOT s.terminal AND
+        s.settlement_source='core_terminal_readback'),false)
+    INTO prior_count,prior_reserved,prior_uncertain,prior_terminal,prior_recovery_uncertain
+  FROM tenant_work_precommit_effect_settlement s
+  WHERE s.tenant_id=NEW.tenant_id AND s.work_id=NEW.work_id
+    AND s.ticket_id=NEW.ticket_id;
+  IF prior_terminal OR NOT (
+      (NEW.lifecycle_state IN ('reserved','observed','issued_expired','revoked') AND prior_count=0) OR
+      (NEW.lifecycle_state='completed' AND prior_reserved AND NOT prior_uncertain) OR
+      (NEW.lifecycle_state IN ('reconciled','quarantined') AND
+        ((prior_reserved AND prior_count IN (1,2)) OR
+         (prior_recovery_uncertain AND prior_count=1))) OR
+      (NEW.settlement_source='core_terminal_readback' AND prior_count=0)
+    ) THEN
+    RAISE EXCEPTION 'tenant_work_precommit_settlement_state_invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS tenant_work_precommit_effect_settlement_guard_insert
+  ON tenant_work_precommit_effect_settlement;
+CREATE TRIGGER tenant_work_precommit_effect_settlement_guard_insert
+BEFORE INSERT ON tenant_work_precommit_effect_settlement
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_effect_settlement_guard();
 CREATE TABLE IF NOT EXISTS tenant_work_precommit_ticket_gate_claim_reconciliation (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, claim_id uuid NOT NULL,
   reconciliation_id uuid NOT NULL, gate_projection_digest char(64) NOT NULL,
@@ -460,6 +730,11 @@ DROP TRIGGER IF EXISTS tenant_work_precommit_scope_freeze_no_mutation
   ON tenant_work_precommit_scope_freeze;
 CREATE TRIGGER tenant_work_precommit_scope_freeze_no_mutation
 BEFORE UPDATE OR DELETE ON tenant_work_precommit_scope_freeze
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
+DROP TRIGGER IF EXISTS tenant_work_precommit_effect_settlement_no_mutation
+  ON tenant_work_precommit_effect_settlement;
+CREATE TRIGGER tenant_work_precommit_effect_settlement_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_precommit_effect_settlement
 FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_reconciliation_append_only();
 
 -- A stale v1 gate remains immutable.  Fresh native plan/evaluation evidence

@@ -1,4 +1,7 @@
-import { coreJoinIdempotencyKey } from "./work-continuity-runtime.js";
+import {
+  coreJoinIdempotencyKey,
+  nativeV2CoreJoinEvaluationReady,
+} from "./work-continuity-runtime.js";
 
 function defaultTextResult(payload) {
   return {
@@ -112,7 +115,7 @@ export function createWorkContinuityClosureEvaluateHandler({
       }
       return textResult({ ok: true, result: initialEvaluation });
     }
-    if (initialEvaluation.closed !== true) {
+    if (!nativeV2CoreJoinEvaluationReady(initialEvaluation)) {
       return textResult({ ok: true, result: initialEvaluation });
     }
     const evaluation = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {

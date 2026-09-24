@@ -6,6 +6,7 @@ import {
   createWorkContinuityClosureRejoinPersistedReleaseHandler,
   replayNyraVerifiedWorkFinalize,
 } from "../src/work-continuity-closure-handler.js";
+import { digest, nativeV2WorkSnapshotMaterial } from "../src/work-continuity-runtime.js";
 
 const DIGEST = (character) => character.repeat(64);
 const identity = { tenantId: "tenant-a" };
@@ -238,6 +239,73 @@ test("closure handler renews through the exact production sequence and binds the
   assert.equal(response.structuredContent.result.release_ready, true);
   assert.equal(response.structuredContent.result.core_join.verdict_id, coreJoinRecord.verdict_id);
   assert.equal("core_join_material" in response.structuredContent.result, false);
+});
+
+test("closure handler joins an exact POST_DEPLOY-only evaluation without claiming final closure", async () => {
+  const calls = [];
+  const { material, releaseIntent, coreJoinRecord } = renewalFixture();
+  const workSnapshot = {
+    schema_version: "native_v2_task_closure_snapshot_v1",
+    tenant_id: identity.tenantId,
+    work_id: args.work_id,
+    v2_task_governed: true,
+    work_type: "code_change",
+    snapshot_scope: "all_required_work_tasks",
+    task_bindings: [],
+    pending_required_task_ids: [],
+    precommit_ticket_task_id: null,
+    precommit_ticket_task_server_recognized: false,
+  };
+  const releaseEffectReady = {
+    closed: false,
+    evaluation_id: "post-deploy-evaluation",
+    target_commit: "b".repeat(40),
+    native_v2_release_effect_ready: true,
+    native_v2_precommit_pending_task_allowed: true,
+    native_v2_task_bindings_verified: true,
+    native_v2_work_tasks_verified: false,
+    native_v2_work_snapshot: workSnapshot,
+    native_v2_work_snapshot_digest: digest(nativeV2WorkSnapshotMaterial(workSnapshot)),
+    precommit_verification: { ready: false },
+    native_v2_precommit_scope: {
+      schema_version: "native_v2_precommit_scope_v1",
+      scope_snapshot_digest: DIGEST("9"),
+    },
+  };
+  const runtime = {
+    async evaluateClosure() {
+      calls.push("evaluate");
+      return releaseEffectReady;
+    },
+    async prepareEffectiveCoreJoinEvaluation(_receivedIdentity, input) {
+      calls.push("prepare");
+      assert.equal(input.evaluation_id, releaseEffectReady.evaluation_id);
+      return { ...releaseEffectReady, core_join_material: material };
+    },
+    async bindCoreJoinVerdict() {
+      calls.push("bind");
+      return { release_ready: true,
+        release_intent_digest: releaseIntent.release_intent_digest };
+    },
+  };
+  const coreHandlers = {
+    async host_native_release_intent_build() {
+      calls.push("release");
+      return { structuredContent: { tenant_id: identity.tenantId,
+        dedicated_core_gate: { authorized: true }, release_intent: releaseIntent } };
+    },
+    async host_native_core_join_issue() {
+      calls.push("issue");
+      return { structuredContent: { tenant_id: identity.tenantId,
+        dedicated_core_gate: { authorized: true }, core_join_verdict: coreJoinRecord } };
+    },
+  };
+  const handler = createWorkContinuityClosureEvaluateHandler({ runtime, coreHandlers });
+  const response = await handler(args, identity);
+  assert.deepEqual(calls, ["evaluate", "prepare", "release", "issue", "bind"]);
+  assert.equal(response.structuredContent.result.closed, false,
+    "effect authorization must not misreport final closure");
+  assert.equal(response.structuredContent.result.release_ready, true);
 });
 
 test("closure handler fails closed when Core knows the expired predecessor was consumed", async () => {

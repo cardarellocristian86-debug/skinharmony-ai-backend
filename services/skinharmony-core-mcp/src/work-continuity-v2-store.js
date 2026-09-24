@@ -318,6 +318,8 @@ VALUES ('20260901_precommit_ticket_gate_claim_v1') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260903_native_v2_task_revision_v1') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260924_precommit_deferred_effect_settlement_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260908_generic_closure_evidence_reconciliation_batch_v3') ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS tenant_work_task_contract (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, task_id uuid NOT NULL,
@@ -416,6 +418,33 @@ CREATE INDEX IF NOT EXISTS tenant_work_trajectory_event_latest_idx
 CREATE OR REPLACE FUNCTION tenant_work_governed_state_append_only() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'tenant_work_governed_state_append_only'; END;
 $$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION tenant_work_precommit_governed_binding_insert_guard() RETURNS trigger AS $$
+DECLARE binding_frozen boolean := false;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM tenant_work_precommit_scope_freeze f
+    LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
+      ON a.tenant_id=f.tenant_id AND a.work_id=f.work_id
+        AND a.gate_projection_digest=f.gate_projection_digest AND a.claim_id=f.claim_id
+    LEFT JOIN tenant_work_precommit_ticket_gate_claim_reconciliation d
+      ON d.tenant_id=f.tenant_id AND d.work_id=f.work_id AND d.claim_id=f.claim_id
+        AND d.stage='deterministic_denial' AND d.ticket_id IS NULL
+    WHERE f.tenant_id=NEW.tenant_id AND f.work_id=NEW.work_id AND f.task_id=NEW.task_id
+      AND a.claim_id IS NULL AND d.claim_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM tenant_work_precommit_effect_settlement s
+        WHERE s.tenant_id=f.tenant_id AND s.work_id=f.work_id AND s.claim_id=f.claim_id
+          AND s.terminal=true
+          AND ((f.governed_precommit_phase='POST_COMMIT' AND s.action_kind='git.commit')
+            OR (f.governed_precommit_phase='POST_DEPLOY' AND s.action_kind IN
+              ('render.deploy','render.promote','render.rollback','render.observe')))
+      )
+  ) INTO binding_frozen;
+  IF binding_frozen THEN
+    RAISE EXCEPTION 'tenant_work_precommit_governed_binding_frozen';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS tenant_work_task_contract_no_mutation ON tenant_work_task_contract;
 CREATE TRIGGER tenant_work_task_contract_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_task_contract
 FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
@@ -431,6 +460,12 @@ FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
 DROP TRIGGER IF EXISTS tenant_work_dependency_manifest_no_mutation ON tenant_work_dependency_manifest;
 CREATE TRIGGER tenant_work_dependency_manifest_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_dependency_manifest
 FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
+DROP TRIGGER IF EXISTS tenant_work_task_contract_precommit_insert_guard ON tenant_work_task_contract;
+CREATE TRIGGER tenant_work_task_contract_precommit_insert_guard BEFORE INSERT ON tenant_work_task_contract
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_governed_binding_insert_guard();
+DROP TRIGGER IF EXISTS tenant_work_dependency_manifest_precommit_insert_guard ON tenant_work_dependency_manifest;
+CREATE TRIGGER tenant_work_dependency_manifest_precommit_insert_guard BEFORE INSERT ON tenant_work_dependency_manifest
+FOR EACH ROW EXECUTE FUNCTION tenant_work_precommit_governed_binding_insert_guard();
 DROP TRIGGER IF EXISTS tenant_work_trajectory_event_no_mutation ON tenant_work_trajectory_event;
 CREATE TRIGGER tenant_work_trajectory_event_no_mutation BEFORE UPDATE OR DELETE ON tenant_work_trajectory_event
 FOR EACH ROW EXECUTE FUNCTION tenant_work_governed_state_append_only();
@@ -5221,8 +5256,23 @@ export function createWorkContinuityV2Store({
       linkedWork = linked.rows[0];
     }
     const result = closureRevalidation
-      ? await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified,revision
-          FROM tenant_work_task
+      ? await client.query(`SELECT t.task_id,t.title,t.weight,t.required,t.status,t.acceptance_verified,t.revision,
+          (SELECT c.contract_digest FROM tenant_work_task_contract c
+            WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id
+            ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_digest,
+          (SELECT c.contract_revision FROM tenant_work_task_contract c
+            WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id
+            ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_revision,
+          (SELECT c.contract FROM tenant_work_task_contract c
+            WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id
+            ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract,
+          (SELECT m.manifest_digest FROM tenant_work_dependency_manifest m
+            WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id
+            ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_digest,
+          (SELECT m.manifest_revision FROM tenant_work_dependency_manifest m
+            WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id
+            ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_revision
+          FROM tenant_work_task t
           WHERE tenant_id=$1 AND work_id=$2
           ORDER BY task_id FOR UPDATE`, [tenantId, workId])
       : await client.query(`SELECT task_id,title,weight,required,status,acceptance_verified,revision
@@ -5394,7 +5444,7 @@ export function createWorkContinuityV2Store({
         };
       }
       const claimStates = await client.query(`SELECT c.claim_id,
-          f.ticket_id AS fulfilled_ticket_id,a.claim_id AS abandoned_claim_id,
+          f.ticket_id AS fulfilled_ticket_id,COALESCE(a.claim_id,d.claim_id) AS abandoned_claim_id,
           EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation r
             WHERE r.tenant_id=c.tenant_id AND r.work_id=c.work_id
               AND r.claim_id=c.claim_id AND r.ticket_id IS NOT NULL) AS reconciled_ticket_present
@@ -5405,6 +5455,10 @@ export function createWorkContinuityV2Store({
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
           ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
             AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        LEFT JOIN LATERAL (SELECT rd.claim_id
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation rd
+          WHERE rd.tenant_id=c.tenant_id AND rd.work_id=c.work_id AND rd.claim_id=c.claim_id
+            AND rd.stage='deterministic_denial' AND rd.ticket_id IS NULL LIMIT 1) d ON true
         WHERE c.tenant_id=$1 AND c.work_id=$2
         ORDER BY c.created_at,c.claim_id FOR UPDATE OF c`, [tenantId, workId]);
       if (claimStates.rows.some((row) => row.fulfilled_ticket_id ||
@@ -5433,8 +5487,12 @@ export function createWorkContinuityV2Store({
         binding.work_type === "legacy" && result.rows.length === 0
       );
       binding.next_action = String(linkedWork.next_action || "").slice(0, 4_000);
-      binding.work_task_bindings = Object.freeze(result.rows.map((candidate) =>
-        Object.freeze({
+      binding.work_task_bindings = Object.freeze(result.rows.map((candidate) => {
+        const phaseClaims = Array.isArray(candidate.task_contract?.required_claims)
+          ? candidate.task_contract.required_claims.filter((claim) =>
+            ["nyra.precommit_phase.POST_COMMIT", "nyra.precommit_phase.POST_DEPLOY"].includes(claim))
+          : [];
+        return Object.freeze({
           ...buildNativeV2TaskBinding({
             tenant_id: tenantId,
             work_id: workId,
@@ -5446,7 +5504,17 @@ export function createWorkContinuityV2Store({
           status: candidate.status,
           acceptance_verified: candidate.acceptance_verified === true,
           revision: Number(candidate.revision),
-        })));
+          task_contract_digest: candidate.task_contract_digest || null,
+          task_contract_revision: candidate.task_contract_revision == null
+            ? null : Number(candidate.task_contract_revision),
+          dependency_manifest_digest: candidate.dependency_manifest_digest || null,
+          dependency_manifest_revision: candidate.dependency_manifest_revision == null
+            ? null : Number(candidate.dependency_manifest_revision),
+          governed_precommit_phase: phaseClaims.length === 1
+            ? phaseClaims[0].slice("nyra.precommit_phase.".length)
+            : null,
+        });
+      }));
     }
     return Object.freeze(binding);
   }
@@ -6622,6 +6690,10 @@ export function createWorkContinuityV2Store({
           scope_snapshot_digest: gate.v2_scope_snapshot_digest,
           v2_task_governed: evaluationScope.v2_task_governed,
           tasks: gate.v2_scope_tasks,
+          ...(Object.prototype.hasOwnProperty.call(evaluationScope, "deferred_tasks") ? {
+            deferred_tasks: evaluationScope.deferred_tasks,
+            deferred_tasks_digest: evaluationScope.deferred_tasks_digest,
+          } : {}),
         });
         if (objectDigest(evaluationScope) !== objectDigest(gateScope)) {
           drift("precommit_gate_v2_scope_drift");
@@ -6631,6 +6703,57 @@ export function createWorkContinuityV2Store({
       } catch {
         drift("precommit_gate_v2_scope_drift");
       }
+    }
+    if (nativeGate && v2TaskScope) {
+      const scoped = [...v2TaskScope.tasks, ...(v2TaskScope.deferred_tasks || [])];
+      const currentTasks = scoped.length
+        ? await client.query(`SELECT t.task_id,t.title,t.weight,t.required,t.status,t.acceptance_verified,t.revision,
+          (SELECT c.contract_digest FROM tenant_work_task_contract c WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_digest,
+          (SELECT c.contract_revision FROM tenant_work_task_contract c WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_revision,
+          (SELECT m.manifest_digest FROM tenant_work_dependency_manifest m WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_digest,
+          (SELECT m.manifest_revision FROM tenant_work_dependency_manifest m WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_revision
+          FROM tenant_work_task t
+          WHERE tenant_id=$1 AND work_id=$2 AND task_id=ANY($3::uuid[])
+          ORDER BY task_id${lock ? " FOR UPDATE" : ""}`,
+        [actor.tenant_id, workId, scoped.map((item) => item.task_id)])
+        : { rows: [] };
+      const currentById = new Map(currentTasks.rows.map((row) => [String(row.task_id), row]));
+      const scopeCurrent = currentTasks.rows.length === scoped.length &&
+        v2TaskScope.tasks.every((expected) => {
+          const row = currentById.get(expected.task_id);
+          const binding = row && buildNativeV2TaskBinding({
+            tenant_id: actor.tenant_id,
+            work_id: workId,
+            task_id: row.task_id,
+            title: row.title,
+            weight: Number(row.weight),
+            required: row.required,
+          });
+          return Boolean(row && binding.v2_task_digest === expected.v2_task_digest &&
+            Number(row.revision) === expected.revision && row.status === "completed" &&
+            row.acceptance_verified === true);
+        }) && (v2TaskScope.deferred_tasks || []).every((expected) => {
+          const row = currentById.get(expected.task_id);
+          const binding = row && buildNativeV2TaskBinding({
+            tenant_id: actor.tenant_id,
+            work_id: workId,
+            task_id: row.task_id,
+            title: row.title,
+            weight: Number(row.weight),
+            required: row.required,
+          });
+          return Boolean(row && binding.v2_task_digest === expected.v2_task_digest &&
+            Number(row.revision) === expected.revision && row.required === true &&
+            (row.task_contract_digest || null) === expected.task_contract_digest &&
+            (row.task_contract_revision == null ? null : Number(row.task_contract_revision)) ===
+              expected.task_contract_revision &&
+            (row.dependency_manifest_digest || null) === expected.dependency_manifest_digest &&
+            (row.dependency_manifest_revision == null ? null : Number(row.dependency_manifest_revision)) ===
+              expected.dependency_manifest_revision &&
+            row.status === expected.status &&
+            row.acceptance_verified === expected.acceptance_verified);
+        });
+      if (!scopeCurrent) drift("precommit_gate_v2_scope_drift");
     }
     if (gate.action_kind !== "git.commit" || gate.gate_kind !== "ticket_acquisition") {
       drift("precommit_gate_kind_invalid");
@@ -6691,6 +6814,10 @@ export function createWorkContinuityV2Store({
       ...(nativeGate ? {
         v2_scope_snapshot_digest: gate.v2_scope_snapshot_digest || null,
         v2_scope_tasks: v2TaskScope?.tasks || [],
+        ...(v2TaskScope && Object.prototype.hasOwnProperty.call(v2TaskScope, "deferred_tasks") ? {
+          deferred_tasks: v2TaskScope.deferred_tasks,
+          deferred_tasks_digest: v2TaskScope.deferred_tasks_digest,
+        } : {}),
       } : {}),
       legacy_evidence_ids: mappings.map((row) => row.legacy_evidence_id).sort(),
       replacement_evidence_ids: mappings.map((row) => row.replacement_evidence_id).sort(),
@@ -6747,7 +6874,7 @@ export function createWorkContinuityV2Store({
       const gate = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
       let scopeTasks = Object.freeze([]);
       const existingResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
-          a.abandonment_digest
+          COALESCE(a.abandonment_digest,d.reconciliation_digest) AS abandonment_digest
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
@@ -6756,6 +6883,10 @@ export function createWorkContinuityV2Store({
           ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
             AND a.gate_projection_digest=c.gate_projection_digest
             AND a.claim_id=c.claim_id
+        LEFT JOIN LATERAL (SELECT r.reconciliation_digest
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation r
+          WHERE r.tenant_id=c.tenant_id AND r.work_id=c.work_id AND r.claim_id=c.claim_id
+            AND r.stage='deterministic_denial' AND r.ticket_id IS NULL LIMIT 1) d ON true
         WHERE c.tenant_id=$1 AND c.work_id=$2 AND
           (c.gate_projection_digest=$3 OR c.idempotency_key=$4) FOR UPDATE OF c`,
       [actor.tenant_id, workId, projectionDigest, idempotencyKey]);
@@ -6772,7 +6903,9 @@ export function createWorkContinuityV2Store({
         if (gate?.schema_version === "precommit_ticket_gate_v2") {
           scopeTasks = await lockAndValidateNativePrecommitScope(client, actor, workId, gate);
           const freezes = await client.query(`SELECT task_id,revision,v2_task_digest,
-              scope_snapshot_digest,gate_projection_digest
+              scope_snapshot_digest,gate_projection_digest,governed_precommit_phase,
+              task_contract_digest,task_contract_revision,dependency_manifest_digest,
+              dependency_manifest_revision
             FROM tenant_work_precommit_scope_freeze
             WHERE tenant_id=$1 AND work_id=$2 AND claim_id=$3
             ORDER BY task_id FOR UPDATE`, [actor.tenant_id, workId, existing.claim_id]);
@@ -6782,6 +6915,11 @@ export function createWorkContinuityV2Store({
             v2_task_digest: task.v2_task_digest,
             scope_snapshot_digest: gate.v2_scope_snapshot_digest,
             gate_projection_digest: projectionDigest,
+            governed_precommit_phase: task.governed_precommit_phase,
+            task_contract_digest: task.task_contract_digest,
+            task_contract_revision: task.task_contract_revision,
+            dependency_manifest_digest: task.dependency_manifest_digest,
+            dependency_manifest_revision: task.dependency_manifest_revision,
           }));
           if (objectDigest(freezes.rows.map((row) => ({ ...row,
             revision: Number(row.revision),
@@ -6800,6 +6938,9 @@ export function createWorkContinuityV2Store({
           ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
             AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
         WHERE c.tenant_id=$1 AND c.work_id=$2 AND f.claim_id IS NULL AND a.claim_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation d
+            WHERE d.tenant_id=c.tenant_id AND d.work_id=c.work_id AND d.claim_id=c.claim_id
+              AND d.stage='deterministic_denial' AND d.ticket_id IS NULL)
         LIMIT 1 FOR UPDATE OF c`, [actor.tenant_id, workId]);
       if (activeClaim.rows[0]) fail("precommit_gate_claim_active");
       assertOperationalWorkMutation(work);
@@ -6827,10 +6968,15 @@ export function createWorkContinuityV2Store({
       for (const task of scopeTasks) {
         await client.query(`INSERT INTO tenant_work_precommit_scope_freeze
           (tenant_id,work_id,gate_projection_digest,claim_id,task_id,revision,
-           v2_task_digest,scope_snapshot_digest)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [actor.tenant_id, workId,
+           v2_task_digest,scope_snapshot_digest,governed_precommit_phase,
+           task_contract_digest,task_contract_revision,dependency_manifest_digest,
+           dependency_manifest_revision)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [actor.tenant_id, workId,
           projectionDigest, claimId, task.task_id, task.revision,
-          task.v2_task_digest, gate.v2_scope_snapshot_digest]);
+          task.v2_task_digest, gate.v2_scope_snapshot_digest,
+          task.governed_precommit_phase, task.task_contract_digest,
+          task.task_contract_revision, task.dependency_manifest_digest,
+          task.dependency_manifest_revision]);
       }
       await appendV2Event(client, actor, workId, "precommit_ticket_gate_claimed", {
         claim_id: claimId, claim_digest: projection.claim_digest,
@@ -6869,7 +7015,8 @@ export function createWorkContinuityV2Store({
       }
       const found = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
           f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
-          r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,a.abandonment_digest
+          r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,
+          COALESCE(a.abandonment_digest,d.reconciliation_digest) AS abandonment_digest
         FROM tenant_work_precommit_ticket_gate_claim c
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
           ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id AND f.gate_projection_digest=c.gate_projection_digest
@@ -6884,6 +7031,10 @@ export function createWorkContinuityV2Store({
           FROM tenant_work_precommit_ticket_gate_claim_reconciliation cb
           WHERE cb.tenant_id=c.tenant_id AND cb.work_id=c.work_id AND cb.claim_id=c.claim_id
             AND cb.stage='before_ticket_locator' LIMIT 1) b ON true
+        LEFT JOIN LATERAL (SELECT cd.reconciliation_digest
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation cd
+          WHERE cd.tenant_id=c.tenant_id AND cd.work_id=c.work_id AND cd.claim_id=c.claim_id
+            AND cd.stage='deterministic_denial' AND cd.ticket_id IS NULL LIMIT 1) d ON true
         WHERE c.tenant_id=$1 AND c.work_id=$2 AND ${gateProjectionDigest
           ? "c.gate_projection_digest=$3" : continuationRef
             ? "c.continuation_ref=$3" : "$3::boolean IS TRUE AND f.ticket_id IS NOT NULL"} AND c.request_digest=$4
@@ -6917,7 +7068,8 @@ export function createWorkContinuityV2Store({
     }
     const result = await pool.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
         f.claim_id AS fulfilled_claim_id,f.claim_digest AS fulfilled_claim_digest,
-        r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,a.abandonment_digest
+        r.ticket_id AS reconciled_ticket_id,b.before_ticket_locator,
+        COALESCE(a.abandonment_digest,d.reconciliation_digest) AS abandonment_digest
       FROM tenant_work_precommit_ticket_gate_claim c
       LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
         ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
@@ -6933,6 +7085,10 @@ export function createWorkContinuityV2Store({
         FROM tenant_work_precommit_ticket_gate_claim_reconciliation cb
         WHERE cb.tenant_id=c.tenant_id AND cb.work_id=c.work_id AND cb.claim_id=c.claim_id
           AND cb.stage='before_ticket_locator' LIMIT 1) b ON true
+      LEFT JOIN LATERAL (SELECT cd.reconciliation_digest
+        FROM tenant_work_precommit_ticket_gate_claim_reconciliation cd
+        WHERE cd.tenant_id=c.tenant_id AND cd.work_id=c.work_id AND cd.claim_id=c.claim_id
+          AND cd.stage='deterministic_denial' AND cd.ticket_id IS NULL LIMIT 1) d ON true
       WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.claim_id=$3`,
     [actor.tenant_id, workId, gateClaim.claim_id]);
     const row = result.rows[0];
@@ -6982,6 +7138,9 @@ export function createWorkContinuityV2Store({
           AND a.claim_id=c.claim_id
       WHERE c.tenant_id=$1 AND c.work_id=$2
         AND f.claim_id IS NULL AND a.claim_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation d
+          WHERE d.tenant_id=c.tenant_id AND d.work_id=c.work_id AND d.claim_id=c.claim_id
+            AND d.stage='deterministic_denial' AND d.ticket_id IS NULL)
       ORDER BY c.created_at,c.claim_id
       LIMIT 2`, [actor.tenant_id, workId]);
     if (active.rows.length === 0) return null;
@@ -7000,12 +7159,15 @@ export function createWorkContinuityV2Store({
     const projectionDigest = digest(input.gate_projection_digest,
       "precommit_claim_reconciliation_projection_invalid");
     const stage = text(input.stage, "precommit_claim_reconciliation_stage_invalid", 40);
-    if (!["before_ticket_locator", "ticket_locator_received"].includes(stage)) {
+    if (!["before_ticket_locator", "ticket_locator_received", "deterministic_denial"].includes(stage)) {
       fail("precommit_claim_reconciliation_stage_invalid");
     }
     const ticketId = input.ticket_id === null ? null : text(input.ticket_id,
       "precommit_claim_reconciliation_ticket_invalid", 160);
     const errorCode = text(input.error_code, "precommit_claim_reconciliation_error_invalid", 160);
+    if (stage === "deterministic_denial" && (input.server_owned !== true || ticketId !== null)) {
+      fail("precommit_claim_deterministic_denial_server_owned_required");
+    }
     const requestDigest = digest(input.request_digest, "precommit_claim_reconciliation_request_invalid");
     const continuationRef = text(input.continuation_ref,
       "precommit_claim_reconciliation_continuation_invalid", 240);
@@ -7198,12 +7360,88 @@ export function createWorkContinuityV2Store({
     if (value.v2_task_governed === true && tasks.length === 0) {
       fail("native_precommit_gate_v2_scope_invalid");
     }
+    const deferredFieldsPresent = Object.prototype.hasOwnProperty.call(value, "deferred_tasks") ||
+      Object.prototype.hasOwnProperty.call(value, "deferred_tasks_digest");
+    if (deferredFieldsPresent &&
+        (!Object.prototype.hasOwnProperty.call(value, "deferred_tasks") ||
+        !Object.prototype.hasOwnProperty.call(value, "deferred_tasks_digest"))) {
+      fail("native_precommit_gate_v2_scope_invalid");
+    }
+    const deferredSeen = new Set();
+    const deferredTasks = deferredFieldsPresent && Array.isArray(value.deferred_tasks) &&
+      value.deferred_tasks.length <= 64
+      ? value.deferred_tasks.map((item) => {
+        const expectedKeys = [
+          "acceptance_verified", "phase", "required", "revision", "schema_version",
+          "status", "task_id", "v2_task_digest", "task_contract_digest",
+          "task_contract_revision", "dependency_manifest_digest", "dependency_manifest_revision",
+        ];
+        if (!plainRecord(item) ||
+            Object.keys(item).sort().join("\0") !== expectedKeys.sort().join("\0")) {
+          fail("native_precommit_gate_v2_scope_invalid");
+        }
+        const taskId = uuid(item.task_id, "native_precommit_gate_v2_scope_invalid");
+        const revision = Number(item.revision);
+        if (item.schema_version !== "native_plan_precommit_deferred_v2_task_v1" ||
+            !Number.isSafeInteger(revision) || revision < 1 || deferredSeen.has(taskId) ||
+            seen.has(taskId) || item.required !== true || item.status !== "planned" ||
+            item.acceptance_verified !== false ||
+            ((item.task_contract_digest === null) !== (item.task_contract_revision === null)) ||
+            (item.task_contract_digest !== null &&
+              (!HASH.test(String(item.task_contract_digest || "")) ||
+                !Number.isSafeInteger(item.task_contract_revision) || item.task_contract_revision < 1)) ||
+            ((item.dependency_manifest_digest === null) !==
+              (item.dependency_manifest_revision === null)) ||
+            (item.dependency_manifest_digest !== null &&
+              (!HASH.test(String(item.dependency_manifest_digest || "")) ||
+                !Number.isSafeInteger(item.dependency_manifest_revision) ||
+                item.dependency_manifest_revision < 1)) ||
+            !["POST_COMMIT", "POST_DEPLOY"].includes(item.phase)) {
+          fail("native_precommit_gate_v2_scope_invalid");
+        }
+        deferredSeen.add(taskId);
+        return Object.freeze({
+          schema_version: item.schema_version,
+          task_id: taskId,
+          v2_task_digest: digest(item.v2_task_digest,
+            "native_precommit_gate_v2_scope_invalid"),
+          revision,
+          required: true,
+          status: "planned",
+          acceptance_verified: false,
+          task_contract_digest: item.task_contract_digest ?? null,
+          task_contract_revision: item.task_contract_revision ?? null,
+          dependency_manifest_digest: item.dependency_manifest_digest ?? null,
+          dependency_manifest_revision: item.dependency_manifest_revision ?? null,
+          phase: item.phase,
+        });
+      }).sort((left, right) => left.task_id.localeCompare(right.task_id))
+      : deferredFieldsPresent ? fail("native_precommit_gate_v2_scope_invalid") : [];
+    const deferredTasksDigest = deferredTasks.length
+      ? digest(value.deferred_tasks_digest, "native_precommit_gate_v2_scope_invalid")
+      : value.deferred_tasks_digest ?? null;
+    if ((deferredTasks.length && objectDigest(deferredTasks) !== deferredTasksDigest) ||
+        (!deferredTasks.length && deferredTasksDigest !== null)) {
+      fail("native_precommit_gate_v2_scope_invalid");
+    }
     return Object.freeze({
       schema_version: "native_v2_precommit_scope_v1",
       scope_snapshot_digest: scopeSnapshotDigest,
       v2_task_governed: value.v2_task_governed,
       tasks: Object.freeze(tasks),
+      ...(deferredFieldsPresent ? {
+        deferred_tasks: Object.freeze(deferredTasks),
+        deferred_tasks_digest: deferredTasksDigest,
+      } : {}),
     });
+  }
+  function sameNativeDeferredScope(gate, scope) {
+    const gateHas = Object.prototype.hasOwnProperty.call(gate || {}, "deferred_tasks");
+    const scopeHas = Object.prototype.hasOwnProperty.call(scope || {}, "deferred_tasks");
+    return gateHas === scopeHas && (!gateHas || (
+      objectDigest(gate.deferred_tasks) === objectDigest(scope.deferred_tasks) &&
+      gate.deferred_tasks_digest === scope.deferred_tasks_digest
+    ));
   }
   async function lockAndValidateNativePrecommitScope(client, actor, workId, gate) {
     if (gate?.schema_version !== "precommit_ticket_gate_v2" ||
@@ -7213,13 +7451,75 @@ export function createWorkContinuityV2Store({
       fail("precommit_gate_claim_v2_scope_invalid");
     }
     const expectedTasks = gate.v2_scope_tasks;
-    if (!expectedTasks.length) return Object.freeze([]);
-    const current = await client.query(`SELECT task_id,title,weight,required,status,
-        acceptance_verified,revision
-      FROM tenant_work_task
+    const expectedDeferredTasks = Array.isArray(gate.deferred_tasks)
+      ? gate.deferred_tasks
+      : [];
+    let deferredRows = [];
+    const frozenByTaskId = new Map();
+    const frozenTask = (row, phase) => {
+      const phaseClaims = Array.isArray(row?.task_contract?.required_claims)
+        ? row.task_contract.required_claims.filter((claim) =>
+          ["nyra.precommit_phase.POST_COMMIT", "nyra.precommit_phase.POST_DEPLOY"].includes(claim))
+        : [];
+      if (phaseClaims.length > 1) fail("precommit_gate_claim_v2_dependency_invalid");
+      const governedPhase = phaseClaims.length === 1
+        ? phaseClaims[0].slice("nyra.precommit_phase.".length)
+        : phase;
+      const effectivePhase = phase === "POST_DEPLOY" || governedPhase === "POST_DEPLOY"
+        ? "POST_DEPLOY" : "POST_COMMIT";
+      const binding = buildNativeV2TaskBinding({
+        tenant_id: actor.tenant_id, work_id: workId, task_id: row.task_id,
+        title: row.title, weight: Number(row.weight), required: row.required,
+      });
+      const material = {
+        task_id: String(row.task_id).toLowerCase(),
+        revision: Number(row.revision),
+        v2_task_digest: binding.v2_task_digest,
+        governed_precommit_phase: effectivePhase,
+        task_contract_digest: row.task_contract_digest || null,
+        task_contract_revision: row.task_contract_revision == null
+          ? null : Number(row.task_contract_revision),
+        dependency_manifest_digest: row.dependency_manifest_digest || null,
+        dependency_manifest_revision: row.dependency_manifest_revision == null
+          ? null : Number(row.dependency_manifest_revision),
+      };
+      if (((material.task_contract_digest === null) !==
+          (material.task_contract_revision === null)) ||
+          ((material.dependency_manifest_digest === null) !==
+            (material.dependency_manifest_revision === null))) {
+        fail("precommit_gate_claim_v2_dependency_invalid");
+      }
+      const prior = frozenByTaskId.get(material.task_id);
+      if (prior) {
+        if (prior.v2_task_digest !== material.v2_task_digest ||
+            prior.revision !== material.revision ||
+            prior.task_contract_digest !== material.task_contract_digest ||
+            prior.task_contract_revision !== material.task_contract_revision ||
+            prior.dependency_manifest_digest !== material.dependency_manifest_digest ||
+            prior.dependency_manifest_revision !== material.dependency_manifest_revision) {
+          fail("precommit_gate_claim_v2_dependency_invalid");
+        }
+        if (material.governed_precommit_phase === "POST_DEPLOY") {
+          prior.governed_precommit_phase = "POST_DEPLOY";
+        }
+        return prior;
+      }
+      frozenByTaskId.set(material.task_id, material);
+      return material;
+    };
+    const governedTaskSelect = `SELECT t.task_id,t.title,t.weight,t.required,t.status,
+        t.acceptance_verified,t.revision,
+        (SELECT c.contract_digest FROM tenant_work_task_contract c WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_digest,
+        (SELECT c.contract_revision FROM tenant_work_task_contract c WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract_revision,
+        (SELECT c.contract FROM tenant_work_task_contract c WHERE c.tenant_id=t.tenant_id AND c.work_id=t.work_id AND c.task_id=t.task_id ORDER BY c.contract_revision DESC LIMIT 1) AS task_contract,
+        (SELECT m.manifest_digest FROM tenant_work_dependency_manifest m WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_digest,
+        (SELECT m.manifest_revision FROM tenant_work_dependency_manifest m WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest_revision,
+        (SELECT m.manifest FROM tenant_work_dependency_manifest m WHERE m.tenant_id=t.tenant_id AND m.work_id=t.work_id AND m.task_id=t.task_id ORDER BY m.manifest_revision DESC LIMIT 1) AS dependency_manifest
+      FROM tenant_work_task t`;
+    const current = expectedTasks.length ? await client.query(`${governedTaskSelect}
       WHERE tenant_id=$1 AND work_id=$2 AND task_id=ANY($3::uuid[])
       ORDER BY task_id FOR UPDATE`,
-    [actor.tenant_id, workId, expectedTasks.map((item) => item.task_id)]);
+    [actor.tenant_id, workId, expectedTasks.map((item) => item.task_id)]) : { rows: [] };
     if (current.rows.length !== expectedTasks.length) {
       fail("precommit_gate_claim_v2_scope_changed");
     }
@@ -7239,6 +7539,85 @@ export function createWorkContinuityV2Store({
           row.acceptance_verified !== true) {
         fail("precommit_gate_claim_v2_scope_changed");
       }
+      frozenTask(row, "POST_COMMIT");
+    }
+    if (expectedDeferredTasks.length) {
+      const deferred = await client.query(`${governedTaskSelect}
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=ANY($3::uuid[])
+        ORDER BY task_id FOR UPDATE`,
+      [actor.tenant_id, workId, expectedDeferredTasks.map((item) => item.task_id)]);
+      if (deferred.rows.length !== expectedDeferredTasks.length) {
+        fail("precommit_gate_claim_v2_scope_changed");
+      }
+      deferredRows = deferred.rows;
+      const deferredById = new Map(deferred.rows.map((row) => [String(row.task_id), row]));
+      for (const expected of expectedDeferredTasks) {
+        const row = deferredById.get(expected.task_id);
+        const binding = row && buildNativeV2TaskBinding({
+          tenant_id: actor.tenant_id,
+          work_id: workId,
+          task_id: row.task_id,
+          title: row.title,
+          weight: Number(row.weight),
+          required: row.required,
+        });
+        if (!row || binding.v2_task_digest !== expected.v2_task_digest ||
+            Number(row.revision) !== expected.revision || row.required !== expected.required ||
+            (row.task_contract_digest || null) !== expected.task_contract_digest ||
+            (row.task_contract_revision == null ? null : Number(row.task_contract_revision)) !==
+              expected.task_contract_revision ||
+            (row.dependency_manifest_digest || null) !== expected.dependency_manifest_digest ||
+            (row.dependency_manifest_revision == null ? null : Number(row.dependency_manifest_revision)) !==
+              expected.dependency_manifest_revision ||
+            row.status !== expected.status ||
+            row.acceptance_verified !== expected.acceptance_verified) {
+          fail("precommit_gate_claim_v2_scope_changed");
+        }
+        frozenTask(row, expected.phase);
+      }
+    }
+    // The caller declares only the post-effect roots. The database derives and
+    // freezes their transitive Work-task dependency closure from the current
+    // governed contracts/manifests, so omitted dependencies cannot drift while
+    // the Core ticket is in flight.
+    const dependencyRows = new Map([
+      ...current.rows,
+      ...deferredRows,
+    ].map((row) => [String(row.task_id).toLowerCase(), row]));
+    const queued = [...frozenByTaskId.values()];
+    const processedPhase = new Map();
+    for (let cursor = 0; cursor < queued.length; cursor += 1) {
+      const frozen = queued[cursor];
+      if (frozenByTaskId.size > 128) fail("precommit_gate_claim_v2_dependency_invalid");
+      if (processedPhase.get(frozen.task_id) === frozen.governed_precommit_phase) continue;
+      processedPhase.set(frozen.task_id, frozen.governed_precommit_phase);
+      let row = dependencyRows.get(frozen.task_id);
+      if (!row) continue;
+      const dependencyRefs = [...new Set([
+        ...(Array.isArray(row.task_contract?.dependency_refs)
+          ? row.task_contract.dependency_refs : []),
+        ...(Array.isArray(row.dependency_manifest?.dependency_ids)
+          ? row.dependency_manifest.dependency_ids : []),
+      ].map((item) => String(item || "").toLowerCase()).filter((item) => UUID.test(item)))];
+      const missingIds = dependencyRefs.filter((taskId) => !dependencyRows.has(taskId));
+      if (missingIds.length) {
+        const dependencies = await client.query(`${governedTaskSelect}
+          WHERE tenant_id=$1 AND work_id=$2 AND task_id=ANY($3::uuid[])
+          ORDER BY task_id FOR UPDATE`, [actor.tenant_id, workId, missingIds]);
+        for (const dependency of dependencies.rows) {
+          dependencyRows.set(String(dependency.task_id).toLowerCase(), dependency);
+        }
+        if (missingIds.some((taskId) => !dependencyRows.has(taskId))) {
+          fail("precommit_gate_claim_v2_dependency_invalid");
+        }
+      }
+      for (const dependencyId of dependencyRefs.sort()) {
+        const before = frozenByTaskId.get(dependencyId);
+        const beforePhase = before?.governed_precommit_phase;
+        const dependency = frozenTask(dependencyRows.get(dependencyId),
+          frozen.governed_precommit_phase);
+        if (!before || beforePhase !== dependency.governed_precommit_phase) queued.push(dependency);
+      }
     }
     const agents = await client.query(`SELECT v2_task_id,v2_task_digest
       FROM core_continuity_native_agents
@@ -7256,7 +7635,9 @@ export function createWorkContinuityV2Store({
         })) {
       fail("precommit_gate_claim_v2_scope_changed");
     }
-    return Object.freeze(expectedTasks);
+    return Object.freeze([...frozenByTaskId.values()]
+      .sort((left, right) => left.task_id.localeCompare(right.task_id))
+      .map((item) => Object.freeze({ ...item })));
   }
   async function materializeNativePrecommitTicketGateWithClient(client, source = {}) {
     if (!client || typeof client.query !== "function") fail("native_precommit_gate_transaction_required");
@@ -7316,7 +7697,8 @@ export function createWorkContinuityV2Store({
           existing.evaluation_digest === evaluationDigest &&
           existing.workspace_digest === workspaceDigest &&
           existing.v2_scope_snapshot_digest === v2TaskScope.scope_snapshot_digest &&
-          objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks)) {
+          objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks) &&
+          sameNativeDeferredScope(existing, v2TaskScope)) {
         return Object.freeze({ ...existing, idempotent_replay: true });
       }
       fail("tenant_work_terminal");
@@ -7355,6 +7737,7 @@ export function createWorkContinuityV2Store({
           existing.evaluation_digest === evaluationDigest && existing.workspace_digest === workspaceDigest &&
           existing.v2_scope_snapshot_digest === v2TaskScope.scope_snapshot_digest &&
           objectDigest(existing.v2_scope_tasks) === objectDigest(v2TaskScope.tasks) &&
+          sameNativeDeferredScope(existing, v2TaskScope) &&
           existing.supersession_digest === supersessionDigest;
       if (existing.schema_version !== "precommit_ticket_gate_v2" ||
           existing.gate_source !== "native_closure_evaluation" || existing.fulfilled === true ||
@@ -7375,8 +7758,9 @@ export function createWorkContinuityV2Store({
       // never mint a newer gate in either state.  Only a claim with an
       // append-only abandonment and no ticket is safe to leave behind.
       const claimStates = await client.query(`SELECT c.claim_id,c.gate_projection_digest,
-          f.ticket_id AS fulfilled_ticket_id,a.claim_id AS abandoned_claim_id,
-          a.abandonment_digest,
+          f.ticket_id AS fulfilled_ticket_id,
+          COALESCE(a.claim_id,d.claim_id) AS abandoned_claim_id,
+          COALESCE(a.abandonment_digest,d.reconciliation_digest) AS abandonment_digest,
           EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation r
             WHERE r.tenant_id=c.tenant_id AND r.work_id=c.work_id
               AND r.claim_id=c.claim_id AND r.ticket_id IS NOT NULL) AS reconciled_ticket_present
@@ -7387,6 +7771,10 @@ export function createWorkContinuityV2Store({
         LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
           ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
             AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+        LEFT JOIN LATERAL (SELECT rd.claim_id,rd.reconciliation_digest
+          FROM tenant_work_precommit_ticket_gate_claim_reconciliation rd
+          WHERE rd.tenant_id=c.tenant_id AND rd.work_id=c.work_id AND rd.claim_id=c.claim_id
+            AND rd.stage='deterministic_denial' AND rd.ticket_id IS NULL LIMIT 1) d ON true
         WHERE c.tenant_id=$1 AND c.work_id=$2
         ORDER BY c.created_at,c.claim_id FOR UPDATE OF c`, [tenantId, workId]);
       if (claimStates.rows.some((row) => row.fulfilled_ticket_id ||
@@ -7421,6 +7809,8 @@ export function createWorkContinuityV2Store({
         evaluation_digest: evaluationDigest, workspace_digest: workspaceDigest,
         v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
         v2_scope_tasks: v2TaskScope.tasks,
+        deferred_tasks: v2TaskScope.deferred_tasks || [],
+        deferred_tasks_digest: v2TaskScope.deferred_tasks_digest || null,
         supersession_digest: supersessionDigest, gate_source: "native_closure_evaluation", mappings: [],
         gate_version: nextVersion, supersedes_reconciliation_digest: existing.reconciliation_digest,
         ...(claimRecovery ? { claim_recovery: claimRecovery } : {}) };
@@ -7450,6 +7840,8 @@ export function createWorkContinuityV2Store({
         supersession_digest: supersessionDigest,
         v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
         v2_scope_tasks: v2TaskScope.tasks,
+        deferred_tasks: v2TaskScope.deferred_tasks || [],
+        deferred_tasks_digest: v2TaskScope.deferred_tasks_digest || null,
         reconciliation_digest: reconciliationDigest,
         gate_source: "native_closure_evaluation",
         action_kind: "git.commit",
@@ -7472,6 +7864,8 @@ export function createWorkContinuityV2Store({
       evaluation_digest: evaluationDigest, workspace_digest: workspaceDigest,
       v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
       v2_scope_tasks: v2TaskScope.tasks,
+      deferred_tasks: v2TaskScope.deferred_tasks || [],
+      deferred_tasks_digest: v2TaskScope.deferred_tasks_digest || null,
       supersession_digest: supersessionDigest, gate_source: "native_closure_evaluation", mappings: [] };
     const reconciliationDigest = objectDigest(material);
     await client.query(`INSERT INTO tenant_work_precommit_ticket_gate
@@ -7488,6 +7882,8 @@ export function createWorkContinuityV2Store({
       workspace_digest: workspaceDigest, supersession_digest: supersessionDigest,
       v2_scope_snapshot_digest: v2TaskScope.scope_snapshot_digest,
       v2_scope_tasks: v2TaskScope.tasks,
+      deferred_tasks: v2TaskScope.deferred_tasks || [],
+      deferred_tasks_digest: v2TaskScope.deferred_tasks_digest || null,
       reconciliation_digest: reconciliationDigest, gate_source: "native_closure_evaluation",
       action_kind: "git.commit", gate_kind: "ticket_acquisition", execution_authorized: false,
     });
@@ -7891,7 +8287,7 @@ export function createWorkContinuityV2Store({
           fail("precommit_ticket_fulfillment_claim_invalid");
         }
         const claimResult = await client.query(`SELECT c.*,f.ticket_id AS fulfilled_ticket_id,
-            a.abandonment_digest
+            COALESCE(a.abandonment_digest,d.reconciliation_digest) AS abandonment_digest
           FROM tenant_work_precommit_ticket_gate_claim c
           LEFT JOIN tenant_work_precommit_ticket_gate_claim_fulfillment f
             ON f.tenant_id=c.tenant_id AND f.work_id=c.work_id
@@ -7899,6 +8295,10 @@ export function createWorkContinuityV2Store({
           LEFT JOIN tenant_work_precommit_ticket_gate_claim_abandonment a
             ON a.tenant_id=c.tenant_id AND a.work_id=c.work_id
               AND a.gate_projection_digest=c.gate_projection_digest AND a.claim_id=c.claim_id
+          LEFT JOIN LATERAL (SELECT rd.reconciliation_digest
+            FROM tenant_work_precommit_ticket_gate_claim_reconciliation rd
+            WHERE rd.tenant_id=c.tenant_id AND rd.work_id=c.work_id AND rd.claim_id=c.claim_id
+              AND rd.stage='deterministic_denial' AND rd.ticket_id IS NULL LIMIT 1) d ON true
           WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.gate_projection_digest=$3 FOR UPDATE OF c`,
         [actor.tenant_id, workId, gateProjectionDigest]);
         claim = claimResult.rows[0];
@@ -7986,6 +8386,216 @@ export function createWorkContinuityV2Store({
       });
       return Object.freeze({ ...material, fulfillment_digest: fulfillmentDigest,
         idempotent_replay: false });
+    });
+  }
+  async function settlePrecommitEffectLifecycle(identity, input = {}) {
+    await initialize();
+    if (input.server_owned !== true) fail("precommit_effect_settlement_server_owned_required");
+    const actor = actorFromIdentity(identity);
+    const record = input.core_record;
+    const ticket = record?.ticket;
+    const state = String(record?.state || "");
+    const settlementSource = input.settlement_source === "core_terminal_readback"
+      ? "core_terminal_readback"
+      : input.settlement_source === undefined || input.settlement_source === "lifecycle_transition"
+        ? "lifecycle_transition"
+        : fail("precommit_effect_settlement_source_invalid");
+    const stateProjection = {
+      reserved: { lifecycle_state: "reserved", terminal: false, effect_unknown: false },
+      completed: { lifecycle_state: "completed", terminal: true, effect_unknown: false },
+      reconciliation_required: {
+        lifecycle_state: "completed", terminal: false, effect_unknown: true,
+      },
+      reconciled: { lifecycle_state: "reconciled", terminal: true, effect_unknown: false },
+      quarantined: { lifecycle_state: "quarantined", terminal: true, effect_unknown: true },
+      observed_unreserved_effect: {
+        lifecycle_state: "observed", terminal: true, effect_unknown: false,
+      },
+      issued_expired: {
+        lifecycle_state: "issued_expired", terminal: true, effect_unknown: true,
+      },
+      revoked: { lifecycle_state: "revoked", terminal: true, effect_unknown: true },
+    }[state];
+    const actionKind = String(ticket?.action?.kind || "");
+    const allowedActionKinds = new Set([
+      "git.commit", "git.push.branch", "git.push.protected", "github.draft_pr",
+      "github.ready", "github.merge", "render.deploy", "render.promote", "render.observe",
+      "render.rollback",
+    ]);
+    if (!plainRecord(record) || !plainRecord(ticket) ||
+        ticket.tenant_id !== actor.tenant_id ||
+        !/^hnt_[A-Za-z0-9_-]{8,}$/.test(String(ticket.ticket_id || ""))) {
+      fail("precommit_effect_settlement_core_record_invalid");
+    }
+    if (!UUID.test(String(ticket.work_id || ""))) {
+      return Object.freeze({ schema_version: "precommit_effect_settlement_v1",
+        applicable: false, ticket_id: ticket.ticket_id });
+    }
+    const workId = uuid(ticket.work_id, "precommit_effect_settlement_work_invalid");
+    const actionPredecessorTicketId = ticket.predecessor?.ticket_id || null;
+    const supersessionCandidates = [
+      ticket.native_precommit_predecessor?.ticket_id,
+      ticket.release_ticket_predecessor?.ticket_id,
+    ].filter(Boolean);
+    if (supersessionCandidates.length > 1) {
+      fail("precommit_effect_settlement_action_lineage_invalid");
+    }
+    const supersededTicketId = supersessionCandidates[0] || null;
+    const nativeSupersession = ticket.native_precommit_predecessor;
+    const releaseSupersession = ticket.release_ticket_predecessor;
+    const manualMergeLineage = actionKind === "render.observe" &&
+      ticket.predecessor?.predecessor_type === "owner_manual_github_merge_readback";
+    return transaction(async (client) => {
+      const claimRoot = async (ticketId) => (await client.query(`SELECT
+          c.claim_id,c.gate_projection_digest,f.ticket_id AS root_ticket_id
+        FROM tenant_work_precommit_ticket_gate_claim_fulfillment f
+        JOIN tenant_work_precommit_ticket_gate_claim c
+          ON c.tenant_id=f.tenant_id AND c.work_id=f.work_id
+            AND c.gate_projection_digest=f.gate_projection_digest AND c.claim_id=f.claim_id
+        WHERE f.tenant_id=$1 AND f.work_id=$2 AND f.ticket_id=$3
+        FOR UPDATE OF c`, [actor.tenant_id, workId, ticketId])).rows[0] || null;
+      const settlementRoot = async (ticketId, terminalOnly) => (await client.query(`SELECT
+          claim_id,gate_projection_digest,root_ticket_id
+        FROM tenant_work_precommit_effect_settlement
+        WHERE tenant_id=$1 AND work_id=$2 AND ticket_id=$3
+          AND ($4::boolean=false OR terminal=true)
+        ORDER BY terminal DESC,created_at DESC LIMIT 1
+        FOR UPDATE`, [actor.tenant_id, workId, ticketId, terminalOnly])).rows[0] || null;
+      let root = await claimRoot(ticket.ticket_id);
+      if (!root && supersededTicketId) {
+        root = await settlementRoot(supersededTicketId, false) ||
+          await claimRoot(supersededTicketId);
+      }
+      if (!root && actionPredecessorTicketId) {
+        root = await settlementRoot(actionPredecessorTicketId, true) ||
+          await claimRoot(actionPredecessorTicketId);
+      }
+      if (!root && manualMergeLineage) {
+        const candidates = await client.query(`SELECT
+            c.claim_id,c.gate_projection_digest,f.ticket_id AS root_ticket_id
+          FROM tenant_work_precommit_ticket_gate_claim_fulfillment f
+          JOIN tenant_work_precommit_ticket_gate_claim c
+            ON c.tenant_id=f.tenant_id AND c.work_id=f.work_id
+              AND c.gate_projection_digest=f.gate_projection_digest AND c.claim_id=f.claim_id
+          WHERE f.tenant_id=$1 AND f.work_id=$2
+            AND EXISTS (SELECT 1 FROM tenant_work_precommit_scope_freeze z
+              WHERE z.tenant_id=c.tenant_id AND z.work_id=c.work_id AND z.claim_id=c.claim_id
+                AND z.governed_precommit_phase='POST_DEPLOY')
+            AND NOT EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_abandonment a
+              WHERE a.tenant_id=c.tenant_id AND a.work_id=c.work_id AND a.claim_id=c.claim_id)
+            AND NOT EXISTS (SELECT 1 FROM tenant_work_precommit_ticket_gate_claim_reconciliation d
+              WHERE d.tenant_id=c.tenant_id AND d.work_id=c.work_id AND d.claim_id=c.claim_id
+                AND d.stage='deterministic_denial' AND d.ticket_id IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM tenant_work_precommit_effect_settlement s
+              WHERE s.tenant_id=c.tenant_id AND s.work_id=c.work_id AND s.claim_id=c.claim_id
+                AND s.terminal=true AND s.action_kind IN
+                  ('render.deploy','render.promote','render.rollback','render.observe'))
+          ORDER BY c.created_at,c.claim_id LIMIT 2 FOR UPDATE OF c`,
+        [actor.tenant_id, workId]);
+        if (candidates.rows.length > 1) {
+          fail("precommit_effect_settlement_manual_merge_ambiguous");
+        }
+        root = candidates.rows[0] || null;
+      }
+      if (!root) {
+        return Object.freeze({ schema_version: "precommit_effect_settlement_v1",
+          applicable: false, ticket_id: ticket.ticket_id });
+      }
+      const lineageKind = supersededTicketId
+        ? "supersession"
+        : manualMergeLineage
+          ? "manual_merge"
+          : actionPredecessorTicketId
+            ? "action"
+            : "root";
+      const predecessorTicketId = supersededTicketId || actionPredecessorTicketId ||
+        (manualMergeLineage ? root.root_ticket_id : null);
+      if ((lineageKind === "root") !== (ticket.ticket_id === root.root_ticket_id) ||
+          (lineageKind === "supersession" &&
+            !((nativeSupersession?.schema_version === "native_precommit_ticket_predecessor_v1" &&
+                HASH.test(String(nativeSupersession.ticket_digest || ""))) ||
+              (releaseSupersession?.schema_version === "host_native_release_ticket_predecessor_v1" &&
+                HASH.test(String(releaseSupersession.ticket_digest || "")) &&
+                ["expired_unreserved", "semantic_scope_revalidated"].includes(
+                  releaseSupersession.successor_reason)))) ||
+          (lineageKind === "manual_merge" &&
+            (ticket.predecessor?.schema_version !==
+              "host_native_owner_manual_merge_predecessor_v2" ||
+              !/^hnmmr_[A-Za-z0-9_-]{8,}$/.test(String(
+                ticket.predecessor?.manual_merge_readback_id || "")) ||
+              !HASH.test(String(ticket.predecessor?.manual_merge_readback_digest || ""))))) {
+        fail("precommit_effect_settlement_action_lineage_invalid");
+      }
+      await loadWork(client, actor, workId, true);
+      if (!stateProjection || ticket.schema_version !== "host_native_action_ticket_v1" ||
+          !/^hnt_[A-Za-z0-9_-]{64}$/.test(String(ticket.signature || "")) ||
+          !allowedActionKinds.has(actionKind) || ticket.provider_execution !== false ||
+          ticket.host_policy_override !== false || ticket.host_policy_must_allow !== true ||
+          (state !== "revoked" && (!HASH.test(String(record.lifecycle_digest || "")) ||
+            !/^hnl_[A-Za-z0-9_-]{16,}$/.test(String(record.lifecycle_signature || "")))) ||
+          (state === "reserved" && Number(record.uses) !== 1) ||
+          (state === "issued_expired" &&
+            (Number(record.uses) !== 0 || record.reservation_id != null))) {
+        fail("precommit_effect_settlement_core_record_invalid");
+      }
+      const coreRecordDigest = objectDigest(record);
+      const material = {
+        schema_version: "precommit_effect_settlement_v1",
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        claim_id: root.claim_id,
+        gate_projection_digest: root.gate_projection_digest,
+        root_ticket_id: root.root_ticket_id,
+        ticket_id: ticket.ticket_id,
+        predecessor_ticket_id: predecessorTicketId,
+        action_kind: actionKind,
+        lineage_kind: lineageKind,
+        settlement_source: settlementSource,
+        ...stateProjection,
+        core_record_digest: coreRecordDigest,
+      };
+      // These guard dimensions are server-derived. Keep the v1 settlement
+      // digest replay-compatible with rows written before the columns existed.
+      const settlementDigest = objectDigest((({ lineage_kind: _lineage,
+        settlement_source: _source, ...value }) => value)(material));
+      const existing = await client.query(`SELECT *
+        FROM tenant_work_precommit_effect_settlement
+        WHERE tenant_id=$1 AND work_id=$2 AND ticket_id=$3 AND lifecycle_state=$4
+        FOR UPDATE`, [actor.tenant_id, workId, ticket.ticket_id,
+        stateProjection.lifecycle_state]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].settlement_digest !== settlementDigest) {
+          fail("precommit_effect_settlement_replay_conflict");
+        }
+        return Object.freeze({ ...material, settlement_digest: settlementDigest,
+          applicable: true, idempotent_replay: true });
+      }
+      await client.query(`INSERT INTO tenant_work_precommit_effect_settlement
+        (tenant_id,work_id,claim_id,gate_projection_digest,root_ticket_id,ticket_id,
+         predecessor_ticket_id,action_kind,lifecycle_state,terminal,effect_unknown,
+         lineage_kind,settlement_source,core_record_digest,settlement_digest)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [actor.tenant_id,
+        workId, root.claim_id, root.gate_projection_digest, root.root_ticket_id,
+        ticket.ticket_id, predecessorTicketId, actionKind, stateProjection.lifecycle_state,
+        stateProjection.terminal, stateProjection.effect_unknown, lineageKind, settlementSource, coreRecordDigest,
+        settlementDigest]);
+      await appendV2Event(client, actor, workId, "precommit_effect_settled", {
+        claim_id: root.claim_id,
+        root_ticket_id: root.root_ticket_id,
+        ticket_id: ticket.ticket_id,
+        predecessor_ticket_id: predecessorTicketId,
+        action_kind: actionKind,
+        lineage_kind: lineageKind,
+        settlement_source: settlementSource,
+        lifecycle_state: stateProjection.lifecycle_state,
+        terminal: stateProjection.terminal,
+        effect_unknown: stateProjection.effect_unknown,
+        core_record_digest: coreRecordDigest,
+        settlement_digest: settlementDigest,
+        execution_authorized: false,
+      });
+      return Object.freeze({ ...material, settlement_digest: settlementDigest,
+        applicable: true, idempotent_replay: false });
     });
   }
   async function persistCoreJoin(identity, { work_id, core_join_digest, core_join_context }) {
@@ -9125,6 +9735,7 @@ export function createWorkContinuityV2Store({
     abandonInactivePrecommitTicketGateClaim: guardPendingWorkMutation(abandonInactivePrecommitTicketGateClaim),
     materializeNativePrecommitTicketGateWithClient,
     fulfillPrecommitTicketTask: guardPendingWorkMutation(fulfillPrecommitTicketTask),
+    settlePrecommitEffectLifecycle,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
     recordTask: guardPendingWorkMutation(recordTask),
     recordTaskContract: guardPendingWorkMutation(recordTaskContract),

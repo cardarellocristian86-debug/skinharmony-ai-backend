@@ -9,6 +9,8 @@ import {
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
 } from "../src/work-continuity-v2-store.js";
+import { buildNativeV2TaskBinding } from "../src/work-continuity-runtime.js";
+import { WORK_CONTINUITY_V2_SCHEMA_SQL } from "../src/work-continuity-v2.js";
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const TASK_ID = "22222222-2222-4222-8222-222222222222";
@@ -105,6 +107,7 @@ class PrecommitPool {
     this.claimFulfillments = new Map();
     this.claimReconciliations = new Map();
     this.claimAbandonments = new Map();
+    this.scopeFreezes = new Map();
     this.events = [];
     this.legacyIntentAnchors = new Map();
   }
@@ -121,6 +124,7 @@ class PrecommitPool {
       claims: cloneMap(this.claims), claimFulfillments: cloneMap(this.claimFulfillments),
       claimReconciliations: cloneMap(this.claimReconciliations),
       claimAbandonments: cloneMap(this.claimAbandonments),
+      scopeFreezes: cloneMap(this.scopeFreezes),
       legacyIntentAnchors: cloneMap(this.legacyIntentAnchors),
     };
   }
@@ -211,6 +215,15 @@ class PrecommitPool {
     if (q.startsWith("SELECT task_id,status,required,acceptance_verified FROM tenant_work_task")) {
       const row = this.tasks.get(key(parameters[0], parameters[2]));
       return { rows: row && row.work_id === parameters[1] ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if ((q.startsWith("SELECT task_id,title,weight,required,status,acceptance_verified,revision FROM tenant_work_task") ||
+         q.startsWith("SELECT t.task_id,t.title,t.weight,t.required,t.status,")) &&
+        q.includes("task_id=ANY($3::uuid[])")) {
+      const ids = new Set(parameters[2]);
+      const rows = [...this.tasks.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && ids.has(row.task_id))
+        .sort((left, right) => left.task_id.localeCompare(right.task_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
     }
     if (q.startsWith("SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id")) {
       const rows = this.plans.filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
@@ -429,6 +442,22 @@ class PrecommitPool {
       this.claimReconciliations.set(key(row.tenant_id, row.work_id, row.claim_id, row.stage), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT task_id,revision,v2_task_digest,")) {
+      const rows = [...this.scopeFreezes.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.claim_id === parameters[2])
+        .sort((left, right) => left.task_id.localeCompare(right.task_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_scope_freeze")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        gate_projection_digest: parameters[2], claim_id: parameters[3], task_id: parameters[4],
+        revision: parameters[5], v2_task_digest: parameters[6], scope_snapshot_digest: parameters[7],
+        governed_precommit_phase: parameters[8], task_contract_digest: parameters[9],
+        task_contract_revision: parameters[10], dependency_manifest_digest: parameters[11],
+        dependency_manifest_revision: parameters[12] };
+      this.scopeFreezes.set(key(row.tenant_id, row.work_id, row.claim_id, row.task_id), row);
+      return { rows: [], rowCount: 1 };
+    }
     if (q.startsWith("SELECT c.claim_id,c.gate_projection_digest,")) {
       const rows = [...this.claims.values()].filter((claim) =>
         claim.tenant_id === parameters[0] && claim.work_id === parameters[1]).map((claim) => {
@@ -456,6 +485,15 @@ class PrecommitPool {
         !this.claimFulfillments.has(key(claim.tenant_id, claim.work_id, claim.gate_projection_digest)) &&
         !this.claimAbandonments.has(key(claim.tenant_id, claim.work_id, claim.gate_projection_digest)));
       return { rows: row ? [{ claim_id: row.claim_id }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT v2_task_id,v2_task_digest FROM core_continuity_native_agents")) {
+      const plan = this.plans.find((item) => item.tenant_id === parameters[0] &&
+        item.work_id === parameters[1] && item.plan_id === parameters[2]);
+      const rows = (plan?.plan?.tasks || []).filter((task) => task.v2_task_id).map((task) => ({
+        v2_task_id: task.v2_task_id,
+        v2_task_digest: task.v2_task_digest,
+      }));
+      return { rows, rowCount: rows.length };
     }
     if (q.startsWith("UPDATE tenant_work_task SET status='completed'")) {
       const row = this.tasks.get(key(parameters[0], parameters[2]));
@@ -880,6 +918,48 @@ test("migration is additive, replay-safe and append-only", () => {
   assert.match(claimMigration, /tenant_work_precommit_ticket_gate_claim_fulfillment/);
   assert.match(claimMigration, /BEFORE UPDATE OR DELETE/);
   assert.match(claimMigration, /20260901_precommit_ticket_gate_claim_v1/);
+
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /CREATE TABLE IF NOT EXISTS tenant_work_precommit_effect_settlement/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /PRIMARY KEY \(tenant_id,work_id,ticket_id,lifecycle_state\)/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /tenant_work_precommit_effect_one_terminal_ticket_uidx[\s\S]*WHERE terminal=true/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /'reserved','completed','reconciled','quarantined','observed','issued_expired'/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /'lifecycle_transition','core_terminal_readback'/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /lineage_kind='supersession'[\s\S]*predecessor_any_kind=NEW\.action_kind/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /lineage_kind='manual_merge'[\s\S]*NEW\.action_kind='render\.observe'/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /settlement_source='core_terminal_readback' AND prior_count=0/);
+  for (const constraint of [
+    "revision_positive", "phase", "task_contract_pair", "task_contract_revision",
+    "dependency_manifest_pair", "dependency_manifest_revision",
+  ]) {
+    assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, new RegExp(
+      `'tw_precommit_freeze_${constraint}_ck'`,
+    ));
+    assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, new RegExp(
+      `VALIDATE CONSTRAINT tw_precommit_freeze_${constraint}_ck`,
+    ));
+  }
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /ADD CONSTRAINT %I CHECK \(%s\) NOT VALID/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /tenant_work_precommit_effect_settlement_guard_insert[\s\S]*BEFORE INSERT/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /predecessor_kind='git\.commit'[\s\S]*git\.push\.branch[\s\S]*github\.draft_pr[\s\S]*github\.merge[\s\S]*render\.deploy/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL,
+    /stage=''deterministic_denial'' AND d\.ticket_id IS NULL/);
+  const storeSource = fs.readFileSync(path.join(directory,
+    "../src/work-continuity-v2-store.js"), "utf8");
+  assert.match(storeSource,
+    /CREATE TRIGGER tenant_work_task_contract_precommit_insert_guard BEFORE INSERT/);
+  assert.match(storeSource,
+    /CREATE TRIGGER tenant_work_dependency_manifest_precommit_insert_guard BEFORE INSERT/);
 });
 
 test("claim CAS permits exact replay and rejects cross-bound projection or request", async () => {
@@ -1344,4 +1424,216 @@ test("native gate writer rejects caller authority and noncanonical legacy projec
   pool.works.get(key("tenant-a", WORK_ID)).work_type = "legacy";
   await assert.rejects(store.materializeNativePrecommitTicketGateWithClient(client, base),
     /native_precommit_gate_work_invalid/);
+});
+
+test("native gate read marks deferred task digest or revision drift stale", async () => {
+  const pool = new PrecommitPool();
+  const scopeTaskId = "12121212-1212-4121-8121-121212121212";
+  const deferredTaskId = "13131313-1313-4131-8131-131313131313";
+  const canonicalAnchor = {
+    schema_version: "intent_anchor_v1",
+    initial_message: "canonical bootstrap",
+    idea: "Deferred release proof",
+    objective: "Keep post-effect tasks bound without blocking the commit ticket.",
+    acceptance_criteria: ["Deferred tasks remain closure-blocking."],
+    constraints: [],
+    source: { client_type: "codex", session_id: "deferred-session" },
+    immutable: true,
+  };
+  const intentDigest = digest(canonicalAnchor);
+  pool.legacyIntentAnchors.set(key("tenant-a", WORK_ID), {
+    anchor: canonicalAnchor,
+    intent_digest: intentDigest,
+  });
+  pool.works.set(key("tenant-a", WORK_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, legacy_work_id: WORK_ID,
+    work_type: "software_git", intent_digest: intentDigest,
+    owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
+  });
+  const createdEventMaterial = {
+    tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1,
+    event_type: "work_v2_created",
+    payload: { legacy_work_id: WORK_ID, intent_digest: intentDigest,
+      legacy_intent_digest: intentDigest, legacy_event_hash: "2".repeat(64) },
+    previous_event_hash: null,
+  };
+  pool.events.push({ ...createdEventMaterial, event_hash: digest(createdEventMaterial) });
+  const taskRow = (taskId, title, status, acceptanceVerified, revision) => ({
+    tenant_id: "tenant-a", work_id: WORK_ID, task_id: taskId, title, weight: 1,
+    required: true, status, acceptance_verified: acceptanceVerified, revision,
+  });
+  const completedTask = taskRow(scopeTaskId, "Verify candidate", "completed", true, 2);
+  const deferredTask = taskRow(deferredTaskId, "Verify deployment", "planned", false, 4);
+  pool.tasks.set(key("tenant-a", scopeTaskId), completedTask);
+  pool.tasks.set(key("tenant-a", deferredTaskId), deferredTask);
+  const bindingFor = (row) => buildNativeV2TaskBinding({
+    tenant_id: row.tenant_id,
+    work_id: row.work_id,
+    task_id: row.task_id,
+    title: row.title,
+    weight: row.weight,
+    required: row.required,
+  });
+  const scopeBinding = bindingFor(completedTask);
+  const deferredBinding = {
+    schema_version: "native_plan_precommit_deferred_v2_task_v1",
+    task_contract_digest: null,
+    task_contract_revision: null,
+    dependency_manifest_digest: null,
+    dependency_manifest_revision: null,
+    task_id: deferredTaskId,
+    v2_task_digest: bindingFor(deferredTask).v2_task_digest,
+    revision: deferredTask.revision,
+    required: true,
+    status: "planned",
+    acceptance_verified: false,
+    phase: "POST_DEPLOY",
+  };
+  const deferredTasks = [deferredBinding];
+  const scope = {
+    schema_version: "native_v2_precommit_scope_v1",
+    scope_snapshot_digest: "d".repeat(64),
+    v2_task_governed: true,
+    tasks: [{
+      task_id: scopeTaskId,
+      v2_task_digest: scopeBinding.v2_task_digest,
+      revision: completedTask.revision,
+    }],
+    deferred_tasks: deferredTasks,
+    deferred_tasks_digest: digest(deferredTasks),
+  };
+  const plan = { schema_version: "native_agent_plan_v1", tasks: [],
+    precommit_deferred_v2_tasks: deferredTasks,
+    precommit_deferred_v2_tasks_digest: digest(deferredTasks) };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    plan, plan_digest: digest(plan), status: "planned", plan_version: 1,
+    supersedes_plan_id: null });
+  const evaluation = {
+    schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: WORKSPACE_DIGEST },
+    native_v2_precommit_scope: scope,
+  };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    evaluation_id: EVALUATION_ID, evaluation, evaluation_digest: digest(evaluation),
+    created_at: "2026-09-01T10:00:00.000Z" });
+  const store = createWorkContinuityV2Store({ pool });
+  const client = await pool.connect();
+  const gate = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    server_owned: true, tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: PLAN_ID, evaluation_id: EVALUATION_ID,
+    evaluation_digest: digest(evaluation), workspace_digest: WORKSPACE_DIGEST,
+    v2_task_scope: scope,
+  });
+  assert.equal(gate.fresh, true);
+  assert.deepEqual(gate.deferred_tasks, deferredTasks);
+
+  pool.tasks.get(key("tenant-a", deferredTaskId)).revision += 1;
+  const drifted = await store.readPrecommitTicketGate(identity(), { work_id: WORK_ID });
+  assert.equal(drifted.fresh, false);
+  assert(drifted.drift_codes.includes("precommit_gate_v2_scope_drift"));
+});
+
+test("server-owned deferred scope carries real contract and dependency bindings through plan, evaluation, gate and claim", async () => {
+  const { pool, store } = fixture();
+  const canonicalAnchor = {
+    schema_version: "intent_anchor_v1", initial_message: "canonical deferred binding",
+    idea: "Deferred contract binding", objective: "Bind the post-effect task server-side.",
+    acceptance_criteria: ["Contract and dependency remain exact."], constraints: [],
+    source: { client_type: "codex", session_id: "deferred-binding-session" }, immutable: true,
+  };
+  const intentDigest = digest(canonicalAnchor);
+  pool.legacyIntentAnchors.set(key("tenant-a", WORK_ID), {
+    anchor: canonicalAnchor, intent_digest: intentDigest,
+  });
+  pool.works.get(key("tenant-a", WORK_ID)).intent_digest = intentDigest;
+  const createdEventMaterial = {
+    tenant_id: "tenant-a", work_id: WORK_ID, sequence_number: 1, event_type: "work_v2_created",
+    payload: { legacy_work_id: WORK_ID, intent_digest: intentDigest,
+      legacy_intent_digest: intentDigest, legacy_event_hash: "2".repeat(64) },
+    previous_event_hash: null,
+  };
+  pool.events = [{ ...createdEventMaterial, event_hash: digest(createdEventMaterial) }];
+  const scopedTaskId = "14141414-1414-4141-8141-141414141414";
+  const scopedTask = {
+    tenant_id: "tenant-a", work_id: WORK_ID, task_id: scopedTaskId,
+    title: "Verify the local candidate", weight: 1, required: true,
+    status: "completed", acceptance_verified: true, revision: 2,
+  };
+  const deferredTask = pool.tasks.get(key("tenant-a", TASK_ID));
+  Object.assign(deferredTask, {
+    title: "Verify the deployed candidate", weight: 1, required: true,
+    status: "planned", acceptance_verified: false, revision: 3,
+    task_contract_digest: "a".repeat(64), task_contract_revision: 7,
+    dependency_manifest_digest: "b".repeat(64), dependency_manifest_revision: 11,
+  });
+  pool.tasks.set(key("tenant-a", scopedTaskId), scopedTask);
+  const scopedBinding = buildNativeV2TaskBinding({
+    tenant_id: "tenant-a", work_id: WORK_ID, task_id: scopedTaskId,
+    title: scopedTask.title, weight: scopedTask.weight, required: scopedTask.required,
+  });
+  const deferredBinding = {
+    schema_version: "native_plan_precommit_deferred_v2_task_v1",
+    task_id: TASK_ID,
+    v2_task_digest: buildNativeV2TaskBinding({
+      tenant_id: "tenant-a", work_id: WORK_ID, task_id: TASK_ID,
+      title: deferredTask.title, weight: deferredTask.weight, required: deferredTask.required,
+    }).v2_task_digest,
+    revision: deferredTask.revision,
+    required: true,
+    status: "planned",
+    acceptance_verified: false,
+    task_contract_digest: deferredTask.task_contract_digest,
+    task_contract_revision: deferredTask.task_contract_revision,
+    dependency_manifest_digest: deferredTask.dependency_manifest_digest,
+    dependency_manifest_revision: deferredTask.dependency_manifest_revision,
+    phase: "POST_DEPLOY",
+  };
+  const deferredTasks = [deferredBinding];
+  const scope = {
+    schema_version: "native_v2_precommit_scope_v1",
+    scope_snapshot_digest: "e".repeat(64),
+    v2_task_governed: true,
+    tasks: [{ task_id: scopedTaskId, v2_task_digest: scopedBinding.v2_task_digest, revision: 2 }],
+    deferred_tasks: deferredTasks,
+    deferred_tasks_digest: digest(deferredTasks),
+  };
+  const plan = {
+    schema_version: "native_agent_plan_v1",
+    tasks: [{ v2_task_id: scopedTaskId, v2_task_digest: scopedBinding.v2_task_digest }],
+    precommit_deferred_v2_tasks: deferredTasks,
+    precommit_deferred_v2_tasks_digest: digest(deferredTasks),
+  };
+  pool.plans[0] = { ...pool.plans[0], plan, plan_digest: digest(plan) };
+  const evaluation = {
+    schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: WORKSPACE_DIGEST },
+    native_v2_precommit_scope: scope,
+  };
+  pool.evaluations[0] = { ...pool.evaluations[0], evaluation, evaluation_digest: digest(evaluation) };
+  const client = await pool.connect();
+  const gate = await store.materializeNativePrecommitTicketGateWithClient(client, {
+    server_owned: true, tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: PLAN_ID, evaluation_id: EVALUATION_ID, evaluation_digest: digest(evaluation),
+    workspace_digest: WORKSPACE_DIGEST, v2_task_scope: scope,
+  });
+  assert.deepEqual(gate.deferred_tasks, deferredTasks);
+  assert.deepEqual(pool.plans[0].plan.precommit_deferred_v2_tasks, deferredTasks);
+  assert.deepEqual(pool.evaluations[0].evaluation.native_v2_precommit_scope.deferred_tasks,
+    deferredTasks);
+
+  const claim = await claimGate(store, gate);
+  assert.equal(claim.replay, false);
+  assert.deepEqual([...pool.scopeFreezes.values()].map(({ task_id, revision }) => ({ task_id, revision })), [
+    { task_id: scopedTaskId, revision: 2 },
+    { task_id: TASK_ID, revision: 3 },
+  ]);
+
+  deferredTask.dependency_manifest_digest = "c".repeat(64);
+  deferredTask.dependency_manifest_revision = 12;
+  const stale = await store.readPrecommitTicketGate(identity(), { work_id: WORK_ID });
+  assert.equal(stale.fresh, false);
+  assert(stale.drift_codes.includes("precommit_gate_v2_scope_drift"));
 });

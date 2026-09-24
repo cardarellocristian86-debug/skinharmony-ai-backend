@@ -5,10 +5,15 @@ import {
   WORK_EVENT_TYPES,
   buildIntentAnchor,
   buildImpactMap,
+  buildNativeAgentPlan,
   bindNativeV2TaskSnapshotToEvaluation,
   createWorkContinuityRuntime,
   digest,
+  nativeV2CoreJoinEvaluationReady,
+  nativeV2PostEffectClosureSatisfied,
   nativeV2PrecommitPendingTaskAllowed,
+  nativeV2ReleaseEffectPendingTaskAllowed,
+  nativeV2WorkSnapshotMaterial,
   normalizeNativePrecommitEvidence,
   normalizeSurfaces,
   stable,
@@ -22,6 +27,23 @@ import {
 } from "../src/work-continuity-tools.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { coreOrchestrationVerdictDigest } from "../../shared/nyra-core-orchestration-verdict.mjs";
+
+function withWorkSnapshotDigest(value) {
+  const snapshot = {
+    schema_version: "native_v2_task_closure_snapshot_v1",
+    tenant_id: "tenant-a",
+    work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    work_type: "code_change",
+    snapshot_scope: "all_required_work_tasks",
+    precommit_ticket_task_id: null,
+    precommit_ticket_task_server_recognized: false,
+    ...value,
+  };
+  return {
+    ...snapshot,
+    work_snapshot_digest: digest(nativeV2WorkSnapshotMaterial(snapshot)),
+  };
+}
 
 test("the immutable Work Intent anchor preserves the pre-Work canonical Intent binding", () => {
   const turnBindingMaterial = {
@@ -167,16 +189,15 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
     required: true,
     native_bindings: taskId === otherTaskId ? [{ native_task_id: "build" }] : [],
   });
-  const snapshot = {
+  const snapshot = withWorkSnapshotDigest({
     ...base,
     work_valid: false,
     missing: [`native_v2_task_acceptance_not_current:${ticketTaskId}`],
     pending_required_task_ids: [ticketTaskId],
     v2_task_governed: true,
     scope_snapshot_digest: "c".repeat(64),
-    work_snapshot_digest: "d".repeat(64),
     task_bindings: [taskBinding(ticketTaskId), taskBinding(otherTaskId)],
-  };
+  });
   const ticketReady = bindNativeV2TaskSnapshotToEvaluation(evaluation, snapshot);
   assert.equal(ticketReady.closed, false);
   assert.equal(ticketReady.commit_ticket_ready, true);
@@ -184,7 +205,8 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
   assert(ticketReady.missing.includes(
     `native_v2_task_acceptance_not_current:${ticketTaskId}`));
 
-  const unrelatedPending = bindNativeV2TaskSnapshotToEvaluation(evaluation, {
+  const unrelatedPending = bindNativeV2TaskSnapshotToEvaluation(evaluation,
+    withWorkSnapshotDigest({
     ...snapshot,
     // A pending task in the native cohort invalidates the cohort snapshot;
     // an authoritative snapshot never marks this combination scope-valid.
@@ -194,9 +216,231 @@ test("native V2 precommit permits only the server-recognized ticket task to rema
       `native_v2_task_acceptance_not_current:${ticketTaskId}`,
       `native_v2_task_acceptance_not_current:${otherTaskId}`,
     ],
-  });
+    }));
   assert.equal(unrelatedPending.commit_ticket_ready, false);
   assert.equal(unrelatedPending.precommit_verification.ready, false);
+});
+
+test("native V2 precommit admits only digest-bound post-effect task classifications", () => {
+  const deferredTaskId = "90f5af84-0dea-4afd-82dd-e4a0d010e36b";
+  const ticketTaskId = "78022faf-df6d-4978-8969-8d8132592289";
+  const completedTaskId = "35f8a6af-79f2-4eb5-93a1-e4cb98ed75c5";
+  const deferred = [{
+    schema_version: "native_plan_precommit_deferred_v2_task_v1",
+    task_contract_digest: null,
+    task_contract_revision: null,
+    dependency_manifest_digest: null,
+    dependency_manifest_revision: null,
+    task_id: deferredTaskId,
+    v2_task_digest: "b".repeat(64),
+    revision: 3,
+    required: true,
+    status: "planned",
+    acceptance_verified: false,
+    phase: "POST_DEPLOY",
+  }];
+  const deferredDigest = digest(deferred);
+  const snapshot = {
+    scope_valid: true,
+    precommit_ticket_task_id: ticketTaskId,
+    precommit_ticket_task_server_recognized: true,
+    precommit_deferred_tasks: deferred,
+    precommit_deferred_tasks_digest: deferredDigest,
+    precommit_deferred_tasks_verified: true,
+  };
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    pending_required_task_ids: [deferredTaskId],
+  }), true);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    pending_required_task_ids: [ticketTaskId, deferredTaskId],
+  }), true);
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    pending_required_task_ids: [deferredTaskId, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+  }), false, "an unclassified pending task remains fail-closed");
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    precommit_deferred_tasks_digest: "c".repeat(64),
+    pending_required_task_ids: [deferredTaskId],
+  }), false, "tampered bindings are rejected");
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    precommit_deferred_tasks_verified: false,
+    pending_required_task_ids: [deferredTaskId],
+  }), false, "revision or status drift remains blocking");
+  assert.equal(nativeV2PrecommitPendingTaskAllowed({
+    ...snapshot,
+    precommit_deferred_tasks: [{ ...deferred[0], phase: "AFTER_RELEASE" }],
+    precommit_deferred_tasks_digest: digest([{ ...deferred[0], phase: "AFTER_RELEASE" }]),
+    pending_required_task_ids: [deferredTaskId],
+  }), false, "unknown phases are rejected");
+
+  const evaluation = bindNativeV2TaskSnapshotToEvaluation({
+    closed: false,
+    missing: ["builder_target_commit_missing"],
+    precommit_verification: { ready: true, workspace_digest: "a".repeat(64) },
+    commit_ticket_ready: true,
+  }, withWorkSnapshotDigest({
+    ...snapshot,
+    work_valid: false,
+    missing: [`native_v2_task_acceptance_not_current:${deferredTaskId}`],
+    pending_required_task_ids: [deferredTaskId],
+    v2_task_governed: true,
+    scope_snapshot_digest: "d".repeat(64),
+    task_bindings: [{ ...deferred[0], phase: undefined,
+      binding_mode: "digest_bound", native_bindings: [] }, {
+      task_id: completedTaskId,
+      task_contract_digest: "1".repeat(64),
+      task_contract_revision: 1,
+      dependency_manifest_digest: "2".repeat(64),
+      dependency_manifest_revision: 1,
+      v2_task_digest: "3".repeat(64),
+      revision: 2,
+      required: true,
+      status: "completed",
+      acceptance_verified: true,
+      binding_mode: "digest_bound",
+      native_bindings: [],
+    }],
+  }));
+  assert.equal(evaluation.commit_ticket_ready, true);
+  assert.deepEqual(evaluation.native_v2_precommit_scope.deferred_tasks, deferred);
+  assert.equal(evaluation.native_v2_precommit_scope.deferred_tasks_digest, deferredDigest);
+  assert.equal(evaluation.missing.includes(
+    `native_v2_task_acceptance_not_current:${deferredTaskId}`), true,
+  "post-effect tasks remain closure-blocking");
+
+  const releaseEffectEvaluation = bindNativeV2TaskSnapshotToEvaluation({
+    closed: true,
+    missing: [],
+    target_commit: "a".repeat(40),
+    precommit_verification: { ready: false, workspace_digest: "a".repeat(64) },
+    commit_ticket_ready: false,
+  }, withWorkSnapshotDigest({
+    ...snapshot,
+    work_valid: false,
+    missing: [`native_v2_task_acceptance_not_current:${deferredTaskId}`],
+    pending_required_task_ids: [deferredTaskId],
+    v2_task_governed: true,
+    scope_snapshot_digest: "d".repeat(64),
+    task_bindings: [{ ...deferred[0], phase: undefined,
+      binding_mode: "digest_bound", native_bindings: [] }, {
+      task_id: completedTaskId,
+      task_contract_digest: "1".repeat(64),
+      task_contract_revision: 1,
+      dependency_manifest_digest: "2".repeat(64),
+      dependency_manifest_revision: 1,
+      v2_task_digest: "3".repeat(64),
+      revision: 2,
+      required: true,
+      status: "completed",
+      acceptance_verified: true,
+      binding_mode: "digest_bound",
+      native_bindings: [],
+    }],
+  }));
+  assert.equal(nativeV2ReleaseEffectPendingTaskAllowed({
+    ...snapshot,
+    pending_required_task_ids: [deferredTaskId],
+  }), true);
+  assert.equal(releaseEffectEvaluation.closed, false,
+    "POST_DEPLOY remains closure-blocking until settlement");
+  assert.equal(releaseEffectEvaluation.native_v2_release_effect_ready, true,
+    "the exact POST_DEPLOY task may admit the effect that will settle it");
+  assert.equal(nativeV2CoreJoinEvaluationReady(releaseEffectEvaluation), true);
+
+  const postCommitPending = {
+    ...snapshot,
+    precommit_deferred_tasks: [{ ...deferred[0], phase: "POST_COMMIT" }],
+    precommit_deferred_tasks_digest: digest([{ ...deferred[0], phase: "POST_COMMIT" }]),
+    pending_required_task_ids: [deferredTaskId],
+  };
+  assert.equal(nativeV2ReleaseEffectPendingTaskAllowed(postCommitPending), false,
+    "an unsettled POST_COMMIT task cannot authorize deploy-phase Core Join");
+  assert.equal(nativeV2CoreJoinEvaluationReady({
+    ...releaseEffectEvaluation,
+    native_v2_release_effect_ready: false,
+  }), false);
+  assert.equal(nativeV2CoreJoinEvaluationReady({
+    ...releaseEffectEvaluation,
+    native_v2_work_snapshot_digest: null,
+  }), false, "release authority is bound to the complete Work task set");
+
+  const settledSnapshot = withWorkSnapshotDigest({
+    ...releaseEffectEvaluation.native_v2_work_snapshot,
+    pending_required_task_ids: [],
+    work_missing: [],
+    scope_missing: [
+      `native_v2_precommit_deferred_task_changed:${deferredTaskId}`,
+    ],
+    task_bindings: [{
+      ...releaseEffectEvaluation.native_v2_work_snapshot.task_bindings[0],
+      v2_task_digest: "f".repeat(64),
+      revision: deferred[0].revision + 1,
+      status: "completed",
+      acceptance_verified: true,
+      native_bindings: [],
+    }, releaseEffectEvaluation.native_v2_work_snapshot.task_bindings[1]],
+  });
+  assert.equal(nativeV2PostEffectClosureSatisfied(
+    releaseEffectEvaluation,
+    settledSnapshot,
+  ), true, "the exact settled POST_DEPLOY transition closes the immutable release evaluation");
+  assert.equal(nativeV2PostEffectClosureSatisfied(releaseEffectEvaluation, {
+    ...settledSnapshot,
+    pending_required_task_ids: [ticketTaskId],
+  }), false, "an unrelated pending task remains blocking after the effect");
+  assert.equal(nativeV2PostEffectClosureSatisfied(releaseEffectEvaluation, {
+    ...settledSnapshot,
+    scope_missing: [...settledSnapshot.scope_missing, "native_v2_task_binding_changed:other"],
+  }), false, "only the expected deferred transition may change the frozen scope");
+  assert.equal(nativeV2PostEffectClosureSatisfied(releaseEffectEvaluation, {
+    ...settledSnapshot,
+    task_bindings: [{ ...settledSnapshot.task_bindings[0], revision: 5 }],
+  }), false, "a skipped or replayed task revision is rejected");
+  const unrelatedDrift = withWorkSnapshotDigest({
+    ...settledSnapshot,
+    task_bindings: [settledSnapshot.task_bindings[0], {
+      ...settledSnapshot.task_bindings[1],
+      task_contract_digest: "4".repeat(64),
+    }],
+  });
+  assert.equal(nativeV2PostEffectClosureSatisfied(
+    releaseEffectEvaluation,
+    unrelatedDrift,
+  ), false, "a validly re-digested unrelated completed task drift cannot inherit Core Join");
+});
+
+test("native plan accepts only bounded post-commit or post-deploy declarations", () => {
+  const base = {
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement the bounded change." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify the bounded change.",
+        dependencies: ["build"] },
+    ],
+  };
+  const taskId = "90f5af84-0dea-4afd-82dd-e4a0d010e36b";
+  const plan = buildNativeAgentPlan({
+    ...base,
+    precommit_deferred_v2_tasks: [{ task_id: taskId, phase: "POST_COMMIT" }],
+  });
+  assert.deepEqual(plan.precommit_deferred_v2_tasks,
+    [{ task_id: taskId, phase: "POST_COMMIT" }]);
+  assert.throws(() => buildNativeAgentPlan({
+    ...base,
+    precommit_deferred_v2_tasks: [{ task_id: taskId, phase: "AFTER_RELEASE" }],
+  }), /native_agent_precommit_deferred_task_invalid/);
+  assert.throws(() => buildNativeAgentPlan({
+    ...base,
+    precommit_deferred_v2_tasks: [
+      { task_id: taskId, phase: "POST_COMMIT" },
+      { task_id: taskId, phase: "POST_DEPLOY" },
+    ],
+  }), /native_agent_precommit_deferred_task_invalid/);
 });
 
 test("precommit evidence is deterministic, ordered and rejects extra authority-shaped fields", () => {

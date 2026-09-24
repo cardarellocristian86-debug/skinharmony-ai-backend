@@ -973,8 +973,10 @@ test("ticket reservation rechecks expiry after asynchronous semantic resolution"
   }), /action_ticket_expired/u);
   const readback = await subject.governance.readActionTicket({ tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id });
-  assert.equal(readback.state, "issued");
+  assert.equal(readback.state, "issued_expired");
   assert.equal(readback.uses, 0);
+  assert.ok(readback.lifecycle_digest);
+  assert.ok(readback.lifecycle_signature);
 });
 
 test("ticket issue and reservation timestamps use the post-await clock", async () => {
@@ -1247,6 +1249,8 @@ test("bootstrap receipt is rejected when its authority expires during semantic r
 });
 
 test("host-native work plan has zero provider execution and requires host materialization", () => {
+  const deferredA = "90f5af84-0dea-4afd-82dd-e4a0d010e36b";
+  const deferredB = "78022faf-df6d-4978-8969-8d8132592289";
   const plan = buildHostNativeWorkPlan({
     tenant_id: "codexai",
     work_id: "work-1",
@@ -1255,6 +1259,10 @@ test("host-native work plan has zero provider execution and requires host materi
     objective: "Implement and verify the bounded host-native runtime.",
     required_checks: ["unit-tests"],
     max_parallel: 2,
+    precommit_deferred_v2_tasks: [
+      { task_id: deferredA, phase: "POST_DEPLOY" },
+      { task_id: deferredB, phase: "POST_COMMIT" },
+    ],
     agents: [
       { agent_id: "builder", role: "builder", task: "Implement.", depends_on: [], capabilities: ["workspace_write"] },
       { agent_id: "verifier", role: "verifier", task: "Verify.", depends_on: ["builder"], capabilities: ["workspace_read"] },
@@ -1268,6 +1276,46 @@ test("host-native work plan has zero provider execution and requires host materi
   assert.equal(plan.materialization_status, "planned_not_spawned");
   assert.equal(plan.host_policy_override, false);
   assert.equal(plan.host_policy_must_allow, true);
+  assert.deepEqual(plan.precommit_deferred_v2_tasks, [
+    { task_id: deferredB, phase: "POST_COMMIT" },
+    { task_id: deferredA, phase: "POST_DEPLOY" },
+  ]);
+  assert.equal(plan.precommit_deferred_v2_tasks_digest,
+    hostNativeDigest(plan.precommit_deferred_v2_tasks));
+  for (const taskId of [
+    "01890f5a-f84a-7dea-82dd-e4a0d010e36b",
+    "01890f5a-f84a-8dea-a2dd-e4a0d010e36b",
+  ]) {
+    const versionedPlan = buildHostNativeWorkPlan({
+      tenant_id: "codexai", work_id: "work-versioned-uuid", intent_anchor_digest: H("1"),
+      repository: "owner/repo", objective: "accept canonical UUID versions",
+      required_checks: ["unit-tests"],
+      precommit_deferred_v2_tasks: [{ task_id: taskId, phase: "POST_COMMIT" }],
+      agents: [
+        { agent_id: "builder", role: "builder", task: "Implement.", depends_on: [], capabilities: [] },
+        { agent_id: "verifier", role: "verifier", task: "Verify.", depends_on: ["builder"], capabilities: [] },
+      ],
+    });
+    assert.equal(versionedPlan.precommit_deferred_v2_tasks[0].task_id, taskId);
+  }
+  for (const invalid of [
+    [{ task_id: deferredA, phase: "POST_COMMIT" }, { task_id: deferredA, phase: "POST_DEPLOY" }],
+    [{ task_id: "not-a-uuid", phase: "POST_COMMIT" }],
+    [{ task_id: "01890f5a-f84a-0dea-82dd-e4a0d010e36b", phase: "POST_COMMIT" }],
+    [{ task_id: "01890f5a-f84a-9dea-82dd-e4a0d010e36b", phase: "POST_COMMIT" }],
+    [{ task_id: "01890f5a-f84a-7dea-72dd-e4a0d010e36b", phase: "POST_COMMIT" }],
+    [{ task_id: deferredA, phase: "PRE_COMMIT" }],
+  ]) {
+    assert.throws(() => buildHostNativeWorkPlan({
+      tenant_id: "codexai", work_id: "work-invalid", intent_anchor_digest: H("1"),
+      repository: "owner/repo", objective: "invalid deferral", required_checks: ["unit-tests"],
+      precommit_deferred_v2_tasks: invalid,
+      agents: [
+        { agent_id: "builder", role: "builder", task: "Implement.", depends_on: [], capabilities: [] },
+        { agent_id: "verifier", role: "verifier", task: "Verify.", depends_on: ["builder"], capabilities: [] },
+      ],
+    }), /precommit_deferred_v2_tasks_invalid/);
+  }
   assert.throws(() => buildHostNativeWorkPlan({
     tenant_id: "codexai",
     work_id: "work-1",

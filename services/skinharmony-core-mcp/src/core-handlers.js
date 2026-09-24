@@ -701,6 +701,7 @@ export function createCoreHandlers(config, options = {}) {
   const resolveDttWorkReadBinding = options.resolveDttWorkReadBinding;
   const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
+  const settlePrecommitEffectLifecycle = options.settlePrecommitEffectLifecycle;
   // The MCP handler owns no Work database projection.  The server injects
   // this bounded reader so Control Room progress is calculated from the
   // canonical V2 Work context, not from caller data or a second preflight.
@@ -731,6 +732,23 @@ export function createCoreHandlers(config, options = {}) {
     } finally {
       clearTimeout(timer);
     }
+  }
+  async function settleCoreActionLifecycle(payload, identity, { terminalReadbackRecovery = false } = {}) {
+    const settlementStates = new Set([
+      "reserved", "completed", "reconciliation_required", "reconciled", "quarantined",
+      "observed_unreserved_effect", "issued_expired", "revoked",
+    ]);
+    if (typeof settlePrecommitEffectLifecycle === "function" && payload?.action_ticket &&
+        settlementStates.has(payload.action_ticket.state)) {
+      await settlePrecommitEffectLifecycle(identity, {
+        server_owned: true,
+        settlement_source: terminalReadbackRecovery
+          ? "core_terminal_readback"
+          : "lifecycle_transition",
+        core_record: payload.action_ticket,
+      });
+    }
+    return payload;
   }
   const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
@@ -2178,6 +2196,17 @@ export function createCoreHandlers(config, options = {}) {
     return record;
   }
 
+  async function prepareTrustedHostNativeLifecycle(ticketId, identity, allowedStates) {
+    const record = await trustedHostNativeTicketRecord(ticketId, identity, allowedStates);
+    // Pre-upgrade in-flight tickets may have no local reserved/unknown row.
+    // Persist the authoritative readback before Core can advance the ticket,
+    // so a failed local write leaves the remote lifecycle untouched.
+    await settleCoreActionLifecycle({ action_ticket: record }, identity, {
+      terminalReadbackRecovery: true,
+    });
+    return record;
+  }
+
   function attachTrustedHostNativeTicket(error, record) {
     if (!error || !record) return error;
     Object.defineProperties(error, {
@@ -2732,6 +2761,9 @@ export function createCoreHandlers(config, options = {}) {
           objective: args.objective,
           required_checks: args.required_checks,
           agents: args.agents,
+          ...(args.precommit_deferred_v2_tasks === undefined ? {} : {
+            precommit_deferred_v2_tasks: args.precommit_deferred_v2_tasks,
+          }),
           ...(args.max_parallel === undefined ? {} : { max_parallel: args.max_parallel }),
         },
       }),
@@ -3021,6 +3053,7 @@ export function createCoreHandlers(config, options = {}) {
         body,
         strictTransport: true,
       });
+      await settleCoreActionLifecycle(payload, identity);
       const claim = payload?.github_execution_claim;
       if (!config.standingReleaseAutoCoordinatorEnabled || !claim) {
         return dedicatedCoreTextResult(payload, route);
@@ -3081,6 +3114,7 @@ export function createCoreHandlers(config, options = {}) {
           },
         },
       );
+      await settleCoreActionLifecycle(marker, identity);
 
       let workerResponse;
       let workerPayload;
@@ -3169,6 +3203,7 @@ export function createCoreHandlers(config, options = {}) {
         identity,
         { method: "POST", body: reconcileBody, strictTransport: true },
       );
+      await settleCoreActionLifecycle(reconciliation, identity);
       return dedicatedCoreTextResult({
         ...payload,
         standing_release_auto_coordinator: {
@@ -3188,6 +3223,7 @@ export function createCoreHandlers(config, options = {}) {
         args.work_id,
         args.intent_anchor_digest,
       );
+      await prepareTrustedHostNativeLifecycle(args.ticket_id, identity, ["reserved"]);
       const body = {
         work_id: persistedIntent.work_id,
         intent_anchor_digest: persistedIntent.intent_anchor_digest,
@@ -3211,6 +3247,7 @@ export function createCoreHandlers(config, options = {}) {
         identity,
         { method: "POST", body, strictTransport: true },
       );
+      await settleCoreActionLifecycle(payload, identity);
       return dedicatedCoreTextResult(payload, route);
     },
     host_native_standing_release_run_reconcile: async (args, identity) => {
@@ -3220,6 +3257,9 @@ export function createCoreHandlers(config, options = {}) {
         args.work_id,
         args.intent_anchor_digest,
       );
+      await prepareTrustedHostNativeLifecycle(args.ticket_id, identity, [
+        "reserved", "reconciliation_required",
+      ]);
       const body = {
         work_id: persistedIntent.work_id,
         intent_anchor_digest: persistedIntent.intent_anchor_digest,
@@ -3242,6 +3282,7 @@ export function createCoreHandlers(config, options = {}) {
         identity,
         { method: "POST", body, strictTransport: true },
       );
+      await settleCoreActionLifecycle(payload, identity);
       return dedicatedCoreTextResult(payload, route);
     },
     host_native_standing_release_run_advance: async (args, identity) => {
@@ -3273,6 +3314,9 @@ export function createCoreHandlers(config, options = {}) {
         args.work_id,
         args.intent_anchor_digest,
       );
+      await prepareTrustedHostNativeLifecycle(args.ticket_id, identity, [
+        "reserved", "reconciliation_required",
+      ]);
       const body = {
         work_id: persistedIntent.work_id,
         intent_anchor_digest: persistedIntent.intent_anchor_digest,
@@ -3287,6 +3331,7 @@ export function createCoreHandlers(config, options = {}) {
         body,
         strictTransport: true,
       });
+      await settleCoreActionLifecycle(payload, identity);
       return dedicatedCoreTextResult(payload, route);
     },
     host_native_standing_release_run_cancel: async (args, identity) => {
@@ -3590,33 +3635,57 @@ export function createCoreHandlers(config, options = {}) {
       });
       return dedicatedCoreTextResult(payload, route);
     },
-    host_native_action_read: async (args, identity) => textResult(
-      await coreRequest(
+    host_native_action_read: async (args, identity) => {
+      const payload = await coreRequest(
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
         identity.tenantId,
         { useTenantGateway: true },
-      ),
-    ),
+      );
+      // Historical freezes predate settlement rows. A trusted terminal Core
+      // readback is their idempotent recovery path; issuance alone never
+      // releases the freeze.
+      await settleCoreActionLifecycle(payload, identity, { terminalReadbackRecovery: true });
+      return textResult(payload);
+    },
     host_native_action_reserve: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
-      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
-        method: "POST",
-        useTenantGateway: true,
-        body: {
-          host_session_fingerprint: hostNativeSessionFingerprint(identity),
-          idempotency_key: args.idempotency_key,
-        },
-      }), route);
+      try {
+        const payload = await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            idempotency_key: args.idempotency_key,
+          },
+        });
+        await settleCoreActionLifecycle(payload, identity);
+        return dedicatedCoreTextResult(payload, route);
+      } catch (error) {
+        if (String(error?.code || error?.message || "").includes("action_ticket_expired") &&
+            typeof settlePrecommitEffectLifecycle === "function") {
+          const readback = await coreRequest(
+            `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
+            identity.tenantId,
+            { useTenantGateway: true },
+          );
+          if (readback?.action_ticket?.state !== "issued_expired" ||
+              readback.action_ticket?.ticket?.ticket_id !== args.ticket_id) {
+            throw new Error("precommit_effect_settlement_expired_readback_invalid");
+          }
+          await settleCoreActionLifecycle(readback, identity);
+        }
+        throw error;
+      }
     },
     host_native_action_complete: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/complete`;
-      const ticketRecord = await trustedHostNativeTicketRecord(
+      const ticketRecord = await prepareTrustedHostNativeLifecycle(
         args.ticket_id,
         identity,
         ["reserved"],
       );
       try {
-        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        const payload = await coreRequest(route, identity.tenantId, {
           method: "POST",
           useTenantGateway: true,
           body: {
@@ -3631,20 +3700,22 @@ export function createCoreHandlers(config, options = {}) {
               : { result_pull_request: args.result_pull_request }),
             ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
           },
-        }), route);
+        });
+        await settleCoreActionLifecycle(payload, identity);
+        return dedicatedCoreTextResult(payload, route);
       } catch (error) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }
     },
     host_native_action_reconcile: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reconcile`;
-      const ticketRecord = await trustedHostNativeTicketRecord(
+      const ticketRecord = await prepareTrustedHostNativeLifecycle(
         args.ticket_id,
         identity,
         ["reserved", "reconciliation_required"],
       );
       try {
-        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        const payload = await coreRequest(route, identity.tenantId, {
           method: "POST",
           useTenantGateway: true,
           body: {
@@ -3658,20 +3729,22 @@ export function createCoreHandlers(config, options = {}) {
               ? {}
               : { observed_pull_request: args.observed_pull_request }),
           },
-        }), route);
+        });
+        await settleCoreActionLifecycle(payload, identity);
+        return dedicatedCoreTextResult(payload, route);
       } catch (error) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }
     },
     host_native_action_quarantine_expired: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/quarantine-expired`;
-      const ticketRecord = await trustedHostNativeTicketRecord(
+      const ticketRecord = await prepareTrustedHostNativeLifecycle(
         args.ticket_id,
         identity,
         ["reserved", "reconciliation_required"],
       );
       try {
-        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        const payload = await coreRequest(route, identity.tenantId, {
           method: "POST",
           useTenantGateway: true,
           body: {
@@ -3680,7 +3753,9 @@ export function createCoreHandlers(config, options = {}) {
             readback_digest: args.readback_digest,
             idempotency_key: args.idempotency_key,
           },
-        }), route);
+        });
+        await settleCoreActionLifecycle(payload, identity);
+        return dedicatedCoreTextResult(payload, route);
       } catch (error) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }
@@ -3689,7 +3764,7 @@ export function createCoreHandlers(config, options = {}) {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/observe-unreserved`;
       const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity, ["issued"]);
       try {
-        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        const payload = await coreRequest(route, identity.tenantId, {
           method: "POST",
           useTenantGateway: true,
           body: {
@@ -3701,7 +3776,9 @@ export function createCoreHandlers(config, options = {}) {
             deviation_reason: args.deviation_reason,
             idempotency_key: args.idempotency_key,
           },
-        }), route);
+        });
+        await settleCoreActionLifecycle(payload, identity);
+        return dedicatedCoreTextResult(payload, route);
       } catch (error) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }

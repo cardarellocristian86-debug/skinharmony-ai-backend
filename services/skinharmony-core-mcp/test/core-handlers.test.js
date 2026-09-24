@@ -1194,6 +1194,7 @@ test("Entity 360 SHADOW disable is owner-bound, tenant-gateway-only and hardcode
 
 test("binds host-native delegation and action routes to OAuth owner and server presence", async () => {
   const calls = [];
+  const settlements = [];
   let ticketReadCount = 0;
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
@@ -1206,6 +1207,10 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     godModeCodexEnabled: true,
     godModeEmergencyStop: false,
   }, {
+    settlePrecommitEffectLifecycle: async (identity, input) => {
+      await Promise.resolve();
+      settlements.push({ tenant_id: identity.tenantId, input });
+    },
     fetchImpl: async (url, init) => {
       const path = new URL(url).pathname;
       calls.push({
@@ -1264,9 +1269,19 @@ test("binds host-native delegation and action routes to OAuth owner and server p
           headers: { "content-type": "application/json" },
         });
       }
+      const lifecycleState = path.endsWith("/reserve")
+        ? "reserved"
+        : path.endsWith("/complete")
+          ? "completed"
+          : path.endsWith("/reconcile")
+            ? "reconciled"
+            : path.endsWith("/quarantine-expired")
+              ? "quarantined"
+              : null;
       return new Response(JSON.stringify({
         ok: true,
         action_ticket: {
+          ...(lifecycleState ? { state: lifecycleState } : {}),
           ticket: {
             ticket_id: "hnt_ticket-12345678",
           },
@@ -1399,6 +1414,23 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[4].body.result_commit, "c".repeat(40));
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
   assert.equal(calls[8].body.host_session_fingerprint, "a".repeat(64));
+  assert.equal(settlements.length, 7);
+  assert(settlements.every((entry) => entry.tenant_id === "tenant-a"));
+  assert(settlements.every((entry) => entry.input.server_owned === true));
+  assert(settlements.every((entry) =>
+    entry.input.core_record.ticket.ticket_id === "hnt_ticket-12345678"));
+  assert.deepEqual(settlements.map((entry) => [
+    entry.input.settlement_source,
+    entry.input.core_record.state,
+  ]), [
+    ["lifecycle_transition", "reserved"],
+    ["core_terminal_readback", "reserved"],
+    ["lifecycle_transition", "completed"],
+    ["core_terminal_readback", "reconciliation_required"],
+    ["lifecycle_transition", "reconciled"],
+    ["core_terminal_readback", "reconciliation_required"],
+    ["lifecycle_transition", "quarantined"],
+  ]);
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
   assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
   assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
@@ -1519,6 +1551,56 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     /host_native_owner_context_signing_unavailable/,
   );
   assert.equal(missingOwnerSecretCalled, false);
+});
+
+test("settles an atomically issued-expired ticket before returning the reserve denial", async () => {
+  const ticketId = "hnt_expired-ticket-12345678";
+  const calls = [];
+  const settlements = [];
+  const coreRecord = {
+    state: "issued_expired",
+    uses: 0,
+    reservation_id: null,
+    ticket: { ticket_id: ticketId },
+  };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    settlePrecommitEffectLifecycle: async (identity, input) => {
+      await Promise.resolve();
+      settlements.push({ tenant_id: identity.tenantId, input });
+    },
+    fetchImpl: async (url, init) => {
+      const request = { path: new URL(url).pathname, method: init.method };
+      calls.push(request);
+      if (init.method === "POST") {
+        return new Response(JSON.stringify({ ok: false, error: "action_ticket_expired" }), {
+          status: 409, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, action_ticket: coreRecord }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await assert.rejects(handlers.host_native_action_reserve({ ticket_id: ticketId }, {
+    tenantId: "tenant-a",
+    agentPresence: { client_type: "codex", session_fingerprint: "a".repeat(64) },
+  }), (error) => error.code === "action_ticket_expired");
+  assert.deepEqual(calls, [
+    { path: `/v1/host-native/actions/${ticketId}/reserve`, method: "POST" },
+    { path: `/v1/host-native/actions/${ticketId}`, method: "GET" },
+  ]);
+  assert.deepEqual(settlements, [{
+    tenant_id: "tenant-a",
+    input: {
+      server_owned: true,
+      settlement_source: "lifecycle_transition",
+      core_record: coreRecord,
+    },
+  }]);
 });
 
 test("validates the real host-native ticket readback shape fail-closed", async () => {

@@ -74,6 +74,12 @@ function initialSeedDigest(value, code) {
   return normalized;
 }
 
+function initialSeedTimestamp(value, code) {
+  const milliseconds = Date.parse(String(value || ""));
+  if (!Number.isFinite(milliseconds)) throw migrationError(code);
+  return new Date(milliseconds).toISOString();
+}
+
 function initialWorkGovernanceSeedPayload(record) {
   return Object.freeze({
     schema_version: ICF_INITIAL_WORK_GOVERNANCE_SEED_SCHEMA,
@@ -398,6 +404,16 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
           digest_contract: ICF_EVENT_DIGEST_CONTRACT_V2,
           payload_digest: null };
       }
+      // The Entity360 reader opens a new repeatable-read transaction after
+      // this one commits.  Return a database-owned cut sampled after the seed
+      // write/readback, otherwise an application clock sampled before this
+      // transaction can make the seed look temporally future and leave the
+      // first snapshot permanently INCOMPLETE.
+      const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at");
+      const consistentCutAt = initialSeedTimestamp(
+        cut.rows[0]?.consistent_cut_at,
+        "icf_initial_seed_consistent_cut_invalid",
+      );
       await client.query("COMMIT");
       audit?.append?.("icf_initial_work_governance_seed_verified", {
         tenant_id: tenant, work_id: canonicalWorkId, causal_work_id: causalWorkId,
@@ -413,6 +429,7 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
         icf_version: result.seq,
         ledger_head_digest: result.digest,
         seed_payload_digest: icfEventPayloadDigestV2(payload),
+        consistent_cut_at: consistentCutAt,
       });
     } catch (error) {
       try { await client.query("ROLLBACK"); } catch { /* preserve the governing error */ }

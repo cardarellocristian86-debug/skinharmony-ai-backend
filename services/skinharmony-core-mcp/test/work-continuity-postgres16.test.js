@@ -556,6 +556,24 @@ function release() {
   };
 }
 
+async function materializeFixtureCausalLineage(store, identity, workId, fixture) {
+  // These integration fixtures create or project a Work below the server
+  // bootstrap boundary. Materialize the canonical state transition (and its
+  // durable event) before exercising a guarded mutation.
+  const lineage = await store.recordCausalLineageState(identity, {
+    work_id: workId,
+    state: "READY",
+    lineage_digest: digest({
+      schema_version: "postgres16_fixture_causal_lineage_v1",
+      work_id: workId,
+      fixture,
+    }),
+  });
+  assert.equal(lineage.state, "READY");
+  assert.match(lineage.lineage_digest, /^[a-f0-9]{64}$/);
+  return lineage;
+}
+
 test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable provenance", {
   skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
 }, async () => {
@@ -600,6 +618,8 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     };
     const firstWork = await runtime.ensure(coordinator, initial, { creationAuthorized: true });
     await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: firstWork.work_id });
+    await materializeFixtureCausalLineage(v2Store, bridgeOwner, firstWork.work_id,
+      "governed-continuity-fabric");
     // The server-owned plan resolver must bind the next required V2 task
     // before either builder or verifier can report. The host supplies no V2
     // task id and cannot infer or substitute one from a title.
@@ -1507,6 +1527,8 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     // its historical evidence hash on upgrade. It may attest only a V2 task
     // that was already completed; it cannot use the new planned-task shortcut.
     await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: secondWork.work_id });
+    await materializeFixtureCausalLineage(v2Store, bridgeOwner, secondWork.work_id,
+      "legacy-native-verifier-bridge");
     const legacyTaskId = crypto.randomUUID();
     await v2Store.recordTask(bridgeOwner, {
       work_id: secondWork.work_id,
@@ -2117,6 +2139,8 @@ test("PostgreSQL 16 reconciles stale Gallery Work with typed status parameters a
     const successor = await createLegacyWork("successor");
     for (const work of [supersedeSource, cancelSource, successor]) {
       await v2Store.projectLegacyWork(owner, { legacy_work_id: work.work_id });
+      await materializeFixtureCausalLineage(v2Store, owner, work.work_id,
+        `stale-gallery-${work.work_id}`);
     }
     const sourceIds = [supersedeSource.work_id, cancelSource.work_id];
     await pool.query(`UPDATE core_continuity_works SET updated_at=now()-interval '3 days'

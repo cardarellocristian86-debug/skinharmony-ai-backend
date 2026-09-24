@@ -184,6 +184,44 @@ function actionKindAllowed(actionClass, kind) {
   return ACTION_KIND_BY_CLASS[actionClass]?.has(String(kind || "")) === true;
 }
 
+function validNativeDeferredGateFields(gate) {
+  const hasTasks = Object.prototype.hasOwnProperty.call(gate || {}, "deferred_tasks");
+  const hasDigest = Object.prototype.hasOwnProperty.call(gate || {}, "deferred_tasks_digest");
+  if (hasTasks !== hasDigest) return false;
+  if (!hasTasks) return true;
+  if (!Array.isArray(gate.deferred_tasks) || gate.deferred_tasks.length > 64) return false;
+  const ids = new Set();
+  for (const task of gate.deferred_tasks) {
+    if (!task || typeof task !== "object" || Array.isArray(task) ||
+        Object.keys(task).sort().join("\0") !== [
+          "acceptance_verified", "phase", "required", "revision", "schema_version",
+          "status", "task_id", "v2_task_digest", "task_contract_digest",
+          "task_contract_revision", "dependency_manifest_digest", "dependency_manifest_revision",
+        ].sort().join("\0") ||
+        task.schema_version !== "native_plan_precommit_deferred_v2_task_v1" ||
+        !/^[a-f0-9-]{36}$/.test(String(task.task_id || "")) || ids.has(task.task_id) ||
+        !SHA256.test(String(task.v2_task_digest || "")) ||
+        !Number.isSafeInteger(task.revision) || task.revision < 1 ||
+        !((task.task_contract_digest === null && task.task_contract_revision === null) ||
+          (SHA256.test(String(task.task_contract_digest || "")) &&
+            Number.isSafeInteger(task.task_contract_revision) && task.task_contract_revision >= 1)) ||
+        !((task.dependency_manifest_digest === null && task.dependency_manifest_revision === null) ||
+          (SHA256.test(String(task.dependency_manifest_digest || "")) &&
+            Number.isSafeInteger(task.dependency_manifest_revision) &&
+            task.dependency_manifest_revision >= 1)) ||
+        task.required !== true || task.status !== "planned" ||
+        task.acceptance_verified !== false ||
+        !["POST_COMMIT", "POST_DEPLOY"].includes(task.phase)) return false;
+    ids.add(task.task_id);
+  }
+  if (gate.deferred_tasks.some((task) =>
+    (gate.v2_scope_tasks || []).some((scope) => scope.task_id === task.task_id))) return false;
+  return gate.deferred_tasks.length > 0
+    ? SHA256.test(String(gate.deferred_tasks_digest || "")) &&
+      digest(gate.deferred_tasks) === gate.deferred_tasks_digest
+    : gate.deferred_tasks_digest === null;
+}
+
 export function commitPrecommitGate(context, payload, request) {
   const gate = context?.precommit_ticket_gate;
   const hashes = [
@@ -201,7 +239,8 @@ export function commitPrecommitGate(context, payload, request) {
     "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
     "supersession_digest", "reconciliation_digest", "v2_scope_snapshot_digest", "v2_scope_tasks", "legacy_evidence_ids",
     "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
-    "projection_digest",
+    ...(Object.prototype.hasOwnProperty.call(gate || {}, "deferred_tasks")
+      ? ["deferred_tasks", "deferred_tasks_digest"] : []), "projection_digest",
   ];
   const nativeExact = nativeGate &&
     Object.keys(gate).sort().join("\0") === nativeFields.sort().join("\0");
@@ -215,7 +254,8 @@ export function commitPrecommitGate(context, payload, request) {
       !Array.isArray(gate.legacy_evidence_ids) ||
       !Array.isArray(gate.replacement_evidence_ids) ||
       (legacyGate && (gate.legacy_evidence_ids.length < 1 || gate.replacement_evidence_ids.length < 1)) ||
-      (nativeGate && (!nativeExact || !SHA256.test(String(gate.v2_scope_snapshot_digest || "")) ||
+      (nativeGate && (!nativeExact || !validNativeDeferredGateFields(gate) ||
+        !SHA256.test(String(gate.v2_scope_snapshot_digest || "")) ||
         !Array.isArray(gate.v2_scope_tasks) || gate.legacy_evidence_ids.length !== 0 ||
         gate.replacement_evidence_ids.length !== 0 || digest(nativeProjection) !== nativeProjectionDigest)) ||
       request?.evidence_digest !== gate.projection_digest ||
@@ -232,7 +272,8 @@ export function fulfilledCommitPrecommitGate(context, payload, request) {
     "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
     "supersession_digest", "reconciliation_digest", "v2_scope_snapshot_digest", "v2_scope_tasks", "legacy_evidence_ids",
     "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
-    "projection_digest",
+    ...(Object.prototype.hasOwnProperty.call(gate || {}, "deferred_tasks")
+      ? ["deferred_tasks", "deferred_tasks_digest"] : []), "projection_digest",
   ];
   const { projection_digest: projectionDigest, ...projection } = gate || {};
   const originalProjection = { ...projection, fulfilled: false, ticket_id: null };
@@ -249,6 +290,7 @@ export function fulfilledCommitPrecommitGate(context, payload, request) {
         gate.v2_scope_snapshot_digest,
         gate.reconciliation_digest, projectionDigest].some((value) => !SHA256.test(String(value || ""))) ||
       !Array.isArray(gate.v2_scope_tasks) ||
+      !validNativeDeferredGateFields(gate) ||
       !Array.isArray(gate.legacy_evidence_ids) || gate.legacy_evidence_ids.length !== 0 ||
       !Array.isArray(gate.replacement_evidence_ids) || gate.replacement_evidence_ids.length !== 0 ||
       !Array.isArray(gate.drift_codes) || gate.drift_codes.length !== 0 ||

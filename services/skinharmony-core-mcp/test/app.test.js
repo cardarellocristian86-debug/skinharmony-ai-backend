@@ -1165,7 +1165,10 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(queueHandler, /tenantWorkCoordinationTarget\("tenant_work_queue_create_v3", request\)/);
   assert.match(queueHandler, /queueNewWork\([\s\S]{0,80}withTenantWorkAcl\(identity\), request/);
   assert.match(queueHandler, /reconcileCanonicalWorkCausalLineage\(identity, queued\.work\)/);
-  assert.match(queueHandler, /work_ready: causalLineage\.state === "READY"/);
+  assert.match(queueHandler, /bootstrapCanonicalWorkEntity360Context\(identity, queued\.work\)/,
+    "queued Work creation must use the same initial Entity360 context bridge");
+  assert.match(queueHandler, /entity360_context: entity360Context/);
+  assert.match(queueHandler, /canonicalWorkEntity360ContextReady\(entity360Context\)/);
   const createStart = serverSource.indexOf("async function createCanonicalWorkGoverned");
   const createEnd = serverSource.indexOf("async function readNyraDirectiveContext", createStart);
   const createHandler = serverSource.slice(createStart, createEnd);
@@ -1174,6 +1177,36 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
     createHandler.indexOf("const coreDecision = await requireOwnerGovernance"));
   assert.match(createHandler, /attachNyraWorkOrchestration\(identity, persisted, "work_created_replay"\)/);
   assert.match(createHandler, /attachNyraWorkOrchestration\(identity, result, "work_created"\)/);
+  assert.equal((createHandler.match(/bootstrapCanonicalWorkEntity360Context\(/gu) || []).length, 2,
+    "new Work creation and durable replay must both materialize initial Entity360 context");
+  assert.match(createHandler, /entity360_context: entity360Context/);
+  assert.doesNotMatch(createHandler,
+    /work_ready: causalLineage\.state === "READY"\s*[,}]/u,
+    "causal lineage alone cannot advertise an operationally ready Work");
+  const entityBootstrapStart = serverSource.indexOf(
+    "async function bootstrapCanonicalWorkEntity360Context",
+  );
+  const entityBootstrapEnd = serverSource.indexOf(
+    "function canonicalWorkEntity360ContextReady",
+    entityBootstrapStart,
+  );
+  const entityBootstrap = serverSource.slice(entityBootstrapStart, entityBootstrapEnd);
+  assert.match(entityBootstrap, /entity_360_policy_read/);
+  assert.match(entityBootstrap, /featureFlag\.mode !== "ENFORCED"/);
+  assert.match(entityBootstrap, /state: "NOT_REQUIRED"/,
+    "OFF and SHADOW tenants must retain compatible Work creation");
+  assert.match(entityBootstrap, /entity_360_work_snapshot_bootstrap/,
+    "ENFORCED tenants must materialize context before readiness");
+  assert.ok(entityBootstrap.indexOf("entity_360_resolve") <
+    entityBootstrap.indexOf("entity_360_snapshot_latest"));
+  assert.ok(entityBootstrap.indexOf("entity_360_snapshot_latest") <
+    entityBootstrap.indexOf("entity_360_snapshot_verify"));
+  assert.ok(entityBootstrap.indexOf("entity_360_snapshot_verify") <
+    entityBootstrap.indexOf("entity_360_work_snapshot_bootstrap"),
+  "an existing valid snapshot must be read and verified before initial bootstrap");
+  assert.match(entityBootstrap, /source: "existing_verified"/);
+  assert.match(entityBootstrap, /error\?\.code !== "entity360_snapshot_not_found"/,
+    "only exact not-found may fall through to the initial bootstrap");
   assert.match(createHandler, /route: "durable_work_bootstrap_readback"/);
   assert.match(createHandler, /authorized: false/);
   const causalBootstrap = createHandler.indexOf("await ensureCanonicalWorkProjectDecisionPath");
@@ -1183,7 +1216,7 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
     "a valid review must precede causal bootstrap, which must precede V2 Work persistence");
 });
 
-test("a governed mutating resume repairs pending canonical causal lineage before continuing", () => {
+test("a governed mutating resume repairs causal lineage and Entity360 before continuing", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const recoveryStart = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
   const recoveryEnd = serverSource.indexOf("async function createCanonicalWorkGoverned", recoveryStart);
@@ -1200,6 +1233,12 @@ test("a governed mutating resume repairs pending canonical causal lineage before
   assert.match(handler, /reconciliation\.state !== "READY"/);
   assert.match(handler, /context = await workContinuityV2Store\.readWork/);
   assert.match(handler, /canonical_work_causal_lineage_pending/);
+  assert.match(handler,
+    /entity360Context = await bootstrapCanonicalWorkEntity360Context\([\s\S]*identity,[\s\S]*context\.work/,
+    "mutating recovery must ensure the initial Entity360 snapshot idempotently");
+  assert.match(handler, /canonicalWorkEntity360ContextReady\(entity360Context\)/);
+  assert.match(handler, /canonical_work_entity360_context_pending/);
+  assert.match(handler, /entity360_context: entity360Context/);
 });
 
 test("every Work-bound dynamic mutation repairs pending causal lineage after presence and Airlock but before preflight or handler", () => {

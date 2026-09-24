@@ -687,12 +687,14 @@ test("causal event observation claims are deterministic under read replay", asyn
   }
 });
 
-test("causal event evidence becomes stale at the event-ledger freshness boundary", async () => {
+test("causal event evidence remains historical beyond the event-ledger freshness boundary", async () => {
   const asOf = "2026-08-25T11:00:00.001Z";
   const assembled = await assembleWork(workRows, asOf);
   const snapshot = snapshotFor(assembled, asOf, {});
-  assert.ok(snapshot.stale_state_references.some((item) =>
+  assert.ok(snapshot.historical_state_references.some((item) =>
     item.fact_id === "work.event_ledger_head"));
+  assert.equal(snapshot.stale_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"), false);
   assert.equal(Object.hasOwn(snapshot.current_state, "work.event_ledger_head"), false);
 });
 

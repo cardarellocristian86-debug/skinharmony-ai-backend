@@ -968,7 +968,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       || !String(receipt.causal_work_id || "").trim()
       || !Number.isSafeInteger(Number(receipt.icf_version)) || Number(receipt.icf_version) < 1
       || !/^[a-f0-9]{64}$/u.test(String(receipt.ledger_head_digest || ""))
-      || !/^[a-f0-9]{64}$/u.test(String(receipt.seed_payload_digest || ""))) {
+      || !/^[a-f0-9]{64}$/u.test(String(receipt.seed_payload_digest || ""))
+      || !Number.isFinite(Date.parse(String(receipt.consistent_cut_at || "")))) {
       fail("entity360_initial_icf_seed_readback_invalid", 503);
     }
     return Object.freeze({
@@ -977,6 +978,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       icf_version: Number(receipt.icf_version),
       ledger_head_digest: receipt.ledger_head_digest,
       seed_payload_digest: receipt.seed_payload_digest,
+      consistent_cut_at: new Date(Date.parse(receipt.consistent_cut_at)).toISOString(),
     });
   }
 
@@ -992,11 +994,11 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       "entity360_expected_revision_required");
     if (expectedRevision !== 0) fail("entity360_bootstrap_revision_invalid", 409);
     const requestedAsOf = timestamp(input.as_of, null, "entity360_as_of_invalid");
-    const asOf = new Date(now()).toISOString();
     const idempotencyKey = text(input.idempotency_key,
       "entity360_idempotency_key_required", 240);
     const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
     const initialIcfSeed = await initialIcfSeedForWork(identity, workId);
+    const asOf = initialIcfSeed.consistent_cut_at;
     const assemblyInput = {
       work_id: workId,
       entity_type: "work",

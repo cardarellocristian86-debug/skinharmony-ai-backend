@@ -106,6 +106,14 @@ test("completed V2 task revalidation is limited to one exact stale native gate l
             q.includes("task_id=$3")) {
           return { rows: [{ ...task, task_id: candidate }], rowCount: 1 };
         }
+        if (q.startsWith("SELECT t.task_id,t.title,t.weight,t.required,t.status,t.acceptance_verified,t.revision,") &&
+            q.includes("task_id=ANY($3::uuid[])")) {
+          return { rows: parameters[2].includes(candidate)
+            ? [{ ...task, task_id: candidate, task_contract_digest: null,
+                task_contract_revision: null, dependency_manifest_digest: null,
+                dependency_manifest_revision: null }]
+            : [], rowCount: parameters[2].includes(candidate) ? 1 : 0 };
+        }
         if (q.startsWith("SELECT work_id,work_type FROM tenant_work")) {
           return { rows: [{ work_id: workId, work_type: "software_git" }], rowCount: 1 };
         }

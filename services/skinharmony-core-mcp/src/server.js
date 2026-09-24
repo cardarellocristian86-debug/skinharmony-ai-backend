@@ -581,6 +581,11 @@ async function resolveGenericWorkCoreJoinBinding(identity, workId) {
 }
 
 const coreHandlers = createCoreHandlers(config, {
+  settlePrecommitEffectLifecycle: workContinuityV2Store
+    ? (identity, input) => workContinuityV2Store.settlePrecommitEffectLifecycle(
+      withTenantWorkAcl(identity), input,
+    )
+    : null,
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
   decisionLedger,
@@ -1293,6 +1298,7 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
           depends_on: task.dependencies || [],
           capabilities: [],
         })),
+        precommit_deferred_v2_tasks: request.precommit_deferred_v2_tasks || [],
         max_parallel: request.max_parallel,
       }, identity);
       const corePlan = corePlanResult?.structuredContent?.plan;
@@ -1881,6 +1887,169 @@ async function reconcileCanonicalWorkCausalLineage(identity, work) {
   }
 }
 
+async function bootstrapCanonicalWorkEntity360Context(identity, work) {
+  const workId = String(work?.work_id || "").trim().toLowerCase();
+  const createdAtMilliseconds = Date.parse(String(work?.created_at || ""));
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+    .test(workId) || !Number.isFinite(createdAtMilliseconds)) {
+    const error = new Error("entity360_work_bootstrap_source_invalid");
+    error.code = "entity360_work_bootstrap_source_invalid";
+    error.status = 503;
+    throw error;
+  }
+  const policyResponse = await entity360Handlers.entity_360_policy_read({
+    work_id: workId,
+  }, identity);
+  const policyPayload = policyResponse?.structuredContent;
+  const policyReadback = policyPayload?.result;
+  const featureFlag = policyReadback?.feature_flag;
+  if (policyPayload?.ok !== true
+    || policyReadback?.schema_version !== "entity_360_policy_read_v1"
+    || policyReadback?.tenant_scope !== identity.tenantId
+    || policyReadback?.execution_authorized !== false
+    || !["OFF", "SHADOW", "ENFORCED"].includes(featureFlag?.mode)
+    || typeof featureFlag?.enabled !== "boolean"
+    || !Number.isSafeInteger(Number(featureFlag?.revision))
+    || Number(featureFlag.revision) < 0
+    || (featureFlag.mode === "OFF" && featureFlag.enabled !== false)
+    || (featureFlag.mode !== "OFF" && featureFlag.enabled !== true)) {
+    const error = new Error("entity360_work_policy_readback_invalid");
+    error.code = "entity360_work_policy_readback_invalid";
+    error.status = 503;
+    throw error;
+  }
+  if (featureFlag.mode !== "ENFORCED") {
+    return Object.freeze({
+      schema_version: "canonical_work_entity360_context_v1",
+      state: "NOT_REQUIRED",
+      work_id: workId,
+      feature_mode: featureFlag.mode,
+      feature_revision: Number(featureFlag.revision),
+      execution_authorized: false,
+    });
+  }
+  const resolutionResponse = await entity360Handlers.entity_360_resolve({
+    work_id: workId,
+    entity_type: "work",
+    identity: { work_id: workId },
+  }, identity);
+  const resolutionPayload = resolutionResponse?.structuredContent;
+  const resolution = resolutionPayload?.result;
+  if (resolutionPayload?.ok !== true ||
+      !["RESOLVED", "UNRESOLVED"].includes(resolution?.status)) {
+    const error = new Error("entity360_work_resolution_readback_invalid");
+    error.code = "entity360_work_resolution_readback_invalid";
+    error.status = 503;
+    throw error;
+  }
+  if (resolution.status === "RESOLVED") {
+    const entityId = String(resolution.entity_id || "");
+    if (!/^e360_[a-f0-9]{48}$/u.test(entityId)) {
+      const error = new Error("entity360_work_resolution_readback_invalid");
+      error.code = "entity360_work_resolution_readback_invalid";
+      error.status = 503;
+      throw error;
+    }
+    let latestResponse = null;
+    try {
+      latestResponse = await entity360Handlers.entity_360_snapshot_latest({
+        work_id: workId,
+        entity_id: entityId,
+      }, identity);
+    } catch (error) {
+      if (error?.code !== "entity360_snapshot_not_found" &&
+          !String(error?.message || "").includes("entity360_snapshot_not_found")) throw error;
+    }
+    if (latestResponse) {
+      const latestPayload = latestResponse.structuredContent;
+      const snapshot = latestPayload?.result;
+      const workBindings = [snapshot?.project_work_linkage?.work_id,
+        snapshot?.project_work_linkage?.legacy_work_id]
+        .filter(Boolean).map((candidate) => String(candidate).trim().toLowerCase());
+      if (latestPayload?.ok !== true || snapshot?.tenant_scope !== identity.tenantId ||
+          snapshot?.entity_id !== entityId || snapshot?.entity_type !== "work" ||
+          !workBindings.includes(workId) || snapshot?.context_status !== "READY" ||
+          !Number.isSafeInteger(Number(snapshot?.snapshot_version)) ||
+          Number(snapshot.snapshot_version) < 1 ||
+          !/^[a-f0-9]{64}$/u.test(String(snapshot?.deterministic_immutable_digest || "")) ||
+          snapshot?.execution_authorized !== false ||
+          snapshot?.production_decision_mutation !== false) {
+        const error = new Error("entity360_work_snapshot_readback_invalid");
+        error.code = "entity360_work_snapshot_readback_invalid";
+        error.status = 503;
+        throw error;
+      }
+      const verificationResponse = await entity360Handlers.entity_360_snapshot_verify({
+        work_id: workId,
+        entity_id: entityId,
+        snapshot_version: Number(snapshot.snapshot_version),
+        snapshot_digest: snapshot.deterministic_immutable_digest,
+      }, identity);
+      const verificationPayload = verificationResponse?.structuredContent;
+      const verification = verificationPayload?.result;
+      if (verificationPayload?.ok !== true || verification?.valid !== true ||
+          verification?.tenant_scope !== identity.tenantId ||
+          verification?.snapshot_digest !== snapshot.deterministic_immutable_digest ||
+          verification?.independently_recomputed_by !==
+            "universal_core_entity360_verifier") {
+        const error = new Error("entity360_work_snapshot_verification_invalid");
+        error.code = "entity360_work_snapshot_verification_invalid";
+        error.status = 409;
+        throw error;
+      }
+      return Object.freeze({
+        schema_version: "canonical_work_entity360_context_v1",
+        state: "READY",
+        source: "existing_verified",
+        work_id: workId,
+        entity_id: entityId,
+        snapshot_version: Number(snapshot.snapshot_version),
+        snapshot_digest: snapshot.deterministic_immutable_digest,
+        verification_digest: crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical(verification))).digest("hex"),
+        execution_authorized: false,
+      });
+    }
+  }
+  const response = await entity360Handlers.entity_360_work_snapshot_bootstrap({
+    work_id: workId,
+    // The request cut is stable replay material only. Universal Core replaces
+    // it with the database-owned post-ICF cut before assembling the snapshot.
+    as_of: new Date(createdAtMilliseconds).toISOString(),
+    expected_revision: 0,
+    idempotency_key: `entity360-initial-work-${workId}`,
+  }, identity);
+  const payload = response?.structuredContent;
+  const context = payload?.result?.entity_360_nyra_context;
+  const gate = payload?.dedicated_core_gate;
+  if (payload?.ok !== true || context?.state !== "READY_CONTEXT_ONLY"
+    || context?.execution_authorized !== false
+    || gate?.authorized !== true || gate?.authority !== "universal_core"
+    || gate?.route !== "entity_360_work_snapshot_bootstrap"
+    || gate?.work_id !== workId || gate?.context_only !== true
+    || gate?.execution_authorized !== false || gate?.provider_execution !== false) {
+    const error = new Error("entity360_work_bootstrap_readback_invalid");
+    error.code = "entity360_work_bootstrap_readback_invalid";
+    error.status = 503;
+    throw error;
+  }
+  return Object.freeze({
+    schema_version: "canonical_work_entity360_context_v1",
+    state: "READY",
+    source: "initial_bootstrap",
+    work_id: workId,
+    entity_id: gate.entity_id,
+    snapshot_version: gate.snapshot_version,
+    snapshot_digest: gate.snapshot_digest,
+    gate_digest: gate.gate_digest,
+    execution_authorized: false,
+  });
+}
+
+function canonicalWorkEntity360ContextReady(context) {
+  return context?.state === "READY" || context?.state === "NOT_REQUIRED";
+}
+
 async function createCanonicalWorkGoverned(args, identity) {
   if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
   requireHostWorkCreateCapability(identity);
@@ -1919,6 +2088,9 @@ async function createCanonicalWorkGoverned(args, identity) {
         throw error;
       }
       const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, persisted.work);
+      const entity360Context = causalLineage.state === "READY"
+        ? await bootstrapCanonicalWorkEntity360Context(identity, persisted.work)
+        : null;
       return continuityTextResult({
         ok: true,
         result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
@@ -1926,8 +2098,11 @@ async function createCanonicalWorkGoverned(args, identity) {
         core_authorization_receipt: null,
         core_authorization_attempt_receipt: null,
         causal_lineage: causalLineage,
-        work_ready: causalLineage.state === "READY",
-        continuation_allowed: causalLineage.state === "READY",
+        entity360_context: entity360Context,
+        work_ready: causalLineage.state === "READY" &&
+          canonicalWorkEntity360ContextReady(entity360Context),
+        continuation_allowed: causalLineage.state === "READY" &&
+          canonicalWorkEntity360ContextReady(entity360Context),
         dedicated_core_gate: {
           authorized: false,
           authority: "universal_core",
@@ -1990,6 +2165,9 @@ async function createCanonicalWorkGoverned(args, identity) {
   // The Work store remains the canonical source of every identifier/material;
   // exact retries repair a missing lineage idempotently before returning.
   const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, result.work);
+  const entity360Context = causalLineage.state === "READY"
+    ? await bootstrapCanonicalWorkEntity360Context(identity, result.work)
+    : null;
   const attemptMaterial = {
     schema_version: "work_bootstrap_core_authorization_attempt_v1",
     authority: "universal_core",
@@ -2013,8 +2191,11 @@ async function createCanonicalWorkGoverned(args, identity) {
     core_authorization_receipt: result.core_authorization_receipt,
     core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt,
     causal_lineage: causalLineage,
-    work_ready: causalLineage.state === "READY",
-    continuation_allowed: causalLineage.state === "READY",
+    entity360_context: entity360Context,
+    work_ready: causalLineage.state === "READY" &&
+      canonicalWorkEntity360ContextReady(entity360Context),
+    continuation_allowed: causalLineage.state === "READY" &&
+      canonicalWorkEntity360ContextReady(entity360Context),
     dedicated_core_gate: {
       authorized: true,
       authority: "universal_core",
@@ -2050,6 +2231,23 @@ async function readNyraDirectiveContext(identity, args) {
         throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
       }
     }
+    let entity360Context = null;
+    if (args.read_only !== true) {
+      if (context?.work?.causal_lineage_state !== "READY") {
+        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      }
+      // Mutating resume is also the idempotent recovery boundary for Work
+      // created while Entity360 was unavailable. ENFORCED tenants must have
+      // their initial snapshot before any consequential continuation;
+      // OFF/SHADOW are explicitly acknowledged as NOT_REQUIRED.
+      entity360Context = await bootstrapCanonicalWorkEntity360Context(
+        identity,
+        context.work,
+      );
+      if (!canonicalWorkEntity360ContextReady(entity360Context)) {
+        throw legacyWorkAclError("canonical_work_entity360_context_pending", 409);
+      }
+    }
     const precommitTicketGate = args.read_only === true ? null : typeof workContinuityV2Store.readPrecommitTicketGate === "function"
       ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
           work_id: args.work_id,
@@ -2058,6 +2256,7 @@ async function readNyraDirectiveContext(identity, args) {
     const withPrecommitGate = {
       ...context,
       precommit_ticket_gate: precommitTicketGate,
+      entity360_context: entity360Context,
     };
     const status = String(context?.work?.status || "").toUpperCase();
     if (["COMPLETED", "ARCHIVED"].includes(status) &&
@@ -2198,6 +2397,7 @@ async function createNativeContinuityPlan(args, identity) {
       depends_on: task.dependencies || [],
       capabilities: [],
     })),
+    precommit_deferred_v2_tasks: nativeArgs.precommit_deferred_v2_tasks || [],
     max_parallel: nativeArgs.max_parallel,
   }, identity);
   const corePlan = corePlanResult?.structuredContent?.plan;
@@ -2934,6 +3134,9 @@ const baseHandlers = {
         withTenantWorkAcl(identity), request,
       );
       const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, queued.work);
+      const entity360Context = causalLineage.state === "READY"
+        ? await bootstrapCanonicalWorkEntity360Context(identity, queued.work)
+        : null;
       const result = causalLineage.state === "READY"
         ? { ...queued, work: (await workContinuityV2Store.readWork(
           withTenantWorkAcl(identity), { work_id: queued.work.work_id },
@@ -2942,8 +3145,11 @@ const baseHandlers = {
       return continuityTextResult({ ok: true,
         result,
         causal_lineage: causalLineage,
-        work_ready: causalLineage.state === "READY",
-        continuation_allowed: causalLineage.state === "READY",
+        entity360_context: entity360Context,
+        work_ready: causalLineage.state === "READY" &&
+          canonicalWorkEntity360ContextReady(entity360Context),
+        continuation_allowed: causalLineage.state === "READY" &&
+          canonicalWorkEntity360ContextReady(entity360Context),
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",
