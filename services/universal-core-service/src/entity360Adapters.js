@@ -177,6 +177,59 @@ function optionalDigest(value) {
   return normalized;
 }
 
+function verifiedWorkIntentLineage(event, { tenantId, workId, galleryIntentDigest,
+  anchoredIntentDigest, legacyWorkId, asOf }) {
+  if (!galleryIntentDigest || !anchoredIntentDigest) return false;
+  // Historical Work rows used the immutable legacy Intent Anchor as their V2
+  // intent as well.  There is no cross-domain lineage to prove in that shape.
+  if (galleryIntentDigest === anchoredIntentDigest) return true;
+  const payload = event?.payload;
+  const sequenceNumber = Number(event?.sequence_number);
+  const recordedAt = Date.parse(String(event?.created_at || ""));
+  const cutAt = Date.parse(String(asOf || ""));
+  if (!event || event.tenant_id !== tenantId || String(event.work_id || "").toLowerCase() !== workId
+    || event.event_type !== "work_v2_created" || !Number.isSafeInteger(sequenceNumber)
+    || sequenceNumber < 1 || !Number.isFinite(recordedAt) || !Number.isFinite(cutAt)
+    || recordedAt > cutAt || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  let eventHash;
+  let previousEventHash = null;
+  let predecessorEventHash = null;
+  try {
+    eventHash = optionalDigest(event.event_hash);
+    previousEventHash = optionalDigest(event.previous_event_hash);
+    predecessorEventHash = optionalDigest(event.predecessor_event_hash);
+  } catch {
+    return false;
+  }
+  if ((sequenceNumber === 1 && (previousEventHash !== null || predecessorEventHash !== null))
+      || (sequenceNumber > 1 && (!previousEventHash
+        || previousEventHash !== predecessorEventHash))) return false;
+  const material = {
+    tenant_id: tenantId,
+    work_id: workId,
+    sequence_number: sequenceNumber,
+    event_type: event.event_type,
+    payload,
+    previous_event_hash: previousEventHash,
+  };
+  if (!eventHash || entity360Digest(material) !== eventHash) return false;
+  try {
+    if (String(payload.legacy_work_id || "").toLowerCase() !== legacyWorkId) return false;
+    if (Object.hasOwn(payload, "legacy_intent_digest")) {
+      return optionalDigest(payload.intent_digest) === galleryIntentDigest
+        && optionalDigest(payload.legacy_intent_digest) === anchoredIntentDigest;
+    }
+    // Compatibility with the previous immutable event encoding: it recorded
+    // only the legacy anchor digest.  The V2 row remains the authoritative
+    // source for its own distinct intent domain.
+    return optionalDigest(payload.intent_digest) === anchoredIntentDigest;
+  } catch {
+    return false;
+  }
+}
+
 function verifiedFinalOutcomeBinding(row, intentDigest, architectureRow = null) {
   try {
     const plan = row?.plan;
@@ -1191,9 +1244,34 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
   const galleryIntentDigest = String(gallery.intent_digest || "").toLowerCase();
   const anchorProjectValid = Boolean(anchor && logicalProjectSlug
     && anchorProjectSlug === logicalProjectSlug);
+  let workIntentLineageValid = !galleryIntentDigest || galleryIntentDigest === anchoredIntentDigest;
+  if (/^[a-f0-9]{64}$/u.test(galleryIntentDigest)
+      && /^[a-f0-9]{64}$/u.test(anchoredIntentDigest)
+      && galleryIntentDigest !== anchoredIntentDigest) {
+    const creationEventResult = assertTenantRows(await optionalQuery(client, `SELECT e.tenant_id,e.work_id::text,
+        e.sequence_number,e.event_type,e.payload,e.previous_event_hash,e.event_hash,e.created_at,
+        predecessor.event_hash AS predecessor_event_hash
+      FROM tenant_work_event e
+      LEFT JOIN tenant_work_event predecessor
+        ON predecessor.tenant_id=e.tenant_id AND predecessor.work_id=e.work_id
+        AND predecessor.sequence_number=e.sequence_number-1
+        AND predecessor.created_at <= $3::timestamptz
+      WHERE e.tenant_id=$1 AND e.work_id=$2::uuid AND e.event_type='work_v2_created'
+        AND e.created_at <= $3::timestamptz
+      ORDER BY e.sequence_number ASC LIMIT 2`,
+    [scope.tenant_id, gallery.work_id, scope.as_of], "intent", report), scope.tenant_id);
+    workIntentLineageValid = creationEventResult.rows.length === 1
+      && verifiedWorkIntentLineage(creationEventResult.rows[0], {
+        tenantId: scope.tenant_id,
+        workId: gallery.work_id,
+        galleryIntentDigest,
+        anchoredIntentDigest,
+        legacyWorkId: gallery.legacy_work_id || legacyWorkId,
+        asOf: scope.as_of,
+      });
+  }
   const anchorDigestValid = /^[a-f0-9]{64}$/u.test(anchoredIntentDigest)
-    && intentAnchorPayloadVerified
-    && (!galleryIntentDigest || galleryIntentDigest === anchoredIntentDigest);
+    && intentAnchorPayloadVerified && workIntentLineageValid;
   const architectureResult = assertTenantRows(await optionalQuery(client, `SELECT tenant_id,version, architecture_digest, architecture,
       impact_map, created_at FROM core_continuity_architecture_versions
     WHERE tenant_id = $1 AND work_id = $2::uuid AND created_at <= $3::timestamptz
@@ -1230,9 +1308,11 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       ...(logicalProjectSlug ? { expected_project_slug: logicalProjectSlug } : {}),
       ...(anchorProjectSlug ? { observed_project_slug: anchorProjectSlug } : {}) });
   } else if (anchor && !anchorDigestValid && !report.some((item) =>
-    item.reason_code === "INTENT_ANCHOR_DIGEST_MISMATCH")) {
+    item.reason_code === "INTENT_ANCHOR_DIGEST_MISMATCH"
+      || item.reason_code === "WORK_INTENT_LINEAGE_MISMATCH")) {
     report.push({ source_id: "intent", state: "rejected",
-      reason_code: "INTENT_ANCHOR_DIGEST_MISMATCH" });
+      reason_code: intentAnchorPayloadVerified && !workIntentLineageValid
+        ? "WORK_INTENT_LINEAGE_MISMATCH" : "INTENT_ANCHOR_DIGEST_MISMATCH" });
   }
   const governanceBindingVerified = causalState.eligible && anchorProjectValid && anchorDigestValid
     && causalIntentDigestValid

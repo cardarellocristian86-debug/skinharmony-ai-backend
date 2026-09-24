@@ -101,6 +101,26 @@ const DIGESTS = Object.freeze({
     previous_event_hash: null }),
 });
 const NATIVE_PLAN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const V2_INTENT_DIGEST = "a".repeat(64);
+
+function v2CreatedEvent({ v2IntentDigest = V2_INTENT_DIGEST,
+  legacyIntentDigest = DIGESTS.intent } = {}) {
+  const event = {
+    tenant_id: TENANT,
+    work_id: WORK_ID,
+    sequence_number: 2,
+    event_type: "work_v2_created",
+    payload: {
+      legacy_work_id: LEGACY_WORK_ID,
+      intent_digest: v2IntentDigest,
+      legacy_intent_digest: legacyIntentDigest,
+      legacy_event_hash: "b".repeat(64),
+    },
+    previous_event_hash: "c".repeat(64),
+  };
+  return { ...event, event_hash: entity360Digest(event), created_at: AT,
+    predecessor_event_hash: event.previous_event_hash };
+}
 
 function acceptanceCriterion(criterion_id, criterion_kind, text) {
   const value = { criterion_id, criterion_kind, text };
@@ -1031,6 +1051,75 @@ test("Gallery and continuity status divergence remains an explicit current-state
     && item.reason_code === "CONCURRENT_CURRENT_VALUES_CONFLICT"));
   assert.deepEqual(snapshot.core_review_requirement.admissible_outcomes, ["HOLD"]);
 });
+
+test("distinct V2 and legacy Intent domains are accepted only through their immutable creation event", async () => {
+  const assembled = await assembleWork((sql) => {
+    if (/FROM tenant_work_event/u.test(sql)) return result([v2CreatedEvent()]);
+    const response = workRows(sql);
+    if (/FROM tenant_work(?:\s|$)/u.test(sql)) {
+      return result(response.rows.map((row) => ({ ...row, intent_digest: V2_INTENT_DIGEST })));
+    }
+    return response;
+  });
+  const snapshot = snapshotFor(assembled);
+  assert.equal(snapshot.context_status, "READY");
+  assert.equal(assembled.discovery.source_discovery.some((item) =>
+    item.reason_code === "WORK_INTENT_LINEAGE_MISMATCH"), false);
+});
+
+test("an unattested split between V2 and legacy Intent domains remains incomplete", async () => {
+  const assembled = await assembleWork((sql) => {
+    if (/FROM tenant_work_event/u.test(sql)) return result([]);
+    const response = workRows(sql);
+    if (/FROM tenant_work(?:\s|$)/u.test(sql)) {
+      return result(response.rows.map((row) => ({ ...row, intent_digest: V2_INTENT_DIGEST })));
+    }
+    return response;
+  });
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    ["intent", "genesis"].includes(item.source_id)), false);
+  assert.ok(assembled.discovery.source_discovery.some((item) => item.source_id === "intent"
+    && item.state === "rejected" && item.reason_code === "WORK_INTENT_LINEAGE_MISMATCH"));
+  assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+});
+
+test("a tampered dual-Intent creation event cannot qualify governance context", async () => {
+  const assembled = await assembleWork((sql) => {
+    if (/FROM tenant_work_event/u.test(sql)) {
+      return result([{ ...v2CreatedEvent(), event_hash: "f".repeat(64) }]);
+    }
+    const response = workRows(sql);
+    if (/FROM tenant_work(?:\s|$)/u.test(sql)) {
+      return result(response.rows.map((row) => ({ ...row, intent_digest: V2_INTENT_DIGEST })));
+    }
+    return response;
+  });
+  assert.ok(assembled.discovery.source_discovery.some((item) =>
+    item.reason_code === "WORK_INTENT_LINEAGE_MISMATCH"));
+  assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+});
+
+for (const brokenLink of [
+  { label: "missing predecessor", patch: { predecessor_event_hash: null } },
+  { label: "mismatched predecessor", patch: { predecessor_event_hash: "d".repeat(64) } },
+  { label: "event beyond the qualified cut", patch: { created_at: "2026-08-25T10:00:00.001Z" } },
+]) {
+  test(`a dual-Intent creation event with ${brokenLink.label} remains unqualified`, async () => {
+    const assembled = await assembleWork((sql) => {
+      if (/FROM tenant_work_event/u.test(sql)) {
+        return result([{ ...v2CreatedEvent(), ...brokenLink.patch }]);
+      }
+      const response = workRows(sql);
+      if (/FROM tenant_work(?:\s|$)/u.test(sql)) {
+        return result(response.rows.map((row) => ({ ...row, intent_digest: V2_INTENT_DIGEST })));
+      }
+      return response;
+    });
+    assert.ok(assembled.discovery.source_discovery.some((item) =>
+      item.reason_code === "WORK_INTENT_LINEAGE_MISMATCH"));
+    assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+  });
+}
 
 test("fresh Work read preserves recorded validity without expiring unchanged authoritative state", async () => {
   const staleAt = "2026-08-25T08:00:00.000Z";
