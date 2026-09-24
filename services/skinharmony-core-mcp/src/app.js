@@ -1601,12 +1601,23 @@ export function resolveHostTransportPresence({
 // higher-priority input.
 export function resolveMcpLogicalSession({
   toolName,
+  operation = "",
   transportPresence = null,
   declaredSessionId = "",
   transportSessionId = "",
   serverIssuedSessionId = "",
 } = {}) {
-  const continuationRebind = ["nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(toolName) &&
+  // The typed Work bootstrap issuer and its continuation consumer must bind
+  // the same server-signed logical presence. ChatGPT can keep an older MCP
+  // transport alive while declaring the logical session that will consume
+  // the opaque reference. Bind only this exact typed operation at issuance;
+  // delegation/action requests retain the physical transport binding.
+  const typedWorkBootstrapIssuer = toolName === "core_typed_request" &&
+    operation === "WORK_CREATE_OR_RECONCILE";
+  const continuationRebind = (
+    typedWorkBootstrapIssuer ||
+    ["nyra_continue", "nyra_governed_continue", "nyra_chatgpt_work_bootstrap_review"].includes(toolName)
+  ) &&
     Boolean(declaredSessionId) &&
     transportPresence?.session_id !== declaredSessionId;
   return Object.freeze({
@@ -3287,6 +3298,7 @@ export function createApp(config, options = {}) {
           : "";
         const sessionResolution = resolveMcpLogicalSession({
           toolName: tool.name,
+          operation: rawArgs.operation,
           transportPresence,
           declaredSessionId,
           transportSessionId,

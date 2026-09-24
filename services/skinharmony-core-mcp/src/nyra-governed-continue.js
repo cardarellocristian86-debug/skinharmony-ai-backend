@@ -600,18 +600,18 @@ export function createNyraGovernedContinueHandler({
   return async function nyraContinue(args = {}, identity = {}) {
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
-    if (args.operation === "create_work" && args.continuation_ref &&
+    if (["review_work_bootstrap", "create_work"].includes(args.operation) && args.continuation_ref &&
         args.work_bootstrap === undefined && args.delegation_request === undefined &&
         args.action_request === undefined && typeof consumeTypedRequest === "function" &&
         typeof completeTypedRequest === "function" && typeof releaseTypedRequest === "function") {
-      if (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
-          !String(args.confirmation_reference || "").trim()) {
+      if (args.operation === "create_work" &&
+          (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+          !String(args.confirmation_reference || "").trim())) {
         fail("owner_confirmation_required", 403);
       }
       const typed = await consumeTypedRequest({ identity,
         continuation_ref: args.continuation_ref, allow_missing: true });
       if (typed) {
-        if (typed.replay === true && typed.final_result) return typed.final_result;
         try {
           if (typed.operation !== "WORK_CREATE_OR_RECONCILE") {
             fail("connected_ai_work_create_binding_mismatch", 409);
@@ -621,6 +621,27 @@ export function createNyraGovernedContinueHandler({
           if (!request || !review?.review_id || !SHA256.test(String(review.review_digest || ""))) {
             fail("connected_ai_work_review_invalid", 409);
           }
+          if (args.operation === "review_work_bootstrap") {
+            if (args.review_id !== undefined || args.review_digest !== undefined ||
+                args.review_decision !== undefined || args.work_id !== undefined) {
+              fail("nyra_continue_work_bootstrap_review_mismatch", 409);
+            }
+            if (typed.replay === true && typed.final_result) return typed.final_result;
+            // Core already performed the anti-duplicate review before issuing
+            // this typed reference. Return that immutable server-owned result
+            // and make the record READY again for the owner-confirmed create;
+            // never rebuild or accept review material from the client.
+            await releaseTypedRequest({ identity, continuation_ref: args.continuation_ref });
+            return nyraResult({
+              tenant_id: typed.tenant_id || identity.tenantId,
+              continuation_ref: typed.continuation_ref || args.continuation_ref,
+              directive_id: null,
+              work_id: null,
+              action_class: "WORK_BOOTSTRAP",
+              merge_policy: "ANTI_DUPLICATE_REVIEW",
+            }, coreOutcome({ structuredContent: typed.core_result }), args.operation, typed.replay === true);
+          }
+          if (typed.replay === true && typed.final_result) return typed.final_result;
           const finalResult = await createWorkBootstrap(
             bootstrapCreateInput(request, review, args, typed.server_idempotency_key), identity);
           await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
