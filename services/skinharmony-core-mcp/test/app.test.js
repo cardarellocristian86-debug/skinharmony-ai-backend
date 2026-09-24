@@ -1222,6 +1222,14 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
     entityBootstrapStart,
   );
   const entityBootstrap = serverSource.slice(entityBootstrapStart, entityBootstrapEnd);
+  assert.match(entityBootstrap, /await ensureNyraReadBinding\(/,
+    "Work bootstrap must provision the bounded DTT read lease before Entity360");
+  assert.ok(entityBootstrap.indexOf("await ensureNyraReadBinding(") <
+    entityBootstrap.indexOf("entity_360_policy_read"),
+  "the initial DTT lease must exist before the first Entity360 request");
+  assert.match(entityBootstrap, /canonical_work_bootstrap_read_binding_invalid/);
+  assert.match(entityBootstrap, /bootstrapBinding\.execution_authorized !== false/);
+  assert.match(entityBootstrap, /bootstrapBinding\.external_action_authorized !== false/);
   assert.match(entityBootstrap, /entity_360_policy_read/);
   assert.match(entityBootstrap, /featureFlag\.mode !== "ENFORCED"/);
   assert.match(entityBootstrap, /state: "NOT_REQUIRED"/,

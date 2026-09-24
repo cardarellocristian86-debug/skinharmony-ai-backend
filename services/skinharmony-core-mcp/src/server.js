@@ -1897,6 +1897,27 @@ async function bootstrapCanonicalWorkEntity360Context(identity, work) {
     error.status = 503;
     throw error;
   }
+  // A canonical Work is committed before its initial Entity360 context is
+  // materialized. Entity360 travels through the DTT transport, which requires
+  // an exact participant/lease binding. Provision the existing bounded,
+  // read-only Nyra binding here so a newly created Work can cross that first
+  // DTT boundary without weakening the lease gate. Exact retries reuse or
+  // renew the same server-derived binding before repairing Entity360.
+  const bootstrapBinding = await ensureNyraReadBinding({
+    runtime: workContinuityRuntime,
+    authorizeRead: requireCanonicalWorkRead,
+    identity,
+    continuity: { work_id: workId },
+  });
+  if (!bootstrapBinding || bootstrapBinding.work_id !== workId
+      || !["active", "renewed", "created"].includes(bootstrapBinding.state)
+      || bootstrapBinding.execution_authorized !== false
+      || bootstrapBinding.external_action_authorized !== false) {
+    const error = new Error("canonical_work_bootstrap_read_binding_invalid");
+    error.code = "canonical_work_bootstrap_read_binding_invalid";
+    error.status = 503;
+    throw error;
+  }
   const policyResponse = await entity360Handlers.entity_360_policy_read({
     work_id: workId,
   }, identity);
