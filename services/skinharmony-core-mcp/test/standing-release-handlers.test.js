@@ -778,6 +778,8 @@ test("horizontal runner mutations use fresh exact DTT bindings and peer-provider
   const runId = `srr_${"c".repeat(40)}`;
   const ticketId = `hnt_${"d".repeat(40)}`;
   const reservationId = `hnr_${"e".repeat(40)}`;
+  const actor = identity();
+  let actionReadCount = 0;
   const handlers = createCoreHandlers(config(), {
     resolveStandingReleaseIntentBinding: trustedResolver(async (actor, workId) => {
       intentRequests.push([actor.tenantId, workId]);
@@ -795,6 +797,38 @@ test("horizontal runner mutations use fresh exact DTT bindings and peer-provider
         body: init.body ? JSON.parse(init.body) : undefined,
       };
       calls.push(call);
+      if (call.method === "GET" && call.path === `/v1/host-native/actions/${ticketId}`) {
+        actionReadCount += 1;
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          action_ticket: {
+            state: actionReadCount === 1 ? "reserved" : "reconciliation_required",
+            uses: 1,
+            reservation_id: reservationId,
+            ticket: {
+              schema_version: "host_native_action_ticket_v1",
+              ticket_id: ticketId,
+              delegation_id: `hnd_${"b".repeat(40)}`,
+              tenant_id: "tenant-a",
+              work_id: RELEASE_WORK,
+              intent_anchor_digest: RELEASE_DIGEST,
+              repository: "owner/repo",
+              host_kind: "chatgpt_native",
+              host_session_fingerprint: actor.agentPresence.session_fingerprint,
+              action: { kind: "github.ready" },
+              evidence_digest: H("9"),
+              issued_at: "2026-09-24T10:00:00.000Z",
+              expires_at: "2026-09-24T11:00:00.000Z",
+              max_uses: 1,
+              provider_execution: false,
+              host_policy_override: false,
+              host_policy_must_allow: true,
+              signature: `hnt_${"1".repeat(64)}`,
+            },
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(JSON.stringify({
         ok: true,
         tenant_id: "tenant-a",
@@ -812,7 +846,6 @@ test("horizontal runner mutations use fresh exact DTT bindings and peer-provider
       }), { status: 200, headers: { "content-type": "application/json" } });
     },
   });
-  const actor = identity();
   await handlers.host_native_standing_release_run_start({
     delegation_id: `hnd_${"b".repeat(40)}`,
     work_id: RELEASE_WORK,
@@ -893,9 +926,12 @@ test("horizontal runner mutations use fresh exact DTT bindings and peer-provider
     ["GET", `/v1/host-native/standing-release/runs/${runId}`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/bind-ticket`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
+    ["GET", `/v1/host-native/actions/${ticketId}`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/complete`],
+    ["GET", `/v1/host-native/actions/${ticketId}`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/reconcile`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/advance`],
+    ["GET", `/v1/host-native/actions/${ticketId}`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/quarantine-expired`],
     ["POST", `/v1/host-native/standing-release/runs/${runId}/cancel`],
   ]);

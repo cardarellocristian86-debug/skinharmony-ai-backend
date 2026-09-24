@@ -347,12 +347,14 @@ class ContinuityPool {
       }
       return { rows: [{ blocker_count: blockers.size }], rowCount: 1 };
     }
-    if (q.startsWith("SELECT status FROM core_continuity_native_plans")) {
+    if (q.startsWith("SELECT status FROM core_continuity_native_plans") ||
+        q.startsWith("SELECT status,plan FROM core_continuity_native_plans")) {
+      const includePlan = q.startsWith("SELECT status,plan");
       if (q.includes("plan_id=$3")) {
         const plan = this.plans.get(key(parameters[0], parameters[2]));
         const exact = plan?.work_id === parameters[1] ? plan : null;
         return {
-          rows: exact ? [{ status: exact.status }] : [],
+          rows: exact ? [{ status: exact.status, ...(includePlan ? { plan: exact.plan } : {}) }] : [],
           rowCount: exact ? 1 : 0,
         };
       }
@@ -361,7 +363,8 @@ class ContinuityPool {
         .sort((left, right) => Number(right.plan_version || 0) - Number(left.plan_version || 0) ||
           String(right.created_at).localeCompare(String(left.created_at)) ||
           String(right.plan_id).localeCompare(String(left.plan_id)));
-      return { rows: rows[0] ? [{ status: rows[0].status }] : [], rowCount: rows[0] ? 1 : 0 };
+      return { rows: rows[0] ? [{ status: rows[0].status,
+        ...(includePlan ? { plan: rows[0].plan } : {}) }] : [], rowCount: rows[0] ? 1 : 0 };
     }
     if (q.startsWith("SELECT status FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
@@ -1276,7 +1279,8 @@ class ContinuityPool {
         .map((row) => ({ ...row }));
       return { rows, rowCount: rows.length };
     }
-    if (q.startsWith("SELECT p.status,j.release_intent,j.release_intent_digest,")) {
+    if (q.startsWith("SELECT p.status,j.release_intent,j.release_intent_digest,") ||
+        q.startsWith("SELECT p.status,p.plan,j.release_intent,j.release_intent_digest,")) {
       const joins = [...this.releaseJoins.values()]
         .filter((candidate) =>
           candidate.tenant_id === parameters[0] &&
@@ -1289,14 +1293,20 @@ class ContinuityPool {
       const join = joins[0];
       const plan = this.plans.get(key(parameters[0], parameters[2]));
       if (!join || !plan) return { rows: [], rowCount: 0 };
+      const evaluations =
+        this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      const evaluation = evaluations.find((candidate) =>
+        candidate.evaluation_id === join.evaluation_id);
       return {
         rows: [{
           status: plan.status,
+          plan: plan.plan,
           release_intent: join.release_intent,
           release_intent_digest: join.release_intent_digest,
           core_join_record: join.core_join_record,
           core_join_record_digest: join.core_join_record_digest,
           verdict_id: join.verdict_id,
+          evaluation: evaluation?.evaluation,
         }],
         rowCount: 1,
       };

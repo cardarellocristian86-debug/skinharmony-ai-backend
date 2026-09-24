@@ -63,6 +63,7 @@ function governedMigrationPool({ tamperTargetConstraint = false, initialSeedReco
   let icfHead = null;
   const icfEvents = new Map();
   let initialSeedEventInserts = 0;
+  const consistentCutAt = "2026-08-25T10:00:01.000Z";
   const compatibleRegistryColumns = [
     { column_name: "migration_id", data_type: "character varying", character_maximum_length: 160, is_nullable: "NO", column_default: null },
     { column_name: "applied_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "now()" },
@@ -143,6 +144,9 @@ function governedMigrationPool({ tamperTargetConstraint = false, initialSeedReco
       if (normalized.includes("FROM core_icf_event") && normalized.includes("seq=$3")) {
         const event = icfEvents.get(Number(values[2]));
         return { rows: event ? [{ ...event }] : [], rowCount: event ? 1 : 0 };
+      }
+      if (normalized === "SELECT clock_timestamp() AS consistent_cut_at") {
+        return { rows: [{ consistent_cut_at: consistentCutAt }], rowCount: 1 };
       }
       if (normalized.startsWith("INSERT INTO core_icf_event")) {
         const event = {
@@ -276,6 +280,8 @@ test("initial Work governance seed is created once and exact replay is read-only
   assert.equal(first.state, "seeded");
   assert.equal(replay.state, "present");
   assert.equal(first.ledger_head_digest, replay.ledger_head_digest);
+  assert.equal(first.consistent_cut_at, "2026-08-25T10:00:01.000Z");
+  assert.equal(replay.consistent_cut_at, first.consistent_cut_at);
   assert.equal(state.initialSeedEventInserts, 1);
   assert.equal(state.events.length, 1);
   assert.equal(state.events[0].event_type, ICF_INITIAL_WORK_GOVERNANCE_SEED_EVENT);

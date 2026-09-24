@@ -935,8 +935,12 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
     "projection_digest",
   ];
   const native = value.schema_version === "precommit_ticket_gate_v2";
+  const deferredFieldsPresent = native &&
+    Object.prototype.hasOwnProperty.call(value, "deferred_tasks") &&
+    Object.prototype.hasOwnProperty.call(value, "deferred_tasks_digest");
   const fields = native
-    ? [...legacyFields, "gate_source", "v2_scope_snapshot_digest", "v2_scope_tasks"]
+    ? [...legacyFields, "gate_source", "v2_scope_snapshot_digest", "v2_scope_tasks",
+      ...(deferredFieldsPresent ? ["deferred_tasks", "deferred_tasks_digest"] : [])]
     : legacyFields;
   const nativeScopeUnavailable = native &&
     value.v2_scope_snapshot_digest === null &&
@@ -952,9 +956,39 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
       Number.isSafeInteger(task.revision) && task.revision >= 1) &&
     new Set(value.v2_scope_tasks.map((task) => task.task_id)).size === value.v2_scope_tasks.length
   );
+  const deferredTasksValid = !native || !deferredFieldsPresent || nativeScopeUnavailable || (
+    Array.isArray(value.deferred_tasks) && value.deferred_tasks.length <= 64 &&
+    value.deferred_tasks.every((task) => task && typeof task === "object" &&
+      !Array.isArray(task) && Object.keys(task).sort().join("\0") === [
+        "acceptance_verified", "phase", "required", "revision", "schema_version",
+        "status", "task_id", "v2_task_digest", "task_contract_digest",
+        "task_contract_revision", "dependency_manifest_digest", "dependency_manifest_revision",
+      ].sort().join("\0") &&
+      task.schema_version === "native_plan_precommit_deferred_v2_task_v1" &&
+      Boolean(boundedWorkId(task.task_id)) &&
+      /^[a-f0-9]{64}$/.test(String(task.v2_task_digest || "")) &&
+      Number.isSafeInteger(task.revision) && task.revision >= 1 &&
+      ((task.task_contract_digest === null && task.task_contract_revision === null) ||
+        (/^[a-f0-9]{64}$/.test(String(task.task_contract_digest || "")) &&
+          Number.isSafeInteger(task.task_contract_revision) && task.task_contract_revision >= 1)) &&
+      ((task.dependency_manifest_digest === null && task.dependency_manifest_revision === null) ||
+        (/^[a-f0-9]{64}$/.test(String(task.dependency_manifest_digest || "")) &&
+          Number.isSafeInteger(task.dependency_manifest_revision) &&
+          task.dependency_manifest_revision >= 1)) &&
+      task.required === true && task.status === "planned" &&
+      task.acceptance_verified === false &&
+      ["POST_COMMIT", "POST_DEPLOY"].includes(task.phase)) &&
+    new Set(value.deferred_tasks.map((task) => task.task_id)).size ===
+      value.deferred_tasks.length &&
+    (value.deferred_tasks.length
+      ? /^[a-f0-9]{64}$/.test(String(value.deferred_tasks_digest || "")) &&
+        deterministicDigest(value.deferred_tasks) === value.deferred_tasks_digest
+      : value.deferred_tasks_digest === null)
+  );
   if (Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
       (!native && value.schema_version !== "precommit_ticket_gate_v1") ||
       (native && value.gate_source !== "native_closure_evaluation") || !nativeScopeTasksValid ||
+      !deferredTasksValid ||
       value.tenant_id !== tenantId || boundedWorkId(value.work_id) !== workId ||
       value.action_kind !== "git.commit" || value.gate_kind !== "ticket_acquisition" ||
       !boundedWorkId(value.task_id) || !boundedWorkId(value.plan_id) ||
@@ -990,7 +1024,12 @@ function normalizePrecommitTicketGate(value, tenantId, workId) {
     ...value,
     legacy_evidence_ids: Object.freeze([...value.legacy_evidence_ids].sort()),
     replacement_evidence_ids: Object.freeze([...value.replacement_evidence_ids].sort()),
-    ...(native ? { v2_scope_tasks: Object.freeze(value.v2_scope_tasks.map((task) => Object.freeze({ ...task }))) } : {}),
+    ...(native ? {
+      v2_scope_tasks: Object.freeze(value.v2_scope_tasks.map((task) => Object.freeze({ ...task }))),
+      ...(deferredFieldsPresent ? {
+        deferred_tasks: Object.freeze(value.deferred_tasks.map((task) => Object.freeze({ ...task }))),
+      } : {}),
+    } : {}),
     drift_codes: Object.freeze([...value.drift_codes]),
   });
 }
@@ -1174,7 +1213,10 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
   // fail-closed exact-presence check for every scoped task.
   const precommitCoveredTaskIds = new Set(precommitTicketGate
     ? [precommitTicketGate.task_id, ...(precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-      ? precommitTicketGate.v2_scope_tasks.map((item) => item.task_id)
+      ? [
+          ...precommitTicketGate.v2_scope_tasks.map((item) => item.task_id),
+          ...(precommitTicketGate.deferred_tasks || []).map((item) => item.task_id),
+        ]
       : [])]
     : []);
   const nativeV2ScopeComplete = Boolean(
@@ -1186,10 +1228,20 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
         matches[0].acceptance_verified === true;
     })
   );
+  const nativeDeferredTasksCurrent = Boolean(
+    precommitTicketGate?.schema_version === "precommit_ticket_gate_v2" &&
+    (precommitTicketGate.deferred_tasks || []).every((item) => {
+      const matches = requiredTasksById.get(item.task_id) || [];
+      return matches.length === 1 && matches[0].status === item.status &&
+        matches[0].required === item.required &&
+        matches[0].acceptance_verified === item.acceptance_verified;
+    })
+  );
   const precommitTicketGateApplicable = Boolean(
     precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
     (precommitTicketGate.schema_version === "precommit_ticket_gate_v2"
-      ? pendingTaskIds.has(precommitTicketGate.task_id) && nativeV2ScopeComplete
+      ? pendingTaskIds.has(precommitTicketGate.task_id) && nativeV2ScopeComplete &&
+        nativeDeferredTasksCurrent
       : pendingTaskIds.has(precommitTicketGate.task_id) &&
         precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
         precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id)))

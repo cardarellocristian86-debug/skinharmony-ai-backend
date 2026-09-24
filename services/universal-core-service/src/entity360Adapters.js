@@ -1532,7 +1532,11 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
         payload_digest: causalObservation.payload_digest,
         actor_provenance_digest: causalObservation.actor_provenance_digest,
         idempotency_key_digest: causalObservation.idempotency_key_digest,
-      }, criticality: "normal", valid_from: causalObservation.observed_at }] }));
+      // WORK_OPENED is immutable causal history, not a mutable current-state
+      // signal.  Keeping it current eventually marks the entire enforcement
+      // context stale even though Genesis/Intent/ICF remain valid.
+      }, criticality: "normal", state: "historical",
+      valid_from: causalObservation.observed_at }] }));
     report.push({ source_id: "event_ledger", state: "accepted",
       evidence_digest: causalObservation.event_hash, evidence_ref: eventEvidenceRef });
   } else if (causalBinding) {

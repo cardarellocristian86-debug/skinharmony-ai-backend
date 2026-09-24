@@ -227,6 +227,14 @@ export const HOST_NATIVE_TOOLS = [
           },
         }, ["agent_id", "role", "task"]),
       },
+      precommit_deferred_v2_tasks: {
+        type: "array",
+        maxItems: 64,
+        items: object({
+          task_id: workUuid,
+          phase: { type: "string", enum: ["POST_COMMIT", "POST_DEPLOY"] },
+        }, ["task_id", "phase"]),
+      },
       max_parallel: { type: "integer", minimum: 1, maximum: 2 },
     }, [
       "work_id",

@@ -519,6 +519,7 @@ function emptyState() {
     owner_manual_merge_readbacks: {},
     owner_manual_merge_successors: {},
     native_precommit_ticket_successors: {},
+    release_ticket_successors: {},
     owner_nonces: {},
     idempotency: {},
     standing_release_mandates: {},
@@ -549,6 +550,10 @@ function normalizeState(input) {
     native_precommit_ticket_successors: input.native_precommit_ticket_successors &&
       typeof input.native_precommit_ticket_successors === "object"
       ? input.native_precommit_ticket_successors
+      : {},
+    release_ticket_successors: input.release_ticket_successors &&
+      typeof input.release_ticket_successors === "object"
+      ? input.release_ticket_successors
       : {},
     owner_nonces: input.owner_nonces && typeof input.owner_nonces === "object" ? input.owner_nonces : {},
     idempotency: input.idempotency && typeof input.idempotency === "object" ? input.idempotency : {},
@@ -900,8 +905,28 @@ function validatePlanAgents(agents) {
 export function buildHostNativeWorkPlan(input = {}) {
   exactKeys(input, new Set([
     "tenant_id", "work_id", "intent_anchor_digest", "repository", "objective", "required_checks", "max_parallel", "agents", "base_branch",
+    "precommit_deferred_v2_tasks",
   ]));
   const agents = validatePlanAgents(input.agents);
+  const deferredInput = input.precommit_deferred_v2_tasks === undefined
+    ? []
+    : input.precommit_deferred_v2_tasks;
+  if (!Array.isArray(deferredInput) || deferredInput.length > 64) {
+    fail("precommit_deferred_v2_tasks_invalid");
+  }
+  const precommit_deferred_v2_tasks = deferredInput.map((item) => {
+    exactKeys(item, new Set(["task_id", "phase"]));
+    const task_id = text(item.task_id, "precommit_deferred_v2_tasks_invalid", 240).toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(task_id) ||
+        !["POST_COMMIT", "POST_DEPLOY"].includes(item.phase)) {
+      fail("precommit_deferred_v2_tasks_invalid");
+    }
+    return Object.freeze({ task_id, phase: item.phase });
+  }).sort((left, right) => left.task_id.localeCompare(right.task_id));
+  if (new Set(precommit_deferred_v2_tasks.map((item) => item.task_id)).size !==
+      precommit_deferred_v2_tasks.length) {
+    fail("precommit_deferred_v2_tasks_invalid");
+  }
   const max_parallel = input.max_parallel === undefined ? Math.min(2, agents.length) : positiveInteger(input.max_parallel, "max_parallel_invalid", 2);
   if (max_parallel > 2) fail("max_parallel_invalid");
   const unsigned = {
@@ -915,6 +940,10 @@ export function buildHostNativeWorkPlan(input = {}) {
     required_checks: stableStrings(input.required_checks, "required_checks_invalid", 50),
     max_parallel,
     agents,
+    ...(precommit_deferred_v2_tasks.length ? {
+      precommit_deferred_v2_tasks,
+      precommit_deferred_v2_tasks_digest: hostNativeDigest(precommit_deferred_v2_tasks),
+    } : {}),
     execution_adapter: "host_native",
     provider_execution: false,
     provider_api_key_required: false,
@@ -1034,6 +1063,10 @@ function buildPolicyBoundWorkPlan(plan, requiredChecksPolicyDigest) {
     builder_agent_id: builders[0].agent_id,
     verifier_agent_ids,
     agents: plan.agents,
+    ...(plan.precommit_deferred_v2_tasks?.length ? {
+      precommit_deferred_v2_tasks: plan.precommit_deferred_v2_tasks,
+      precommit_deferred_v2_tasks_digest: plan.precommit_deferred_v2_tasks_digest,
+    } : {}),
     maximum_parallel_agents: plan.max_parallel,
   };
   const plan_digest = hostNativeDigest(payload);
@@ -2510,11 +2543,13 @@ export function createHostNativeGovernance({
     };
     return Object.freeze({ ...unsigned, decision_digest: hostNativeDigest(unsigned) });
   };
-  const resolveSemanticScopeContext = async ({ delegation, action, tenantId, phase } = {}) => {
+  const resolveSemanticScopeContext = async ({ delegation, action, tenantId, phase,
+    freshnessHorizonMs = 0 } = {}) => {
     if (configuredSemanticScopeMode === "OFF") return null;
     try {
       const resolved = await semanticScopeContextResolver?.({ tenant_id: tenantId,
-        work_id: delegation.grant.work_id, action: clone(action), phase });
+        work_id: delegation.grant.work_id, action: clone(action), phase,
+        freshness_horizon_ms: freshnessHorizonMs });
       return resolved || Object.freeze({ unavailable: true });
     } catch {
       return Object.freeze({ unavailable: true });
@@ -2676,6 +2711,91 @@ export function createHostNativeGovernance({
       );
     if (!valid) fail("action_ticket_lifecycle_invalid");
     return record;
+  }
+
+  function releaseTicketSuccessorUnsigned(record) {
+    return {
+      schema_version: record?.schema_version,
+      core_join_verdict_id: record?.core_join_verdict_id,
+      core_join_verdict_digest: record?.core_join_verdict_digest,
+      predecessor_ticket_id: record?.predecessor_ticket_id,
+      predecessor_ticket_digest: record?.predecessor_ticket_digest,
+      successor_ticket_id: record?.successor_ticket_id,
+      successor_ticket_digest: record?.successor_ticket_digest,
+      superseded_at: record?.superseded_at,
+      reason: record?.reason,
+    };
+  }
+
+  function signReleaseTicketSuccessor(predecessor, successor, supersededAt, reason) {
+    const unsigned = {
+      schema_version: "host_native_release_ticket_successor_v1",
+      core_join_verdict_id: predecessor.ticket.core_join_verdict_id,
+      core_join_verdict_digest: predecessor.ticket.core_join_verdict_digest,
+      predecessor_ticket_id: predecessor.ticket.ticket_id,
+      predecessor_ticket_digest: hostNativeDigest(predecessor.ticket),
+      successor_ticket_id: successor.ticket.ticket_id,
+      successor_ticket_digest: hostNativeDigest(successor.ticket),
+      superseded_at: supersededAt,
+      reason,
+    };
+    const successorDigest = hostNativeDigest(unsigned);
+    return {
+      ...unsigned,
+      successor_digest: successorDigest,
+      signature: hmac(
+        "hnrs",
+        signing,
+        canonical({ ...unsigned, successor_digest: successorDigest }),
+      ),
+    };
+  }
+
+  function verifyReleaseTicketSuccessor(record) {
+    const expectedKeys = [
+      "core_join_verdict_digest", "core_join_verdict_id", "predecessor_ticket_digest",
+      "predecessor_ticket_id", "reason", "schema_version", "signature",
+      "successor_digest", "successor_ticket_digest", "successor_ticket_id",
+      "superseded_at",
+    ];
+    const unsigned = releaseTicketSuccessorUnsigned(record);
+    const valid = record && typeof record === "object" && !Array.isArray(record) &&
+      Object.keys(record).sort().join("\0") === expectedKeys.join("\0") &&
+      record.schema_version === "host_native_release_ticket_successor_v1" &&
+      ["semantic_scope_revalidated", "expired_unreserved"].includes(record.reason) &&
+      hostNativeDigest(unsigned) === record.successor_digest &&
+      Number.isFinite(Date.parse(record.superseded_at || "")) &&
+      safeEqual(
+        record.signature,
+        hmac("hnrs", signing, canonical({ ...unsigned, successor_digest: record.successor_digest })),
+      );
+    if (!valid) fail("release_ticket_lifecycle_invalid");
+    return record;
+  }
+
+  function verifyReleaseTicketSuccessorLineage(state, successor) {
+    const predecessorRef = successor?.ticket?.release_ticket_predecessor;
+    if (!predecessorRef) return successor;
+    const predecessor = state.tickets?.[predecessorRef.ticket_id];
+    const link = state.release_ticket_successors?.[predecessorRef.ticket_id];
+    if (!predecessor || !link ||
+        predecessor.state !== "superseded" ||
+        predecessor.superseded_by_ticket_id !== successor.ticket.ticket_id ||
+        predecessor.superseded_at !== link.superseded_at ||
+        predecessorRef.schema_version !== "host_native_release_ticket_predecessor_v1" ||
+        predecessorRef.ticket_digest !== hostNativeDigest(predecessor.ticket) ||
+        predecessorRef.successor_reason !== link.reason ||
+        link.predecessor_ticket_id !== predecessor.ticket.ticket_id ||
+        link.predecessor_ticket_digest !== hostNativeDigest(predecessor.ticket) ||
+        link.successor_ticket_id !== successor.ticket.ticket_id ||
+        link.successor_ticket_digest !== hostNativeDigest(successor.ticket) ||
+        link.core_join_verdict_id !== successor.ticket.core_join_verdict_id ||
+        link.core_join_verdict_digest !== successor.ticket.core_join_verdict_digest) {
+      fail("release_ticket_lifecycle_invalid");
+    }
+    verifyActionTicketLifecycleRecord(predecessor);
+    verifyReleaseTicketSuccessor(link);
+    return successor;
   }
 
   function readDelegationRecord(tenantId, delegationId) {
@@ -3099,7 +3219,27 @@ export function createHostNativeGovernance({
   }
 
   function validateStandingReplay(state, cached, nowValue = nowMillis(now)) {
-    const current = authoritativeReplayResult(state, cached);
+    let current = authoritativeReplayResult(state, cached);
+    const visitedReleaseTickets = new Set();
+    while (current?.ticket && current.state === "superseded" &&
+        state.release_ticket_successors?.[current.ticket.ticket_id]) {
+      if (visitedReleaseTickets.has(current.ticket.ticket_id) ||
+          visitedReleaseTickets.size >= 16) {
+        fail("release_ticket_lifecycle_invalid");
+      }
+      visitedReleaseTickets.add(current.ticket.ticket_id);
+      verifyActionTicketLifecycleRecord(current);
+      const link = verifyReleaseTicketSuccessor(
+        state.release_ticket_successors[current.ticket.ticket_id],
+      );
+      const successor = state.tickets?.[link.successor_ticket_id];
+      if (!successor || link.predecessor_ticket_digest !== hostNativeDigest(current.ticket) ||
+          link.successor_ticket_digest !== hostNativeDigest(successor.ticket)) {
+        fail("release_ticket_lifecycle_invalid");
+      }
+      verifyReleaseTicketSuccessorLineage(state, successor);
+      current = successor;
+    }
     const delegation = current?.grant?.standing_release_binding
       ? current
       : state.delegations?.[current?.ticket?.delegation_id];
@@ -3243,9 +3383,18 @@ export function createHostNativeGovernance({
     }
     const knownStates = new Set([
       "issued", "reserved", "completed", "reconciliation_required", "reconciled",
-      "quarantined", "revoked", "observed_unreserved_effect",
+      "quarantined", "revoked", "observed_unreserved_effect", "issued_expired",
     ]);
     if (!knownStates.has(current.state)) fail("action_ticket_lifecycle_invalid");
+    if (current.state === "issued_expired") {
+      verifyActionTicketLifecycleRecord(current);
+      if (current.uses !== 0 || current.reservation_id != null ||
+          !Number.isFinite(Date.parse(current.quarantined_at || "")) ||
+          !SHA256.test(String(current.quarantine_reason_digest || ""))) {
+        fail("action_ticket_lifecycle_invalid");
+      }
+      return Object.freeze({ ticket: current, expired: true });
+    }
     if (current.state !== "issued") {
       if ((current.lifecycle_schema_version || "host_native_action_lifecycle_v1") !==
             "host_native_action_lifecycle_v1" ||
@@ -5599,6 +5748,7 @@ export function createHostNativeGovernance({
         action,
         tenantId,
         phase: "ISSUE",
+        freshnessHorizonMs: ticketTtl,
       });
       // Async policy, provider-origin and semantic reads may consume the whole
       // validity window. Every authoritative check and timestamp inside the
@@ -5696,8 +5846,22 @@ export function createHostNativeGovernance({
           || Date.parse(bootstrapDeadlockVerdict.expires_at || "") <= issueNowValue
           || Date.parse(bootstrapReleaseExceptionCandidate.expires_at || "") <= issueNowValue
         )) fail("bootstrap_release_exception_expired");
+        const semanticScopeAtIssue = semanticScopeDecision({
+          delegation: currentDelegation,
+          action,
+          tenantId,
+          hostKind: host_kind,
+          hostSessionFingerprint: host_session_fingerprint,
+          phase: "ISSUE",
+          entity360: semanticScopeContextAtIssue,
+        });
+        if (semanticScopeEnforcedDenial(semanticScopeAtIssue)) {
+          fail(`semantic_scope_${semanticScopeAtIssue.action.toLowerCase()}`);
+        }
         let releaseJoin = null;
         let supersededTicket = expiredClaimTicket;
+        let releaseSupersededTicket = null;
+        let releaseSupersessionReason = null;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
           releaseJoin = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
           if (releaseJoin) {
@@ -5714,40 +5878,55 @@ export function createHostNativeGovernance({
             fail("core_join_verdict_expired");
           }
           const priorTicket = state.tickets[String(releaseJoin.authorized_ticket_id || "")];
-          if (
-            priorTicket?.state === "issued" &&
-            priorTicket.uses === 0 &&
-            Date.parse(priorTicket.ticket?.expires_at || "") > issueNowValue
-          ) {
-            fail("core_join_ticket_active");
-          }
           if (priorTicket) {
-            if (
-              priorTicket.state !== "issued" ||
-              priorTicket.uses !== 0 ||
-              Date.parse(priorTicket.ticket?.expires_at || "") > issueNowValue ||
-              priorTicket.ticket.host_session_fingerprint !== host_session_fingerprint ||
-              priorTicket.ticket.evidence_digest !== evidence_digest ||
-              priorTicket.ticket.release_manifest_digest !== release_manifest.manifest_digest ||
-              priorTicket.ticket.release_intent_digest !== release_intent_digest ||
-              hostNativeDigest(priorTicket.ticket.action) !== hostNativeDigest(action)
-            ) {
+            const expiresAt = Date.parse(priorTicket.ticket?.expires_at || "");
+            const priorIssuedState = priorTicket.state === "issued" ||
+              priorTicket.state === "issued_expired";
+            if (priorTicket.state === "issued_expired") {
+              verifyActionTicketLifecycleRecord(priorTicket);
+            }
+            const exactBinding = priorIssuedState &&
+              priorTicket.uses === 0 && !priorTicket.reservation_id &&
+              governance.verifyActionTicket(priorTicket.ticket);
+            const releaseBindingMatches = exactBinding &&
+              priorTicket.ticket.tenant_id === tenantId &&
+              priorTicket.ticket.work_id === currentDelegation.grant.work_id &&
+              priorTicket.ticket.intent_anchor_digest ===
+                currentDelegation.grant.intent_anchor_digest &&
+              priorTicket.ticket.repository === currentDelegation.grant.repository &&
+              priorTicket.ticket.delegation_id === currentDelegation.delegation_id &&
+              priorTicket.ticket.host_kind === host_kind &&
+              priorTicket.ticket.host_session_fingerprint === host_session_fingerprint &&
+              priorTicket.ticket.evidence_digest === evidence_digest &&
+              priorTicket.ticket.release_manifest_digest === release_manifest.manifest_digest &&
+              priorTicket.ticket.release_intent_digest === release_intent_digest &&
+              priorTicket.ticket.core_join_verdict_id === releaseJoin.verdict_id &&
+              priorTicket.ticket.core_join_verdict_digest === releaseJoin.claim_digest &&
+              hostNativeDigest(priorTicket.ticket.action) === hostNativeDigest(action);
+            if (!releaseBindingMatches || !Number.isFinite(expiresAt)) {
               fail("core_join_ticket_replacement_binding_mismatch");
             }
+            if (expiresAt > issueNowValue) {
+              const priorScopeDigest = priorTicket.ticket.semantic_scope_at_issue?.decision_digest;
+              const currentScopeDigest = semanticScopeAtIssue?.decision_digest;
+              if (priorScopeDigest === currentScopeDigest) {
+                verifyReleaseTicketSuccessorLineage(state, priorTicket);
+                return saveIdempotent(state, descriptor, priorTicket);
+              }
+              if (priorTicket.ticket.semantic_scope_at_issue?.action !== "ALLOW" ||
+                  semanticScopeAtIssue?.action !== "ALLOW") {
+                fail("core_join_ticket_active");
+              }
+              releaseSupersessionReason = "semantic_scope_revalidated";
+            } else {
+              releaseSupersessionReason = "expired_unreserved";
+            }
+            if (state.release_ticket_successors?.[priorTicket.ticket.ticket_id]) {
+              fail("release_ticket_lifecycle_invalid");
+            }
             supersededTicket = priorTicket;
+            releaseSupersededTicket = priorTicket;
           }
-        }
-        const semanticScopeAtIssue = semanticScopeDecision({
-          delegation: currentDelegation,
-          action,
-          tenantId,
-          hostKind: host_kind,
-          hostSessionFingerprint: host_session_fingerprint,
-          phase: "ISSUE",
-          entity360: semanticScopeContextAtIssue,
-        });
-        if (semanticScopeEnforcedDenial(semanticScopeAtIssue)) {
-          fail(`semantic_scope_${semanticScopeAtIssue.action.toLowerCase()}`);
         }
         const usage = actionUsage(action.kind, action, currentDelegation);
         ensureBudget(currentDelegation, usage);
@@ -5827,6 +6006,14 @@ export function createHostNativeGovernance({
               ticket_digest: hostNativeDigest(expiredClaimTicket.ticket),
             },
           } : {}),
+          ...(releaseSupersededTicket ? {
+            release_ticket_predecessor: {
+              schema_version: "host_native_release_ticket_predecessor_v1",
+              ticket_id: releaseSupersededTicket.ticket.ticket_id,
+              ticket_digest: hostNativeDigest(releaseSupersededTicket.ticket),
+              successor_reason: releaseSupersessionReason,
+            },
+          } : {}),
           ...(semanticScopeAtIssue ? { semantic_scope_at_issue: semanticScopeAtIssue } : {}),
           ...(predecessor ? { predecessor, predecessor_chain_digest: hostNativeDigest(predecessor) } : {}),
           ...(release_manifest ? {
@@ -5863,6 +6050,15 @@ export function createHostNativeGovernance({
           });
         }
         state.tickets[ticketId] = record;
+        if (releaseSupersededTicket) {
+          state.release_ticket_successors[releaseSupersededTicket.ticket.ticket_id] =
+            signReleaseTicketSuccessor(
+              releaseSupersededTicket,
+              record,
+              supersededAt,
+              releaseSupersessionReason,
+            );
+        }
         if (expiredClaimTicket) {
           state.native_precommit_ticket_successors[
             expiredClaimTicket.ticket.ticket_id
@@ -6096,7 +6292,11 @@ export function createHostNativeGovernance({
       const idempotencyInput = actionReservationIdempotencyInput(input);
       const initial = store.readState();
       const replay = getIdempotent(initial, tenantId, "reserveActionTicket", idempotencyInput);
-      if (replay?.result) return validateStandingReplay(initial, replay.result);
+      if (replay?.result) {
+        const replayed = validateStandingReplay(initial, replay.result);
+        if (replayed.state === "issued_expired") fail("action_ticket_expired");
+        return replayed;
+      }
       const nowValue = nowMillis(now);
       const bootstrapTicket = initial.tickets[String(input.ticket_id || "")];
       if (bootstrapTicket) {
@@ -6179,16 +6379,30 @@ export function createHostNativeGovernance({
       // authoritative post-await instant.
       const reservationNowValue = nowMillis(now);
       assertSoftwareConsumerFresh(trusted);
-      return store.mutate((state) => {
+      const reservationResult = await store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", idempotencyInput);
         if (descriptor?.result) return validateStandingReplay(state, descriptor.result,
           reservationNowValue);
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record) fail("action_ticket_not_found");
         if (record.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
+        verifyReleaseTicketSuccessorLineage(state, record);
         if (record.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
         if (record.state !== "issued") fail("replayed");
-        if (Date.parse(record.ticket.expires_at) <= reservationNowValue) fail("action_ticket_expired");
+        if (Date.parse(record.ticket.expires_at) <= reservationNowValue) {
+          record.state = "issued_expired";
+          record.quarantined_at = iso(reservationNowValue);
+          record.quarantine_reason_digest = hostNativeDigest({
+            schema_version: "host_native_issued_ticket_expiry_v1",
+            ticket_id: record.ticket.ticket_id,
+            expires_at: record.ticket.expires_at,
+            observed_at: record.quarantined_at,
+            uses: 0,
+            reservation_id: null,
+          });
+          signActionTicketLifecycleRecord(record);
+          return saveIdempotent(state, descriptor, record);
+        }
         const delegation = state.delegations[record.ticket.delegation_id];
         if (!delegationActive(delegation, reservationNowValue)) fail("delegation_not_active");
         ensureStandingReleaseDelegationActive(state, delegation, reservationNowValue);
@@ -6281,6 +6495,8 @@ export function createHostNativeGovernance({
         signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
+      if (reservationResult.state === "issued_expired") fail("action_ticket_expired");
+      return reservationResult;
     },
 
     async completeActionTicket(input = {}, trusted = {}) {

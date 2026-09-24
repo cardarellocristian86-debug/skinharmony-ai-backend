@@ -1534,6 +1534,7 @@ async function enforcedRuntimeFixture({ now = () => Date.parse(AT), initialIcfSe
       schema_version: "icf_initial_work_governance_seed_receipt_v1", state,
       tenant_id, work_id, causal_work_id: work_id, project_id: PROJECT_UUID,
       icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+      consistent_cut_at: new Date(now()).toISOString(),
     };
   });
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
@@ -1790,6 +1791,7 @@ test("Work snapshot bootstrap seeds missing ICF from a server-owned receipt and 
       schema_version: "icf_initial_work_governance_seed_receipt_v1", state,
       tenant_id, work_id, causal_work_id: work_id, project_id: PROJECT_UUID,
       icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+      consistent_cut_at: AT,
     };
   };
   const { runtime } = await enforcedRuntimeFixture({ initialIcfSeed });
@@ -1837,6 +1839,35 @@ test("Work snapshot bootstrap fails closed before assembly when the server-owned
     work_id: WORK_ID, as_of: AT, expected_revision: 0,
     idempotency_key: "entity360-icf-seed-mismatch",
   }), (error) => error.code === "icf_initial_seed_binding_mismatch" && error.status === 409);
+  assert.equal(assemblyCalls, 0);
+  assert.equal(snapshotWrites, 0);
+});
+
+test("Work snapshot bootstrap rejects an ICF receipt without a database-owned cut before assembly", async () => {
+  const { runtime, store, adapterRegistry } = await enforcedRuntimeFixture({
+    initialIcfSeed: async ({ tenant_id, work_id }) => ({
+      schema_version: "icf_initial_work_governance_seed_receipt_v1",
+      state: "seeded", tenant_id, work_id, causal_work_id: work_id,
+      project_id: PROJECT_UUID, icf_version: 1,
+      ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+    }),
+  });
+  let assemblyCalls = 0;
+  let snapshotWrites = 0;
+  const assembleContext = adapterRegistry.assembleContext;
+  const writeSnapshot = store.writeSnapshot;
+  adapterRegistry.assembleContext = async (...args) => {
+    assemblyCalls += 1;
+    return assembleContext(...args);
+  };
+  store.writeSnapshot = async (...args) => {
+    snapshotWrites += 1;
+    return writeSnapshot(...args);
+  };
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "entity360-icf-cut-missing",
+  }), (error) => error.code === "entity360_initial_icf_seed_readback_invalid" && error.status === 503);
   assert.equal(assemblyCalls, 0);
   assert.equal(snapshotWrites, 0);
 });
