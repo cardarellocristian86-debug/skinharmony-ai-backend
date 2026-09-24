@@ -362,6 +362,37 @@ test("governed continuation rebinds only to its declared logical session", () =>
   });
 });
 
+test("typed Work bootstrap issuance and continuation share the declared logical session", () => {
+  const staleTransport = { session_id: "stale-mcp-session" };
+  for (const input of [
+    { toolName: "core_typed_request", operation: "WORK_CREATE_OR_RECONCILE" },
+    { toolName: "nyra_continue", operation: "review_work_bootstrap" },
+    { toolName: "nyra_continue", operation: "create_work" },
+  ]) {
+    assert.deepEqual(resolveMcpLogicalSession({
+      ...input,
+      transportPresence: staleTransport,
+      declaredSessionId: "typed-bootstrap-logical-session",
+      transportSessionId: "rotated-mcp-session",
+    }), {
+      session_id: "typed-bootstrap-logical-session",
+      continuation_rebind: true,
+    }, `${input.toolName}:${input.operation}`);
+  }
+  for (const operation of ["DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"]) {
+    assert.deepEqual(resolveMcpLogicalSession({
+      toolName: "core_typed_request",
+      operation,
+      transportPresence: staleTransport,
+      declaredSessionId: "typed-bootstrap-logical-session",
+      transportSessionId: "rotated-mcp-session",
+    }), {
+      session_id: "stale-mcp-session",
+      continuation_rebind: false,
+    }, operation);
+  }
+});
+
 test("governed continuation restores the logical presence only after its handler succeeds", async () => {
   const observed = [];
   const app = createApp(config, {
