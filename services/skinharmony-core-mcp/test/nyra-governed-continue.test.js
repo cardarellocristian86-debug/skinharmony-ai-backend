@@ -1324,7 +1324,9 @@ test("Nyra performs the Core bootstrap review then creates one Work using the pe
   }, identity());
   assert.equal(created.structuredContent.work_created, true);
   assert.equal(created.structuredContent.work_id, WORK_ID);
-  assert.deepEqual(coreCalls[1], ["create", "core_create_work", "22222222-2222-4222-8222-222222222222"]);
+  assert.equal(coreCalls[1][0], "create");
+  assert.match(coreCalls[1][1], /^work_bootstrap_[a-f0-9]{48}$/);
+  assert.equal(coreCalls[1][2], "22222222-2222-4222-8222-222222222222");
   assert.equal(created.structuredContent.core_authority, "UNIVERSAL_CORE");
 });
 
