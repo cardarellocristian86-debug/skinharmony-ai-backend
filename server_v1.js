@@ -159,7 +159,15 @@ app.post("/api/assistant/chat", async (req, res) => {
 });
 
 if (require.main === module) {
-  const port = Number(process.env.PROTOCOL_ENGINE_PORT || 3030);
+  // Render injects PORT for each web-service instance.  Keep the local
+  // protocol-engine override for development, but never let it shadow the
+  // platform binding in production.
+  const requestedPort = process.env.PORT || process.env.PROTOCOL_ENGINE_PORT || "3030";
+  if (!/^\d{1,5}$/.test(requestedPort)) {
+    throw new Error("protocol_engine_port_invalid");
+  }
+  const port = Number(requestedPort);
+  if (port < 1 || port > 65_535) throw new Error("protocol_engine_port_invalid");
   app.listen(port, () => {
     console.log(`Protocol engine v1 attivo su http://localhost:${port}`);
   });
