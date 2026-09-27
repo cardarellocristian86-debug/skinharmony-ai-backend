@@ -461,6 +461,47 @@ async function resolveDttWorkBinding(identity, workId) {
   }
 }
 
+async function resolveDttWorkBootstrapBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  const presence = identity?.agentPresence;
+  if (!presence || presence.transport_bound !== true) {
+    throw legacyWorkAclError("dtt_work_signed_presence_required", 403);
+  }
+  const authorized = await authorizeDttExactWorkRead({
+    store: workContinuityV2Store,
+    identity: withTenantWorkAcl(identity),
+    tenant_id: identity.tenantId,
+    work_id: workId,
+  });
+  const work = authorized?.work || authorized;
+  if (!work || work.work_id !== workId ||
+      work.causal_lineage_state !== "READY" ||
+      !/^[a-f0-9]{64}$/u.test(String(work.causal_lineage_digest || "")) ||
+      !/^[a-f0-9]{64}$/u.test(String(work.intent_digest || ""))) {
+    throw legacyWorkAclError("dtt_work_bootstrap_binding_denied", 409);
+  }
+  return Object.freeze({
+    schema_version: "dtt_work_bootstrap_binding_v1",
+    tenant_id: identity.tenantId,
+    work_id: workId,
+    binding_id: crypto.randomUUID(),
+    work_binding_digest: crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical({
+        schema_version: "dtt_work_bootstrap_work_binding_v1",
+        tenant_id: identity.tenantId,
+        work_id: workId,
+        legacy_work_id: work.legacy_work_id || null,
+        project_id: work.project_id,
+        intent_digest: work.intent_digest,
+        causal_lineage_digest: work.causal_lineage_digest,
+      })))
+      .digest("hex"),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    server_owned: true,
+    execution_authorized: false,
+  });
+}
+
 async function resolveDttWorkReadBinding(identity, workId) {
   requireTenantWorkCapability(identity, "read");
   if (typeof workContinuityV2Store?.readWork !== "function") {
@@ -591,6 +632,7 @@ const coreHandlers = createCoreHandlers(config, {
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,
   resolveDttWorkBinding,
+  resolveDttWorkBootstrapBinding,
   resolveDttWorkReadBinding,
   resolveStandingReleaseIntentBinding,
   resolveGenericWorkCoreJoinBinding,
@@ -687,6 +729,7 @@ const softwareCognitionHandlers = createSoftwareCognitionHandlers({
 });
 const entity360Handlers = createEntity360Handlers({
   coreRequest: coreHandlers.dttCoreRequest,
+  bootstrapCoreRequest: coreHandlers.dttWorkBootstrapCoreRequest,
   shadowEnableCoreRequest: coreHandlers.entity360ShadowEnableCoreRequest,
   enforceEnableCoreRequest: coreHandlers.entity360EnforceEnableCoreRequest,
   shadowDisableCoreRequest: coreHandlers.entity360ShadowDisableCoreRequest,
@@ -908,7 +951,7 @@ async function materializeNyraControlContext(identity, continuity, operation, {
 } = {}) {
   if (!continuity?.work_id || !workContinuityRuntime?.upsertControlContext) return null;
   let projectId = continuity.project_id || null;
-  const expectedRevision = Number(continuity.architecture_version || continuity.work_revision || 0);
+  const expectedRevision = Number(continuity.work_revision || continuity.architecture_version || 0);
   if (!force && projectId && typeof workContinuityRuntime.readControlContext === "function") {
     const existing = await workContinuityRuntime.readControlContext(identity, {
       work_id: continuity.work_id,
@@ -1045,16 +1088,30 @@ async function ensureContinuity(identity, args, toolName, preflightResult, {
         autopilot = { assignments: [] };
       }
     }
-    const operationalRevision = Number(operational?.work_revision || 0);
+    const stateProjection = verifiedWork?.work_state_projection;
+    const projectionAvailable = stateProjection?.schema_version === "work_state_projection_v1" &&
+      stateProjection.available !== false;
+    const projectedRevision = Number(stateProjection?.work_revision || 0);
+    const projectedWatermark = Number(stateProjection?.ledger_watermark || 0);
+    if (projectionAvailable && (
+      stateProjection.work_id !== work.work_id ||
+      stateProjection.intent_digest !== work.intent_digest ||
+      !Number.isSafeInteger(projectedRevision) || projectedRevision < 0 ||
+      !Number.isSafeInteger(projectedWatermark) || projectedWatermark < 0 ||
+      projectedRevision !== projectedWatermark ||
+      !/^[a-f0-9]{64}$/.test(String(stateProjection.projection_digest || ""))
+    )) throw legacyWorkAclError("continuity_work_projection_invalid", 409);
     const continuity = Object.freeze({
       tenant_id: identity.tenantId,
       project_id: projectId,
       work_id: work.work_id,
       state: String(work.status || "unknown").toLowerCase(),
-      work_revision: Number.isSafeInteger(operationalRevision) && operationalRevision > 0
-        ? operationalRevision
+      work_revision: projectionAvailable && projectedRevision > 0
+        ? projectedRevision
         : null,
       intent_digest: work.intent_digest || operational?.intent_digest || null,
+      // V2 Work state is authoritative. The legacy continuity row remains a
+      // source for checkpoint/handoff metadata, never for the current action.
       next_action: work.next_action || null,
     });
     const controlContext = buildNyraControlContext({
@@ -1872,8 +1929,10 @@ async function reconcileCanonicalWorkCausalLineage(identity, work) {
     const binding = await ensureCanonicalWorkCausalLineage({ handlers: causalContinuityHandlers,
       identity, work: canonicalWork });
     const state = await workContinuityV2Store.recordCausalLineageState(
-      recoveryIdentity, { work_id: canonicalWork.work_id, state: "READY", server_owned_recovery: true });
-    return { state: state.state, binding, lineage_digest: state.lineage_digest };
+      recoveryIdentity, { work_id: canonicalWork.work_id, state: "READY",
+        lineage_digest: binding.lineage_digest, server_owned_recovery: true });
+    return { state: state.state, available: true, binding,
+      lineage_digest: state.lineage_digest };
   } catch (error) {
     const reasonCode = String(error?.code || error?.message || "canonical_work_causal_lineage_unavailable");
     const state = await workContinuityV2Store.recordCausalLineageState(
@@ -1882,7 +1941,12 @@ async function reconcileCanonicalWorkCausalLineage(identity, work) {
     // A competing recovery can make the Work READY between the failed causal
     // attempt and this fallback. Preserve the store's effective state instead
     // of returning a false PENDING result to the losing caller.
-    return { state: state.state, ...(state.state === "PENDING" ? { reason_code: reasonCode } : {}),
+    const recoveredByCompetingAttempt = state.state === "READY" &&
+      state.binding_verified === true &&
+      /^[a-f0-9]{64}$/u.test(String(state.lineage_digest || ""));
+    return { state: state.state, available: recoveredByCompetingAttempt,
+      recovered_by_competing_attempt: recoveredByCompetingAttempt,
+      ...(recoveredByCompetingAttempt ? {} : { reason_code: reasonCode }),
       lineage_digest: state.lineage_digest };
   }
 }
@@ -2071,6 +2135,47 @@ function canonicalWorkEntity360ContextReady(context) {
   return context?.state === "READY" || context?.state === "NOT_REQUIRED";
 }
 
+async function reconcileInitialEntity360WorkSnapshot(identity, work) {
+  const recoveryIdentity = withServerOwnedCausalLineageRecovery(identity);
+  let context;
+  try {
+    context = await bootstrapCanonicalWorkEntity360Context(identity, work);
+    context = { ...context, required: context.state !== "NOT_REQUIRED" };
+  } catch (error) {
+    context = { state: "PENDING", required: true,
+      reason_code: String(error?.code || error?.message ||
+        "entity360_work_bootstrap_unavailable").slice(0, 160) };
+  }
+  if (typeof workContinuityV2Store.recordEntity360ContextState === "function") {
+    const persisted = await workContinuityV2Store.recordEntity360ContextState(
+      recoveryIdentity, { work_id: work.work_id, ...context },
+    );
+    return { ...context, state: persisted.state,
+      reason_code: persisted.reason_code || context.reason_code || null,
+      context_digest: persisted.context_digest };
+  }
+  return context;
+}
+
+async function reconcileCanonicalWorkBootstrapReadiness(identity, work) {
+  const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, work);
+  if (causalLineage.available !== true || causalLineage.state !== "READY") {
+    return { causal_lineage: causalLineage,
+      entity_360_context: { state: "PENDING", required: true,
+        reason_code: "canonical_work_causal_lineage_pending" }, ready: false };
+  }
+  if (!work.legacy_work_id) {
+    return { causal_lineage: causalLineage,
+      entity_360_context: { state: "ACTIVATION_REQUIRED", required: false,
+        reason_code: "accepted_assignment_resume_required" },
+      activation_required: true, ready: false };
+  }
+  const entity360Context = await reconcileInitialEntity360WorkSnapshot(identity, work);
+  const ready = entity360Context.state === "READY" ||
+    entity360Context.state === "NOT_REQUIRED";
+  return { causal_lineage: causalLineage, entity_360_context: entity360Context, ready };
+}
+
 async function createCanonicalWorkGoverned(args, identity) {
   if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
   requireHostWorkCreateCapability(identity);
@@ -2156,22 +2261,18 @@ async function createCanonicalWorkGoverned(args, identity) {
             .digest("hex"),
         });
       }
-      const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, persisted.work);
-      const entity360Context = causalLineage.state === "READY"
-        ? await bootstrapCanonicalWorkEntity360Context(identity, persisted.work)
-        : null;
+      const readiness = await reconcileCanonicalWorkBootstrapReadiness(identity, persisted.work);
       return continuityTextResult({
         ok: true,
         result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
         legacy_work_id: persisted.legacy_work_id,
         core_authorization_receipt: null,
         core_authorization_attempt_receipt: replayAuthorizationAttemptReceipt,
-        causal_lineage: causalLineage,
-        entity360_context: entity360Context,
-        work_ready: causalLineage.state === "READY" &&
-          canonicalWorkEntity360ContextReady(entity360Context),
-        continuation_allowed: causalLineage.state === "READY" &&
-          canonicalWorkEntity360ContextReady(entity360Context),
+        causal_lineage: readiness.causal_lineage,
+        entity_360_context: readiness.entity_360_context,
+        entity360_context: readiness.entity_360_context,
+        work_ready: readiness.ready,
+        continuation_allowed: readiness.ready,
         dedicated_core_gate: {
           authorized: replayAuthorizationAttemptReceipt !== null,
           authority: "universal_core",
@@ -2235,10 +2336,7 @@ async function createCanonicalWorkGoverned(args, identity) {
   // Work creation and its causal lineage form one governed logical bootstrap.
   // The Work store remains the canonical source of every identifier/material;
   // exact retries repair a missing lineage idempotently before returning.
-  const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, result.work);
-  const entity360Context = causalLineage.state === "READY"
-    ? await bootstrapCanonicalWorkEntity360Context(identity, result.work)
-    : null;
+  const readiness = await reconcileCanonicalWorkBootstrapReadiness(identity, result.work);
   const attemptMaterial = {
     schema_version: "work_bootstrap_core_authorization_attempt_v1",
     authority: "universal_core",
@@ -2261,12 +2359,11 @@ async function createCanonicalWorkGoverned(args, identity) {
     // without rewriting or misattributing the original Work event evidence.
     core_authorization_receipt: result.core_authorization_receipt,
     core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt,
-    causal_lineage: causalLineage,
-    entity360_context: entity360Context,
-    work_ready: causalLineage.state === "READY" &&
-      canonicalWorkEntity360ContextReady(entity360Context),
-    continuation_allowed: causalLineage.state === "READY" &&
-      canonicalWorkEntity360ContextReady(entity360Context),
+    causal_lineage: readiness.causal_lineage,
+    entity_360_context: readiness.entity_360_context,
+        entity360_context: readiness.entity_360_context,
+    work_ready: readiness.ready,
+    continuation_allowed: readiness.ready,
     dedicated_core_gate: {
       authorized: true,
       authority: "universal_core",
@@ -2284,21 +2381,29 @@ async function readNyraDirectiveContext(identity, args) {
       tenantWorkIdentity,
       { work_id: args.work_id },
     );
-    if (args.read_only !== true && context?.work?.causal_lineage_state !== "READY") {
+    if (args.read_only !== true &&
+        (context?.work?.causal_lineage_state !== "READY" ||
+          !["READY", "NOT_REQUIRED"].includes(context?.work?.entity360_context_state))) {
       // A bootstrap can persist its canonical Work before a transient causal
       // binding failure.  The next governed, mutating resume is the recovery
       // boundary: rebuild the binding exclusively from server-owned Work and
       // project state, then re-read the Work before permitting any mutation.
       // Pure reads remain side-effect free and continue to expose PENDING.
-      const reconciliation = await reconcileCanonicalWorkCausalLineage(identity, context.work);
-      if (reconciliation.state !== "READY") {
-        throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
+      const reconciliation = await reconcileCanonicalWorkBootstrapReadiness(identity, context.work);
+      if (!reconciliation.ready) {
+        throw legacyWorkAclError(
+          reconciliation.causal_lineage?.available === false
+            ? "canonical_work_causal_lineage_pending"
+            : "canonical_work_entity360_context_pending",
+          409,
+        );
       }
       context = await workContinuityV2Store.readWork(
         tenantWorkIdentity,
         { work_id: args.work_id },
       );
-      if (context?.work?.causal_lineage_state !== "READY") {
+      if (context?.work?.causal_lineage_state !== "READY" ||
+          !["READY", "NOT_REQUIRED"].includes(context?.work?.entity360_context_state)) {
         throw legacyWorkAclError("canonical_work_causal_lineage_pending", 409);
       }
     }
@@ -2397,6 +2502,16 @@ async function resumeExistingContinuityWork(args, identity) {
       activationBinding.activation_replay_available
     ? await activateAcceptedQueuedWorkContinuity(identity, canonicalWork.work_id)
     : null;
+  const bootstrapReadiness = continuityActivation
+    ? await reconcileCanonicalWorkBootstrapReadiness(identity, continuityActivation.work)
+    : null;
+  if (bootstrapReadiness && bootstrapReadiness.ready !== true) {
+    const error = new Error(bootstrapReadiness.entity_360_context?.reason_code
+      || "canonical_work_bootstrap_readiness_pending");
+    error.code = "canonical_work_bootstrap_readiness_pending";
+    error.status = 409;
+    throw error;
+  }
   const result = continuityActivation
     ? await workContinuityRuntime.ensure(identity, {
         ...args,
@@ -2423,6 +2538,7 @@ async function resumeExistingContinuityWork(args, identity) {
     ok: true,
     result,
     continuity_activation: continuityActivation,
+    bootstrap_readiness: bootstrapReadiness,
     participant_onboarding: participant,
   };
   payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
@@ -2582,6 +2698,7 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
         coreHandlers.host_native_action_authorize(args,
           nativeClaim ? { ...identity, nativePrecommitClaimIssuer: true } : identity,
           nativeClaim),
+      authorizeTypedAction: coreTypedActionAuthorizer.authorize,
       reviewWorkBootstrap: reviewCanonicalWorkCreation,
       createWorkBootstrap: createCanonicalWorkGoverned,
       resumeExistingWork: resumeExistingContinuityWork,
@@ -3151,6 +3268,16 @@ const baseHandlers = {
           (activationBinding.activation_required || activationBinding.activation_replay_available)
         ? await activateAcceptedQueuedWorkContinuity(identity, canonicalWork.work_id)
         : null;
+      const bootstrapReadiness = continuityActivation
+        ? await reconcileCanonicalWorkBootstrapReadiness(identity, continuityActivation.work)
+        : null;
+      if (bootstrapReadiness && bootstrapReadiness.ready !== true) {
+        const error = new Error(bootstrapReadiness.entity_360_context?.reason_code
+          || "canonical_work_bootstrap_readiness_pending");
+        error.code = "canonical_work_bootstrap_readiness_pending";
+        error.status = 409;
+        throw error;
+      }
       const result = await workContinuityRuntime.ensure(identity, {
         ...args,
         project_id: projectId,
@@ -3173,6 +3300,7 @@ const baseHandlers = {
         ok: true,
         result,
         continuity_activation: continuityActivation,
+        bootstrap_readiness: bootstrapReadiness,
         participant_onboarding: participant,
         dedicated_core_gate: {
           authorized: true,
@@ -3204,23 +3332,22 @@ const baseHandlers = {
       const queued = await workContinuityV2Store.queueNewWork(
         withTenantWorkAcl(identity), request,
       );
-      const causalLineage = await reconcileCanonicalWorkCausalLineage(identity, queued.work);
-      const entity360Context = causalLineage.state === "READY"
-        ? await bootstrapCanonicalWorkEntity360Context(identity, queued.work)
-        : null;
-      const result = causalLineage.state === "READY"
+      const readiness = await reconcileCanonicalWorkBootstrapReadiness(identity, queued.work);
+      const result = readiness.ready
         ? { ...queued, work: (await workContinuityV2Store.readWork(
           withTenantWorkAcl(identity), { work_id: queued.work.work_id },
         )).work }
         : queued;
       return continuityTextResult({ ok: true,
         result,
-        causal_lineage: causalLineage,
-        entity360_context: entity360Context,
-        work_ready: causalLineage.state === "READY" &&
-          canonicalWorkEntity360ContextReady(entity360Context),
-        continuation_allowed: causalLineage.state === "READY" &&
-          canonicalWorkEntity360ContextReady(entity360Context),
+        causal_lineage: readiness.causal_lineage,
+        entity_360_context: readiness.entity_360_context,
+        entity360_context: readiness.entity_360_context,
+        work_ready: readiness.ready,
+        continuation_allowed: readiness.ready || readiness.activation_required === true,
+        lifecycle_state: readiness.activation_required === true
+          ? "ACTIVATION_REQUIRED" : (readiness.ready ? "READY" : "CONTEXT_PENDING"),
+        activation_required: readiness.activation_required === true,
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",

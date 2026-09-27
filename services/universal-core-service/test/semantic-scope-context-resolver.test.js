@@ -209,6 +209,49 @@ test("ENFORCE marks old snapshots stale and rejects future or tampered receipts"
   /semantic_scope_context_unavailable/u);
 });
 
+test("ENFORCE refreshes a stale snapshot before issuing a semantic context", async () => {
+  const old = snapshot({ snapshot_version: 1,
+    deterministic_immutable_digest: "1".repeat(64) });
+  const freshTime = "2026-09-05T10:16:00.001Z";
+  const fresh = snapshot({ snapshot_version: 2,
+    deterministic_immutable_digest: "2".repeat(64),
+    bitemporal: { as_of_valid_time: freshTime, as_of_knowledge_time: freshTime } });
+  let current = old;
+  const entity360 = runtime({ current: old,
+    verification: { valid: true, snapshot_digest: old.deterministic_immutable_digest } });
+  entity360.resolveEnforcementContext = async (identity, input) => {
+    entity360.calls.push({ capability: "entity_360_enforcement_context", identity, input });
+    return { snapshot: current,
+      verification: { valid: true,
+        snapshot_digest: current.deterministic_immutable_digest },
+      receipt: contextReceipt(current, {}, input) };
+  };
+  entity360.refreshEnforcementSnapshot = async (identity, input) => {
+    entity360.calls.push({ capability: "entity_360_enforcement_snapshot_refresh",
+      identity, input });
+    current = fresh;
+    return { snapshot: fresh, refresh: { execution_authorized: false } };
+  };
+  const resolver = createEntity360SemanticScopeContextResolver({
+    mode: "ENFORCE",
+    getEntity360Runtime: () => entity360,
+    maxSnapshotAgeMs: 15 * 60_000,
+    now: () => Date.parse(freshTime),
+  });
+  await resolver.initialize();
+  const context = await resolver.resolve({ tenant_id: TENANT, work_id: WORK,
+    action: { kind: "git.commit" }, phase: "ISSUE",
+    freshness_horizon_ms: 10 * 60_000 });
+  assert.equal(context.stale, false);
+  assert.equal(context.entity360_snapshot_ref,
+    `entity360_snapshot:${fresh.deterministic_immutable_digest}`);
+  assert.deepEqual(entity360.calls.map((call) => call.capability), [
+    "entity_360_enforcement_context",
+    "entity_360_enforcement_snapshot_refresh",
+    "entity_360_enforcement_context",
+  ]);
+});
+
 test("SHADOW reports dependency loss without becoming a readiness gate", async () => {
   const resolver = createEntity360SemanticScopeContextResolver({
     mode: "SHADOW",

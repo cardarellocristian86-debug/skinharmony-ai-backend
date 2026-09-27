@@ -21,6 +21,12 @@ function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+function coreHttpDenial(code, status = 409) {
+  return Object.assign(new Error(`core_request_failed:${status}:${code}`), {
+    code, status, statusCode: status,
+  });
+}
+
 function identity() {
   return { tenantId: "tenant-a", agentPresence: { session_fingerprint: SESSION } };
 }
@@ -320,7 +326,7 @@ test("expired delegation abandons a failed claim only with server-derived Core r
       abandonInactivePrecommitTicketGateClaim: async (_acl, input) => { abandonment = input; },
     },
     core: {
-      host_native_action_authorize: async () => { throw new Error("delegation_expired"); },
+      host_native_action_authorize: async () => { throw coreHttpDenial("delegation_expired"); },
       host_native_delegation_read: async () => ({ structuredContent: {
         ok: true,
         tenant_id: "tenant-a",
@@ -343,7 +349,7 @@ test("expired delegation abandons a failed claim only with server-derived Core r
   assert.match(abandonment.core_delegation_readback.readback_digest, /^[a-f0-9]{64}$/);
 });
 
-test("authorization failure records reconciliation and keeps an active delegation claim resumable", async () => {
+test("deterministic Core denial records a server-owned no-ticket abandonment receipt", async () => {
   const gate = nativeGate();
   const req = request(gate);
   let reconciled;
@@ -355,7 +361,7 @@ test("authorization failure records reconciliation and keeps an active delegatio
       abandonInactivePrecommitTicketGateClaim: async () => { abandoned += 1; },
     },
     core: {
-      host_native_action_authorize: async () => { throw new Error("core_action_blocked"); },
+      host_native_action_authorize: async () => { throw coreHttpDenial("core_action_blocked"); },
       host_native_delegation_read: async () => ({ structuredContent: {
         ok: true,
         tenant_id: "tenant-a",
@@ -372,7 +378,109 @@ test("authorization failure records reconciliation and keeps an active delegatio
     },
   });
   await assert.rejects(runtime.authorize(req, identity(), typedContext(gate)), /core_action_blocked/);
-  assert.equal(reconciled.stage, "before_ticket_locator");
+  assert.equal(reconciled.stage, "deterministic_denial");
   assert.equal(reconciled.ticket_id, null);
+  assert.equal(reconciled.server_owned, true);
   assert.equal(abandoned, 0);
+});
+
+test("semantic scope HOLD retires the no-ticket claim without granting authority", async () => {
+  const gate = nativeGate();
+  const req = request(gate);
+  let reconciled;
+  let fulfilled = 0;
+  const runtime = authorizer({
+    store: {
+      claimPrecommitTicketGate: async (_acl, binding) => claim(binding),
+      reconcilePrecommitTicketGateClaim: async (_acl, input) => { reconciled = input; },
+      fulfillPrecommitTicketTask: async () => { fulfilled += 1; },
+    },
+    core: {
+      host_native_action_authorize: async () => {
+        throw coreHttpDenial("semantic_scope_hold", 400);
+      },
+    },
+  });
+  await assert.rejects(runtime.authorize(req, identity(), typedContext(gate)),
+    /semantic_scope_hold/);
+  assert.equal(reconciled.stage, "deterministic_denial");
+  assert.equal(reconciled.ticket_id, null);
+  assert.equal(reconciled.server_owned, true);
+  assert.equal(reconciled.error_code, "semantic_scope_hold");
+  assert.equal(fulfilled, 0);
+});
+
+test("transient or unknown authorization failure keeps the claim reconciled and active", async (t) => {
+  for (const [name, error] of [
+    ["timeout", Object.assign(new Error("core_request_timeout"), { code: "core_request_timeout", status: 504 })],
+    ["rate limit", Object.assign(new Error("rate_limited"), { code: "rate_limited", status: 429 })],
+    ["unknown", new Error("socket_closed")],
+  ]) await t.test(name, async () => {
+    const gate = nativeGate();
+    const req = request(gate);
+    let reconciled;
+    let delegationReads = 0;
+    const runtime = authorizer({
+      store: {
+        claimPrecommitTicketGate: async (_acl, binding) => claim(binding),
+        reconcilePrecommitTicketGateClaim: async (_acl, input) => { reconciled = input; },
+      },
+      core: {
+        host_native_action_authorize: async () => { throw error; },
+        host_native_delegation_read: async () => { delegationReads += 1; },
+      },
+    });
+    await assert.rejects(runtime.authorize(req, identity(), typedContext(gate)));
+    assert.equal(reconciled.stage, "before_ticket_locator");
+    assert.equal(reconciled.ticket_id, null);
+    assert.equal(Object.hasOwn(reconciled, "server_owned"), false);
+    assert.equal(delegationReads, 0);
+  });
+});
+
+test("deterministic denial blocks exact retry while a newly bound gate and request can proceed", async () => {
+  const firstGate = nativeGate();
+  const firstRequest = request(firstGate);
+  const nextGate = nativeGate({ evaluation_digest: "6".repeat(64) });
+  const nextRequest = request(nextGate);
+  const nextRecord = ticketRecord(nextRequest, nextGate);
+  let deniedDigest = null;
+  let coreCalls = 0;
+  const runtime = authorizer({
+    store: {
+      claimPrecommitTicketGate: async (_acl, binding) => {
+        if (deniedDigest === binding.request_digest) {
+          throw new Error("precommit_gate_claim_abandoned");
+        }
+        return claim(binding);
+      },
+      reconcilePrecommitTicketGateClaim: async (_acl, input) => {
+        if (input.stage === "deterministic_denial") deniedDigest = input.request_digest;
+      },
+      fulfillPrecommitTicketTask: async () => {},
+    },
+    core: {
+      host_native_action_authorize: async () => {
+        coreCalls += 1;
+        if (coreCalls === 1) throw coreHttpDenial("core_action_blocked");
+        return { structuredContent: { action_ticket: nextRecord } };
+      },
+      host_native_action_read: async () => ({ structuredContent: {
+        ok: true, tenant_id: "tenant-a", action_ticket: nextRecord,
+      } }),
+    },
+  });
+  await assert.rejects(runtime.authorize(firstRequest, identity(), typedContext(firstGate)),
+    /core_action_blocked/);
+  await assert.rejects(runtime.authorize(firstRequest, identity(), typedContext(firstGate)),
+    /precommit_gate_claim_abandoned/);
+  assert.equal(coreCalls, 1);
+
+  const result = await runtime.authorize(nextRequest, identity(), typedContext(nextGate, {
+    continuation_ref: `nyc1_${"9".repeat(40)}`,
+    request_digest: "8".repeat(64),
+    server_idempotency_key: "server-idempotency-next",
+  }));
+  assert.equal(result.structuredContent.action_ticket.ticket.ticket_id, TICKET_ID);
+  assert.equal(coreCalls, 2);
 });

@@ -38,9 +38,11 @@ import {
   mediateFailureObservation,
 } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import {
+  DTT_WORK_BOOTSTRAP_CONTEXT_HEADER,
   DTT_WORK_CONTEXT_HEADER,
   DTT_WORK_READ_CONTEXT_HEADER,
   canonicalDttWorkContextBody,
+  issueDttWorkBootstrapContext,
   issueDttWorkContext,
   issueDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
@@ -698,6 +700,7 @@ export function createCoreHandlers(config, options = {}) {
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
+  const resolveDttWorkBootstrapBinding = options.resolveDttWorkBootstrapBinding;
   const resolveDttWorkReadBinding = options.resolveDttWorkReadBinding;
   const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
@@ -1019,6 +1022,7 @@ export function createCoreHandlers(config, options = {}) {
     useTenantGateway = false,
     allowFailurePayload = false,
     dttWorkContext = null,
+    dttWorkBootstrapContext = null,
     dttWorkReadContext = null,
     genericWorkCoreJoinContext = null,
     preservePolicyRegistryDomainPackId = false,
@@ -1054,7 +1058,8 @@ export function createCoreHandlers(config, options = {}) {
       }
       headers["x-sh-tenant-context"] = context;
     }
-    if (dttWorkContext && dttWorkReadContext) {
+    if ([dttWorkContext, dttWorkBootstrapContext, dttWorkReadContext]
+      .filter(Boolean).length > 1) {
       throw new Error("dtt_work_context_ambiguous");
     }
     if (dttWorkContext) {
@@ -1065,6 +1070,21 @@ export function createCoreHandlers(config, options = {}) {
         work_id: dttWorkContext.work_id,
         lease_binding: dttWorkContext.lease_binding,
         agent_presence: dttWorkContext.agent_presence,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
+    if (dttWorkBootstrapContext) {
+      if (useTenantGateway !== true) {
+        throw new Error("dtt_work_bootstrap_context_tenant_gateway_required");
+      }
+      headers[DTT_WORK_BOOTSTRAP_CONTEXT_HEADER] = issueDttWorkBootstrapContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: dttWorkBootstrapContext.work_id,
+        bootstrap_binding: dttWorkBootstrapContext.bootstrap_binding,
+        agent_presence: dttWorkBootstrapContext.agent_presence,
         method,
         path,
         body: sanitizedBody,
@@ -1086,7 +1106,7 @@ export function createCoreHandlers(config, options = {}) {
       });
     }
     if (genericWorkCoreJoinContext) {
-      if (dttWorkContext || dttWorkReadContext) {
+      if (dttWorkContext || dttWorkBootstrapContext || dttWorkReadContext) {
         throw new Error("generic_work_core_join_context_ambiguous");
       }
       if (useTenantGateway !== true) {
@@ -1404,6 +1424,51 @@ export function createCoreHandlers(config, options = {}) {
         agent_presence: identity.agentPresence,
       },
     });
+  }
+
+  async function dttWorkBootstrapCoreRequest(path, args, identity, request = {}) {
+    if (path !== "/v1/entity-360/snapshots/bootstrap" ||
+        String(request.method || "POST").toUpperCase() !== "POST") {
+      throw new Error("dtt_work_bootstrap_route_denied");
+    }
+    if (typeof resolveDttWorkBootstrapBinding !== "function") {
+      throw new Error("dtt_work_bootstrap_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!POLICY_REGISTRY_WORK_ID.test(workId)) {
+      throw new Error("dtt_work_id_invalid");
+    }
+    const binding = await resolveDttWorkBootstrapBinding(identity, workId);
+    const presence = identity?.agentPresence;
+    const expiresAt = Date.parse(String(binding?.expires_at || ""));
+    if (binding?.schema_version !== "dtt_work_bootstrap_binding_v1" ||
+        binding.tenant_id !== identity.tenantId || binding.work_id !== workId ||
+        binding.execution_authorized !== false || binding.server_owned !== true ||
+        !/^[a-f0-9]{64}$/u.test(String(binding.work_binding_digest || "")) ||
+        !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !presence) {
+      throw new Error("dtt_work_bootstrap_binding_invalid");
+    }
+    const body = request.body === undefined ? args : request.body;
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      method: "POST",
+      body,
+      useTenantGateway: true,
+      dttWorkBootstrapContext: {
+        work_id: workId,
+        bootstrap_binding: binding,
+        agent_presence: presence,
+      },
+    });
+  }
+
+  async function entity360TenantStatusCoreRequest(identity) {
+    return entity360TenantStatusReadback(await coreRequest(
+      "/v1/entity-360/tenant-status",
+      identity.tenantId,
+      { method: "POST", body: {}, useTenantGateway: true, strictTransport: true,
+        timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS, maxResponseBytes: 8 * 1024 },
+    ));
   }
 
   async function dttReadCoreRequest(path, args, identity, request = {}) {
@@ -4027,10 +4092,29 @@ export function createCoreHandlers(config, options = {}) {
       };
       const view = args.view || "registry";
       const requestedBranches = view === "authorized" && Array.isArray(args.branches) ? args.branches : [];
-      const query = requestedBranches.length
-        ? `?${new URLSearchParams({ branches: requestedBranches.join(",") }).toString()}`
-        : "";
-      const bindingPayload = { view, branches: requestedBranches };
+      const paginationRequested = args.cursor !== undefined || args.limit !== undefined;
+      if (view !== "taxonomy" && paginationRequested) {
+        const error = new Error("core_branch_registry_pagination_not_applicable");
+        error.code = "core_branch_registry_pagination_not_applicable";
+        error.status = 400;
+        throw error;
+      }
+      const queryParameters = new URLSearchParams();
+      if (requestedBranches.length) queryParameters.set("branches", requestedBranches.join(","));
+      if (view === "taxonomy") {
+        queryParameters.set("limit", String(args.limit ?? 100));
+        if (args.cursor) queryParameters.set("cursor", String(args.cursor));
+      }
+      const queryString = queryParameters.toString();
+      const query = queryString ? `?${queryString}` : "";
+      const bindingPayload = {
+        view,
+        branches: requestedBranches,
+        ...(view === "taxonomy" ? {
+          cursor: args.cursor || null,
+          limit: Number(args.limit ?? 100),
+        } : {}),
+      };
       const owner = ownerReadContext(identity, ownerRequestBinding("branch_registry", bindingPayload));
       const additionalHeaders = owner.owner_verified === true
         ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
@@ -5256,6 +5340,18 @@ export function createCoreHandlers(config, options = {}) {
   // capability.
   Object.defineProperty(handlers, "dttCoreRequest", {
     value: dttCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(handlers, "dttWorkBootstrapCoreRequest", {
+    value: dttWorkBootstrapCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(handlers, "entity360TenantStatusCoreRequest", {
+    value: entity360TenantStatusCoreRequest,
     enumerable: false,
     configurable: false,
     writable: false,

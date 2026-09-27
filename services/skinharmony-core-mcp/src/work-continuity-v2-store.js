@@ -116,9 +116,31 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_agent_id varchar(128
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_session_fingerprint varchar(128);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_version varchar(64) NOT NULL DEFAULT 'work_priority_v1';
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_context jsonb NOT NULL DEFAULT '{}'::jsonb;
-ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_state varchar(16) NOT NULL DEFAULT 'READY';
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_state varchar(16) NOT NULL DEFAULT 'PENDING';
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_reason varchar(160);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS causal_lineage_digest char(64);
+ALTER TABLE tenant_work ALTER COLUMN causal_lineage_state SET DEFAULT 'PENDING';
+UPDATE tenant_work SET causal_lineage_state='PENDING',
+  causal_lineage_reason=COALESCE(causal_lineage_reason,'canonical_work_causal_lineage_not_verified')
+WHERE causal_lineage_state='READY' AND causal_lineage_digest IS NULL;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_context_state varchar(16) NOT NULL DEFAULT 'PENDING';
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_context_reason varchar(160);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_entity_id varchar(160);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_snapshot_version bigint;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_snapshot_digest char(64);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_gate_digest char(64);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS entity360_verification_digest char(64);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='tenant_work_entity360_context_state_valid'
+      AND conrelid='tenant_work'::regclass
+  ) THEN
+    ALTER TABLE tenant_work ADD CONSTRAINT tenant_work_entity360_context_state_valid
+      CHECK (entity360_context_state IN ('PENDING','READY','NOT_REQUIRED'));
+  END IF;
+END $$;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL DEFAULT true;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 1;
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
@@ -1346,9 +1368,17 @@ function assertPermission(predicate, work, actor) {
 function normalizeWork(row) {
   return {
     ...row,
-    causal_lineage_state: String(row.causal_lineage_state || "READY").toUpperCase(),
+    causal_lineage_state: String(row.causal_lineage_state || "PENDING").toUpperCase(),
     causal_lineage_reason: row.causal_lineage_reason || null,
     causal_lineage_digest: row.causal_lineage_digest || null,
+    entity360_context_state: String(row.entity360_context_state || "PENDING").toUpperCase(),
+    entity360_context_reason: row.entity360_context_reason || null,
+    entity360_entity_id: row.entity360_entity_id || null,
+    entity360_snapshot_version: row.entity360_snapshot_version == null
+      ? null : Number(row.entity360_snapshot_version),
+    entity360_snapshot_digest: row.entity360_snapshot_digest || null,
+    entity360_gate_digest: row.entity360_gate_digest || null,
+    entity360_verification_digest: row.entity360_verification_digest || null,
     assigned_user_ids: Array.isArray(row.assigned_user_ids) ? row.assigned_user_ids : [],
     supervising_user_ids: Array.isArray(row.supervising_user_ids) ? row.supervising_user_ids : [],
     agent_ids: Array.isArray(row.agent_ids) ? row.agent_ids : [],
@@ -2042,25 +2072,45 @@ export function createWorkContinuityV2Store({
     if (!new Set(["READY", "PENDING"]).has(state)) fail("causal_lineage_state_invalid");
     const reasonCode = state === "PENDING"
       ? text(input.reason_code, "causal_lineage_reason_required", 160) : null;
-    const lineageDigest = objectDigest({ schema_version: "canonical_work_causal_lineage_state_v1",
-      tenant_id: actor.tenant_id, work_id: workId, state, reason_code: reasonCode });
+    const verifiedBindingDigest = state === "READY"
+      ? digest(input.lineage_digest, "causal_lineage_binding_digest_required") : null;
+    const lineageDigest = state === "READY" ? verifiedBindingDigest
+      : objectDigest({ schema_version: "canonical_work_causal_lineage_state_v1",
+        tenant_id: actor.tenant_id, work_id: workId, state, reason_code: reasonCode });
     return transaction(async (client) => {
       const locked = await client.query(`SELECT * FROM tenant_work
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
       if (locked.rowCount !== 1) fail("work_not_found");
       const work = normalizeWork(locked.rows[0]);
       if (state === "PENDING" && work.causal_lineage_state === "READY") {
+        const verified = await client.query(`SELECT sequence_number,event_type,event_hash,payload
+          FROM tenant_work_event WHERE tenant_id=$1 AND work_id=$2
+            AND event_type='canonical_causal_lineage_state'
+            AND payload->>'lineage_digest'=$3
+            AND payload->>'schema_version'='canonical_work_causal_lineage_state_v2'
+            AND payload->>'state'='READY'
+          ORDER BY sequence_number DESC LIMIT 1`,
+        [actor.tenant_id, workId, work.causal_lineage_digest]);
+        const bindingVerified = verified.rows.some((event) =>
+          event.payload?.schema_version === "canonical_work_causal_lineage_state_v2"
+          && event.payload?.state === "READY"
+          && event.payload?.lineage_digest === work.causal_lineage_digest);
         return { work, state: "READY", reason_code: work.causal_lineage_reason,
-          lineage_digest: work.causal_lineage_digest, event: null, idempotent_replay: true };
+          lineage_digest: work.causal_lineage_digest, binding_verified: bindingVerified,
+          event: null, idempotent_replay: true };
       }
       const prior = await client.query(`SELECT sequence_number,event_type,event_hash,payload
         FROM tenant_work_event WHERE tenant_id=$1 AND work_id=$2
           AND event_type='canonical_causal_lineage_state'
           AND payload->>'lineage_digest'=$3
         ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId, lineageDigest]);
-      const event = prior.rows[0] || await appendV2Event(client, actor, workId,
+      const priorEvent = prior.rows.find((event) => state !== "READY" ||
+        (event.payload?.schema_version === "canonical_work_causal_lineage_state_v2"
+          && event.payload?.state === "READY"));
+      const event = priorEvent || await appendV2Event(client, actor, workId,
         "canonical_causal_lineage_state", {
-          schema_version: "canonical_work_causal_lineage_state_v1", state,
+          schema_version: state === "READY" ? "canonical_work_causal_lineage_state_v2"
+            : "canonical_work_causal_lineage_state_v1", state,
           reason_code: reasonCode, lineage_digest: lineageDigest,
         });
       const updated = await client.query(`UPDATE tenant_work
@@ -2074,6 +2124,117 @@ export function createWorkContinuityV2Store({
       if (!effective) fail("causal_lineage_state_conflict");
       return { work: normalizeWork(effective), state: effective.causal_lineage_state,
         reason_code: effective.causal_lineage_reason, lineage_digest: effective.causal_lineage_digest,
+        binding_verified: state === "READY",
+        event: { sequence_number: Number(event.sequence_number), event_type: event.event_type,
+          event_hash: event.event_hash }, idempotent_replay: Boolean(priorEvent) };
+    });
+  }
+
+  async function recordEntity360ContextState(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (identity?.serverOwnedCausalLineageRecovery !== true) {
+      fail("entity360_context_server_owned_recovery_required");
+    }
+    const workId = uuid(input.work_id);
+    const state = String(input.state || "").toUpperCase();
+    if (!new Set(["PENDING", "READY", "NOT_REQUIRED"]).has(state)) {
+      fail("entity360_context_state_invalid");
+    }
+    const reasonCode = state === "PENDING"
+      ? text(input.reason_code, "entity360_context_reason_required", 160) : null;
+    const entityId = state === "READY"
+      ? text(input.entity_id, "entity360_context_entity_id_required", 160) : null;
+    const snapshotVersion = state === "READY" ? Number(input.snapshot_version) : null;
+    const snapshotDigest = state === "READY"
+      ? digest(input.snapshot_digest, "entity360_context_snapshot_digest_required") : null;
+    const evidenceSource = state === "READY" ? input.source || "initial_bootstrap" : null;
+    if (state === "READY" && !["initial_bootstrap", "existing_verified"].includes(evidenceSource)) {
+      fail("entity360_context_evidence_source_invalid");
+    }
+    const existingVerified = evidenceSource === "existing_verified";
+    if (state === "READY" && (existingVerified ? input.gate_digest != null
+      : input.verification_digest != null)) {
+      fail("entity360_context_evidence_kind_mismatch");
+    }
+    const gateDigest = state === "READY" && !existingVerified
+      ? digest(input.gate_digest, "entity360_context_gate_digest_required") : null;
+    const verificationDigest = existingVerified
+      ? digest(input.verification_digest, "entity360_context_verification_digest_required") : null;
+    // Preserve legacy bootstrap replay identity; a verifier receipt is separate
+    // evidence and must never be stored or represented as an authorization gate.
+    const verificationBinding = verificationDigest ? {
+      schema_version: "canonical_work_entity360_context_state_v2",
+      source: "existing_verified", verification_digest: verificationDigest,
+    } : {};
+    if (state === "READY" && (!Number.isSafeInteger(snapshotVersion) || snapshotVersion < 1)) {
+      fail("entity360_context_snapshot_version_invalid");
+    }
+    const contextDigest = objectDigest({
+      schema_version: "canonical_work_entity360_context_state_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      state,
+      reason_code: reasonCode,
+      entity_id: entityId,
+      snapshot_version: snapshotVersion,
+      snapshot_digest: snapshotDigest,
+      gate_digest: gateDigest,
+      ...verificationBinding,
+    });
+    return transaction(async (client) => {
+      const locked = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      if (locked.rowCount !== 1) fail("work_not_found");
+      const work = normalizeWork(locked.rows[0]);
+      // Entity360 readiness is a verified bootstrap fact. A later retry may
+      // observe a transient timeout after another recovery already committed
+      // READY; it must not erase the verified snapshot binding. The row lock
+      // makes this monotonic under concurrent recovery attempts.
+      if (work.entity360_context_state === "READY" && state !== "READY") {
+        const existingContextDigest = objectDigest({
+          schema_version: "canonical_work_entity360_context_state_v1",
+          tenant_id: actor.tenant_id,
+          work_id: workId,
+          state: "READY",
+          reason_code: null,
+          entity_id: work.entity360_entity_id,
+          snapshot_version: work.entity360_snapshot_version,
+          snapshot_digest: work.entity360_snapshot_digest,
+          gate_digest: work.entity360_gate_digest,
+          ...(work.entity360_verification_digest ? {
+            schema_version: "canonical_work_entity360_context_state_v2",
+            source: "existing_verified",
+            verification_digest: work.entity360_verification_digest,
+          } : {}),
+        });
+        return { work, state: "READY", reason_code: work.entity360_context_reason,
+          context_digest: existingContextDigest, event: null, idempotent_replay: true };
+      }
+      const prior = await client.query(`SELECT sequence_number,event_type,event_hash,payload
+        FROM tenant_work_event WHERE tenant_id=$1 AND work_id=$2
+          AND event_type='canonical_entity360_context_state'
+          AND payload->>'context_digest'=$3
+        ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId, contextDigest]);
+      const event = prior.rows[0] || await appendV2Event(client, actor, workId,
+        "canonical_entity360_context_state", {
+          schema_version: "canonical_work_entity360_context_state_v1",
+          state, reason_code: reasonCode, entity_id: entityId,
+          snapshot_version: snapshotVersion, snapshot_digest: snapshotDigest,
+          gate_digest: gateDigest, ...verificationBinding, context_digest: contextDigest,
+        });
+      const updated = await client.query(`UPDATE tenant_work SET
+          entity360_context_state=$3,entity360_context_reason=$4,entity360_entity_id=$5,
+          entity360_snapshot_version=$6,entity360_snapshot_digest=$7,entity360_gate_digest=$8,
+          entity360_verification_digest=$9,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 RETURNING *`,
+      [actor.tenant_id, workId, state, reasonCode, entityId, snapshotVersion,
+        snapshotDigest, gateDigest, verificationDigest]);
+      const effective = updated.rows[0];
+      if (!effective) fail("entity360_context_state_conflict");
+      return { work: normalizeWork(effective), state: effective.entity360_context_state,
+        reason_code: effective.entity360_context_reason,
+        context_digest: contextDigest,
         event: { sequence_number: Number(event.sequence_number), event_type: event.event_type,
           event_hash: event.event_hash }, idempotent_replay: prior.rows.length === 1 };
     });
@@ -2085,7 +2246,8 @@ export function createWorkContinuityV2Store({
         const actor = actorFromIdentity(identity);
         const current = await query(`SELECT * FROM tenant_work
           WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
-        if (String(current.rows[0]?.causal_lineage_state || "READY").toUpperCase() === "PENDING") {
+        if (current.rows[0] &&
+            String(current.rows[0].causal_lineage_state || "READY").toUpperCase() === "PENDING") {
           fail("canonical_work_causal_lineage_pending", 409);
         }
       }
@@ -9709,7 +9871,7 @@ export function createWorkContinuityV2Store({
   }
   return Object.freeze({ initialize, createWork: guardPendingWorkMutation(createWork), createNewWork,
     validateCanonicalWorkBootstrapReview,
-    readCreatedWorkByBootstrapRequest, recordCausalLineageState,
+    readCreatedWorkByBootstrapRequest, recordCausalLineageState, recordEntity360ContextState,
     // Creation/replay performs its own authoritative collision checks. A
     // caller-supplied UUID that already names a PENDING Work must reach those
     // checks instead of being misreported as a mutation of that Work.

@@ -285,21 +285,15 @@ function validateBootstrapGate(value, identityContext, args, tenantId, workId) {
   if (!result || !gate || !snapshot) throw new Error("entity360_bootstrap_readback_invalid");
   const gateKeys = Object.keys(gate).sort();
   const { gate_digest: gateDigest, ...gateUnsigned } = gate;
-  const canonicalAsOf = new Date(args.as_of).toISOString();
   const canonicalIdempotencyKey = String(args.idempotency_key || "").trim();
-  const assemblyInput = {
-    work_id: workId,
-    entity_type: "work",
-    identity: { work_id: workId },
-    as_of: canonicalAsOf,
-    expected_revision: 0,
-    idempotency_key: canonicalIdempotencyKey,
-  };
   const requestDigest = entity360Digest({
-    schema_version: "entity_360_snapshot_assemble_request_v1",
+    schema_version: "entity_360_work_snapshot_bootstrap_request_v2",
     tenant_id: tenantId,
-    actor_id: identityContext.agentPresence?.agent_id,
-    input: assemblyInput,
+    input: {
+      work_id: workId,
+      expected_revision: 0,
+      idempotency_key: canonicalIdempotencyKey,
+    },
   });
   const snapshotWorkBindings = [snapshot.project_work_linkage?.work_id,
     snapshot.project_work_linkage?.legacy_work_id]
@@ -459,6 +453,7 @@ function adaptEntity360NyraContext(capabilityId, value, tenantId, workId) {
 
 export function createEntity360Handlers({
   coreRequest,
+  bootstrapCoreRequest = null,
   shadowEnableCoreRequest,
   enforceEnableCoreRequest,
   shadowDisableCoreRequest,
@@ -530,7 +525,12 @@ export function createEntity360Handlers({
         agent_presence: identityContext.agentPresence,
       });
       if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
-      const value = await coreRequest(paths[capabilityId], args,
+      const selectedCoreRequest = capabilityId === "entity_360_work_snapshot_bootstrap"
+        ? bootstrapCoreRequest : coreRequest;
+      if (typeof selectedCoreRequest !== "function") {
+        throw new Error("entity360_bootstrap_transport_required");
+      }
+      const value = await selectedCoreRequest(paths[capabilityId], args,
         identityContext, {
         method: "POST",
         body: withoutCallerTenant(args),

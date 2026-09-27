@@ -122,6 +122,9 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
   // public capability name intentionally does not contain `atlas`, so derive
   // the Core-recognised Atlas target from the validated Work identifier.
   if (name === "software_cognition_repository_bootstrap") return `work_atlas:${workId}`;
+  if (name === "entity_360_snapshot_assemble") {
+    return `work_continuity_entity_360_snapshot:${workId}`;
+  }
   if (["tenant_work_task_record", "tenant_work_task_contract_record",
     "tenant_work_dependency_manifest_record", "tenant_work_trajectory_evaluate",
     "tenant_work_task_commit", "tenant_work_task_invalidate"].includes(name)) return `task:${workId}`;
@@ -600,6 +603,15 @@ export const WORK_CONTINUITY_TOOLS = [
         evidence_required: { type: "boolean" },
         live_verification_required: { type: "boolean" },
       }),
+      precommit_deferred_v2_tasks: {
+        type: "array",
+        maxItems: 64,
+        uniqueItems: true,
+        items: object({
+          task_id: uuid,
+          phase: { type: "string", enum: ["POST_COMMIT", "POST_DEPLOY"] },
+        }, ["task_id", "phase"]),
+      },
       software_contract: object({
         change_id: uuid, base_state_digest: hash, goal: text(4_000),
         hypotheses: { type: "array", maxItems: 200, items: { type: "object", additionalProperties: true } },
@@ -676,7 +688,27 @@ export const WORK_CONTINUITY_TOOLS = [
             items: { type: "string", minLength: 1, maxLength: 2_000 },
           },
         }, ["schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files"]),
-        tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
+        tests: {
+          type: "array",
+          maxItems: 100,
+          items: {
+            ...object({
+              name: text(500),
+              suite: text(500),
+              check: text(500),
+              passed: { type: "boolean" },
+              total: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+              passed_count: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+              failed_count: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+              skipped_count: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+            }, ["passed"]),
+            anyOf: [
+              { required: ["name"] },
+              { required: ["suite"] },
+              { required: ["check"] },
+            ],
+          },
+        },
         evidence_refs: { type: "array", maxItems: 100, items: { type: "string", maxLength: 500 } },
         acceptance_evidence: {
           type: "array",
@@ -693,6 +725,7 @@ export const WORK_CONTINUITY_TOOLS = [
           }, ["criterion_digest", "passed", "evidence_refs"]),
         },
         verifies_task_ids: { type: "array", maxItems: 3, items: { type: "string", maxLength: 120 } },
+        precommit_deferred_v2_tasks_digest: hash,
         live_verified: { type: "boolean" }, correction_required: { type: "boolean" },
       }, ["summary"]),
     }, [

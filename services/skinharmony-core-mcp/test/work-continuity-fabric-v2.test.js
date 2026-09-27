@@ -11,6 +11,7 @@ import {
   evaluateNativeClosure,
   evaluateTaskScopedNativeVerifierEvidence,
   incidentFingerprint,
+  normalizeNativeAgentTests,
   normalizeSurfaces,
   selectAggregatedAtlasWithinBudget,
   surfacesOverlap,
@@ -20,6 +21,68 @@ import { validateToolArguments } from "../src/schema-validation.js";
 
 const COMMIT = "c".repeat(40);
 const COORDINATOR_SESSION = "a".repeat(64);
+
+test("native test evidence rejects counters masquerading as closure verdicts", () => {
+  assert.throws(() => normalizeNativeAgentTests([{
+    suite: "skinharmony-core-mcp full",
+    passed: 1317,
+    failed: 0,
+    skipped: 12,
+  }]), /native_agent_test_evidence_passed_boolean_required/);
+  assert.deepEqual(normalizeNativeAgentTests([{
+    suite: "skinharmony-core-mcp full",
+    passed: true,
+    total: 1329,
+    passed_count: 1317,
+    failed_count: 0,
+    skipped_count: 12,
+  }]), [{
+    schema_version: "native_test_evidence_v1",
+    name: "skinharmony-core-mcp full",
+    passed: true,
+    total: 1329,
+    passed_count: 1317,
+    failed_count: 0,
+    skipped_count: 12,
+  }]);
+  assert.throws(() => normalizeNativeAgentTests([{
+    check: "contradictory report",
+    passed: true,
+    failed_count: 1,
+  }]), /native_agent_test_evidence_result_conflict/);
+  assert.throws(() => normalizeNativeAgentTests([{
+    check: "unknown legacy counter",
+    passed: true,
+    failed: 0,
+  }]), /native_agent_test_evidence_field_invalid/);
+  assert.throws(() => normalizeNativeAgentTests([{
+    check: "string counter",
+    passed: true,
+    total: "1",
+  }]), /native_agent_test_evidence_count_invalid/);
+  assert.throws(() => normalizeNativeAgentTests([{
+    check: "x".repeat(501),
+    passed: true,
+  }]), /native_agent_test_evidence_name_invalid/);
+
+  const reportTool = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_report");
+  const testsSchema = reportTool.inputSchema.properties.report.properties.tests;
+  assert.deepEqual(validateToolArguments(testsSchema, [{
+    suite: "skinharmony-core-mcp full",
+    passed: true,
+    total: 1329,
+    passed_count: 1317,
+    failed_count: 0,
+    skipped_count: 12,
+  }]), []);
+  assert.ok(validateToolArguments(testsSchema, [{
+    suite: "skinharmony-core-mcp full",
+    passed: 1317,
+    failed: 0,
+    skipped: 12,
+  }]).some((error) => error.code === "type" || error.code === "additional_property"));
+});
 
 function boundedUniqueText(prefix, index, length) {
   const marker = `${prefix}-${String(index).padStart(3, "0")}-`;
@@ -725,6 +788,7 @@ test("task-scoped verifier rejects a peer bound to a different V2 task definitio
     v2_task_id: v2TaskId,
     v2_task_digest: "4".repeat(64),
   }));
+  agents[1].report.evidence_refs.push(`v2-task:${"4".repeat(64)}`);
   const peer = structuredClone(agents[1]);
   peer.task_id = "verify-peer";
   peer.agent_id = "codex-peer-verifier";
@@ -761,6 +825,35 @@ test("task-scoped verifier rejects a peer bound to a different V2 task definitio
   assert.equal(unattestedPeerBlocked.promotable, false);
   assert.ok(unattestedPeerBlocked.missing.includes(
     "task_scoped_peer_v2_task_attestation_missing:verify-peer"));
+});
+
+test("task-scoped acceptance for task A cannot promote task B", () => {
+  const plan = closurePlan();
+  const taskB = "44444444-4444-4444-8444-444444444444";
+  const taskADigest = "3".repeat(64);
+  const taskBDigest = "4".repeat(64);
+  const agents = completedAgents(plan).map((agent) => ({
+    ...agent,
+    v2_task_id: taskB,
+    v2_task_digest: taskBDigest,
+  }));
+  agents[1].report.evidence_refs.push(`v2-task:${taskADigest}`);
+
+  const crossTask = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.equal(crossTask.promotable, false);
+  assert.ok(crossTask.missing.includes("task_scoped_v2_task_attestation_missing"));
+
+  agents[1].report.evidence_refs.push(`v2-task:${taskBDigest}`);
+  const exactTask = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.equal(exactTask.promotable, true);
 });
 
 test("task-scoped verifier promotes empty acceptance only for exact normalized precommit evidence", () => {

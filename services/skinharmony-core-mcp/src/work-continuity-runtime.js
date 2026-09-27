@@ -348,6 +348,59 @@ function requireObject(value, name) {
   return value;
 }
 
+export function normalizeNativeAgentTests(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new Error("native_agent_test_evidence_invalid");
+  }
+  return value.map((item) => {
+    requireObject(item, "native_agent_test_evidence");
+    // Closure consumes `passed` as an explicit assertion, not as a counter.
+    // Reject ambiguous payloads at admission instead of persisting a report
+    // that can only fail later with `test_failure_present`.
+    if (typeof item.passed !== "boolean") {
+      throw new Error("native_agent_test_evidence_passed_boolean_required");
+    }
+    const allowedKeys = new Set([
+      "name", "suite", "check", "passed", "total",
+      "passed_count", "failed_count", "skipped_count",
+    ]);
+    if (Object.keys(item).some((key) => !allowedKeys.has(key))) {
+      throw new Error("native_agent_test_evidence_field_invalid");
+    }
+    const suppliedName = item.name ?? item.suite ?? item.check;
+    if (typeof suppliedName !== "string" || suppliedName.length > 500) {
+      throw new Error("native_agent_test_evidence_name_invalid");
+    }
+    const name = suppliedName.trim();
+    if (!name) throw new Error("native_agent_test_evidence_name_required");
+    const counts = {};
+    for (const key of ["total", "passed_count", "failed_count", "skipped_count"]) {
+      if (item[key] === undefined) continue;
+      const count = item[key];
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error("native_agent_test_evidence_count_invalid");
+      }
+      counts[key] = count;
+    }
+    if (counts.total !== undefined &&
+        ["passed_count", "failed_count", "skipped_count"].every((key) =>
+          counts[key] !== undefined) &&
+        counts.total !== counts.passed_count + counts.failed_count + counts.skipped_count) {
+      throw new Error("native_agent_test_evidence_count_mismatch");
+    }
+    if (item.passed === true && Number(counts.failed_count || 0) > 0) {
+      throw new Error("native_agent_test_evidence_result_conflict");
+    }
+    return Object.freeze({
+      schema_version: "native_test_evidence_v1",
+      name,
+      passed: item.passed,
+      ...counts,
+    });
+  });
+}
+
 function dateValue(value, name) {
   const parsed = value instanceof Date ? value : new Date(value);
   if (!Number.isFinite(parsed.getTime())) throw new Error(`${name}_invalid`);
@@ -1792,18 +1845,23 @@ export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], ve
     const agentAcceptanceEvidence = Array.isArray(verificationAgent.report?.acceptance_evidence)
       ? verificationAgent.report.acceptance_evidence
       : [];
-    if (agentAcceptanceEvidence.length) continue;
     const peer = verificationAgent.task_id !== verifier.task_id;
+    // Acceptance criteria are Work-wide. A V2 task promotion therefore also
+    // needs an explicit attestation to the exact server-owned task digest;
+    // otherwise evidence collected for task A could be replayed while the
+    // verifier is bound to task B in the same Work.
+    if (SHA256_DIGEST.test(v2TaskDigest) &&
+        (!Array.isArray(verificationAgent.report?.evidence_refs) ||
+        !verificationAgent.report.evidence_refs.includes(`v2-task:${v2TaskDigest}`))) {
+      missing.push(peer
+        ? `task_scoped_peer_v2_task_attestation_missing:${verificationAgent.task_id}`
+        : "task_scoped_v2_task_attestation_missing");
+    }
+    if (agentAcceptanceEvidence.length) continue;
     if (!matchingPrecommitEvidence || !matchingV2TaskBinding) {
       missing.push(peer
         ? `task_scoped_peer_verifier_evidence_invalid:${verificationAgent.task_id}`
         : "task_scoped_verifier_evidence_missing");
-    }
-    if (!Array.isArray(verificationAgent.report?.evidence_refs) ||
-        !verificationAgent.report.evidence_refs.includes(`v2-task:${v2TaskDigest}`)) {
-      missing.push(peer
-        ? `task_scoped_peer_v2_task_attestation_missing:${verificationAgent.task_id}`
-        : "task_scoped_v2_task_attestation_missing");
     }
   }
   if (verifierEvidence.some((item) => item?.passed !== true)) {
@@ -6770,7 +6828,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         reportInput.precommit_evidence === null
         ? null
         : normalizeNativePrecommitEvidence(reportInput.precommit_evidence),
-      tests: Array.isArray(reportInput.tests) ? reportInput.tests.slice(0, 100) : [],
+      tests: normalizeNativeAgentTests(reportInput.tests),
       evidence_refs: stringList(reportInput.evidence_refs, "native_agent_evidence_refs", {
         maxItems: 100,
         maxLength: 500,

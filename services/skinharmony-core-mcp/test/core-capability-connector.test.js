@@ -114,6 +114,30 @@ test("read capability handlers bind tenant server-side and route only to enumera
   assert(calls.filter((call) => call.body).every((call) => !Object.hasOwn(call.body, "tenant_id")));
 });
 
+test("branch taxonomy reads always use bounded opaque-cursor pagination", async () => {
+  const { calls, handlers } = harness();
+  const identity = { tenantId: "tenant-a" };
+  const cursor = `btc1_${"A".repeat(64)}`;
+
+  await handlers.core_branch_registry({ view: "taxonomy" }, identity);
+  await handlers.core_branch_registry({ view: "taxonomy", limit: 37, cursor }, identity);
+
+  assert.equal(calls[0].url.pathname, "/v1/branches/taxonomy");
+  assert.equal(calls[0].url.searchParams.get("limit"), "100");
+  assert.equal(calls[0].url.searchParams.has("cursor"), false);
+  assert.equal(calls[1].url.searchParams.get("limit"), "37");
+  assert.equal(calls[1].url.searchParams.get("cursor"), cursor);
+
+  await assert.rejects(
+    handlers.core_branch_registry({ view: "registry", limit: 10 }, identity),
+    /core_branch_registry_pagination_not_applicable/,
+  );
+
+  const definition = TOOLS.find((tool) => tool.name === "core_branch_registry");
+  assert.equal(definition.inputSchema.properties.limit.maximum, 200);
+  assert.match(cursor, new RegExp(definition.inputSchema.properties.cursor.pattern));
+});
+
 test("owner advisory reads bind registry, analyze and control-plane headers to the exact request", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

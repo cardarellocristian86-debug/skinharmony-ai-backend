@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import {
   commitPrecommitGate,
+  deterministicNoTicketDenial,
   fulfilledCommitPrecommitGate,
   nativePrecommitClaimBinding,
   precommitReconciliationErrorCode,
@@ -204,19 +205,28 @@ export function createCoreTypedActionAuthorizer({
       try {
         const recoverySource = String(recovery?.recovery_source || "");
         if (!recovery || recoverySource === "claim") {
+          const deterministicDenial = !ticketId ? deterministicNoTicketDenial(error) : null;
           await workStore.reconcilePrecommitTicketGateClaim(tenantAcl(identity), {
+            ...(deterministicDenial ? { server_owned: true } : {}),
             work_id: request.work_id,
             gate_claim: nativeClaim,
             gate_projection_digest: gate.projection_digest,
             continuation_ref: nativeClaim.continuation_ref,
             request_digest: nativeClaim.request_digest,
             idempotency_key: nativeClaim.idempotency_key,
-            stage: ticketId ? "ticket_locator_received" : "before_ticket_locator",
+            stage: ticketId ? "ticket_locator_received"
+              : deterministicDenial ? "deterministic_denial" : "before_ticket_locator",
             ticket_id: ticketId,
             error_code: precommitReconciliationErrorCode(error),
           });
         }
-        if (!ticketId) await abandonInactiveClaim({ work_id: request.work_id, gate_claim: nativeClaim }, identity);
+        // Only a deterministic Core denial may retire a no-ticket claim while
+        // its delegation is still active. Transport failures and unknown
+        // outcomes remain frozen behind their reconciliation receipt.
+        if (!ticketId && ["delegation_expired", "delegation_not_active"]
+          .includes(deterministicNoTicketDenial(error))) {
+          await abandonInactiveClaim({ work_id: request.work_id, gate_claim: nativeClaim }, identity);
+        }
       } catch {
         fail("core_typed_request_precommit_recovery_failed", 503);
       }

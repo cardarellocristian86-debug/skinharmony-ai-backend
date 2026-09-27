@@ -176,6 +176,7 @@ test("PostgreSQL 16 carries a divergent bridged intent from createNewWork into t
     const lineage = await v2Store.recordCausalLineageState(owner, {
       work_id: created.work.work_id,
       state: "READY",
+      lineage_digest: "c".repeat(64),
     });
     assert.equal(lineage.state, "READY");
 

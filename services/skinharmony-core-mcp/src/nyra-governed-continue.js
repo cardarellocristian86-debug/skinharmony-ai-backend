@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { HOST_APP_CAPABILITIES, authenticatedHostKind, hostPrincipalAllows } from "./host-app-registry.js";
 import { SUPPORTED_HOST_NATIVE_KINDS } from "./host-app-authorization.js";
 import { governedWorkBootstrapDigest } from "./work-bootstrap-contract.js";
+import { normalizeConnectedAiTypedRequest } from "../../shared/connected-ai-typed-request.mjs";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -14,6 +15,13 @@ const PRECOMMIT_DATABASE_ERRORS = new Set([
   "tenant_work_task_release_frozen",
   "tenant_work_task_precommit_scope_frozen",
   "tenant_work_task_identity_immutable",
+]);
+const DETERMINISTIC_NO_TICKET_DENIALS = new Set([
+  "absolute_deny_action", "action_not_allowed", "branch_not_allowed", "core_action_blocked",
+  "cross_tenant_delegation_denied", "delegation_expired", "delegation_intent_mismatch",
+  "delegation_not_active", "delegation_not_found", "delegation_repository_mismatch",
+  "delegation_work_mismatch", "host_not_allowed", "path_not_allowed", "protected_base_required",
+  "provider_execution_denied", "semantic_scope_hold",
 ]);
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_COMMIT: new Set(["git.commit"]),
@@ -109,6 +117,16 @@ export function precommitReconciliationErrorCode(error) {
     : "precommit_claim_operation_failed";
 }
 
+export function deterministicNoTicketDenial(error) {
+  const code = String(error?.code || error?.message || "");
+  const status = Number(error?.status || error?.statusCode || 0);
+  const response = /^core_request_failed:(400|403|404|409|422):([a-z][a-z0-9_]{2,159})$/
+    .exec(String(error?.message || ""));
+  return response && Number(response[1]) === status && response[2] === code &&
+    DETERMINISTIC_NO_TICKET_DENIALS.has(code)
+    ? code : null;
+}
+
 function unavailable(reason) {
   return Object.freeze({
     schema_version: "nyra_continuation_ref_v1",
@@ -131,8 +149,12 @@ function candidateKind(directive) {
 // AI boundary: persist and return only a server-side reference.  No signed
 // Core candidate is exposed to the model or accepted back from it.
 export function createNyraContinuationOpener({ store } = {}) {
-  return async function openNyraContinuation({ identity, directive, workBootstrapRequest = null } = {}) {
-    if (!store || typeof store.open !== "function") return unavailable("continuation_store_unavailable");
+  return async function openNyraContinuation({ identity, directive, workBootstrapRequest = null,
+    typedCoreRequest = null, continuationOperation = null } = {}) {
+    if (!store || (typeof store.open !== "function" &&
+        typeof store.recordConnectedAiTypedRequest !== "function")) {
+      return unavailable("continuation_store_unavailable");
+    }
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) {
       return unavailable("registered_host_capability_required");
     }
@@ -145,6 +167,65 @@ export function createNyraContinuationOpener({ store } = {}) {
       return unavailable("host_native_host_kind_not_supported");
     }
     try {
+      if (kind === "work_action") {
+        if (!store.recordConnectedAiTypedRequest || !typedCoreRequest ||
+            !["issue_delegation", "authorize_action"].includes(continuationOperation)) {
+          return unavailable("typed_core_request_required");
+        }
+        const expectedOperation = continuationOperation === "issue_delegation"
+          ? "DELEGATION_REQUEST" : "ACTION_TICKET_REQUEST";
+        if (typedCoreRequest.operation !== expectedOperation ||
+            typedCoreRequest.schema_version !== "connected_ai_typed_request_v1") {
+          return unavailable("typed_core_request_operation_mismatch");
+        }
+        const binding = directive.ticket_request.binding;
+        const request = Object.freeze({
+          ...typedCoreRequest.request,
+          work_id: binding.work_id,
+          ...(expectedOperation === "DELEGATION_REQUEST"
+            ? { audience: Object.freeze([authenticatedHostKind(identity)]) }
+            : {}),
+          idempotency_key: `conversation_${directive.ticket_request.request_digest.slice(0, 48)}`,
+        });
+        const canonical = normalizeConnectedAiTypedRequest({
+          schema_version: typedCoreRequest.schema_version,
+          operation: expectedOperation,
+          request,
+        });
+        const materialized = Object.freeze({ ...canonical, request: Object.freeze({
+          ...canonical.request, intent_anchor_digest: binding.intent_digest,
+        }) });
+        if (materialized.request.work_id !== binding.work_id || !binding.intent_digest ||
+            (expectedOperation === "DELEGATION_REQUEST" &&
+              materialized.request.allowed_actions.some((action) =>
+                !ACTION_KIND_BY_CLASS[directive.ticket_request.action_class]?.has(action))) ||
+            (expectedOperation === "ACTION_TICKET_REQUEST" &&
+              !ACTION_KIND_BY_CLASS[directive.ticket_request.action_class]?.has(materialized.request.action?.kind))) {
+          return unavailable("typed_core_request_binding_mismatch");
+        }
+        const pending = Object.freeze({
+          schema_version: "connected_ai_core_pending_v2",
+          state: "PENDING",
+          ok: false,
+          tenant_id: identity.tenantId,
+          continuation_operation: continuationOperation,
+          action_class: directive.ticket_request.action_class,
+          directive_id: directive.directive_id,
+          binding,
+          ticket_request_digest: directive.ticket_request.request_digest,
+        });
+        const refs = await store.recordConnectedAiTypedRequest({
+          identity, canonical_request: materialized, core_result: pending,
+        });
+        return Object.freeze({
+          schema_version: "nyra_continuation_ref_v1",
+          available: true,
+          continuation_ref: refs.continuation_ref,
+          expires_at: refs.expires_at,
+          state: "READY",
+          reason: null,
+        });
+      }
       return await store.open({ identity, directive, work_bootstrap_request: workBootstrapRequest });
     } catch (error) {
       return unavailable(/^nyra_continuation_[a-z0-9_]+$/.test(String(error?.code || ""))
@@ -577,7 +658,7 @@ function persistedPrecommitReconciliationResult(result) {
 
 export function createNyraGovernedContinueHandler({
   store, readDirectiveContext, normalizeDirectiveContext, issueDelegation,
-  authorizeAction, reviewWorkBootstrap, createWorkBootstrap, readActionTicket,
+  authorizeAction, authorizeTypedAction = null, reviewWorkBootstrap, createWorkBootstrap, readActionTicket,
   fulfillPrecommitTicketTask, claimPrecommitTicketGate = null,
   releaseOrReconcilePrecommitTicketGateClaim = null,
   abandonInactivePrecommitTicketGateClaim = null,
@@ -653,6 +734,87 @@ export function createNyraGovernedContinueHandler({
           await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
             final_result: finalResult });
           return finalResult;
+        } catch (error) {
+          await releaseTypedRequest({ identity,
+            continuation_ref: args.continuation_ref }).catch(() => {});
+          throw error;
+        }
+      }
+    }
+    if (["issue_delegation", "authorize_action"].includes(args.operation) &&
+        args.continuation_ref && typeof consumeTypedRequest === "function" &&
+        typeof completeTypedRequest === "function" && typeof releaseTypedRequest === "function") {
+      const typed = await consumeTypedRequest({ identity,
+        continuation_ref: args.continuation_ref, allow_missing: true });
+      const callerReconstructed = args.delegation_request !== undefined ||
+        args.action_request !== undefined;
+      if (!typed) {
+        // Compatibility is limited to a real legacy continuation record. It
+        // remains subject to the old store's immutable digest and binding
+        // checks below; a ref-only legacy request is never guessed.
+        if (!callerReconstructed) {
+          fail("nyra_continue_server_request_materialization_required", 409);
+        }
+      } else if (callerReconstructed) {
+        if (typed.replay !== true) await releaseTypedRequest({ identity,
+          continuation_ref: args.continuation_ref }).catch(() => {});
+        fail("nyra_continue_client_request_reconstruction_forbidden", 409);
+      } else {
+        if (typed.replay === true && typed.final_result) {
+          return { structuredContent: typed.final_result,
+            content: [{ type: "text", text: "Nyra ha ripreso il risultato Core server-owned." }] };
+        }
+        try {
+          const expectedOperation = args.operation === "issue_delegation"
+            ? "DELEGATION_REQUEST" : "ACTION_TICKET_REQUEST";
+          const pending = typed.core_result;
+          const request = typed.canonical_request?.request;
+          const binding = pending?.binding;
+          if (typed.operation !== expectedOperation ||
+              pending?.schema_version !== "connected_ai_core_pending_v2" ||
+              pending.continuation_operation !== args.operation || !request || !binding ||
+              request.work_id !== binding.work_id ||
+              request.intent_anchor_digest !== binding.intent_digest) {
+            fail("nyra_continue_server_request_binding_mismatch", 409);
+          }
+          const input = { work_id: binding.work_id, project_id: binding.project_id,
+            work_revision: binding.work_revision, intent_digest: binding.intent_digest };
+          const context = normalizeDirectiveContext(
+            await readDirectiveContext(identity, input), identity, input);
+          ensureFreshWorkContext(context, binding);
+          let coreResponse;
+          if (args.operation === "issue_delegation") {
+            if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE) ||
+                args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+                !String(args.confirmation_reference || "").trim()) {
+              fail("owner_confirmation_required", 403);
+            }
+            coreResponse = await issueDelegation({ ...request,
+              idempotency_key: typed.server_idempotency_key }, identity);
+          } else {
+            if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE)) {
+              fail("nyra_continue_host_capability_required", 403);
+            }
+          if (typeof authorizeTypedAction !== "function") {
+            fail("nyra_continue_typed_action_authorizer_unavailable", 503);
+          }
+          coreResponse = await authorizeTypedAction({ ...request,
+            idempotency_key: typed.server_idempotency_key }, identity, Object.freeze({
+            typed_record: typed,
+            work_binding: Object.freeze({
+              work_id: binding.work_id,
+              intent_digest: binding.intent_digest,
+              directive_context: context,
+            }),
+          }));
+          }
+          const finalResult = coreResponse?.structuredContent;
+          if (!finalResult || finalResult.ok !== true || finalResult.tenant_id !== identity.tenantId) {
+            fail("nyra_continue_core_result_invalid", 502);
+          }
+          await completeTypedRequest({ identity, continuation_ref: args.continuation_ref,
+            final_result: finalResult });
+          return coreResponse;
         } catch (error) {
           await releaseTypedRequest({ identity,
             continuation_ref: args.continuation_ref }).catch(() => {});
@@ -1229,6 +1391,9 @@ export function createNyraGovernedContinueHandler({
             pullRequestHandoffStarted = true;
           }
         } catch (error) {
+          const deterministicDenial = !issuedTicketId
+            ? deterministicNoTicketDenial(error)
+            : null;
           if (nativeClaim && (!recoveryPresent || recoverySource === "claim") &&
               typeof releaseOrReconcilePrecommitTicketGateClaim === "function") {
             try {
@@ -1239,7 +1404,9 @@ export function createNyraGovernedContinueHandler({
                 continuation_ref: nativeClaim.continuation_ref,
                 request_digest: nativeClaim.request_digest,
                 idempotency_key: nativeClaim.idempotency_key,
-                stage: issuedTicketId ? "ticket_locator_received" : "before_ticket_locator",
+                ...(deterministicDenial ? { server_owned: true } : {}),
+                stage: issuedTicketId ? "ticket_locator_received"
+                  : deterministicDenial ? "deterministic_denial" : "before_ticket_locator",
                 ticket_id: issuedTicketId || null,
                 error_code: precommitReconciliationErrorCode(error),
               }, identity);
@@ -1248,6 +1415,7 @@ export function createNyraGovernedContinueHandler({
             }
           }
           if (nativeClaim && !issuedTicketId &&
+              ["delegation_expired", "delegation_not_active"].includes(deterministicDenial) &&
               typeof abandonInactivePrecommitTicketGateClaim === "function") {
             try {
               // Only Universal Core can declare the delegation inactive. The

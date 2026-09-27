@@ -982,6 +982,125 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     });
   }
 
+  function bootstrapRequestDigest(identity, workId, idempotencyKey) {
+    // Bootstrap is a server-owned recovery operation.  Its idempotency must
+    // survive a transport/host handoff, so actor/session provenance is audit
+    // material, not part of the immutable request identity.
+    return entity360Digest({
+      schema_version: "entity_360_work_snapshot_bootstrap_request_v2",
+      tenant_id: identity.tenant_id,
+      input: {
+        work_id: workId,
+        expected_revision: 0,
+        idempotency_key: idempotencyKey,
+      },
+    });
+  }
+
+  function bootstrapGate({ identity, workId, snapshot, requestDigest,
+    idempotencyKey, feature, initialIcfSeed }) {
+    const gateUnsigned = Object.freeze({
+      schema_version: "entity_360_snapshot_bootstrap_gate_v1",
+      authorized: true,
+      authority: "universal_core",
+      route: "entity_360_work_snapshot_bootstrap",
+      action: "entity360.snapshot.persist",
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      entity_id: snapshot.entity_id,
+      snapshot_version: 1,
+      snapshot_digest: snapshot.deterministic_immutable_digest,
+      request_digest: requestDigest,
+      idempotency_digest: entity360Digest({ idempotency_key: idempotencyKey }),
+      tenant_feature_revision: Number(feature.revision),
+      policy_digest: feature.policy_digest,
+      enforcement_authority_digest: feature.enforcement_authority_digest,
+      icf_governance_seed: Object.freeze({
+        causal_work_id: initialIcfSeed.causal_work_id,
+        icf_version: initialIcfSeed.icf_version,
+        ledger_head_digest: initialIcfSeed.ledger_head_digest,
+        seed_payload_digest: initialIcfSeed.seed_payload_digest,
+      }),
+      context_only: true,
+      execution_authorized: false,
+      provider_execution: false,
+      host_policy_override: false,
+      production_decision_changed: false,
+    });
+    return Object.freeze({ ...gateUnsigned,
+      gate_digest: entity360Digest(gateUnsigned) });
+  }
+
+  async function adoptInitialWorkSnapshot({ identity, workId, feature,
+    initialIcfSeed, requestDigest, idempotencyKey }) {
+    const resolution = await resolve(identity, {
+      work_id: workId,
+      entity_type: "work",
+      identity: { work_id: workId },
+    });
+    if (resolution.status !== "RESOLVED") return null;
+    const snapshot = await store.readSnapshot({ tenant_id: identity.tenant_id,
+      entity_id: resolution.entity_id, snapshot_version: 1 });
+    if (!snapshot) return null;
+    requireSnapshotWorkBinding(snapshot, workId);
+    const icfBinding = snapshot.current_state?.["governance.icf.binding"]?.value;
+    if (snapshot.tenant_scope !== identity.tenant_id
+      || snapshot.entity_type !== "work" || snapshot.snapshot_version !== 1
+      || snapshot.previous_snapshot_digest !== null || snapshot.context_status !== "READY"
+      || snapshot.policy_version !== compiledPolicy.policy_version
+      || snapshot.policy_digest !== compiledPolicy.policy_digest
+      || snapshot.ontology_version !== compiledOntology.ontology_version
+      || snapshot.ontology_digest !== entity360Digest(compiledOntology)
+      || snapshot.adapter_registry_version !==
+        (adapterRegistry.schema_version || "entity_360_adapter_registry_v1")
+      || snapshot.execution_authorized !== false
+      || snapshot.production_decision_mutation !== false
+      || Number(icfBinding?.version) !== initialIcfSeed.icf_version
+      || icfBinding?.ledger_head_digest !== initialIcfSeed.ledger_head_digest) {
+      fail("entity360_bootstrap_existing_snapshot_binding_invalid", 409);
+    }
+    const verification = verifyEntity360Snapshot(snapshot, {
+      policy: compiledPolicy,
+      ontology: compiledOntology,
+      verification_time: new Date(now()).toISOString(),
+      persisted_at: snapshot.__entity360_persisted_at || null,
+      qualification_verifier: qualificationVerifier,
+    });
+    if (!verification.valid) {
+      fail("entity360_bootstrap_existing_snapshot_verification_failed", 409, {
+        reasons: verification.reasons,
+      });
+    }
+    const head = await store.readHead({ tenant_id: identity.tenant_id,
+      entity_id: snapshot.entity_id });
+    if (!head || Number(head.current_snapshot_version) < 1
+      || head.current_snapshot_digest !== snapshot.deterministic_immutable_digest) {
+      fail("entity360_bootstrap_existing_snapshot_head_invalid", 409);
+    }
+    const featureAfter = await requireTenantEnforcedMode(identity.tenant_id);
+    if (featureAfter.mode !== feature.mode
+      || featureAfter.enabled !== feature.enabled
+      || Number(featureAfter.revision) !== Number(feature.revision)
+      || featureAfter.policy_digest !== feature.policy_digest
+      || featureAfter.enforcement_authority_digest !==
+        feature.enforcement_authority_digest) {
+      fail("entity360_bootstrap_feature_drift", 409);
+    }
+    return Object.freeze({ snapshot,
+      projection: await projectPersistedSnapshot(snapshot),
+      persistence: { revision: Number(head.revision || head.current_snapshot_version),
+        replayed: true, adopted: true, backend: store.kind || "postgresql" },
+      feature_flag: { mode: featureAfter.mode, enabled: featureAfter.enabled,
+        revision: Number(featureAfter.revision || 0), source: featureAfter.source },
+      shadow_mode: false,
+      enforcement_mode: true,
+      production_decision_changed: false,
+      execution_authorized: false,
+      dedicated_core_gate: bootstrapGate({ identity, workId, snapshot,
+        requestDigest, idempotencyKey, feature: featureAfter, initialIcfSeed }),
+    });
+  }
+
   async function bootstrapInitialWorkSnapshot(identity, input = {}) {
     const allowedInput = new Set([
       "tenant_id", "work_id", "as_of", "expected_revision", "idempotency_key",
@@ -998,6 +1117,13 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       "entity360_idempotency_key_required", 240);
     const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
     const initialIcfSeed = await initialIcfSeedForWork(identity, workId);
+    const requestDigest = bootstrapRequestDigest(identity, workId, idempotencyKey);
+    const adopted = await adoptInitialWorkSnapshot({ identity, workId,
+      feature: featureBefore, initialIcfSeed, requestDigest, idempotencyKey });
+    if (adopted) return adopted;
+    // Use the PostgreSQL cut returned after the ICF seed transaction wrote or
+    // verified its head.  Sampling `now()` before seeding caused the following
+    // Entity360 query to hide that same seed behind `created_at <= as_of`.
     const asOf = initialIcfSeed.consistent_cut_at;
     const assemblyInput = {
       work_id: workId,
@@ -1007,12 +1133,6 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       expected_revision: 0,
       idempotency_key: idempotencyKey,
     };
-    const requestDigest = entity360Digest({
-      schema_version: "entity_360_snapshot_assemble_request_v1",
-      tenant_id: identity.tenant_id,
-      actor_id: identity.actor_id,
-      input: assemblyInput,
-    });
     // This route establishes the first snapshot of an already-created
     // canonical Work.  A host timestamp sampled before the atomic Work commit
     // must not hide the just-committed Genesis/Intent/ICF rows and deadlock
@@ -1041,36 +1161,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       || featureAfter.enforcement_authority_digest !== featureBefore.enforcement_authority_digest) {
       fail("entity360_bootstrap_feature_drift", 409);
     }
-    const gateUnsigned = Object.freeze({
-      schema_version: "entity_360_snapshot_bootstrap_gate_v1",
-      authorized: true,
-      authority: "universal_core",
-      route: "entity_360_work_snapshot_bootstrap",
-      action: "entity360.snapshot.persist",
-      tenant_id: identity.tenant_id,
-      work_id: workId,
-      entity_id: snapshot.entity_id,
-      snapshot_version: 1,
-      snapshot_digest: snapshot.deterministic_immutable_digest,
-      request_digest: requestDigest,
-      idempotency_digest: entity360Digest({ idempotency_key: idempotencyKey }),
-      tenant_feature_revision: Number(featureAfter.revision),
-      policy_digest: featureAfter.policy_digest,
-      enforcement_authority_digest: featureAfter.enforcement_authority_digest,
-      icf_governance_seed: Object.freeze({
-        causal_work_id: initialIcfSeed.causal_work_id,
-        icf_version: initialIcfSeed.icf_version,
-        ledger_head_digest: initialIcfSeed.ledger_head_digest,
-        seed_payload_digest: initialIcfSeed.seed_payload_digest,
-      }),
-      context_only: true,
-      execution_authorized: false,
-      provider_execution: false,
-      host_policy_override: false,
-      production_decision_changed: false,
-    });
-    const dedicatedCoreGate = Object.freeze({ ...gateUnsigned,
-      gate_digest: entity360Digest(gateUnsigned) });
+    const dedicatedCoreGate = bootstrapGate({ identity, workId, snapshot,
+      requestDigest, idempotencyKey, feature: featureAfter, initialIcfSeed });
     return Object.freeze({ ...assembled, dedicated_core_gate: dedicatedCoreGate });
   }
 
@@ -1276,6 +1368,98 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       execution_authorized: false });
   }
 
+  async function refreshEnforcementSnapshot(rawIdentity, input = {}) {
+    if (state !== "ready") fail("entity360_enforcement_runtime_not_ready", 503);
+    const identity = requireIdentity(rawIdentity);
+    requireCoreEnforcementAuthority(identity);
+    requireInputTenant(identity, input);
+    const workId = requireWorkBinding(identity, input);
+    const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
+    const resolution = await resolve(identity, {
+      work_id: workId,
+      entity_type: "work",
+      identity: { work_id: workId },
+    });
+    if (resolution.status !== "RESOLVED") {
+      fail("entity360_enforcement_context_unresolved", 409);
+    }
+    const latest = await store.readLatestSnapshot({ tenant_id: identity.tenant_id,
+      entity_id: resolution.entity_id });
+    if (!latest) fail("entity360_snapshot_not_found", 404);
+    const requestedVersion = input.expected_snapshot_version === undefined
+      ? Number(latest.snapshot_version)
+      : integer(input.expected_snapshot_version,
+        "entity360_enforcement_refresh_revision_invalid", 1);
+    const requestedDigest = input.expected_snapshot_digest === undefined
+      ? latest.deterministic_immutable_digest
+      : text(input.expected_snapshot_digest,
+        "entity360_enforcement_refresh_digest_invalid", 64).toLowerCase();
+    const previous = Number(latest.snapshot_version) === requestedVersion
+      ? latest
+      : await store.readSnapshot({ tenant_id: identity.tenant_id,
+        entity_id: resolution.entity_id, snapshot_version: requestedVersion });
+    if (!previous || previous.deterministic_immutable_digest !== requestedDigest
+      || Number(latest.snapshot_version) > requestedVersion + 1) {
+      fail("entity360_enforcement_refresh_predecessor_mismatch", 409);
+    }
+    requireSnapshotWorkBinding(previous, workId);
+    const expectedRevision = integer(previous.snapshot_version,
+      "entity360_enforcement_snapshot_revision_invalid", 1);
+    const requestDigest = entity360Digest({
+      schema_version: "entity_360_enforcement_snapshot_refresh_request_v1",
+      tenant_id: identity.tenant_id,
+      work_id: workId,
+      entity_id: resolution.entity_id,
+      previous_snapshot_digest: previous.deterministic_immutable_digest,
+      policy_digest: compiledPolicy.policy_digest,
+      ontology_digest: entity360Digest(compiledOntology),
+      adapter_registry_version:
+        adapterRegistry.schema_version || "entity_360_adapter_registry_v1",
+    });
+    const assembled = await assemble(identity, {
+      work_id: workId,
+      entity_id: resolution.entity_id,
+      entity_type: "work",
+      identity: { work_id: workId },
+      as_of: new Date(now()).toISOString(),
+      expected_revision: expectedRevision,
+      idempotency_key: `entity360-enforcement-refresh-${requestDigest}`,
+    }, { requireReadyBeforePersist: true,
+      persistenceRequestDigest: requestDigest,
+      bootstrapServerOwnedLinkage: true });
+    const snapshot = assembled?.snapshot;
+    if (!snapshot || snapshot.snapshot_version !== expectedRevision + 1
+      || snapshot.previous_snapshot_digest !== previous.deterministic_immutable_digest
+      || snapshot.context_status !== "READY"
+      || snapshot.policy_digest !== compiledPolicy.policy_digest
+      || snapshot.ontology_digest !== entity360Digest(compiledOntology)
+      || snapshot.execution_authorized !== false
+      || snapshot.production_decision_mutation !== false) {
+      fail("entity360_enforcement_refresh_readback_invalid", 503);
+    }
+    requireSnapshotWorkBinding(snapshot, workId);
+    const featureAfter = await requireTenantEnforcedMode(identity.tenant_id);
+    if (featureAfter.mode !== featureBefore.mode
+      || featureAfter.enabled !== featureBefore.enabled
+      || Number(featureAfter.revision) !== Number(featureBefore.revision)
+      || featureAfter.policy_digest !== featureBefore.policy_digest
+      || featureAfter.enforcement_authority_digest !==
+        featureBefore.enforcement_authority_digest) {
+      fail("entity360_enforcement_feature_drift", 409);
+    }
+    return Object.freeze({ ...assembled,
+      refresh: Object.freeze({
+        schema_version: "entity_360_enforcement_snapshot_refresh_v1",
+        tenant_id: identity.tenant_id,
+        work_id: workId,
+        previous_snapshot_digest: previous.deterministic_immutable_digest,
+        snapshot_digest: snapshot.deterministic_immutable_digest,
+        request_digest: requestDigest,
+        execution_authorized: false,
+      }),
+    });
+  }
+
   async function readEnforcementContextReceipt(rawIdentity, input = {}) {
     const identity = requireIdentity(rawIdentity);
     requireInputTenant(identity, input);
@@ -1455,6 +1639,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     preflightObservationGate,
     observeCurrentPath,
     resolveEnforcementContext,
+    refreshEnforcementSnapshot,
     readEnforcementContextReceipt,
     policy: compiledPolicy,
     ontology: compiledOntology,

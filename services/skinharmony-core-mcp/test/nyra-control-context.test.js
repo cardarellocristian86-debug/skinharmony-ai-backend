@@ -79,6 +79,28 @@ test("a claimed Autopilot assignment is not offered to a later dialogue", () => 
   assert.equal(context.nyra_dialogue.assignment, null);
 });
 
+test("the V2 Work revision wins over the unrelated legacy architecture counter", () => {
+  const context = buildNyraControlContext({
+    continuity: {
+      tenant_id: "codexai",
+      project_id: "project-a",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      architecture_version: 1,
+      work_revision: 52,
+      state: "active",
+      intent_digest: "a".repeat(64),
+    },
+    operational: {
+      work_revision: 52,
+      intent_digest: "a".repeat(64),
+      gallery: { state: "available", work_count: 1 },
+    },
+  });
+  assert.equal(context.work_revision, 52);
+  assert.equal(context.nyra_dialogue.work.work_revision, 52);
+  assert.equal(context.nyra_dialogue.self_diagnosis.state, "healthy");
+});
+
 test("Nyra exposes only an offered assignment whose dependencies are complete", () => {
   const base = {
     continuity: { tenant_id: "codexai", project_id: "project-a", work_id: "11111111-1111-4111-8111-111111111111", state: "active" },

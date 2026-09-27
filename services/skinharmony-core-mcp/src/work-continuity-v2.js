@@ -34,12 +34,17 @@ CREATE TABLE IF NOT EXISTS tenant_work (
   intent_digest char(64), parent_work_id uuid, successor_work_id uuid, superseded_by_work_id uuid,
   causal_lineage_state varchar(16) NOT NULL DEFAULT 'READY',
   causal_lineage_reason varchar(160), causal_lineage_digest char(64),
+  entity360_context_state varchar(16) NOT NULL DEFAULT 'PENDING',
+  entity360_context_reason varchar(160), entity360_entity_id varchar(160),
+  entity360_snapshot_version bigint, entity360_snapshot_digest char(64),
+  entity360_gate_digest char(64),
   closure_type varchar(64), closure_reason text, final_evidence_digest char(64),
   PRIMARY KEY (tenant_id, work_id), UNIQUE (tenant_id, work_code),
   CHECK (status IN ('PLANNED','ACTIVE','PAUSED','BLOCKED','HANDOFF','COMPLETED','CANCELLED','SUPERSEDED','ARCHIVED')),
   CHECK (visibility_scope IN ('private','shared','team','tenant')),
   CHECK (priority IN ('P0','P1','P2','P3','P4'))
   ,CHECK (causal_lineage_state IN ('PENDING','READY'))
+  ,CHECK (entity360_context_state IN ('PENDING','READY','NOT_REQUIRED'))
 );
 CREATE INDEX IF NOT EXISTS tenant_work_operational_idx ON tenant_work (tenant_id, status, priority_score DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS tenant_work_project_idx ON tenant_work (tenant_id, project_id, updated_at DESC);

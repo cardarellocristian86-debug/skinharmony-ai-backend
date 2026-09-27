@@ -101,7 +101,7 @@ export function registerEntity360Routes({ app, authFor, runtime, resolveAgentCon
   if (!runtime || typeof runtime.invoke !== "function") throw new Error("entity360_runtime_required");
   if (typeof resolveAgentContext !== "function") throw new Error("entity360_identity_resolver_required");
   for (const [method, routePath, capability, access] of ROUTES) {
-    app[method](routePath, authFor(access), async (req, res) => {
+    app[method](routePath, authFor(access, { routePath, capability }), async (req, res) => {
       const startedAt = Date.now();
       try {
         const identity = await identityFrom(req, res, resolveAgentContext, access);

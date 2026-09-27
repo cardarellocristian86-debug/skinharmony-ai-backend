@@ -1195,11 +1195,12 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(queueHandler, /const request = bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
   assert.match(queueHandler, /tenantWorkCoordinationTarget\("tenant_work_queue_create_v3", request\)/);
   assert.match(queueHandler, /queueNewWork\([\s\S]{0,80}withTenantWorkAcl\(identity\), request/);
-  assert.match(queueHandler, /reconcileCanonicalWorkCausalLineage\(identity, queued\.work\)/);
-  assert.match(queueHandler, /bootstrapCanonicalWorkEntity360Context\(identity, queued\.work\)/,
-    "queued Work creation must use the same initial Entity360 context bridge");
-  assert.match(queueHandler, /entity360_context: entity360Context/);
-  assert.match(queueHandler, /canonicalWorkEntity360ContextReady\(entity360Context\)/);
+  assert.match(queueHandler, /reconcileCanonicalWorkBootstrapReadiness\(identity, queued\.work\)/);
+  assert.match(queueHandler, /entity_360_context: readiness\.entity_360_context/);
+  assert.match(queueHandler, /work_ready: readiness\.ready/);
+  assert.match(queueHandler, /continuation_allowed: readiness\.ready \|\| readiness\.activation_required === true/);
+  assert.match(queueHandler, /lifecycle_state: readiness\.activation_required === true\s*\? "ACTIVATION_REQUIRED"/);
+  assert.match(queueHandler, /activation_required: readiness\.activation_required === true/);
   const createStart = serverSource.indexOf("async function createCanonicalWorkGoverned");
   const createEnd = serverSource.indexOf("async function readNyraDirectiveContext", createStart);
   const createHandler = serverSource.slice(createStart, createEnd);
@@ -1208,9 +1209,9 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
     createHandler.indexOf("const coreDecision = await requireOwnerGovernance"));
   assert.match(createHandler, /attachNyraWorkOrchestration\(identity, persisted, "work_created_replay"\)/);
   assert.match(createHandler, /attachNyraWorkOrchestration\(identity, result, "work_created"\)/);
-  assert.equal((createHandler.match(/bootstrapCanonicalWorkEntity360Context\(/gu) || []).length, 2,
+  assert.equal((createHandler.match(/reconcileCanonicalWorkBootstrapReadiness\(/gu) || []).length, 2,
     "new Work creation and durable replay must both materialize initial Entity360 context");
-  assert.match(createHandler, /entity360_context: entity360Context/);
+  assert.match(createHandler, /entity360_context: readiness\.entity_360_context/);
   assert.doesNotMatch(createHandler,
     /work_ready: causalLineage\.state === "READY"\s*[,}]/u,
     "causal lineage alone cannot advertise an operationally ready Work");
@@ -1261,7 +1262,7 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
     "a valid review must precede causal bootstrap, which must precede V2 Work persistence");
 });
 
-test("a governed mutating resume repairs causal lineage and Entity360 before continuing", () => {
+test("a governed mutating resume repairs causal capsule and Entity360 context before continuing", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const recoveryStart = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
   const recoveryEnd = serverSource.indexOf("async function createCanonicalWorkGoverned", recoveryStart);
@@ -1274,8 +1275,9 @@ test("a governed mutating resume repairs causal lineage and Entity360 before con
   const end = serverSource.indexOf("async function", start + 1);
   const handler = serverSource.slice(start, end);
   assert.match(handler, /args\.read_only !== true/);
-  assert.match(handler, /await reconcileCanonicalWorkCausalLineage\(identity, context\.work\)/);
-  assert.match(handler, /reconciliation\.state !== "READY"/);
+  assert.match(handler, /entity360_context_state/);
+  assert.match(handler, /await reconcileCanonicalWorkBootstrapReadiness\(identity, context\.work\)/);
+  assert.match(handler, /!reconciliation\.ready/);
   assert.match(handler, /context = await workContinuityV2Store\.readWork/);
   assert.match(handler, /canonical_work_causal_lineage_pending/);
   assert.match(handler,
@@ -1314,13 +1316,16 @@ test("every Work-bound dynamic mutation repairs pending causal lineage after pre
   assert.doesNotMatch(gate, /requiresGenericWorkPreflight\(toolName, args\) &&[\s\S]{0,160}targetDefinition/);
 });
 
-test("causal lineage fallback returns a concurrent READY state instead of inventing PENDING", () => {
+test("causal lineage fallback reports unavailability unless a competing recovery reached READY", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const start = serverSource.indexOf("async function reconcileCanonicalWorkCausalLineage");
   const end = serverSource.indexOf("async function createCanonicalWorkGoverned", start);
   const helper = serverSource.slice(start, end);
-  assert.match(helper, /return \{ state: state\.state, binding/);
-  assert.match(helper, /state\.state === "PENDING"/);
+  assert.match(helper, /return \{ state: state\.state, available: true, binding/);
+  assert.match(helper, /const recoveredByCompetingAttempt = state\.state === "READY"/);
+  assert.match(helper, /available: recoveredByCompetingAttempt/);
+  assert.match(helper, /recovered_by_competing_attempt: recoveredByCompetingAttempt/);
+  assert.match(helper, /recoveredByCompetingAttempt \? \{\} : \{ reason_code: reasonCode \}/);
 });
 
 test("causal lineage recovery is server-owned and never caller-provided", () => {
@@ -3268,6 +3273,16 @@ test("production compact mode exposes only the stable connector surface", async 
       assert(compactConverse.outputSchema);
       assert.equal(compactConverse.outputSchema.additionalProperties, true);
       assert(Buffer.byteLength(JSON.stringify(compactConverse)) < 5 * 1024);
+      assert.equal(compactConverse.inputSchema.properties.typed_core_request.type, "object");
+      assert.equal(compactConverse.inputSchema.properties.typed_core_request.additionalProperties, false);
+      assert.deepEqual(compactConverse.inputSchema.properties.typed_core_request.required,
+        ["schema_version", "operation", "request"]);
+      assert.deepEqual(compactConverse.inputSchema.properties.typed_core_request.properties.operation.enum,
+        ["DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"]);
+      assert.match(compactConverse.inputSchema.properties.typed_core_request.description,
+        /host.*spec|spec.*host/i);
+      assert.doesNotMatch(compactConverse.inputSchema.properties.typed_core_request.description,
+        /copy the exact server-bound object/i);
       assert.deepEqual(compactContinue.inputSchema.required, ["operation", "idempotency_key"]);
       assert.equal(compactContinue.inputSchema.additionalProperties, false);
       for (const field of [
