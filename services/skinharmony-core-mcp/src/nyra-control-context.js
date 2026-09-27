@@ -53,8 +53,11 @@ export function buildNyraControlContext({ continuity = {}, autopilot = null, ope
     work_id: workId,
     intent_digest: intentDigest,
     work_state: clean(continuity.state || continuity.status, 80) || "unknown",
-    work_revision: Number.isSafeInteger(Number(continuity.architecture_version || continuity.work_revision))
-      ? Number(continuity.architecture_version || continuity.work_revision)
+    // Work Continuity V2 is the authoritative mutation ledger.  The legacy
+    // architecture version is a different counter and must never mask a
+    // newer Work revision in a dialogue/readback contract.
+    work_revision: Number.isSafeInteger(Number(continuity.work_revision || continuity.architecture_version))
+      ? Number(continuity.work_revision || continuity.architecture_version)
       : null,
     operation: clean(operation, 80) || "continue",
     next_action: clean(

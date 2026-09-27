@@ -300,7 +300,8 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
 
   async function saveState(input) {
     return runProjectOperation({
-      ...input, operation: "project_state_snapshot", event_type: "PROJECT_STATE_SNAPSHOTTED", request: input,
+      ...input, operation: "project_state_snapshot", event_type: "PROJECT_STATE_SNAPSHOTTED",
+      request: input.request,
       mutate: async (client) => {
         const project = rowOrNotFound(await client.query(
           "SELECT * FROM core_projects WHERE tenant_id=$1 AND project_id=$2 FOR UPDATE",
@@ -1060,7 +1061,8 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
 
   async function saveCapsule(input) {
     return runProjectOperation({
-      ...input, operation: "continuity_capsule_build", event_type: "CONTINUITY_CAPSULE_BUILT", request: input.capsule,
+      ...input, operation: "continuity_capsule_build", event_type: "CONTINUITY_CAPSULE_BUILT",
+      request: input.request,
       mutate: async (client) => (await client.query(
         `INSERT INTO core_causal_continuity_capsules
           (tenant_id,capsule_id,project_id,work_id,generated_from_event_sequence,capsule_payload,capsule_digest)
@@ -1505,7 +1507,8 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
     const prior = state.idempotency.get(idem);
     if (prior) {
       if (prior.request_digest !== digest) throw new CausalContinuityError("IDEMPOTENCY_CONFLICT");
-      return structuredClone(prior.result);
+      const replay = structuredClone(prior.result);
+      return { ...replay, _event: { ...replay._event, replayed: true } };
     }
     const events = listFor(state.events, input.tenant_id, (row) => row.project_id === input.project_id).sort((a, b) => a.sequence_number - b.sequence_number);
     const previous = events.at(-1);
@@ -1574,7 +1577,9 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       return row;
     }); },
     async readScope(input) { return listFor(state.scopes, input.tenant_id, (row) => row.project_id === input.project_id && (input.active_only === false || row.active)).sort((a, b) => `${a.resource_type}:${a.canonical_identifier}`.localeCompare(`${b.resource_type}:${b.canonical_identifier}`)); },
-    async saveState(input) { return withOp(input, "project_state_snapshot", "PROJECT_STATE_SNAPSHOTTED", async () => {
+    async saveState(input) { return runProjectOperation({ ...input,
+      operation: "project_state_snapshot", event_type: "PROJECT_STATE_SNAPSHOTTED",
+      request: input.request, mutate: async () => {
       const project = state.projects.get(key(input.tenant_id, input.project_id));
       if (!project) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
       if (input.base_state_digest && project.active_state_digest && input.base_state_digest !== project.active_state_digest) throw new CausalContinuityError("STALE_PROJECT_STATE");
@@ -1585,7 +1590,7 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       state.snapshots.set(key(input.tenant_id, input.snapshot_id), row);
       project.active_state_digest = input.state_digest; project.version += 1;
       return row;
-    }); },
+    } }); },
     async currentState(input) { const project = await this.readProject(input); return project.active_state_digest ? listFor(state.snapshots, input.tenant_id, (row) => row.project_id === project.project_id && row.state_digest === project.active_state_digest)[0] || null : null; },
     async createGenesis(input) { return withOp(input, "genesis_intent_create", "GENESIS_INTENT_CREATED", async () => { const row = { ...input }; state.genesis.set(key(input.tenant_id, input.project_id), row); return row; }); },
     async readGenesis(input) { return get(state.genesis, input.tenant_id, input.project_id); },
@@ -1784,7 +1789,10 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
         mutate: async () => ({ consumed: true, context_digest: input.context_digest }),
       });
     },
-    async saveCapsule(input) { return withOp({ ...input, request: input.capsule }, "continuity_capsule_build", "CONTINUITY_CAPSULE_BUILT", async () => { const row = { ...input }; state.capsules.set(key(input.tenant_id, input.capsule_id), row); return row; }); },
+    async saveCapsule(input) { return runProjectOperation({ ...input,
+      operation: "continuity_capsule_build", event_type: "CONTINUITY_CAPSULE_BUILT",
+      request: input.request, mutate: async () => { const row = { ...input };
+        state.capsules.set(key(input.tenant_id, input.capsule_id), row); return row; } }); },
     async latestCapsule(input) { const rows = listFor(state.capsules, input.tenant_id, (row) => row.project_id === input.project_id && row.work_id === input.work_id).sort((a, b) => b.generated_from_event_sequence - a.generated_from_event_sequence); if (!rows[0]) throw new CausalContinuityError("CAUSAL_NOT_FOUND"); return rows[0]; },
     async timeline(input) { return listFor(state.events, input.tenant_id, (row) => row.project_id === input.project_id && (!input.before_sequence || row.sequence_number < input.before_sequence)).sort((a, b) => a.sequence_number - b.sequence_number).slice(-(Math.min(Number(input.limit) || 200, 200))); },
     async createGalleryBinding(input) { return runProjectOperation({

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
+import fs from "node:fs";
 import {
   actorFromIdentity,
   canRead,
@@ -584,7 +585,9 @@ class AtomicWorkPool {
           created_by_agent_id: agentId, created_by_session_fingerprint: sessionFingerprint,
           acceptance_criteria: JSON.parse(criteria), idea, architecture: JSON.parse(architecture),
           parent_work_id: parentWorkId,
-          causal_lineage_state: "PENDING", causal_lineage_reason: "CAUSAL_BINDING_PENDING",
+          causal_lineage_state: q.includes("'PLANNED'") ? "PENDING" : "READY",
+          causal_lineage_reason: q.includes("'PLANNED'") ? "CAUSAL_BINDING_PENDING" : null,
+          causal_lineage_digest: q.includes("'PLANNED'") ? null : "c".repeat(64),
           progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
           updated_at: "2026-08-08T10:00:00.000Z" };
       } else {
@@ -596,7 +599,9 @@ class AtomicWorkPool {
           created_by_user_id: null, assigned_user_ids: [], supervising_user_ids: [], agent_ids: [],
           visibility_scope: "private", created_at: createdAt, started_at: createdAt, updated_at: updatedAt,
           status, objective, next_action: nextAction, parent_work_id: parentWorkId, progress_bp: 0,
-          priority: "P4", priority_score: 0, legacy_projection_sequence: projectionSequence,
+          priority: "P4", priority_score: 0, causal_lineage_state: "READY",
+          causal_lineage_reason: null, causal_lineage_digest: "c".repeat(64),
+          legacy_projection_sequence: projectionSequence,
           legacy_projection_event_hash: projectionEventHash,
           legacy_projection_updated_at: projectionUpdatedAt };
       }
@@ -690,6 +695,18 @@ class AtomicWorkPool {
       row.causal_lineage_state = parameters[2];
       row.causal_lineage_reason = parameters[3];
       row.causal_lineage_digest = parameters[4];
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET entity360_context_state=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      row.entity360_context_state = parameters[2];
+      row.entity360_context_reason = parameters[3];
+      row.entity360_entity_id = parameters[4];
+      row.entity360_snapshot_version = parameters[5];
+      row.entity360_snapshot_digest = parameters[6];
+      row.entity360_gate_digest = parameters[7];
+      row.entity360_verification_digest = parameters[8];
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work SET assignment_target_agent_id=$3")) {
@@ -1022,6 +1039,15 @@ class AtomicWorkPool {
         .sort((left, right) => right.sequence_number - left.sequence_number)[0];
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT sequence_number,event_type,event_hash,payload FROM tenant_work_event") &&
+        q.includes("event_type='canonical_entity360_context_state'")) {
+      const row = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        event.event_type === "canonical_entity360_context_state" &&
+        event.payload?.context_digest === parameters[2])
+        .sort((left, right) => right.sequence_number - left.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("SELECT sequence_number,event_hash FROM tenant_work_event")) {
       const rows = [...this.events.values()].filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1])
         .sort((a, b) => a.sequence_number - b.sequence_number);
@@ -1273,6 +1299,8 @@ function candidateWork(index, overrides = {}) {
     owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
     supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
     priority: "P4", priority_score: 0, progress_bp: 0, next_action: "continue",
+    causal_lineage_state: "READY", causal_lineage_reason: null,
+    causal_lineage_digest: "c".repeat(64),
     updated_at: "2026-08-08T10:00:00.000Z",
     ...overrides,
   };
@@ -1576,6 +1604,8 @@ test("owner reconstructs a missing legacy bridge from retained V2 fields exactly
     objective: "Restore the missing bridge without changing the V2 identity.",
     next_action: "Plan the verifier", acceptance_criteria: ["Bridge is tenant-bound and idempotent."],
     idea: null, architecture: { bounded: true }, progress_bp: 0,
+    causal_lineage_state: "READY", causal_lineage_reason: null,
+    causal_lineage_digest: "e".repeat(64),
     legacy_projection_sequence: 2, legacy_projection_event_hash: "d".repeat(64),
   });
   const calls = [];
@@ -1614,6 +1644,8 @@ test("legacy bridge repair fails closed for a non-owner or an inconsistent V2 li
       status: "ACTIVE", priority: "P4", priority_score: 0, intent_digest: "c".repeat(64),
       objective: "Restore safely.", next_action: "Plan the verifier", acceptance_criteria: ["bounded"],
       idea: null, architecture: {}, progress_bp: 0,
+      causal_lineage_state: "READY", causal_lineage_reason: null,
+      causal_lineage_digest: "e".repeat(64),
     });
     return { pool, store: createWorkContinuityV2Store({ pool, legacyRuntime: bridgeLegacyRuntime(pool, []),
       now: () => new Date("2026-08-08T10:00:00.000Z") }) };
@@ -2144,8 +2176,12 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
     activation_requirement: "accepted_assignment_resume",
   });
 
-  await store.recordCausalLineageState(identity(), {
+  await assert.rejects(store.recordCausalLineageState(identity(), {
     work_id: queued.work.work_id, state: "READY",
+  }), /causal_lineage_binding_digest_required/u);
+
+  await store.recordCausalLineageState(identity(), {
+    work_id: queued.work.work_id, state: "READY", lineage_digest: "c".repeat(64),
   });
 
   const archived = await store.archiveWork(identity(), {
@@ -2215,11 +2251,55 @@ test("Gallery V3 materializes a server-derived immutable Intent before exposing 
     event.event_type === "queued_work_intent_materialized").length, 1);
 });
 
+test("server-owned Entity360 readiness is durable, replayable, and fail-closed", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const reviewedInput = await reviewed(store, createInput());
+  const queued = await store.queueNewWork(identity(), reviewedInput);
+  const recoveryIdentity = { ...identity(), serverOwnedCausalLineageRecovery: true };
+  const pending = await store.recordEntity360ContextState(recoveryIdentity, {
+    work_id: queued.work.work_id,
+    state: "PENDING",
+    reason_code: "entity360_snapshot_not_materialized",
+  });
+  assert.equal(pending.state, "PENDING");
+  const readyInput = {
+    work_id: queued.work.work_id,
+    state: "READY",
+    entity_id: "e360_work_entity",
+    snapshot_version: 1,
+    snapshot_digest: "a".repeat(64),
+    gate_digest: "b".repeat(64),
+  };
+  const ready = await store.recordEntity360ContextState(recoveryIdentity, readyInput);
+  const replay = await store.recordEntity360ContextState(recoveryIdentity, readyInput);
+  assert.equal(ready.state, "READY");
+  assert.equal(ready.work.entity360_entity_id, "e360_work_entity");
+  assert.equal(ready.work.entity360_snapshot_version, 1);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "canonical_entity360_context_state").length, 2);
+  const lateFailure = await store.recordEntity360ContextState(recoveryIdentity, {
+    work_id: queued.work.work_id,
+    state: "PENDING",
+    reason_code: "entity360_transient_timeout_after_ready",
+  });
+  assert.equal(lateFailure.state, "READY");
+  assert.equal(lateFailure.work.entity360_snapshot_digest, "a".repeat(64));
+  assert.equal(lateFailure.event, null);
+  assert.equal([...pool.events.values()].filter((event) =>
+    event.event_type === "canonical_entity360_context_state").length, 2);
+  await assert.rejects(store.recordEntity360ContextState(identity(), readyInput),
+    /entity360_context_server_owned_recovery_required/u);
+});
+
 test("Gallery V3 archive replays one committed archive and rejects key reuse with a different reason", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
-  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id, state: "READY" });
+  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id,
+    state: "READY", lineage_digest: "c".repeat(64) });
   const request = {
     work_id: queued.work.work_id,
     reason: "Archiviato in attesa della nuova priorità.",
@@ -2282,7 +2362,8 @@ test("a private Gallery assignment loses agent read access on archive, reopen, a
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
   const workId = queued.work.work_id;
-  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
+  await store.recordCausalLineageState(identity(), { work_id: workId,
+    state: "READY", lineage_digest: "c".repeat(64) });
   const codex = identity("codex", "member");
   codex.agentPresence.client_type = "codex";
   await store.assignQueuedWork(identity(), {
@@ -2432,7 +2513,8 @@ test("an exact Codex agent can accept a Gallery offer, but an impersonating host
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
-  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id, state: "READY" });
+  await store.recordCausalLineageState(identity(), { work_id: queued.work.work_id,
+    state: "READY", lineage_digest: "c".repeat(64) });
   const offer = await store.assignQueuedWork(identity(), {
     work_id: queued.work.work_id,
     target_agent_id: "agent-codex",
@@ -2478,7 +2560,8 @@ test("only the exact accepted host session can atomically activate queued Work c
     now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
   const workId = queued.work.work_id;
-  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
+  await store.recordCausalLineageState(identity(), { work_id: workId,
+    state: "READY", lineage_digest: "c".repeat(64) });
   await assert.rejects(store.activateAcceptedQueuedWorkContinuity(identity(), {
     work_id: workId,
   }), /queued_work_continuity_server_authority_required/);
@@ -2581,7 +2664,8 @@ test("queued continuity activation rejects unaccepted Work and rolls back a fail
     now: () => new Date("2026-08-08T10:00:00.000Z") });
   const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
   const workId = queued.work.work_id;
-  await store.recordCausalLineageState(identity(), { work_id: workId, state: "READY" });
+  await store.recordCausalLineageState(identity(), { work_id: workId,
+    state: "READY", lineage_digest: "c".repeat(64) });
   const codex = identity("codex", "member");
   codex.agentPresence.client_type = "codex";
 
@@ -2656,6 +2740,8 @@ test("completed archives remain immutable and cannot be reopened", async () => {
     assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
     status: "ARCHIVED", archived_at: "2026-08-08T09:00:00.000Z", archived_from_status: null,
     priority: "P4", priority_score: 0, progress_bp: 10000, updated_at: "2026-08-08T09:00:00.000Z",
+    causal_lineage_state: "READY", causal_lineage_reason: null,
+    causal_lineage_digest: "e".repeat(64),
   });
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   await assert.rejects(store.reopenWork(identity(), {
@@ -4070,4 +4156,112 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
     event.event_type === "terminal_coordination_reconciled").length, 1);
   assert.equal([...pool.coreEvents.values()].filter((event) =>
     event.event_type === "terminal_coordination_reconciled").length, 1);
+});
+
+
+test("server wrapper persists existing verified Entity360 evidence without minting a gate", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const work = { ...queued.work, created_at: "2026-08-08T10:00:00.000Z" };
+  const entityId = `e360_${"a".repeat(48)}`;
+  const snapshotDigest = "b".repeat(64);
+  let verificationValid = true;
+  const reply = (result) => ({ structuredContent: { ok: true, result } });
+  const handlers = {
+    entity_360_policy_read: async () => reply({ schema_version: "entity_360_policy_read_v1",
+      tenant_scope: "tenant-a", execution_authorized: false,
+      feature_flag: { mode: "ENFORCED", enabled: true, revision: 1 } }),
+    entity_360_resolve: async () => reply({ status: "RESOLVED", entity_id: entityId }),
+    entity_360_snapshot_latest: async () => reply({ tenant_scope: "tenant-a",
+      entity_id: entityId, entity_type: "work", project_work_linkage: { work_id: work.work_id },
+      context_status: "READY", snapshot_version: 3,
+      deterministic_immutable_digest: snapshotDigest,
+      execution_authorized: false, production_decision_mutation: false }),
+    entity_360_snapshot_verify: async () => reply({ valid: verificationValid,
+      tenant_scope: "tenant-a", snapshot_digest: snapshotDigest,
+      independently_recomputed_by: "universal_core_entity360_verifier" }),
+    entity_360_work_snapshot_bootstrap: async () => { throw new Error("unexpected_bootstrap"); },
+  };
+  // Execute the production wrappers with real durable-store logic, while
+  // replacing only authenticated read dependencies and their Core responses.
+  const source = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const wrapperSource = source.slice(source.indexOf("async function bootstrapCanonicalWorkEntity360Context"),
+    source.indexOf("async function reconcileCanonicalWorkBootstrapReadiness"));
+  const markerSource = source.slice(source.indexOf("function withServerOwnedCausalLineageRecovery"),
+    source.indexOf("\n}", source.indexOf("function withServerOwnedCausalLineageRecovery")) + 2);
+  const reconcile = new Function("crypto", "stableCanonical", "ensureNyraReadBinding",
+    "workContinuityRuntime", "requireCanonicalWorkRead", "entity360Handlers",
+    "workContinuityV2Store", "withTenantWorkAcl", `${markerSource}\n${wrapperSource}
+    return reconcileInitialEntity360WorkSnapshot;`)(crypto, stable,
+    async () => ({ work_id: work.work_id, state: "active", execution_authorized: false,
+      external_action_authorized: false }), {}, async () => {}, handlers, store,
+    (caller) => ({ ...caller }));
+  const ready = await reconcile(identity(), work);
+  const replay = await reconcile(identity(), work);
+  assert.equal(ready.state, "READY");
+  assert.equal(ready.source, "existing_verified");
+  assert.equal(ready.gate_digest, undefined);
+  assert.equal(replay.context_digest, ready.context_digest);
+  const persisted = pool.works.get(key("tenant-a", work.work_id));
+  assert.equal(persisted.entity360_gate_digest, null);
+  assert.equal(persisted.entity360_verification_digest, ready.verification_digest);
+  const events = [...pool.events.values()].filter((event) =>
+    event.event_type === "canonical_entity360_context_state");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.schema_version, "canonical_work_entity360_context_state_v2");
+  assert.equal(events[0].payload.source, "existing_verified");
+  assert.equal(events[0].payload.verification_digest, ready.verification_digest);
+  verificationValid = false;
+  const lateFailure = await reconcile(identity(), work);
+  assert.equal(lateFailure.state, "READY");
+  assert.equal(lateFailure.context_digest, ready.context_digest);
+  await assert.rejects(store.recordEntity360ContextState(identity(), { ...ready, work_id: work.work_id }),
+    /entity360_context_server_owned_recovery_required/);
+  const recoveryIdentity = { ...identity(), serverOwnedCausalLineageRecovery: true };
+  await assert.rejects(store.recordEntity360ContextState(recoveryIdentity,
+    { ...ready, work_id: work.work_id, gate_digest: "c".repeat(64) }),
+  /entity360_context_evidence_kind_mismatch/);
+  await assert.rejects(store.recordEntity360ContextState(recoveryIdentity,
+    { ...ready, work_id: work.work_id, verification_digest: null }),
+  /entity360_context_verification_digest_required/);
+});
+
+test("legacy causal READY is preserved but cannot attest a verified binding during recovery", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const recoveryIdentity = { ...identity(), serverOwnedCausalLineageRecovery: true };
+  const readyInput = { work_id: queued.work.work_id, state: "READY",
+    lineage_digest: "d".repeat(64), server_owned_recovery: true };
+  await store.recordCausalLineageState(recoveryIdentity, readyInput);
+  const legacyEvent = [...pool.events.values()].find((event) =>
+    event.event_type === "canonical_causal_lineage_state");
+  legacyEvent.payload.schema_version = "canonical_work_causal_lineage_state_v1";
+  const pendingInput = { work_id: queued.work.work_id, state: "PENDING",
+    reason_code: "core_temporarily_unavailable", server_owned_recovery: true };
+  const source = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const wrapperSource = source.slice(source.indexOf("async function reconcileCanonicalWorkCausalLineage"),
+    source.indexOf("async function bootstrapCanonicalWorkEntity360Context"));
+  const reconcile = new Function("withServerOwnedCausalLineageRecovery", "workContinuityV2Store",
+    "ensureCanonicalWorkCausalLineage", "causalContinuityHandlers", `${wrapperSource}
+    return reconcileCanonicalWorkCausalLineage;`)(() => recoveryIdentity, store,
+    async () => { throw new Error("core_temporarily_unavailable"); }, {});
+  const legacyWrapper = await reconcile(identity(), queued.work);
+  assert.equal(legacyWrapper.available, false);
+  assert.equal(legacyWrapper.recovered_by_competing_attempt, false);
+  const legacyRecovery = await store.recordCausalLineageState(recoveryIdentity, pendingInput);
+  assert.equal(legacyRecovery.state, "READY");
+  assert.equal(legacyRecovery.binding_verified, false);
+  const upgraded = await store.recordCausalLineageState(recoveryIdentity, readyInput);
+  assert.equal(upgraded.idempotent_replay, false);
+  assert.equal(upgraded.binding_verified, true);
+  const concurrentRecovery = await store.recordCausalLineageState(recoveryIdentity, pendingInput);
+  assert.equal(concurrentRecovery.binding_verified, true);
+  assert.equal(concurrentRecovery.lineage_digest, readyInput.lineage_digest);
+  const concurrentWrapper = await reconcile(identity(), queued.work);
+  assert.equal(concurrentWrapper.available, true);
+  assert.equal(concurrentWrapper.recovered_by_competing_attempt, true);
 });

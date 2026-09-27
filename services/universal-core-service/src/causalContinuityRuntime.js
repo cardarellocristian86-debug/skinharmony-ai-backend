@@ -190,6 +190,9 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
   async function project_state_snapshot(context, input = {}) {
     const prepared = mutationInput(context, input, "project_state_snapshot");
     const project_id = requireUuid(input.project_id, "project_id");
+    const base_state_digest = input.base_state_digest
+      ? requireDigest(input.base_state_digest, "base_state_digest") : null;
+    const caller_observed_at = input.observed_at ? iso(input.observed_at, "observed_at") : null;
     const resources = (await store.readScope({ tenant_id: prepared.tenant_id, project_id, active_only: true, limit: 500 }))
       .map((resource) => ({
         resource_type: resource.resource_type,
@@ -207,8 +210,15 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       ...prepared, project_id,
       snapshot_id: stableUuid(prepared.tenant_id, project_id, prepared.operation, prepared.idempotency_key),
       canonicalization_version: CAUSAL_CANONICAL_VERSION, canonical_state, state_digest,
-      base_state_digest: input.base_state_digest ? requireDigest(input.base_state_digest, "base_state_digest") : null,
-      observed_at: input.observed_at ? iso(input.observed_at, "observed_at") : now().toISOString(),
+      base_state_digest,
+      observed_at: caller_observed_at || now().toISOString(),
+      // Idempotency represents the caller's semantic request. A server clock
+      // value materialized for storage is output, not request input.
+      request: {
+        project_id,
+        base_state_digest,
+        ...(caller_observed_at ? { observed_at: caller_observed_at } : {}),
+      },
     });
   }
 
@@ -764,6 +774,20 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
     return store.saveCapsule({
       ...prepared, project_id, work_id, capsule_id: stableUuid(prepared.tenant_id, project_id, prepared.operation, prepared.idempotency_key),
       generated_from_event_sequence: sequence, capsule, capsule_digest: capsule.capsule_digest,
+      // The capsule is a server-derived readback of an advancing ledger. An
+      // exact retry is keyed by the original request, never by that readback.
+      request: {
+        project_id,
+        work_id,
+        ...(input.generated_from_event_sequence !== undefined
+          ? { generated_from_event_sequence: Number(input.generated_from_event_sequence) } : {}),
+        ...(input.bounded_history !== undefined
+          ? { bounded_history: Number(input.bounded_history) } : {}),
+        ...(input.next_safe_action !== undefined
+          ? { next_safe_action: input.next_safe_action } : {}),
+        ...(input.forbidden_actions !== undefined
+          ? { forbidden_actions: input.forbidden_actions } : {}),
+      },
     });
   }
 

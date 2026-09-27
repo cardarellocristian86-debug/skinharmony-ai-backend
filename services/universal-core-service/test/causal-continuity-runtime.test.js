@@ -618,6 +618,30 @@ test("idempotency returns one event and changed payload conflicts", async () => 
   );
 });
 
+test("causal bootstrap snapshot retry ignores server-derived time after a later phase fails", async () => {
+  const f = await fixture();
+  await f.runtime.project_scope_bind(CONTEXT, {
+    project_id: f.project.project_id, idempotency_key: "scope-bootstrap-retry",
+    resource_type: "service", canonical_identifier: "render:bootstrap-retry",
+    environment: "production", ownership: {}, provenance: { source: "verified-readback" },
+  });
+  const request = { project_id: f.project.project_id,
+    base_state_digest: f.snapshot.state_digest, idempotency_key: "state-bootstrap-retry" };
+  let firstSnapshot;
+  await assert.rejects(async () => {
+    firstSnapshot = await f.runtime.project_state_snapshot(CONTEXT, request);
+    throw new Error("simulated_next_bootstrap_phase_failure");
+  }, /simulated_next_bootstrap_phase_failure/u);
+  f.setClock("2026-08-09T12:01:00.000Z");
+  const replay = await f.runtime.project_state_snapshot(CONTEXT, request);
+  assert.equal(replay._event.event_id, firstSnapshot._event.event_id);
+  assert.equal(replay._event.replayed, true);
+  assert.equal(replay.observed_at, firstSnapshot.observed_at);
+  await assert.rejects(() => f.runtime.project_state_snapshot(CONTEXT, {
+    ...request, base_state_digest: "f".repeat(64),
+  }), (error) => error.code === "IDEMPOTENCY_CONFLICT");
+});
+
 test("legacy Work binding requires exact state and never invents ambiguous causality", async () => {
   const f = await fixture();
   const legacyWorkId = "22222222-2222-4222-8222-222222222221";
@@ -762,4 +786,25 @@ test("capsule and metrics expose bounded authoritative lifecycle support", async
   assert.equal(metrics.metrics.obligation_transitions, 3);
   assert.equal(metrics.metrics.open_conflicts, 1);
   assert.equal(metrics.metrics.pending_temporal_checks, 1);
+});
+
+test("capsule exact retry returns its original ledger-bound record after timeline advances", async () => {
+  const f = await fixture();
+  const request = { project_id: f.project.project_id, work_id: f.work.work_id,
+    next_safe_action: "verify candidate", forbidden_actions: ["deploy"],
+    idempotency_key: "capsule-stable-replay" };
+  const first = await f.runtime.continuity_capsule_build(CONTEXT, request);
+  await f.runtime.project_scope_bind(CONTEXT, {
+    project_id: f.project.project_id, idempotency_key: "scope-after-capsule",
+    resource_type: "service", canonical_identifier: "render:after-capsule",
+    environment: "production", ownership: {}, provenance: { source: "verified-readback" },
+  });
+  const replay = await f.runtime.continuity_capsule_build(CONTEXT, request);
+  assert.equal(replay._event.event_id, first._event.event_id);
+  assert.equal(replay._event.replayed, true);
+  assert.equal(replay.capsule_digest, first.capsule_digest);
+  assert.deepEqual(replay.capsule, first.capsule);
+  await assert.rejects(() => f.runtime.continuity_capsule_build(CONTEXT, {
+    ...request, next_safe_action: "publish candidate",
+  }), (error) => error.code === "IDEMPOTENCY_CONFLICT");
 });

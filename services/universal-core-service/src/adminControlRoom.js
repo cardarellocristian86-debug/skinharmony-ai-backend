@@ -308,11 +308,14 @@ export function mountAdminControlRoom({ app, storageRoot, audit, keyStore, tenan
   });
 
   app.get("/admin/healthz", (_req, res) => res.json({ ok: true, service: "core-nyra-admin", configured: adminConfigured() }));
-  app.get("/admin", (_req, res) => res.sendFile(path.join(uiRoot, "index.html")));
+  // Pass the trusted UI directory as Express' root.  Supplying one absolute
+  // path makes `send` treat every parent component as request material and it
+  // rejects valid deployments/worktrees located below a hidden directory.
+  app.get("/admin", (_req, res) => res.sendFile("index.html", { root: uiRoot }));
   app.get("/admin/assets/:asset", (req, res) => {
     const asset = String(req.params.asset || "");
     if (!/^[a-z0-9_.-]+$/i.test(asset)) return res.status(404).end();
-    return res.sendFile(path.join(uiRoot, asset));
+    return res.sendFile(asset, { root: uiRoot });
   });
 
   app.get("/admin/api/bootstrap", (req, res) => {

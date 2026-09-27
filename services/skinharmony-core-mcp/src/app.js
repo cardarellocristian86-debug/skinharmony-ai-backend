@@ -72,6 +72,22 @@ const COMPACT_OPAQUE_BOUND_OBJECT = Object.freeze({
   additionalProperties: true,
 });
 
+const COMPACT_TYPED_CORE_REQUEST = Object.freeze({
+  type: "object",
+  description: "Semantic AI-to-Core request. The host supplies only the operation-specific spec; Nyra binds Work, Intent, host, audience and idempotency server-side.",
+  properties: Object.freeze({
+    schema_version: { const: "connected_ai_typed_request_v1" },
+    operation: { type: "string", enum: ["DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"] },
+    request: {
+      type: "object",
+      description: "Semantic delegation or action spec without Work, Intent, host, audience or idempotency bindings.",
+      additionalProperties: true,
+    },
+  }),
+  required: Object.freeze(["schema_version", "operation", "request"]),
+  additionalProperties: false,
+});
+
 const COMPACT_OUTPUT_SCHEMAS = Object.freeze({
   nyra_converse: Object.freeze({
     type: "object",
@@ -136,6 +152,7 @@ export function compactPublishedToolDescriptor(tool) {
       properties: {
         ...inputSchema?.properties,
         work_bootstrap: COMPACT_OPAQUE_BOUND_OBJECT,
+        typed_core_request: COMPACT_TYPED_CORE_REQUEST,
       },
     };
   } else if (tool.name === "core_typed_request") {

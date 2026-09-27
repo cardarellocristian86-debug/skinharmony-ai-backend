@@ -75,7 +75,7 @@ function normalizeOperationalState(operational = {}) {
 
 export function diagnoseNyraOperationalState({ continuity = {}, operational = {} } = {}) {
   const normalized = normalizeOperationalState(operational);
-  const continuityRevision = Number(continuity.architecture_version || continuity.work_revision || 0);
+  const continuityRevision = Number(continuity.work_revision || continuity.architecture_version || 0);
   const reconnect = continuity?.connector_state?.state === "reconnect_required";
   if (reconnect) {
     return Object.freeze({

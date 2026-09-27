@@ -338,6 +338,15 @@ function directiveContextFixture({
       next_action: "E360-02 — ADR boundaries",
       acceptance_criteria: ["Architecture and acceptance criteria are verified"],
     },
+    work_state_projection: {
+      schema_version: "work_state_projection_v1",
+      work_id: WORK_ID,
+      intent_digest: INTENT_DIGEST,
+      work_revision: workRevision,
+      ledger_watermark: workRevision,
+      projection_digest: "9".repeat(64),
+      persistence_state: "CURRENT",
+    },
     tasks: [{
       tenant_id: tenantId,
       task_id: TASK_ID,
@@ -404,6 +413,8 @@ function nativePrecommitTicketGateFixture(overrides = {}) {
     reconciliation_digest: "6".repeat(64),
     v2_scope_snapshot_digest: "8".repeat(64),
     v2_scope_tasks: [],
+    deferred_tasks: [],
+    deferred_tasks_digest: null,
     legacy_evidence_ids: [],
     replacement_evidence_ids: [],
     fulfilled: false,
@@ -1098,6 +1109,18 @@ test("never turns a read-only Work query into an owner ticket when Core marks it
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.owner_confirmation_required, false);
   assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+});
+
+test("reconciles the public dialogue to the authoritative V2 Work projection", async () => {
+  const response = await harness({
+    directiveContext: directiveContextFixture({ workRevision: 52 }),
+  }).handler({
+    message: "Leggi stato e checkpoint del Work. Sola lettura.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(response.structuredContent.nyra_dialogue.work_revision, 52);
+  assert.equal(response.structuredContent.orchestration_directive.work_context.work_revision, 52);
 });
 
 test("does not leak a Core-selected action or blocked risk into a factual Work read", async () => {
@@ -1814,7 +1837,12 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
       state: "active",
       next_action: "Continue the existing Work.",
     },
-    operational: { work_revision: 3, gallery: { state: "available", work_count: 1 } },
+    operational: {
+      work_revision: 3,
+      checkpoint: { capsule_id: "capsule-resume-1", capsule_digest: "b".repeat(64) },
+      handoff: { available: true, to: "independent_verifier", at: "2026-09-23T16:00:00.000Z" },
+      gallery: { state: "available", work_count: 1 },
+    },
   });
   const { handler, calls } = harness({ persistedContext: context });
   const result = await handler({
@@ -1829,6 +1857,10 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(calls.interpret.length, 0);
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.work.next_action, "Continue the existing Work.");
+  assert.equal(payload.nyra_dialogue.checkpoint_capsule_id, "capsule-resume-1");
+  assert.equal(payload.nyra_dialogue.checkpoint_capsule_digest, "b".repeat(64));
+  assert.equal(payload.nyra_dialogue.handoff_to, "independent_verifier");
+  assert.equal(payload.nyra_dialogue.handoff_at, "2026-09-23T16:00:00.000Z");
   assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
   assert.match(payload.host_response_contract.reply_seed,
     /^Riprendo dal punto verificabile di questo Work\.\n\nAdesso: AI collegata — Continue the existing Work\./);
@@ -2696,6 +2728,16 @@ test("applies an exact native closure precommit gate without legacy evidence req
     work_id: WORK_ID,
     project_id: "nyra_core",
     continuation_operation: "authorize_action",
+    typed_core_request: {
+      schema_version: "connected_ai_typed_request_v1",
+      operation: "ACTION_TICKET_REQUEST",
+      request: {
+        delegation_id: "hnd_commit-delegation-001",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        action: { kind: "git.commit", branch: "fix/typed", commit: "8".repeat(40) },
+        evidence_digest: "9".repeat(64),
+      },
+    },
     locale: "it",
   }, identity())).structuredContent;
   const directive = payload.orchestration_directive;
@@ -2750,6 +2792,16 @@ test("covers the bound V2 task as well as the synthetic native ticket task", asy
     work_id: WORK_ID,
     project_id: "nyra_core",
     continuation_operation: "authorize_action",
+    typed_core_request: {
+      schema_version: "connected_ai_typed_request_v1",
+      operation: "ACTION_TICKET_REQUEST",
+      request: {
+        delegation_id: "hnd_commit-delegation-001",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        action: { kind: "git.commit", branch: "fix/typed", commit: "8".repeat(40) },
+        evidence_digest: "9".repeat(64),
+      },
+    },
     locale: "it",
   }, identity())).structuredContent;
   const directive = payload.orchestration_directive;
@@ -2759,6 +2811,89 @@ test("covers the bound V2 task as well as the synthetic native ticket task", asy
   assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
   assert.equal(directive.ticket_request.continuation.available, true);
   assert.equal(openedContinuations.length, 1);
+  assert.equal(openedContinuations[0].typedCoreRequest.operation, "ACTION_TICKET_REQUEST");
+  assert.equal(openedContinuations[0].continuationOperation, "authorize_action");
+});
+
+test("Dialogue defers only server-verified post-effect tasks while closure stays blocked", async () => {
+  const scopedTaskId = "e4c8e893-1a86-4ed3-bd85-5150d451af76";
+  const deferredTaskId = "90f5af84-0dea-4afd-82dd-e4a0d010e36b";
+  const context = directiveContextFixture();
+  context.evidence = context.evidence.map((item) => ({
+    ...item,
+    independently_verified: true,
+  }));
+  context.tasks.push({
+    tenant_id: "tenant-a", task_id: scopedTaskId, work_id: WORK_ID,
+    title: "Verify the exact precommit candidate", status: "completed",
+    required: true, acceptance_verified: true,
+  }, {
+    tenant_id: "tenant-a", task_id: deferredTaskId, work_id: WORK_ID,
+    title: "Verify the deployed runtime", status: "planned",
+    required: true, acceptance_verified: false,
+  });
+  const deferredTasks = [{
+    schema_version: "native_plan_precommit_deferred_v2_task_v1",
+    task_contract_digest: null,
+    task_contract_revision: null,
+    dependency_manifest_digest: null,
+    dependency_manifest_revision: null,
+    task_id: deferredTaskId,
+    v2_task_digest: "a".repeat(64),
+    revision: 2,
+    required: true,
+    status: "planned",
+    acceptance_verified: false,
+    phase: "POST_DEPLOY",
+  }];
+  context.precommit_ticket_gate = nativePrecommitTicketGateFixture({
+    v2_scope_tasks: [{ task_id: scopedTaskId, v2_task_digest: "9".repeat(64), revision: 1 }],
+    deferred_tasks: deferredTasks,
+    deferred_tasks_digest: canonicalDigest(deferredTasks),
+  });
+  const payload = (await harness({ directiveContext: context }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    typed_core_request: {
+      schema_version: "connected_ai_typed_request_v1",
+      operation: "ACTION_TICKET_REQUEST",
+      request: {
+        delegation_id: "hnd_commit-delegation-001",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        action: { kind: "git.commit", branch: "fix/typed", commit: "8".repeat(40) },
+        evidence_digest: "9".repeat(64),
+      },
+    },
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.pending_required_task_count, 2);
+  assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
+  assert.equal(directive.work_context.closure_verified, false);
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+
+  const tampered = structuredClone(context);
+  tampered.precommit_ticket_gate.deferred_tasks[0].revision += 1;
+  await assert.rejects(harness({ directiveContext: tampered }).handler({
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    typed_core_request: {
+      schema_version: "connected_ai_typed_request_v1",
+      operation: "ACTION_TICKET_REQUEST",
+      request: {
+        delegation_id: "hnd_commit-delegation-001",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        action: { kind: "git.commit", branch: "fix/typed", commit: "8".repeat(40) },
+        evidence_digest: "9".repeat(64),
+      },
+    },
+  }, identity()), /nyra_converse_precommit_ticket_gate_invalid/);
 });
 
 test("keeps the Work integrity digest stable when continuation readback lacks dialogue checkpoint metadata", async () => {
@@ -3046,6 +3181,67 @@ test("rejects cross-bound or revision-drifted Work directive context", async () 
     }, identity()),
     /nyra_converse_directive_context_revision_mismatch/,
   );
+});
+
+test("rejects altered V2 Work, checkpoint and handoff projections", async () => {
+  const cases = [
+    ["work id", (context) => {
+      context.work_state_projection.work_id = "11111111-1111-4111-8111-111111111111";
+    },
+      /nyra_converse_work_projection_invalid/],
+    ["intent", (context) => { context.work_state_projection.intent_digest = "a".repeat(64); },
+      /nyra_converse_work_projection_invalid/],
+    ["watermark", (context) => { context.work_state_projection.ledger_watermark += 1; },
+      /nyra_converse_work_projection_invalid/],
+    ["projection digest", (context) => { context.work_state_projection.projection_digest = "invalid"; },
+      /nyra_converse_work_projection_invalid/],
+  ];
+  for (const [label, mutate, expected] of cases) {
+    const context = directiveContextFixture();
+    mutate(context);
+    await assert.rejects(
+      harness({ directiveContext: context }).handler({
+        message: "Nyra, diagnostica il Work",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+      }, identity()),
+      expected,
+      label,
+    );
+  }
+
+  const buildPersisted = async () => (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a", project_id: "nyra_core", work_id: WORK_ID,
+      state: "active", work_revision: 4, next_action: "Continue",
+    },
+    operational: {
+      work_revision: 4,
+      checkpoint: { capsule_id: "capsule-1", capsule_digest: "b".repeat(64) },
+      handoff: { available: true, to: "independent_verifier", at: "2026-09-23T16:00:00.000Z" },
+      gallery: { state: "available", work_count: 1 },
+    },
+  });
+  for (const [label, mutate, expected] of [
+    ["partial checkpoint", (persisted) => {
+      delete persisted.nyra_dialogue.work.checkpoint.capsule_digest;
+    }, /nyra_converse_checkpoint_projection_invalid/],
+    ["partial handoff", (persisted) => {
+      delete persisted.nyra_dialogue.work.handoff.at;
+    }, /nyra_converse_handoff_projection_invalid/],
+  ]) {
+    const persisted = structuredClone(await buildPersisted());
+    mutate(persisted);
+    await assert.rejects(
+      harness({ persistedContext: persisted, directiveContext: directiveContextFixture() }).handler({
+        message: "Nyra, riprendi il lavoro",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+      }, identity()),
+      expected,
+      label,
+    );
+  }
 });
 
 test("rejects malformed execution claims and quarantines upstream completion language", async () => {

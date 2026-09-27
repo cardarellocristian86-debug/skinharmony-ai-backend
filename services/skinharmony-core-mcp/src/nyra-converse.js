@@ -310,13 +310,18 @@ function publicNyraDialogue(value) {
     work_revision: Number.isSafeInteger(Number(work.work_revision)) ? Number(work.work_revision) : null,
     intent_digest: /^[a-f0-9]{64}$/.test(String(work.intent_digest || "")) ? work.intent_digest : null,
     checkpoint_available: checkpoint.available === true,
+    checkpoint_capsule_id: boundedPublicText(checkpoint.capsule_id, 80) || null,
+    checkpoint_capsule_digest: /^[a-f0-9]{64}$/.test(String(checkpoint.capsule_digest || ""))
+      ? checkpoint.capsule_digest
+      : null,
     handoff_available: handoff.available === true,
     handoff_to: boundedPublicText(handoff.to, 80) || null,
+    handoff_at: boundedPublicText(handoff.at, 40) || null,
     gallery_work_count: boundedCount(gallery.work_count),
     software_state: boundedString(software.state, 40) || "not_indexed",
     atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
     diagnosis_state: boundedString(diagnosis.state, 80) || "unknown",
-    next_action_available: true,
+    next_action_available: Boolean(boundedPublicText(dialogue.next_action, 500)),
     assignment: Object.freeze({
       available: Boolean(assignmentId),
       assignment_id: assignmentId,
@@ -777,8 +782,11 @@ function unavailableWorkDirectiveContext(work, dialogue) {
     status: null,
     progress_bp: null,
     checkpoint_available: dialogue?.checkpoint_available === true,
+    checkpoint_capsule_id: dialogue?.checkpoint_capsule_id || null,
+    checkpoint_capsule_digest: dialogue?.checkpoint_capsule_digest || null,
     handoff_available: dialogue?.handoff_available === true,
     handoff_to: dialogue?.handoff_to || null,
+    handoff_at: dialogue?.handoff_at || null,
     acceptance_criteria_count: 0,
     required_task_count: 0,
     pending_required_task_count: 0,
@@ -1099,7 +1107,24 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     (!readOnly && workBinding.project_id && work.project_id !== workBinding.project_id)
   ) throw fail("nyra_converse_directive_context_binding_invalid", 409);
   const projectId = readOnly ? canonicalReadProjectId : workBinding.project_id;
-  const suppliedRevision = Number(value.work_revision);
+  const stateProjection = value.work_state_projection &&
+    typeof value.work_state_projection === "object" &&
+    !Array.isArray(value.work_state_projection)
+    ? value.work_state_projection
+    : null;
+  const projectionAvailable = stateProjection?.schema_version === "work_state_projection_v1" &&
+    stateProjection.available !== false;
+  const projectedRevision = Number(stateProjection?.work_revision || 0);
+  const projectedWatermark = Number(stateProjection?.ledger_watermark || 0);
+  if (projectionAvailable && (
+    boundedWorkId(stateProjection.work_id)?.toLowerCase() !== bindingWorkId ||
+    stateProjection.intent_digest !== work.intent_digest ||
+    !Number.isSafeInteger(projectedRevision) || projectedRevision < 0 ||
+    !Number.isSafeInteger(projectedWatermark) || projectedWatermark < 0 ||
+    projectedRevision !== projectedWatermark ||
+    !/^[a-f0-9]{64}$/.test(String(stateProjection.projection_digest || ""))
+  )) throw fail("nyra_converse_work_projection_invalid", 409);
+  const suppliedRevision = projectionAvailable ? projectedRevision : Number(value.work_revision);
   const dialogueRevision = Number(dialogue.work_revision);
   if (
     Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0 &&
@@ -1132,8 +1157,21 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     throw fail("nyra_converse_directive_context_progress_invalid", 409);
   }
   const checkpointAvailable = dialogue?.checkpoint_available === true;
+  const checkpointCapsuleId = boundedPublicText(dialogue?.checkpoint_capsule_id, 80) || null;
+  const checkpointCapsuleDigest = /^[a-f0-9]{64}$/.test(String(dialogue?.checkpoint_capsule_digest || ""))
+    ? dialogue.checkpoint_capsule_digest
+    : null;
+  if (Boolean(checkpointCapsuleId) !== Boolean(checkpointCapsuleDigest) ||
+      (!checkpointAvailable && Boolean(checkpointCapsuleId && checkpointCapsuleDigest))) {
+    throw fail("nyra_converse_checkpoint_projection_invalid", 409);
+  }
   const handoffAvailable = dialogue?.handoff_available === true;
   const handoffTo = boundedPublicText(dialogue?.handoff_to, 80) || null;
+  const handoffAt = boundedPublicText(dialogue?.handoff_at, 40) || null;
+  if (Boolean(handoffTo) !== Boolean(handoffAt) ||
+      (!handoffAvailable && Boolean(handoffTo && handoffAt))) {
+    throw fail("nyra_converse_handoff_projection_invalid", 409);
+  }
   if (!Array.isArray(work.acceptance_criteria) || work.acceptance_criteria.length > 250) {
     throw fail("nyra_converse_directive_context_acceptance_invalid", 409);
   }
@@ -1373,8 +1411,11 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue, { r
     status,
     progress_bp: progressBp,
     checkpoint_available: checkpointAvailable,
+    checkpoint_capsule_id: checkpointCapsuleId,
+    checkpoint_capsule_digest: checkpointCapsuleDigest,
     handoff_available: handoffAvailable,
     handoff_to: handoffTo,
+    handoff_at: handoffAt,
     acceptance_criteria_count: acceptanceCriteria.length,
     required_task_count: requiredTasks.length,
     pending_required_task_count: pendingRequiredTasks.length,
@@ -3367,6 +3408,20 @@ export function createNyraConverseHandler({
         { readOnly: statePureRead },
       );
     }
+    const reconciledDialogue = workContext.available === true
+      ? Object.freeze({
+          ...boundedPreflight.dialogue,
+          work_revision: workContext.work_revision,
+          intent_digest: workContext.intent_digest,
+          checkpoint_available: workContext.checkpoint_available,
+          checkpoint_capsule_id: workContext.checkpoint_capsule_id,
+          checkpoint_capsule_digest: workContext.checkpoint_capsule_digest,
+          handoff_available: workContext.handoff_available,
+          handoff_to: workContext.handoff_to,
+          handoff_at: workContext.handoff_at,
+          next_action_available: Boolean(workContext.next_required_task || boundedPreflight.work.next_action),
+        })
+      : boundedPreflight.dialogue;
     let workBootstrapRequestDigest = null;
     // This is deliberately retained only inside the server call path.  The
     // public directive exposes its digest and opaque continuation, never the
@@ -3477,6 +3532,8 @@ export function createNyraConverseHandler({
           identity,
           directive: baseDirective,
           workBootstrapRequest,
+          typedCoreRequest: args.typed_core_request,
+          continuationOperation,
         }));
         if (reference?.schema_version === "nyra_continuation_ref_v1") {
           continuation = reference;
@@ -3579,7 +3636,7 @@ export function createNyraConverseHandler({
         dialogue_accepted: publicInterpretation.dialogue_accepted,
         opened_branch_count: publicInterpretation.opened_branch_count,
       }),
-      nyra_dialogue: boundedPreflight.dialogue,
+      nyra_dialogue: reconciledDialogue,
       action_policy: action,
       orchestration_directive: directive,
       intent_routing: localRouting,

@@ -2,10 +2,132 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { createCoreHandlers, createCoreWriteGuard } from "../src/core-handlers.js";
+import {
+  DTT_WORK_BOOTSTRAP_CONTEXT_HEADER,
+  issueDttWorkBootstrapContext,
+  verifyDttWorkBootstrapContext,
+} from "../../shared/dtt-work-context.js";
 
 const OWNER_CONTEXT_SECRET = "test-owner-context-signing-secret-0123456789";
 const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
+
+test("Entity360 initial snapshot bootstrap uses only the server-owned request-bound transport", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const secret = "entity360-bootstrap-dtt-signing-secret-0123456789";
+  const presence = {
+    transport_bound: true,
+    agent_id: "chatgpt-bootstrap",
+    session_id: "session-entity360-bootstrap",
+    client_type: "chatgpt",
+    session_fingerprint: "a".repeat(24),
+    host_transport_session_fingerprint: "b".repeat(24),
+    signature: `ags_${"c".repeat(32)}`,
+    opaque_agent_id: `ai_${"d".repeat(24)}`,
+    actor_provenance: `ap_${"e".repeat(32)}`,
+  };
+  const calls = [];
+  let bindingCalls = 0;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+    dttAgentIdentitySigningSecret: secret,
+  }, {
+    resolveDttWorkBootstrapBinding: async (identity, boundWorkId) => {
+      bindingCalls += 1;
+      assert.equal(identity.tenantId, "tenant-a");
+      assert.equal(boundWorkId, workId);
+      return Object.freeze({
+        schema_version: "dtt_work_bootstrap_binding_v1",
+        tenant_id: "tenant-a",
+        work_id: workId,
+        binding_id: "22222222-2222-4222-8222-222222222222",
+        work_binding_digest: "f".repeat(64),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        server_owned: true,
+        execution_authorized: false,
+      });
+    },
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, init, body });
+      const verified = verifyDttWorkBootstrapContext({
+        token: init.headers[DTT_WORK_BOOTSTRAP_CONTEXT_HEADER],
+        secret,
+        expected_tenant_id: "tenant-a",
+        expected_work_id: workId,
+        method: "POST",
+        path: "/v1/entity-360/snapshots/bootstrap",
+        body,
+      });
+      assert.equal(verified.execution_authorized, false);
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const args = { work_id: workId, as_of: "2026-09-24T12:00:00.000Z",
+    expected_revision: 0, idempotency_key: `entity360-work-bootstrap-${workId}` };
+  await handlers.dttWorkBootstrapCoreRequest(
+    "/v1/entity-360/snapshots/bootstrap", args,
+    { tenantId: "tenant-a", agentPresence: presence }, { method: "POST", body: args },
+  );
+  assert.equal(bindingCalls, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+  await assert.rejects(() => handlers.dttWorkBootstrapCoreRequest(
+    "/v1/entity-360/snapshots/assemble", args,
+    { tenantId: "tenant-a", agentPresence: presence }, { method: "POST", body: args },
+  ), /dtt_work_bootstrap_route_denied/u);
+  assert.equal(bindingCalls, 1);
+  assert.equal(calls.length, 1);
+});
+
+test("Entity360 bootstrap context rejects tamper, binding drift, expiry, and future issuance", () => {
+  const secret = "entity360-bootstrap-negative-signing-secret-0123456789";
+  const tenantId = "tenant-bootstrap-negative";
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const nowMs = Date.parse("2026-09-24T12:00:00.000Z");
+  const path = "/v1/entity-360/snapshots/bootstrap";
+  const body = { work_id: workId, expected_revision: 0 };
+  const presence = { transport_bound: true, agent_id: "bootstrap-agent",
+    session_id: "bootstrap-session", client_type: "codex",
+    session_fingerprint: "a".repeat(24),
+    host_transport_session_fingerprint: "b".repeat(24),
+    signature: `ags_${"c".repeat(32)}`, opaque_agent_id: `ai_${"d".repeat(24)}`,
+    actor_provenance: `ap_${"e".repeat(32)}` };
+  const bootstrapBinding = { schema_version: "dtt_work_bootstrap_binding_v1",
+    tenant_id: tenantId, work_id: workId,
+    binding_id: "22222222-2222-4222-8222-222222222222",
+    work_binding_digest: "f".repeat(64),
+    expires_at: new Date(nowMs + 60_000).toISOString(), server_owned: true,
+    execution_authorized: false };
+  const issue = (issuedAt = nowMs) => issueDttWorkBootstrapContext({ secret,
+    tenant_id: tenantId, work_id: workId, bootstrap_binding: bootstrapBinding,
+    agent_presence: presence, method: "POST", path, body, now_ms: issuedAt });
+  const token = issue();
+  const verify = (overrides = {}) => verifyDttWorkBootstrapContext({ token, secret,
+    expected_tenant_id: tenantId, expected_work_id: workId, method: "POST", path,
+    body, now_ms: nowMs, ...overrides });
+  assert.equal(verify().work_id, workId);
+  const final = token.at(-1) === "a" ? "b" : "a";
+  assert.throws(() => verify({ token: `${token.slice(0, -1)}${final}` }),
+    /dtt_work_bootstrap_context_signature_invalid/u);
+  assert.throws(() => verify({ expected_tenant_id: "tenant-bootstrap-other" }),
+    /dtt_work_bootstrap_context_tenant_mismatch/u);
+  assert.throws(() => verify({ expected_work_id: "99999999-9999-4999-8999-999999999999" }),
+    /dtt_work_bootstrap_context_work_mismatch/u);
+  assert.throws(() => verify({ body: { ...body, expected_revision: 1 } }),
+    /dtt_work_bootstrap_context_request_mismatch/u);
+  assert.throws(() => verify({ path: "/v1/entity-360/snapshots/assemble" }),
+    /dtt_work_bootstrap_context_request_mismatch/u);
+  assert.throws(() => verify({ now_ms: nowMs + 61_000 }),
+    /dtt_work_bootstrap_context_expired/u);
+  const futureToken = issue(nowMs + 10_000);
+  assert.throws(() => verify({ token: futureToken }),
+    /dtt_work_bootstrap_context_not_active/u);
+});
 
 test("Control Room reads the effective Entity360 tenant mode without a Work binding", async () => {
   const calls = [];

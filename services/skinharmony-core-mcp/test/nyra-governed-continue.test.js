@@ -1112,6 +1112,111 @@ test("the public continuation contract is opaque and the schema contains no bear
   assert.equal(chatGptReview._meta["skinharmony/chatgptBootstrapReview"], true);
 });
 
+test("work action opener materializes one server-bound typed request and returns only an opaque ref", async () => {
+  const recorded = [];
+  const store = {
+    recordConnectedAiTypedRequest: async (value) => {
+      recorded.push(value);
+      return { continuation_ref: CONTINUATION_REF,
+        expires_at: "2026-08-28T22:00:00.000Z" };
+    },
+  };
+  const opener = createNyraContinuationOpener({ store });
+  const directive = {
+    directive_id: "nyra_dir_1234567890abcdef12345678",
+    ticket_request: {
+      required: true,
+      state: "READY_FOR_CORE_REVIEW",
+      action_class: "GIT_PUSH",
+      request_digest: SECRET_DIGEST,
+      binding: { tenant_id: "tenant-a", work_id: WORK_ID, project_id: "nyra_core",
+        work_revision: 7, intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST },
+    },
+  };
+  const opened = await opener({ identity: identity(), directive,
+    continuationOperation: "authorize_action",
+    typedCoreRequest: {
+      schema_version: "connected_ai_typed_request_v1",
+      operation: "ACTION_TICKET_REQUEST",
+      request: {
+        delegation_id: "hnd_push-delegation-001",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        action: { kind: "git.push.branch", branch: "fix/typed" },
+        evidence_digest: "9".repeat(64),
+      },
+    },
+  });
+  assert.equal(opened.continuation_ref, CONTINUATION_REF);
+  assert.equal(recorded[0].canonical_request.request.work_id, WORK_ID);
+  assert.equal(recorded[0].canonical_request.request.intent_anchor_digest, SECRET_DIGEST);
+  assert.match(recorded[0].canonical_request.request.idempotency_key, /^conversation_/);
+  assert.equal(recorded[0].core_result.schema_version, "connected_ai_core_pending_v2");
+  assert.equal(JSON.stringify(opened).includes("delegation_id"), false);
+
+  const mismatch = await opener({ identity: identity(), directive,
+    continuationOperation: "authorize_action",
+    typedCoreRequest: { schema_version: "connected_ai_typed_request_v1",
+      operation: "DELEGATION_REQUEST", request: {} },
+  });
+  assert.equal(mismatch.reason, "typed_core_request_operation_mismatch");
+});
+
+test("nyra continue consumes a server-owned typed action ref without a reconstructed request", async () => {
+  const request = { ...pushRequest(), idempotency_key: "conversation_original" };
+  const binding = { work_id: WORK_ID, project_id: "nyra_core", work_revision: 7,
+    intent_digest: SECRET_DIGEST, context_digest: CONTEXT_DIGEST };
+  const completed = [];
+  const handler = createNyraGovernedContinueHandler({
+    store: { claim: async () => { throw new Error("legacy store must not run"); },
+      complete: async () => {}, readCompletedOperation: async () => ({}) },
+    consumeConnectedAiTypedRequest: async () => ({
+      operation: "ACTION_TICKET_REQUEST", replay: false,
+      server_idempotency_key: "core_typed_server_owned",
+      canonical_request: { request },
+      core_result: { schema_version: "connected_ai_core_pending_v2",
+        continuation_operation: "authorize_action", binding },
+    }),
+    completeConnectedAiTypedRequest: async (value) => completed.push(value),
+    releaseConnectedAiTypedRequest: async () => {},
+    readDirectiveContext: async () => ({ available: true, ...binding, status: "ACTIVE" }),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected delegation"); },
+    authorizeAction: async () => { throw new Error("legacy authorizer must not run"); },
+    authorizeTypedAction: async (value, _identity, typedContext) => {
+      assert.equal(value.idempotency_key, "core_typed_server_owned");
+      assert.equal(typedContext.typed_record.server_idempotency_key, "core_typed_server_owned");
+      assert.equal(typedContext.work_binding.work_id, WORK_ID);
+      assert.equal(typedContext.work_binding.intent_digest, SECRET_DIGEST);
+      assert.equal(typedContext.work_binding.directive_context.context_digest, CONTEXT_DIGEST);
+      return { structuredContent: { ok: true, tenant_id: "tenant-a",
+        action_ticket: { ticket: { ticket_id: `hnt_${"8".repeat(64)}` } } }, content: [] };
+    },
+    reviewWorkBootstrap: async () => { throw new Error("unexpected review"); },
+    createWorkBootstrap: async () => { throw new Error("unexpected create"); },
+  });
+  const result = await handler({ operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF, idempotency_key: "caller-ref-only" }, identity());
+  assert.equal(result.structuredContent.ok, true);
+  assert.equal(completed.length, 1);
+  await assert.rejects(handler({ operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF, idempotency_key: "caller-reconstructed",
+    action_request: request }, identity()),
+  /nyra_continue_client_request_reconstruction_forbidden/);
+
+  const legacy = createNyraGovernedContinueHandler({
+    store: { claim: async () => { throw new Error("legacy must remain unreachable for ref-only"); },
+      complete: async () => {}, readCompletedOperation: async () => ({}) },
+    consumeConnectedAiTypedRequest: async () => null,
+    completeConnectedAiTypedRequest: async () => {}, releaseConnectedAiTypedRequest: async () => {},
+    readDirectiveContext: async () => ({}), normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => ({}), authorizeAction: async () => ({}),
+    reviewWorkBootstrap: async () => ({}), createWorkBootstrap: async () => ({}),
+  });
+  await assert.rejects(legacy({ operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF, idempotency_key: "legacy-ref-only" }, identity()),
+  /nyra_continue_server_request_materialization_required/);
+});
+
 test("runtime rejects missing continuation bindings before any governed operation", async () => {
   const calls = [];
   const handler = bootstrapHandler(fakeStore(bootstrapRecord(), calls), calls);
@@ -2068,6 +2173,42 @@ test("native precommit claim is reconciled when authorization fails after CAS cl
   assert.equal(recoveries[0].stage, "before_ticket_locator");
   assert.equal(recoveries[0].ticket_id, null);
   assert.equal(recoveries[0].gate_claim.replay, true);
+});
+
+test("native continuation retires only an HTTP-proven deterministic denial", async (t) => {
+  for (const [name, error, expectedStage, serverOwned] of [
+    ["deterministic", Object.assign(new Error("core_request_failed:409:core_action_blocked"),
+      { code: "core_action_blocked", status: 409 }), "deterministic_denial", true],
+    ["lookalike without Core response", Object.assign(new Error("core_action_blocked"),
+      { code: "core_action_blocked", status: 409 }), "before_ticket_locator", false],
+    ["timeout", Object.assign(new Error("core_request_failed:504:core_action_blocked"),
+      { code: "core_action_blocked", status: 504 }), "before_ticket_locator", false],
+  ]) await t.test(name, async () => {
+    const gate = nativePrecommitGate();
+    const request = commitRequest(gate);
+    const recoveries = [];
+    let inactiveReads = 0;
+    const handler = createNyraGovernedContinueHandler({
+      store: fakeStore(actionRecord({ action_class: "GIT_COMMIT" })),
+      readDirectiveContext: async () => commitContext(gate),
+      normalizeDirectiveContext: (value) => value,
+      issueDelegation: async () => {}, reviewWorkBootstrap: async () => {}, createWorkBootstrap: async () => {},
+      claimPrecommitTicketGate: async (binding) => {
+        const material = { schema_version: "precommit_ticket_gate_claim_v1",
+          claim_id: "precommit-claim-native-denial", ...binding, replay: false };
+        return { ...material, claim_digest: deterministicDigest(material) };
+      },
+      authorizeAction: async () => { throw error; },
+      releaseOrReconcilePrecommitTicketGateClaim: async (input) => { recoveries.push(input); },
+      abandonInactivePrecommitTicketGateClaim: async () => { inactiveReads += 1; },
+    });
+    await assert.rejects(handler({ operation: "authorize_action",
+      continuation_ref: CONTINUATION_REF, idempotency_key: `denial-${name.replaceAll(" ", "-")}`,
+      action_request: request }, identity()));
+    assert.equal(recoveries[0].stage, expectedStage);
+    assert.equal(recoveries[0].server_owned === true, serverOwned);
+    assert.equal(inactiveReads, 0);
+  });
 });
 
 test("git.commit fulfillment rejects temporally stale or cross-bound Core readback", async (t) => {

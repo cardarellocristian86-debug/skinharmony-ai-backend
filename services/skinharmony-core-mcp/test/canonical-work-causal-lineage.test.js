@@ -89,8 +89,29 @@ function fixture({ existing = true, genesisPresent = true, revisionPresent = tru
     work_bind_intent: invoke("work_bind_intent", async (args) => ({
       project_id: args.project_id, work_id: args.work_id,
     })),
+    continuity_capsule_build: invoke("continuity_capsule_build", async (args) => {
+      const capsule = {
+        project_identity: { project_id: args.project_id },
+        active_work: { work_id: args.work_id },
+        capsule_version: "causal_continuity_capsule_v1",
+      };
+      const capsuleDigest = crypto.createHash("sha256")
+        .update(stableCanonicalJson(capsule)).digest("hex");
+      return { project_id: args.project_id, work_id: args.work_id,
+        capsule_payload: { ...capsule, capsule_digest: capsuleDigest },
+        capsule_digest: capsuleDigest };
+    }),
   };
   return { handlers, calls };
+}
+
+function stableCanonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableCanonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableCanonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 test("canonical Work bootstrap repairs the server-derived causal binding", async () => {
@@ -99,14 +120,67 @@ test("canonical Work bootstrap repairs the server-derived causal binding", async
   assert.equal(result.work_id, WORK.work_id);
   assert.deepEqual(calls.map((item) => item.name), [
     "project_identity_resolve", "genesis_intent_read", "project_decision_path_read",
-    "project_state_snapshot", "work_bind_intent",
+    "project_state_snapshot", "work_bind_intent", "continuity_capsule_build",
   ]);
-  const binding = calls.at(-1).args;
+  const binding = calls.find((item) => item.name === "work_bind_intent").args;
   assert.equal(binding.work_id, WORK.work_id);
   assert.equal(binding.project_id, result.project_id);
   assert.equal(binding.intent_revision_id, result.intent_revision_id);
   assert.equal(binding.base_state_digest, result.state_digest);
   assert.equal(binding.legacy_binding_state, "VERIFIED");
+});
+
+test("canonical Work bootstrap rejects a capsule bound to another Work", async () => {
+  const { handlers } = fixture();
+  handlers.continuity_capsule_build = async (args) => {
+    const capsule = { project_identity: { project_id: args.project_id },
+      active_work: { work_id: "99999999-9999-4999-8999-999999999999" },
+      capsule_version: "causal_continuity_capsule_v1" };
+    const capsuleDigest = crypto.createHash("sha256")
+      .update(stableCanonicalJson(capsule)).digest("hex");
+    return { ok: true, result: { project_id: args.project_id,
+      work_id: "99999999-9999-4999-8999-999999999999",
+      capsule_payload: { ...capsule, capsule_digest: capsuleDigest },
+      capsule_digest: capsuleDigest } };
+  };
+  await assert.rejects(
+    ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY, work: WORK }),
+    /canonical_work_causal_capsule_readback_invalid/u,
+  );
+});
+
+test("canonical Work bootstrap rejects a capsule bound to another project", async () => {
+  const { handlers } = fixture();
+  handlers.continuity_capsule_build = async (args) => {
+    const otherProjectId = "88888888-8888-4888-8888-888888888888";
+    const capsule = { project_identity: { project_id: otherProjectId },
+      active_work: { work_id: args.work_id },
+      capsule_version: "causal_continuity_capsule_v1" };
+    const capsuleDigest = crypto.createHash("sha256")
+      .update(stableCanonicalJson(capsule)).digest("hex");
+    return { ok: true, result: { project_id: otherProjectId, work_id: args.work_id,
+      capsule_payload: { ...capsule, capsule_digest: capsuleDigest },
+      capsule_digest: capsuleDigest } };
+  };
+  await assert.rejects(
+    ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY, work: WORK }),
+    /canonical_work_causal_capsule_readback_invalid/u,
+  );
+});
+
+test("canonical Work bootstrap rejects a tampered capsule digest", async () => {
+  const { handlers } = fixture();
+  const original = handlers.continuity_capsule_build;
+  handlers.continuity_capsule_build = async (args) => {
+    const response = await original(args);
+    response.structuredContent.result.capsule_payload.active_work.work_id =
+      "99999999-9999-4999-8999-999999999999";
+    return response;
+  };
+  await assert.rejects(
+    ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY, work: WORK }),
+    /canonical_work_causal_capsule_readback_invalid/u,
+  );
 });
 
 test("canonical lineage materializes a missing project, genesis and initial approval before binding", async () => {
@@ -118,6 +192,7 @@ test("canonical lineage materializes a missing project, genesis and initial appr
     "genesis_intent_create", "genesis_intent_read", "project_decision_path_read",
     "intent_revision_propose", "project_decision_path_read", "intent_revision_approve",
     "project_decision_path_read", "project_state_snapshot", "work_bind_intent",
+    "continuity_capsule_build",
   ]);
   assert.equal(calls.find((item) => item.name === "project_identity_create").args.alias, WORK.project_id);
   assert.equal(calls.find((item) => item.name === "genesis_intent_create").args.intent_text, WORK.objective);
@@ -302,12 +377,41 @@ test("canonical Work replay repairs or replays only the idempotent binding", asy
   assert.equal(calls.filter((item) => item.name === "genesis_intent_create").length, 0);
   assert.equal(calls.filter((item) => item.name === "intent_revision_propose").length, 0);
   assert.equal(calls.filter((item) => item.name === "work_bind_intent").length, 2);
+  assert.equal(calls.filter((item) => item.name === "continuity_capsule_build").length, 2);
   assert.equal(calls.filter((item) => item.name === "work_bind_intent")[0].args.idempotency_key,
     calls.filter((item) => item.name === "work_bind_intent")[1].args.idempotency_key);
+  assert.equal(calls.filter((item) => item.name === "continuity_capsule_build")[0].args.idempotency_key,
+    calls.filter((item) => item.name === "continuity_capsule_build")[1].args.idempotency_key);
 });
 
 test("canonical lineage rejects caller-like incomplete Work material", async () => {
   const { handlers } = fixture({ existing: true });
   await assert.rejects(() => ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY,
     work: { ...WORK, work_id: "" } }), /canonical_work_causal_lineage_source_invalid/u);
+});
+
+
+test("upgraded causal bootstrap never reuses legacy output-hashed request keys", async () => {
+  const { handlers, calls } = fixture();
+  const requests = new Map();
+  for (const name of ["project_state_snapshot", "work_bind_intent", "continuity_capsule_build"]) {
+    const original = handlers[name];
+    handlers[name] = async (args, identity) => {
+      if (args.idempotency_key.startsWith("canonical-work-lineage:")) {
+        throw new Error("IDEMPOTENCY_CONFLICT");
+      }
+      const material = JSON.stringify(args);
+      const prior = requests.get(args.idempotency_key);
+      if (prior && prior !== material) throw new Error("IDEMPOTENCY_CONFLICT");
+      requests.set(args.idempotency_key, material);
+      return original(args, identity);
+    };
+  }
+  const first = await ensureCanonicalWorkCausalLineage({ handlers, identity: IDENTITY,
+    work: { ...WORK, next_action: "Old operational step" } });
+  const replay = await ensureCanonicalWorkCausalLineage({ handlers, identity: OTHER_HOST_IDENTITY,
+    work: { ...WORK, next_action: "New operational step" } });
+  assert.equal(first.lineage_digest, replay.lineage_digest);
+  assert.equal(requests.size, 3);
+  assert.equal(calls.filter((call) => call.name === "continuity_capsule_build").length, 2);
 });

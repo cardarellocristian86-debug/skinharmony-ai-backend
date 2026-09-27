@@ -100,14 +100,6 @@ function bootstrapCoreResponse(args, identityContext, {
     production_decision_mutation: false,
     ...snapshotOverrides,
   };
-  const assemblyInput = {
-    work_id: args.work_id,
-    entity_type: "work",
-    identity: { work_id: args.work_id },
-    as_of: new Date(args.as_of).toISOString(),
-    expected_revision: 0,
-    idempotency_key: args.idempotency_key.trim(),
-  };
   const gateUnsigned = {
     schema_version: "entity_360_snapshot_bootstrap_gate_v1",
     authorized: true,
@@ -120,10 +112,13 @@ function bootstrapCoreResponse(args, identityContext, {
     snapshot_version: 1,
     snapshot_digest: snapshot.deterministic_immutable_digest,
     request_digest: sha256({
-      schema_version: "entity_360_snapshot_assemble_request_v1",
+      schema_version: "entity_360_work_snapshot_bootstrap_request_v2",
       tenant_id: identityContext.tenantId,
-      actor_id: identityContext.agentPresence.agent_id,
-      input: assemblyInput,
+      input: {
+        work_id: args.work_id,
+        expected_revision: 0,
+        idempotency_key: args.idempotency_key.trim(),
+      },
     }),
     idempotency_digest: sha256({ idempotency_key: args.idempotency_key.trim() }),
     tenant_feature_revision: 7,
@@ -390,14 +385,16 @@ test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fiel
 test("Entity 360 transport derives tenant and DTT context only from authenticated identity", async () => {
   const calls = [];
   const issued = [];
+  const transport = async (...args) => {
+    calls.push(args);
+    if (args[0] === "/v1/entity-360/snapshots/bootstrap") {
+      return bootstrapCoreResponse(args[1], args[2]);
+    }
+    return { ok: true, route: args[0], execution_authorized: false };
+  };
   const handlers = createEntity360Handlers({
-    coreRequest: async (...args) => {
-      calls.push(args);
-      if (args[0] === "/v1/entity-360/snapshots/bootstrap") {
-        return bootstrapCoreResponse(args[1], args[2]);
-      }
-      return { ok: true, route: args[0], execution_authorized: false };
-    },
+    coreRequest: transport,
+    bootstrapCoreRequest: transport,
     issueAgentContext: (value) => {
       issued.push(value);
       return "signed-entity-360-context";
@@ -530,7 +527,8 @@ test("Entity 360 Work snapshot bootstrap accepts only an exact dedicated Core ga
   const calls = [];
   const handlers = createEntity360Handlers({
     issueAgentContext: () => "signed-entity-360-context",
-    coreRequest: async (...call) => {
+    coreRequest: async () => { throw new Error("lease_transport_must_not_be_used"); },
+    bootstrapCoreRequest: async (...call) => {
       calls.push(call);
       return bootstrapCoreResponse(args, identity);
     },
@@ -627,12 +625,27 @@ test("Entity 360 Work snapshot bootstrap rejects self-consistent gate and snapsh
     await t.test(label, async () => {
       const handlers = createEntity360Handlers({
         issueAgentContext: () => "signed-entity-360-context",
-        coreRequest: async () => bootstrapCoreResponse(args, identity, overrides),
+        coreRequest: async () => { throw new Error("lease_transport_must_not_be_used"); },
+        bootstrapCoreRequest: async () => bootstrapCoreResponse(args, identity, overrides),
       });
       await assert.rejects(() => handlers.entity_360_work_snapshot_bootstrap(args, identity),
         /entity360_bootstrap_readback_invalid/u);
     });
   }
+});
+
+test("Entity 360 Work snapshot bootstrap fails closed without its server-owned transport", async () => {
+  const handlers = createEntity360Handlers({
+    issueAgentContext: () => "signed-entity-360-context",
+    coreRequest: async () => { throw new Error("lease_transport_must_not_be_used"); },
+  });
+  await assert.rejects(() => handlers.entity_360_work_snapshot_bootstrap({
+    work_id: WORK_ID,
+    as_of: "2026-08-25T12:00:00.000Z",
+    expected_revision: 0,
+    idempotency_key: "entity-360-work-bootstrap-no-transport",
+  }, { tenantId: "tenant-authenticated", agentPresence }),
+  /entity360_bootstrap_transport_required/u);
 });
 
 test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", async () => {

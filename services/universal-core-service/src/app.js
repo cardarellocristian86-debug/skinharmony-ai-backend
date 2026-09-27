@@ -54,6 +54,7 @@ import {
   resolveBranchesForKey,
 } from "../branches/index.js";
 import { applyOwnerActiveAdvisory, resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
+import { paginateBranchTaxonomy } from "./branchTaxonomyPagination.js";
 import {
   listOrchestrationCapabilities,
   listVirtualOrchestrationCombinations,
@@ -180,8 +181,10 @@ import {
   verifyCausalAgentIdentityContext,
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
+  DTT_WORK_BOOTSTRAP_CONTEXT_HEADER,
   DTT_WORK_CONTEXT_HEADER,
   DTT_WORK_READ_CONTEXT_HEADER,
+  verifyDttWorkBootstrapContext,
   verifyDttWorkContext,
   verifyDttWorkReadContext,
 } from "../../shared/dtt-work-context.js";
@@ -7895,6 +7898,52 @@ export function createUniversalCoreService(options = {}) {
     }
   };
 
+  const dttWorkBootstrapAuth = async (req, res, next) => {
+    try {
+      if (req.method !== "POST" || req.path !== "/v1/entity-360/snapshots/bootstrap") {
+        throw new Error("dtt_work_bootstrap_route_denied");
+      }
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        throw new Error("dtt_work_bootstrap_gateway_required");
+      }
+      if (!dttAgentIdentitySecret) throw new Error("dtt_work_bootstrap_binding_unavailable");
+      const binding = verifyDttWorkBootstrapContext({
+        token: req.get(DTT_WORK_BOOTSTRAP_CONTEXT_HEADER),
+        secret: dttAgentIdentitySecret,
+        expected_tenant_id: req.tenantId,
+        method: req.method,
+        path: req.path,
+        body: req.body,
+      });
+      const workId = String(binding?.work_id || "").trim();
+      if (binding?.schema_version !== "dtt_work_bootstrap_context_v1"
+          || binding?.tenant_id !== req.tenantId
+          || binding?.execution_authorized !== false
+          || binding?.authorization?.schema_version !== "dtt_work_bootstrap_binding_v1"
+          || binding?.authorization?.server_owned !== true
+          || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId)) {
+        throw new Error("dtt_work_bootstrap_context_invalid");
+      }
+      if (String(req.body?.work_id || "") !== workId) {
+        throw new Error("dtt_work_bootstrap_work_mismatch");
+      }
+      req.workId = workId;
+      req.dttWorkBootstrapBinding = Object.freeze(structuredClone(binding));
+      return next();
+    } catch (error) {
+      const reason = String(error?.message || "dtt_work_bootstrap_context_invalid");
+      const code = /^dtt_work_bootstrap_[a-z0-9_]+$/u.test(reason)
+        ? reason : "dtt_work_bootstrap_context_invalid";
+      audit.append("dtt_work_bootstrap_binding_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey?.key_id || null,
+        path: req.path,
+        reason: code,
+      });
+      return publicError(res, dttStatusForError(code, 403), code);
+    }
+  };
+
   const dttWorkReadAuth = async (req, res, next) => {
     try {
       let binding;
@@ -7959,7 +8008,7 @@ export function createUniversalCoreService(options = {}) {
   if (entity360Runtime) {
     registerEntity360Routes({
       app,
-      authFor: (access) => {
+      authFor: (access, route = {}) => {
         const authenticate = coreAuth(access === "read" || access === "tenant_read"
           ? SCOPES.READ_SNAPSHOT
           : access === "configure" ? [SCOPES.ENTITY360_CONFIGURE, SCOPES.OWNER_ASSERTION]
@@ -8010,7 +8059,9 @@ export function createUniversalCoreService(options = {}) {
             });
             return next();
           }
-          return dttWorkAuth(req, res, next);
+          return route.capability === "entity_360_work_snapshot_bootstrap"
+            ? dttWorkBootstrapAuth(req, res, next)
+            : dttWorkAuth(req, res, next);
         });
       },
       runtime: {
@@ -8027,7 +8078,7 @@ export function createUniversalCoreService(options = {}) {
       resolveAgentContext: (token, tenantId, req) => {
         if (!dttAgentIdentityReceiptService?.configured) throw new Error("dtt_agent_identity_not_ready");
         return dttAgentIdentityReceiptService.verifyContext(token, tenantId,
-          req.workId, req.dttWorkBinding?.principal);
+          req.workId, (req.dttWorkBootstrapBinding || req.dttWorkBinding)?.principal);
       },
       audit: (event) => audit.append("core_entity360_invoked", event),
     });
@@ -14318,6 +14369,32 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches/taxonomy", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+    const paginated = req.query.limit !== undefined || req.query.cursor !== undefined;
+    if (paginated) {
+      try {
+        const page = paginateBranchTaxonomy({
+          taxonomy: deterministicBranchTaxonomy(),
+          tenantId: req.tenantId,
+          cursor: req.query.cursor,
+          limit: req.query.limit,
+          secret: tenantContextSigningSecret,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          ...page,
+          groups: deterministicBranchGroups(),
+          packages: BRANCH_PACKAGES,
+        });
+      } catch (error) {
+        const code = String(error?.code || error?.message || "branch_taxonomy_page_invalid");
+        return publicError(
+          res,
+          code === "branch_taxonomy_cursor_unavailable" ? 503 : 400,
+          code,
+        );
+      }
+    }
     res.json({
       ok: true,
       taxonomy: deterministicBranchTaxonomy(),

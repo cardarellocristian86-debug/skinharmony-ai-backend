@@ -1050,6 +1050,48 @@ test("ENFORCE denies REVALIDATE when the Entity360 snapshot changes before reser
   assert.equal(persisted.uses, 0);
 });
 
+test("a refreshed Entity360 snapshot reissues a generic ticket before reservation", async () => {
+  let calls = 0;
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => {
+      calls += 1;
+      return {
+        entity360_snapshot_ref: `e360_${(calls === 1 ? "a" : "b").repeat(48)}`,
+        as_of_valid_time: "2026-07-29T10:00:00.000Z",
+        as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+        policy_revision: "entity360-policy-v1",
+      };
+    },
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const first = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  await assert.rejects(() => subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: first.ticket.ticket_id,
+    host_session_fingerprint: first.ticket.host_session_fingerprint,
+  }), /semantic_scope_revalidate/u);
+  const successor = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  assert.notEqual(successor.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(successor.ticket.semantic_scope_at_issue.binding.entity360_snapshot_ref,
+    `e360_${"b".repeat(48)}`);
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: successor.ticket.ticket_id,
+    host_session_fingerprint: successor.ticket.host_session_fingerprint,
+  });
+  assert.equal(reserved.state, "reserved");
+  assert.equal(reserved.semantic_scope_at_reservation.action, "ALLOW");
+  const predecessor = await subject.governance.readActionTicket({
+    tenant_id: "codexai", ticket_id: first.ticket.ticket_id,
+  });
+  assert.equal(predecessor.state, "issued");
+  assert.equal(predecessor.uses, 0);
+  assert.equal(calls, 4);
+});
+
 test("enforce mode cannot start without a semantic context resolver", () => {
   const guard = createSemanticScopeGuard({ mode: "ENFORCE" });
   assert.throws(() => harness({ allowedActions: ["git.commit"], semanticScopeGuard: guard,
@@ -6250,4 +6292,128 @@ test("expired unreserved release ticket leaves budget and Core join available fo
     delegation_id: delegation.delegation_id,
   });
   assert.equal(chargedDelegation.usage.total_actions, 1);
+});
+
+test("an active release ticket gets one signed successor after server-side scope revalidation", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  let snapshot = "a";
+  const subject = harness({
+    store,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => ({
+      entity360_snapshot_ref: `e360_${snapshot.repeat(48)}`,
+      as_of_valid_time: "2026-07-29T10:00:00.000Z",
+      as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+      policy_revision: "entity360-policy-v1",
+    }),
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(pending));
+  const manifest = manifestWithCoreJoin(pending, join.verdict.verdict_id);
+  const issue = (session = "release-successor-session", idempotencyKey) =>
+    subject.governance.issueActionTicket({
+      tenant_id: "codexai",
+      delegation_id: delegation.delegation_id,
+      work_id: "work-1",
+      intent_anchor_digest: H("1"),
+      repository: "owner/repo",
+      host_kind: "codex_native",
+      host_session_fingerprint: session,
+      action: githubMergeAction(),
+      evidence_digest: H("6"),
+      release_manifest: manifest,
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    });
+
+  const first = await issue("release-successor-session", "release-successor-root");
+  const convergedFirst = await issue();
+  assert.equal(convergedFirst.ticket.ticket_id, first.ticket.ticket_id);
+  assert.equal(Object.keys(store.readState().tickets).length, 1);
+
+  snapshot = "b";
+  await assert.rejects(issue("different-release-session"),
+    /core_join_ticket_replacement_binding_mismatch/);
+  const second = await issue();
+  assert.notEqual(second.ticket.ticket_id, first.ticket.ticket_id);
+  assert.deepEqual(second.ticket.release_ticket_predecessor, {
+    schema_version: "host_native_release_ticket_predecessor_v1",
+    ticket_id: first.ticket.ticket_id,
+    ticket_digest: hostNativeDigest(first.ticket),
+    successor_reason: "semantic_scope_revalidated",
+  });
+  const state = store.readState();
+  assert.equal(state.tickets[first.ticket.ticket_id].state, "superseded");
+  assert.equal(state.tickets[first.ticket.ticket_id].superseded_by_ticket_id,
+    second.ticket.ticket_id);
+  assert.equal(state.core_join_verdicts[join.verdict.verdict_id].authorized_ticket_id,
+    second.ticket.ticket_id);
+  assert.equal(state.release_ticket_successors[first.ticket.ticket_id].successor_ticket_id,
+    second.ticket.ticket_id);
+  assert.equal(state.release_ticket_successors[first.ticket.ticket_id].reason,
+    "semantic_scope_revalidated");
+
+  const convergedSecond = await issue();
+  assert.equal(convergedSecond.ticket.ticket_id, second.ticket.ticket_id);
+  const historicalIdempotentReplay = await issue(
+    "release-successor-session",
+    "release-successor-root",
+  );
+  assert.equal(historicalIdempotentReplay.ticket.ticket_id, second.ticket.ticket_id);
+  assert.equal(Object.keys(store.readState().tickets).length, 2,
+    "exact replay cannot mint a second successor");
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: first.ticket.ticket_id,
+    host_session_fingerprint: first.ticket.host_session_fingerprint,
+  }), /replayed/);
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: second.ticket.ticket_id,
+    host_session_fingerprint: second.ticket.host_session_fingerprint,
+  });
+  assert.equal(reserved.state, "reserved");
+});
+
+test("release-ticket successor lineage is fail-closed when its signed audit link is tampered", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  let snapshot = "a";
+  const subject = harness({
+    store,
+    semanticScopeGuard: createSemanticScopeGuard({ mode: "ENFORCE" }),
+    semanticScopeMode: "ENFORCE",
+    semanticScopeContextResolver: async () => ({
+      entity360_snapshot_ref: `e360_${snapshot.repeat(48)}`,
+      as_of_valid_time: "2026-07-29T10:00:00.000Z",
+      as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+      policy_revision: "entity360-policy-v1",
+    }),
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(pending));
+  const input = {
+    tenant_id: "codexai", delegation_id: delegation.delegation_id,
+    work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+    host_kind: "codex_native", host_session_fingerprint: "release-tamper-session",
+    action: githubMergeAction(), evidence_digest: H("6"),
+    release_manifest: manifestWithCoreJoin(pending, join.verdict.verdict_id),
+  };
+  const first = await subject.governance.issueActionTicket(input);
+  snapshot = "b";
+  const successor = await subject.governance.issueActionTicket(input);
+  store.mutate((state) => {
+    state.release_ticket_successors[first.ticket.ticket_id].reason = "expired_unreserved";
+    return null;
+  });
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai", ticket_id: successor.ticket.ticket_id,
+    host_session_fingerprint: successor.ticket.host_session_fingerprint,
+  }), /release_ticket_lifecycle_invalid/);
+  const persisted = await subject.governance.readActionTicket({
+    tenant_id: "codexai", ticket_id: successor.ticket.ticket_id,
+  });
+  assert.equal(persisted.state, "issued");
+  assert.equal(persisted.uses, 0);
 });

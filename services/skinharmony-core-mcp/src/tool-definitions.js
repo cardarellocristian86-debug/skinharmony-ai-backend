@@ -1155,8 +1155,11 @@ const nyraOrchestrationDirectiveSchema = object({
     status: nyraConverseNullableText(24),
     progress_bp: { type: ["integer", "null"], minimum: 0, maximum: 10_000 },
     checkpoint_available: { type: "boolean" },
+    checkpoint_capsule_id: nyraConverseNullableText(80),
+    checkpoint_capsule_digest: nyraConverseNullableText(64),
     handoff_available: { type: "boolean" },
     handoff_to: nyraConverseNullableText(80),
+    handoff_at: nyraConverseNullableText(40),
     acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
     required_task_count: { type: "integer", minimum: 0, maximum: 64 },
     pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
@@ -1181,7 +1184,8 @@ const nyraOrchestrationDirectiveSchema = object({
     final_outcome: nyraFinalOutcomeProjection,
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
-    "status", "progress_bp", "checkpoint_available", "handoff_available", "handoff_to", "acceptance_criteria_count",
+    "status", "progress_bp", "checkpoint_available", "checkpoint_capsule_id", "checkpoint_capsule_digest",
+    "handoff_available", "handoff_to", "handoff_at", "acceptance_criteria_count",
     "required_task_count", "pending_required_task_count",
     "required_evidence_count", "unverified_required_evidence_count", "precommit_ticket_gate",
     "precommit_ticket_gate_applicable", "precommit_pending_required_task_count",
@@ -1374,8 +1378,11 @@ const nyraConverseOutputSchema = object({
     work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
     intent_digest: nyraConverseNullableText(64),
     checkpoint_available: { type: "boolean" },
+    checkpoint_capsule_id: nyraConverseNullableText(80),
+    checkpoint_capsule_digest: nyraConverseNullableText(64),
     handoff_available: { type: "boolean" },
     handoff_to: nyraConverseNullableText(80),
+    handoff_at: nyraConverseNullableText(40),
     gallery_work_count: { type: "integer", minimum: 0, maximum: 100_000 },
     software_state: { type: "string", enum: ["available", "not_indexed", "unknown"] },
     atlas_revision: { type: ["integer", "null"], minimum: 0, maximum: 100_000 },
@@ -1387,7 +1394,8 @@ const nyraConverseOutputSchema = object({
       role: nyraConverseNullableText(80),
       state: nyraConverseNullableText(40),
     }, ["available", "assignment_id", "role", "state"]),
-  }, ["dialogue_id", "manual_digest", "work_revision", "intent_digest", "checkpoint_available", "gallery_work_count", "software_state", "atlas_revision", "diagnosis_state", "next_action_available", "assignment"]),
+  }, ["dialogue_id", "manual_digest", "work_revision", "intent_digest", "checkpoint_available",
+    "gallery_work_count", "software_state", "atlas_revision", "diagnosis_state", "next_action_available", "assignment"]),
   action_policy: object({
     consequential_request_detected: { type: "boolean" },
     categories: {
@@ -1711,6 +1719,37 @@ const coreTypedRequestPayloadSchema = Object.freeze({ oneOf: [
   }, ["work_id", "delegation_id", "repository", "action", "evidence_digest", "idempotency_key"]),
 ] });
 
+// Conversation supplies only the semantic request. Work, Intent, host audience
+// and idempotency are materialized and persisted by the server before an
+// opaque continuation is returned.
+const nyraTypedCoreRequestSpec = Object.freeze({ oneOf: [
+  object({
+    schema_version: { const: "connected_ai_typed_request_v1" },
+    operation: { const: "DELEGATION_REQUEST" },
+    request: object({
+      repository: nyraContinueRepository,
+      allowed_branches: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: nyraContinueBranch },
+      protected_branches: { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: nyraContinueBranch },
+      allowed_path_prefixes: { type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+      allowed_actions: { type: "array", minItems: 1, maxItems: 50, uniqueItems: true, items: identifier },
+      budget: coreTypedDelegationBudget,
+      release_policy: coreTypedDelegationReleasePolicy,
+      ttl_seconds: { type: "integer", minimum: 60, maximum: 3600 },
+    }, ["repository", "allowed_branches", "protected_branches", "allowed_path_prefixes",
+      "allowed_actions", "budget", "release_policy", "ttl_seconds"]),
+  }, ["schema_version", "operation", "request"]),
+  object({
+    schema_version: { const: "connected_ai_typed_request_v1" },
+    operation: { const: "ACTION_TICKET_REQUEST" },
+    request: object({
+      delegation_id: { type: "string", pattern: "^hnd_[A-Za-z0-9._-]{8,160}$" },
+      repository: nyraContinueRepository,
+      action: { type: "object", minProperties: 1, maxProperties: 40, additionalProperties: true },
+      evidence_digest: nyraContinueSha256,
+    }, ["delegation_id", "repository", "action", "evidence_digest"]),
+  }, ["schema_version", "operation", "request"]),
+] });
+
 export const TOOLS = [
   tool("core_typed_request", "Send typed request to Universal Core", "AI host → Universal Core typed entry. Core reviews and materializes WORK_CREATE_OR_RECONCILE, DELEGATION_REQUEST or ACTION_TICKET_REQUEST without Nyra lexical routing; Nyra receives only opaque orchestration references.", object({
     schema_version: { const: "connected_ai_typed_request_v1" },
@@ -1803,6 +1842,7 @@ export const TOOLS = [
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
     continuation_operation: nyraActionContinuationOperation,
+    typed_core_request: nyraTypedCoreRequestSpec,
     work_selection_mode: { type: "string", enum: ["list"], description: "Read-only Work list." },
     work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Server-issued read-only page cursor." },
     semantic_intent_hint: {
@@ -1884,6 +1924,8 @@ export const TOOLS = [
   tool("core_branch_registry", "Core branch registry", "Read branch taxonomy, maturity and authorization.", object({
     view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },
     branches: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
+    cursor: { type: "string", pattern: "^btc1_[A-Za-z0-9_-]{40,1019}$", maxLength: 1024 },
+    limit: { type: "integer", minimum: 1, maximum: 200 },
   }), ["core:read"]),
   tool("core_branch_analyze", "Analyze through a Core branch", "Run one authorized Core branch in advisory mode. It cannot execute, publish or bypass the final Core verdict.", object({
     branch: identifier,

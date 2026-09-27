@@ -887,8 +887,23 @@ export function compactMcpTools(tools, handlers) {
         properties: {
           ...tool.inputSchema?.properties,
           // The full canonical schema is enforced by the handler. Publishing
-          // this bounded object keeps the fixed MCP surface importable.
+          // these bounded objects keeps the fixed MCP surface importable.
           work_bootstrap: { type: "object", additionalProperties: true },
+          typed_core_request: {
+            type: "object",
+            description: "Semantic AI-to-Core spec; Nyra adds Work, Intent, host, audience and idempotency bindings server-side.",
+            properties: {
+              schema_version: { const: "connected_ai_typed_request_v1" },
+              operation: { type: "string", enum: ["DELEGATION_REQUEST", "ACTION_TICKET_REQUEST"] },
+              request: {
+                type: "object",
+                description: "Operation-specific semantic fields only; do not add server-owned bindings.",
+                additionalProperties: true,
+              },
+            },
+            required: ["schema_version", "operation", "request"],
+            additionalProperties: false,
+          },
         },
       },
     } : tool.name === "core_typed_request" ? {

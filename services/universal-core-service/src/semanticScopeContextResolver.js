@@ -60,7 +60,7 @@ function publicError() {
 
 function resolvedContext(snapshot, verification, tenantId, workId, {
   now = Date.now(), maxSnapshotAgeMs = DEFAULT_MAX_SNAPSHOT_AGE_MS, receipt = null,
-  action = null, phase = null,
+  action = null, phase = null, freshnessHorizonMs = 0,
 } = {}) {
   const digest = String(snapshot?.deterministic_immutable_digest || "").toLowerCase();
   const snapshotVersion = Number(snapshot?.snapshot_version);
@@ -91,7 +91,8 @@ function resolvedContext(snapshot, verification, tenantId, workId, {
   const policyRevision = text(snapshot?.policy_version,
     "semantic_scope_entity360_policy_revision_invalid", 160);
   const ambiguous = contextStatus !== "READY";
-  const stale = ambiguous || now - knowledgeMilliseconds > maxSnapshotAgeMs
+  const stale = ambiguous
+    || now - knowledgeMilliseconds > maxSnapshotAgeMs - freshnessHorizonMs
     || (Array.isArray(snapshot?.stale_sources) && snapshot.stale_sources.length > 0);
   if (receipt) {
     const { receipt_digest: receiptDigest, ...unsignedReceipt } = receipt;
@@ -297,18 +298,41 @@ export function createEntity360SemanticScopeContextResolver({
         enforced: configuredMode === "ENFORCE",
       });
       if (configuredMode === "ENFORCE") {
-        const enforced = await runtime.resolveEnforcementContext(identity, {
+        const resolveEnforced = () => runtime.resolveEnforcementContext(identity, {
           tenant_id: tenantId,
           work_id: workId,
           action: input.action,
           phase: input.phase,
         });
-        return resolvedContext(enforced?.snapshot, enforced?.verification, tenantId, workId, {
+        let enforced = await resolveEnforced();
+        let context = resolvedContext(enforced?.snapshot, enforced?.verification, tenantId, workId, {
           now: Number(now()), maxSnapshotAgeMs: configuredMaxSnapshotAgeMs,
           receipt: enforced?.receipt,
           action: input.action,
           phase: input.phase,
+          freshnessHorizonMs: Math.max(0, Math.min(configuredMaxSnapshotAgeMs - 1,
+            Number(input.freshness_horizon_ms) || 0)),
         });
+        if (context.stale === true
+          && typeof runtime.refreshEnforcementSnapshot === "function") {
+          await runtime.refreshEnforcementSnapshot(identity, {
+            tenant_id: tenantId,
+            work_id: workId,
+            expected_snapshot_version: enforced?.snapshot?.snapshot_version,
+            expected_snapshot_digest:
+              enforced?.snapshot?.deterministic_immutable_digest,
+          });
+          enforced = await resolveEnforced();
+          context = resolvedContext(enforced?.snapshot, enforced?.verification, tenantId, workId, {
+            now: Number(now()), maxSnapshotAgeMs: configuredMaxSnapshotAgeMs,
+            receipt: enforced?.receipt,
+            action: input.action,
+            phase: input.phase,
+            freshnessHorizonMs: Math.max(0, Math.min(configuredMaxSnapshotAgeMs - 1,
+              Number(input.freshness_horizon_ms) || 0)),
+          });
+        }
+        return context;
       }
       const resolution = await runtime.invoke("entity_360_resolve", identity, {
         work_id: workId,

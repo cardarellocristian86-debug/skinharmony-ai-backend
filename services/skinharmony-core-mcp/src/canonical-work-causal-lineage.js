@@ -258,7 +258,9 @@ export async function ensureCanonicalWorkCausalLineage({ handlers, identity, wor
   if (governedBootstrapIntentDigest && !/^[a-f0-9]{64}$/u.test(governedBootstrapIntentDigest)) {
     fail("canonical_work_causal_intent_binding_mismatch");
   }
-  const key = `canonical-work-lineage:${digest({ tenant_id: identity.tenantId,
+  // v2 separates semantic-request idempotency from legacy output-hashed requests.
+  // Never reinterpret an existing ledger entry under the new request format.
+  const key = `canonical-work-lineage-v2:${digest({ tenant_id: identity.tenantId,
     project_id: projectId, work_id: workId, intent_revision_id: revision.intent_revision_id,
     work_intent_digest: workIntentDigest, project_intent_digest: activeIntentDigest }).slice(0, 48)}`;
   const state = payload(await handlers.project_state_snapshot({ project_id: projectId,
@@ -272,7 +274,46 @@ export async function ensureCanonicalWorkCausalLineage({ handlers, identity, wor
   if (bound?.work_id !== workId || bound?.project_id !== projectId) {
     fail("canonical_work_causal_binding_readback_invalid");
   }
+  const capsule = payload(await handlers.continuity_capsule_build({
+    project_id: projectId,
+    work_id: workId,
+    next_safe_action: "Resume the canonical Work from its server state.",
+    forbidden_actions: ["cross_tenant_mutation", "unbound_effect_replay"],
+    idempotency_key: `${key}:capsule`,
+  }, identity));
+  const capsulePayload = capsule?.capsule_payload || capsule?.capsule || capsule;
+  const capsuleDigest = String(capsule?.capsule_digest
+    || capsulePayload?.capsule_digest || "").trim().toLowerCase();
+  const capsuleProjectId = String(capsule?.project_id
+    || capsulePayload?.project_identity?.project_id || "").trim();
+  const capsuleWorkId = String(capsule?.work_id
+    || capsulePayload?.active_work?.work_id || "").trim();
+  const { capsule_digest: _embeddedCapsuleDigest, ...unsignedCapsule } = capsulePayload || {};
+  const recomputedCapsuleDigest = crypto.createHash("sha256")
+    .update(stableJson(unsignedCapsule)).digest("hex");
+  if (!/^[a-f0-9]{64}$/u.test(capsuleDigest)
+      || capsuleProjectId !== projectId
+      || capsuleWorkId !== workId
+      || recomputedCapsuleDigest !== capsuleDigest
+      || (capsulePayload?.project_identity?.project_id
+        && capsulePayload.project_identity.project_id !== projectId)
+      || (capsulePayload?.active_work?.work_id
+        && capsulePayload.active_work.work_id !== workId)) {
+    fail("canonical_work_causal_capsule_readback_invalid");
+  }
+  const lineageDigest = crypto.createHash("sha256").update(stableJson({
+    schema_version: "canonical_work_causal_lineage_binding_v1",
+    tenant_id: identity.tenantId,
+    project_id: projectId,
+    work_id: workId,
+    intent_revision_id: revision.intent_revision_id,
+    work_intent_digest: workIntentDigest,
+    project_intent_digest: activeIntentDigest,
+    state_digest: state.state_digest,
+    capsule_digest: capsuleDigest,
+  })).digest("hex");
   return Object.freeze({ project_id: projectId, work_id: workId,
     intent_revision_id: revision.intent_revision_id, work_intent_digest: workIntentDigest,
-    project_intent_digest: activeIntentDigest, state_digest: state.state_digest });
+    project_intent_digest: activeIntentDigest, state_digest: state.state_digest,
+    capsule_digest: capsuleDigest, lineage_digest: lineageDigest });
 }

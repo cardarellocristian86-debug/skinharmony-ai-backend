@@ -9,6 +9,12 @@ import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
 import { createIcfPostgresStore } from "../src/icfPostgresStore.js";
 import { createKeyStore } from "../src/keyStore.js";
+import {
+  DTT_WORK_BOOTSTRAP_CONTEXT_HEADER,
+  DTT_WORK_CONTEXT_HEADER,
+  issueDttWorkBootstrapContext,
+  issueDttWorkContext,
+} from "../../shared/dtt-work-context.js";
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -71,6 +77,106 @@ async function waitForEntity360(base) {
   }
   throw new Error("entity360_app_initialization_timeout");
 }
+
+test("Entity360 bootstrap accepts only its request-bound server-owned context", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-bootstrap-auth-"));
+  const gatewayKey = "g".repeat(48);
+  const tenantSecret = "t".repeat(48);
+  const workSecret = "w".repeat(48);
+  const tenantId = "tenant-bootstrap";
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const nowMs = Date.now();
+  const presence = { transport_bound: true, agent_id: "bootstrap-agent",
+    session_id: "bootstrap-session", client_type: "chatgpt",
+    session_fingerprint: "a".repeat(24), host_transport_session_fingerprint: "b".repeat(24),
+    signature: `ags_${"c".repeat(32)}`, opaque_agent_id: `ai_${"d".repeat(24)}`,
+    actor_provenance: `ap_${"e".repeat(32)}` };
+  const body = { work_id: workId, as_of: "2026-09-24T12:00:00.000Z",
+    expected_revision: 0, idempotency_key: `entity360-work-bootstrap-${workId}` };
+  const bootstrapBinding = { schema_version: "dtt_work_bootstrap_binding_v1",
+    tenant_id: tenantId, work_id: workId,
+    binding_id: "22222222-2222-4222-8222-222222222222",
+    work_binding_digest: "f".repeat(64),
+    expires_at: new Date(nowMs + 60_000).toISOString(), server_owned: true,
+    execution_authorized: false };
+  const leaseBinding = { schema_version: "dtt_work_lease_binding_v1",
+    tenant_id: tenantId, work_id: workId,
+    lease_id: "33333333-3333-4333-8333-333333333333",
+    expires_at: new Date(nowMs + 60_000).toISOString(),
+    participant_expires_at: new Date(nowMs + 60_000).toISOString(),
+    session_id: presence.session_id, agent_id: presence.agent_id,
+    client_type: presence.client_type, session_fingerprint: presence.session_fingerprint,
+    host_transport_session_fingerprint: presence.host_transport_session_fingerprint,
+    presence_signature: presence.signature, opaque_agent_id: presence.opaque_agent_id,
+    actor_provenance: presence.actor_provenance, execution_authorized: false };
+  const calls = [];
+  const entity360Runtime = {
+    async initialize() {},
+    async health() { return { ok: true, ready: true, state: "ready", mode: "ENFORCED" }; },
+    async invoke(capability, identity, input) {
+      calls.push({ capability, identity, input });
+      return { execution_authorized: false };
+    },
+  };
+  const { app } = createUniversalCoreService({ storageRoot, entity360Mode: "ENFORCE",
+    entity360Runtime, mcpTenantGatewayKey: gatewayKey,
+    tenantContextSigningSecret: tenantSecret, dttAgentIdentitySigningSecret: workSecret,
+    dttAgentIdentityReceiptService: { configured: true,
+      verifyContext: async (_token, boundTenant, boundWork, principal) => {
+        if (principal.agent_id !== presence.agent_id
+            || principal.session_id !== presence.session_id
+            || principal.session_fingerprint !== presence.session_fingerprint) {
+          throw new Error("dtt_agent_context_principal_mismatch");
+        }
+        return { tenant_id: boundTenant, work_id: boundWork, agent_id: principal.agent_id,
+          session_fingerprint: principal.session_fingerprint,
+          actor_provenance: principal.actor_provenance, client_type: principal.client_type };
+      } },
+  });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1/entity-360/snapshots/bootstrap`;
+  const commonHeaders = { authorization: `Bearer ${gatewayKey}`,
+    "content-type": "application/json", "x-sh-tenant-id": tenantId,
+    "x-sh-tenant-context": tenantContext(tenantSecret, tenantId),
+    "x-sh-dtt-agent-context": "signed-agent-context" };
+  try {
+    await waitForEntity360(`http://127.0.0.1:${server.address().port}`);
+    const validToken = issueDttWorkBootstrapContext({ secret: workSecret,
+      tenant_id: tenantId, work_id: workId, bootstrap_binding: bootstrapBinding,
+      agent_presence: presence, method: "POST", path: "/v1/entity-360/snapshots/bootstrap",
+      body, now_ms: nowMs });
+    const accepted = await fetch(endpoint, { method: "POST",
+      headers: { ...commonHeaders, [DTT_WORK_BOOTSTRAP_CONTEXT_HEADER]: validToken },
+      body: JSON.stringify(body) });
+    assert.equal(accepted.status, 201);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].capability, "entity_360_work_snapshot_bootstrap");
+    assert.equal(calls[0].identity.work_id, workId);
+
+    const leaseToken = issueDttWorkContext({ secret: workSecret, tenant_id: tenantId,
+      work_id: workId, lease_binding: leaseBinding, agent_presence: presence,
+      method: "POST", path: "/v1/entity-360/snapshots/bootstrap", body, now_ms: nowMs });
+    const denied = await fetch(endpoint, { method: "POST",
+      headers: { ...commonHeaders, [DTT_WORK_CONTEXT_HEADER]: leaseToken },
+      body: JSON.stringify(body) });
+    assert.equal(denied.status, 403);
+    assert.equal(calls.length, 1);
+
+    const mismatchedToken = issueDttWorkBootstrapContext({ secret: workSecret,
+      tenant_id: tenantId, work_id: workId, bootstrap_binding: bootstrapBinding,
+      agent_presence: { ...presence, agent_id: "other-bootstrap-agent" },
+      method: "POST", path: "/v1/entity-360/snapshots/bootstrap", body, now_ms: nowMs });
+    const principalDenied = await fetch(endpoint, { method: "POST",
+      headers: { ...commonHeaders, [DTT_WORK_BOOTSTRAP_CONTEXT_HEADER]: mismatchedToken },
+      body: JSON.stringify(body) });
+    assert.notEqual(principalDenied.status, 201);
+    assert.equal(calls.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
 
 test("Universal Core exposes Entity 360 SHADOW health without making it a production authority gate", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-app-"));

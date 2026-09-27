@@ -128,7 +128,8 @@ function completeContributions(order = "normal") {
       criticality: "high_impact" }] });
   const icf = source({ sourceId: "icf", adapterVersion: "icf_entity360_adapter_v2",
     evidenceClass: "authoritative_record", digest: DIGEST_D,
-    facts: [{ fact_id: "governance.icf.binding", value: { ledger_head_digest: DIGEST_D },
+    facts: [{ fact_id: "governance.icf.binding", value: { version: 1,
+      ledger_head_digest: DIGEST_D },
       criticality: "high_impact" }] });
   const values = [continuity, intent, genesis, icf];
   return order === "reverse" ? values.reverse() : values;
@@ -1893,6 +1894,45 @@ test("Work snapshot bootstrap uses a server-owned current cut after canonical Wo
   assert.deepEqual(replay.dedicated_core_gate, first.dedicated_core_gate);
 });
 
+test("Work snapshot bootstrap takes its consistent cut after a newly seeded ICF event", async () => {
+  const beforeSeed = "2026-08-25T09:59:59.900Z";
+  const databaseCut = "2026-08-25T10:00:00.250Z";
+  const observedCuts = [];
+  let currentTime = beforeSeed;
+  const dependencies = await enforcedRuntimeFixture({
+    now: () => Date.parse(currentTime),
+    initialIcfSeed: async ({ tenant_id, work_id }) => {
+      currentTime = databaseCut;
+      return {
+        schema_version: "icf_initial_work_governance_seed_receipt_v1",
+        state: "seeded",
+        tenant_id,
+        work_id,
+        causal_work_id: work_id,
+        project_id: PROJECT_UUID,
+        icf_version: 1,
+        ledger_head_digest: DIGEST_D,
+        seed_payload_digest: DIGEST_C,
+        consistent_cut_at: databaseCut,
+      };
+    },
+  });
+  const assembleContext = dependencies.adapterRegistry.assembleContext;
+  dependencies.adapterRegistry.assembleContext = async (input) => {
+    observedCuts.push(input.as_of);
+    return assembleContext(input);
+  };
+  const result = await dependencies.runtime.invoke(
+    "entity_360_work_snapshot_bootstrap",
+    DTT_IDENTITY,
+    { work_id: WORK_ID, as_of: beforeSeed, expected_revision: 0,
+      idempotency_key: "entity360-post-seed-database-cut" },
+  );
+  assert.deepEqual(observedCuts, [databaseCut]);
+  assert.equal(result.snapshot.as_of, databaseCut);
+  assert.equal(result.snapshot.context_status, "READY");
+});
+
 test("Work snapshot bootstrap does not treat a server-derived preliminary linkage as caller input", async () => {
   const dependencies = await enforcedRuntimeFixture();
   const assembleContext = dependencies.adapterRegistry.assembleContext;
@@ -1968,14 +2008,113 @@ test("Work snapshot bootstrap rejects SHADOW mode and never persists incomplete 
   assert.equal(writes, 0);
 });
 
-test("Work snapshot bootstrap rejects an occupied head with a different idempotency key", async () => {
+test("Work snapshot bootstrap adopts an exact verified v1 head with a different recovery key", async () => {
   const { runtime } = await enforcedRuntimeFixture();
-  await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
     work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-head-first",
   });
-  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+  const adopted = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
     work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "bootstrap-head-second",
-  }), (error) => String(error?.message || "").includes("entity360_head_revision_conflict"));
+  });
+  assert.equal(adopted.persistence.adopted, true);
+  assert.equal(adopted.persistence.replayed, true);
+  assert.equal(adopted.snapshot.deterministic_immutable_digest,
+    first.snapshot.deterministic_immutable_digest);
+  assert.notEqual(adopted.dedicated_core_gate.idempotency_digest,
+    first.dedicated_core_gate.idempotency_digest);
+});
+
+test("Work snapshot bootstrap recovers a lost response across host identities", async () => {
+  const { runtime } = await enforcedRuntimeFixture();
+  const input = { work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "bootstrap-cross-host-lost-response" };
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap",
+    DTT_IDENTITY, input);
+  const codexIdentity = Object.freeze({ ...DTT_IDENTITY,
+    actor_id: "agent:codex-native",
+    provenance: { ...DTT_IDENTITY.provenance,
+      session_fingerprint: "e".repeat(64), actor_provenance: "codex_native" } });
+  const recovered = await runtime.invoke("entity_360_work_snapshot_bootstrap",
+    codexIdentity, { ...input, as_of: "2026-08-25T10:00:01.000Z" });
+  assert.equal(recovered.persistence.adopted, true);
+  assert.equal(recovered.snapshot.deterministic_immutable_digest,
+    first.snapshot.deterministic_immutable_digest);
+  assert.equal(recovered.dedicated_core_gate.request_digest,
+    first.dedicated_core_gate.request_digest);
+});
+
+test("Work snapshot bootstrap never adopts v1 after the verified ICF head changes", async () => {
+  let calls = 0;
+  const { runtime } = await enforcedRuntimeFixture({
+    initialIcfSeed: async ({ tenant_id, work_id }) => {
+      calls += 1;
+      return {
+        schema_version: "icf_initial_work_governance_seed_receipt_v1",
+        state: calls === 1 ? "seeded" : "present",
+        tenant_id,
+        work_id,
+        causal_work_id: work_id,
+        project_id: PROJECT_UUID,
+        icf_version: calls === 1 ? 1 : 2,
+        ledger_head_digest: calls === 1 ? DIGEST_D : "e".repeat(64),
+        seed_payload_digest: DIGEST_C,
+        consistent_cut_at: AT,
+      };
+    },
+  });
+  await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "bootstrap-before-icf-head-change",
+  });
+  await assert.rejects(() => runtime.invoke("entity_360_work_snapshot_bootstrap",
+    DTT_IDENTITY, { work_id: WORK_ID, as_of: AT, expected_revision: 0,
+      idempotency_key: "bootstrap-after-icf-head-change" }),
+  (error) => error.code === "entity360_bootstrap_existing_snapshot_binding_invalid"
+    && error.status === 409);
+});
+
+test("Work snapshot bootstrap adopts a migrated verified v1 without its original write key", async () => {
+  const { runtime } = await enforcedRuntimeFixture();
+  const migrated = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+    work_id: WORK_ID,
+    entity_type: "work",
+    identity: { work_id: WORK_ID },
+    as_of: AT,
+    expected_revision: 0,
+    idempotency_key: "historical-v1-before-work-state-migration",
+  });
+  const adopted = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "migration-recovery-bootstrap",
+  });
+  assert.equal(adopted.persistence.adopted, true);
+  assert.equal(adopted.snapshot.deterministic_immutable_digest,
+    migrated.snapshot.deterministic_immutable_digest);
+  assert.equal(adopted.snapshot.context_status, "READY");
+});
+
+test("Core refreshes an old enforcement snapshot with deterministic replay", async () => {
+  let clock = Date.parse(AT);
+  const { runtime } = await enforcedRuntimeFixture({ now: () => clock });
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, {
+    work_id: WORK_ID, as_of: AT, expected_revision: 0,
+    idempotency_key: "bootstrap-before-enforcement-refresh",
+  });
+  clock += 16 * 60_000;
+  const refreshInput = { tenant_id: TENANT, work_id: WORK_ID,
+    expected_snapshot_version: first.snapshot.snapshot_version,
+    expected_snapshot_digest: first.snapshot.deterministic_immutable_digest };
+  const refreshed = await runtime.refreshEnforcementSnapshot(
+    CORE_ENFORCEMENT_IDENTITY, refreshInput);
+  const replay = await runtime.refreshEnforcementSnapshot(
+    CORE_ENFORCEMENT_IDENTITY, refreshInput);
+  assert.equal(refreshed.snapshot.snapshot_version, 2);
+  assert.equal(refreshed.snapshot.previous_snapshot_digest,
+    first.snapshot.deterministic_immutable_digest);
+  assert.equal(refreshed.snapshot.context_status, "READY");
+  assert.equal(replay.persistence.replayed, true);
+  assert.equal(replay.snapshot.deterministic_immutable_digest,
+    refreshed.snapshot.deterministic_immutable_digest);
 });
 
 test("Work snapshot bootstrap emits no gate when the ENFORCED feature binding drifts", async () => {
