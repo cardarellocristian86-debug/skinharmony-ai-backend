@@ -4890,6 +4890,13 @@ export function createWorkContinuityV2Store({
       required: input.required !== false,
     });
     return transaction(async (client) => {
+      // Native planning takes the Core Work row before it reads the V2 task
+      // and materializes a binding.  Take that same optional row first here:
+      // a linked Work is then serialized with plan creation before this
+      // writer locks its Gallery task, while an unbridged V2 Work remains
+      // usable and has no native-plan row to protect.
+      await client.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canRecordTask, work, actor);
       const existing = await client.query(`SELECT work_id,title,weight,status,required
@@ -4906,6 +4913,21 @@ export function createWorkContinuityV2Store({
         return deriveWorkStateWithClient(client, actor, workId, { persist: false });
       }
       assertOperationalWorkMutation(work);
+      // A native plan freezes the precise V2 task revision that its builder
+      // and verifier must attest.  Letting this public writer replace that
+      // task after planning makes the plan impossible to complete: the
+      // native binding correctly rejects the changed revision later on.
+      // The shared Core Work lock above serializes plan creation first; lock
+      // the matching planned plan row before deciding this mutation.
+      const nativeBinding = await client.query(`SELECT plan_id
+        FROM core_continuity_native_plans p
+        WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.status='planned'
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(coalesce(p.plan->'tasks', '[]'::jsonb)) AS planned_task
+            WHERE lower(planned_task->'v2_task_binding'->>'task_id')=lower($3::text)
+          )
+        FOR UPDATE`, [actor.tenant_id, workId, taskId]);
+      if (nativeBinding.rows[0]) fail("tenant_work_task_native_binding_frozen");
       const persisted = await client.query(`INSERT INTO tenant_work_task (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified,completed_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,false,CASE WHEN $6::varchar='completed' THEN now() ELSE NULL END)
         ON CONFLICT (tenant_id,task_id) DO UPDATE
