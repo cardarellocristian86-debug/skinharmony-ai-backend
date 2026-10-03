@@ -1526,6 +1526,21 @@ export function resolveHostTransportPresence({
     membership?.tenant_id === identity?.tenantId &&
     membership?.role === "tenant_owner",
   );
+  // Codex's registered service bearer is independently authenticated by the
+  // host registry and can run the same two-step bootstrap protocol. The
+  // continuation itself remains bound to the server-signed logical presence,
+  // tenant, subject, registry revision and one-time durable record; this
+  // exception therefore cannot turn a caller-selected session into general
+  // continuation authority.
+  const codexWorkBootstrapContinuationBound = Boolean(
+    oauthWorkBootstrapContinuationCall &&
+    declaredSessionId &&
+    agentPresence &&
+    identity?.kind === "codex" &&
+    identity?.authenticatedHostPrincipal?.registered === true &&
+    hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE) &&
+    hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE),
+  );
   // Assignment hand-off is a bounded Gallery operation, not a general Work
   // mutation. ChatGPT may rotate MCP transports between messages, so an
   // authenticated registered host can carry its server-signed logical
@@ -1580,10 +1595,12 @@ export function resolveHostTransportPresence({
       binding_source: "oauth_declared_finalize",
     });
   }
-  if (oauthWorkBootstrapContinuationBound) {
+  if (oauthWorkBootstrapContinuationBound || codexWorkBootstrapContinuationBound) {
     return Object.freeze({
       presence: agentPresence,
-      binding_source: "oauth_declared_work_bootstrap",
+      binding_source: oauthWorkBootstrapContinuationBound
+        ? "oauth_declared_work_bootstrap"
+        : "codex_declared_work_bootstrap",
     });
   }
   // Assignment claim/submit must retain the same declared logical presence

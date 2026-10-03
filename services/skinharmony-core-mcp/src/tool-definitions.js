@@ -1629,6 +1629,13 @@ const nyraContinueProperties = Object.freeze({
   native_plan_request: nyraContinueNativePlanRequest,
   native_bind_request: nyraContinueNativeBindRequest,
   idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  // The bootstrap issuer (`nyra_converse`) binds its opaque continuation to a
+  // server-signed logical presence. A registered host may rotate its MCP
+  // transport before it consumes that continuation, so expose the same
+  // logical-session fields on the narrow continuation contract.
+  agent_id: identifier,
+  client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] },
+  session_id: { type: "string", minLength: 1, maxLength: 240 },
   ...ownerConfirmationProperties,
 });
 const nyraContinueInputSchema = Object.freeze({
