@@ -1910,13 +1910,17 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       acceptance_verified: false,
     });
 
-    await v2Store.recordTask(bridgeOwner, {
+    await assert.rejects(v2Store.recordTask(bridgeOwner, {
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
       title: "Native verifier acceptance bridge target changed after evaluation",
       status: "completed",
       required: true,
-    });
+    }), /tenant_work_task_native_binding_frozen/,
+    "a public task update cannot invalidate a current native plan binding");
+    // Direct database tampering remains a hostile-path regression fixture:
+    // the native evaluator must still fail closed if the durable row is
+    // altered outside the public capability.
     await pool.query(`UPDATE tenant_work_task SET title=$4,status='completed',
         acceptance_verified=true,completed_at=now()
       WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [
