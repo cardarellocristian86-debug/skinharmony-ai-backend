@@ -237,6 +237,65 @@ test("binds only a registered owner bootstrap continuation to its signed logical
   assert.equal(unrelated.binding_source, "transport");
 });
 
+test("binds a registered Codex bootstrap continuation to its signed logical presence", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "codex-bootstrap",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const resolved = resolveHostTransportPresence({
+    identity: {
+      kind: "codex",
+      tenantId: "tenant-a",
+      authenticatedHostPrincipal: {
+        registered: true,
+        capabilities: [
+          HOST_APP_CAPABILITIES.GOVERNED_CONTINUE,
+          HOST_APP_CAPABILITIES.WORK_CREATE,
+        ],
+      },
+    },
+    toolName: "nyra_continue",
+    operation: "review_work_bootstrap",
+    declaredSessionId: "logical-codex-bootstrap-session",
+    agentPresence,
+    transportAgentPresence: null,
+  });
+  assert.equal(resolved.presence, agentPresence);
+  assert.equal(resolved.binding_source, "codex_declared_work_bootstrap");
+
+  for (const capabilities of [
+    [HOST_APP_CAPABILITIES.GOVERNED_CONTINUE],
+    [HOST_APP_CAPABILITIES.WORK_CREATE],
+  ]) {
+    const denied = resolveHostTransportPresence({
+      identity: { kind: "codex", tenantId: "tenant-a", authenticatedHostPrincipal: {
+        registered: true, capabilities,
+      } },
+      toolName: "nyra_continue",
+      operation: "create_work",
+      declaredSessionId: "logical-codex-bootstrap-session",
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(denied.presence, null);
+    assert.equal(denied.binding_source, null);
+  }
+  const unrelated = resolveHostTransportPresence({
+    identity: { kind: "codex", tenantId: "tenant-a", authenticatedHostPrincipal: {
+      registered: true,
+      capabilities: [HOST_APP_CAPABILITIES.GOVERNED_CONTINUE, HOST_APP_CAPABILITIES.WORK_CREATE],
+    } },
+    toolName: "nyra_continue",
+    operation: "authorize_action",
+    declaredSessionId: "logical-codex-bootstrap-session",
+    agentPresence,
+    transportAgentPresence: null,
+  });
+  assert.equal(unrelated.presence, null);
+  assert.equal(unrelated.binding_source, null);
+});
+
 test("does not promote caller-declared sessions without an authenticated OAuth owner binding", () => {
   const agentPresence = Object.freeze({
     agent_id: "untrusted-agent",
