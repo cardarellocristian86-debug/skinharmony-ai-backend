@@ -67,8 +67,8 @@ export const NYRA_AUTOPILOT_TOOLS = [
     "Submit bounded evidence for one claimed assignment.",
     object({ work_id: uuid, assignment_id: uuid, result: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["work_id", "assignment_id", "result", "idempotency_key"]),
     { readOnly: false, bounded: true, collaborationReadScope: true }),
-  tool("nyra_work_assignment_reissue", "Reissue quarantined Nyra assignment",
-    "Create one fresh replacement for a quarantined assignment in the same Work without granting execution.",
+  tool("nyra_work_assignment_reissue", "Reissue quarantined or server-expired verifier assignment",
+    "Create one fresh replacement for a quarantined assignment or a server-verified expired independent verifier assignment in the same Work without granting execution.",
     object({ work_id: uuid, assignment_id: uuid, idempotency_key: identifier }, ["work_id", "assignment_id", "idempotency_key"]),
     { readOnly: false, bounded: true, collaborationReadScope: true }),
 ];

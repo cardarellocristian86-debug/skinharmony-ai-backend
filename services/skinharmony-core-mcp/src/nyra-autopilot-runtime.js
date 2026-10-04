@@ -532,11 +532,41 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       idempotency(input.idempotency_key);
       await initialize();
       return transaction(async (client) => {
-        const selected = await client.query(`SELECT * FROM core_nyra_autopilot_assignments
-          WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`, [tenantId, workId, assignmentId]);
-        const prior = selected.rows[0];
+        const selected = await client.query(`SELECT a.*,
+            (a.claim_expires_at IS NOT NULL AND a.claim_expires_at<=clock_timestamp()) AS expired_claim_verified
+          FROM core_nyra_autopilot_assignments a
+          WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.assignment_id=$3 FOR UPDATE`, [tenantId, workId, assignmentId]);
+        let prior = selected.rows[0];
         if (!prior) throw codedError("nyra_assignment_not_found");
-        if (prior.status !== "quarantined") throw codedError("nyra_assignment_reissue_not_applicable");
+        const sourceStatus = String(prior.status || "");
+        // A past verifier lease can be left CLAIMED when the mutation that
+        // observed it expired later rolls back. Reissue owns the source lock,
+        // proves the deadline against PostgreSQL's clock, records expiry, and
+        // creates a distinct offer in this same transaction. It never revives
+        // an old claim or admits a future/producer/submitted claim.
+        const claimedExpiredVerifier = sourceStatus === "claimed"
+          && prior.role === "independent_verifier"
+          && prior.expired_claim_verified === true;
+        if (claimedExpiredVerifier) {
+          const expired = await client.query(`UPDATE core_nyra_autopilot_assignments
+            SET status='expired',updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 AND status='claimed'
+              AND claim_expires_at IS NOT NULL AND claim_expires_at<=clock_timestamp()
+            RETURNING *`, [tenantId, workId, assignmentId]);
+          if (!expired.rows[0]) throw codedError("nyra_assignment_reissue_not_applicable");
+          prior = { ...expired.rows[0], expired_claim_verified: true };
+          await appendReceipt(client, tenantId, workId, "nyra_assignment_claim_expired", {
+            assignment_id: assignmentId, assignment_key: prior.assignment_key,
+            role: prior.role, source_status: "claimed", execution_authorized: false,
+          });
+        }
+        const recoveryStatus = claimedExpiredVerifier ? "expired" : sourceStatus;
+        const expiredClaim = recoveryStatus === "expired"
+          && prior.role === "independent_verifier"
+          && prior.expired_claim_verified === true;
+        if (sourceStatus !== "quarantined" && !expiredClaim) {
+          throw codedError("nyra_assignment_reissue_not_applicable");
+        }
         // A retry must return the same replacement.  The source assignment is
         // immutable, so it is a stronger idempotency boundary than a caller
         // supplied key and remains safe across reconnects.
@@ -559,7 +589,11 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         const replacementId = crypto.randomUUID();
         const taskContract = { ...clone(prior.task_contract), reissue: {
           schema_version: "nyra_assignment_reissue_v1", source_assignment_id: assignmentId,
-          reason: "quarantined_submission_requires_fresh_bounded_evidence",
+          source_status: sourceStatus,
+          recovery_status: recoveryStatus,
+          reason: expiredClaim
+            ? "expired_claim_requires_fresh_independent_evidence"
+            : "quarantined_submission_requires_fresh_bounded_evidence",
         } };
         const inserted = await client.query(`INSERT INTO core_nyra_autopilot_assignments
           (tenant_id,work_id,run_id,assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types)
@@ -569,6 +603,8 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           JSON.stringify(prior.dependencies || []), JSON.stringify(prior.eligible_client_types || [...CLIENT_TYPES])]);
         const receipt = await appendReceipt(client, tenantId, workId, "nyra_assignment_reissued", {
           source_assignment_id: assignmentId, replacement_assignment_id: replacementId, run_id: prior.run_id,
+          source_status: sourceStatus, recovery_status: recoveryStatus,
+          replacement_reason: taskContract.reissue.reason,
           execution_authorized: false,
         });
         return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(inserted.rows[0]), receipt, execution_authorized: false };

@@ -24,6 +24,7 @@ export const ICF_INITIAL_WORK_GOVERNANCE_SEED_EVENT =
   "WORK_INITIAL_GOVERNANCE_SEEDED";
 export const ICF_INITIAL_WORK_GOVERNANCE_SEED_SCHEMA =
   "icf_initial_work_governance_seed_v1";
+export const ICF_WORK_GOVERNANCE_REOBSERVED_EVENT = "WORK_GOVERNANCE_BINDING_REOBSERVED";
 
 const ICF_EVENT_DIGEST_MIGRATION_URL = new URL(
   "../migrations/20260825_002_icf_event_digest_v2.sql",
@@ -437,6 +438,80 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
     } finally { client.release(); }
   }
 
+  // This is intentionally a server-owned, append-only observation.  It is not
+  // a state repair: the seed path above re-reads canonical Work/Intent binding
+  // and verifies the existing head before a new timestamped ICF fact exists.
+  async function refreshWorkGovernanceBinding({ tenantId, workId, idempotencyKey } = {}) {
+    const key = initialSeedText(idempotencyKey, "icf_binding_refresh_idempotency_invalid", 240);
+    const seed = await ensureInitialWorkGovernanceSeed({ tenantId, workId });
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+        `skinharmony:icf:binding-refresh:${seed.tenant_id}:${seed.work_id}`,
+      ]);
+      // Keep canonical binding rows locked until the observation commits.
+      const canonical = await readCanonicalInitialSeedRecord(client, seed.tenant_id, seed.work_id);
+      const canonicalPayload = initialWorkGovernanceSeedPayload(canonical);
+      if (icfEventPayloadDigestV2(canonicalPayload) !== seed.seed_payload_digest) {
+        throw migrationError("icf_binding_refresh_canonical_drift");
+      }
+      const current = await client.query(`SELECT version,ledger_head_digest,ledger_head_digest_contract
+        FROM core_icf_work WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [seed.tenant_id, seed.causal_work_id]);
+      const head = current.rows[0];
+      if (!head || !Number.isSafeInteger(Number(head.version)) || Number(head.version) < 1
+        || head.ledger_head_digest_contract !== ICF_EVENT_DIGEST_CONTRACT_V2) {
+        throw migrationError("icf_binding_refresh_head_drift");
+      }
+      const ledger = await client.query(`SELECT seq,event_type,payload,previous_digest,digest,digest_contract,
+        canonicalization_version,digest_algorithm,payload_digest,previous_digest_contract,created_at
+        FROM core_icf_event WHERE tenant_id=$1 AND work_id=$2 ORDER BY seq FOR SHARE`,
+      [seed.tenant_id, seed.causal_work_id]);
+      if (ledger.rows.length !== Number(head.version)) throw migrationError("icf_binding_refresh_ledger_incomplete");
+      let predecessor = null;
+      for (let index = 0; index < ledger.rows.length; index += 1) {
+        const item = ledger.rows[index]; const sequence = index + 1;
+        const expected = icfEventDigestV2({ tenantId: seed.tenant_id, workId: seed.causal_work_id,
+          seq: sequence, eventType: item.event_type, payload: item.payload,
+          previous: predecessor, previousDigestContract: item.previous_digest_contract });
+        if (Number(item.seq) !== sequence || item.previous_digest !== predecessor
+          || item.previous_digest_contract !== (sequence === 1 ? null : ICF_EVENT_DIGEST_CONTRACT_V2)
+          || item.digest_contract !== ICF_EVENT_DIGEST_CONTRACT_V2
+          || item.canonicalization_version !== ICF_EVENT_CANONICALIZATION_V2
+          || item.digest_algorithm !== ICF_EVENT_DIGEST_ALGORITHM
+          || icfEventPayloadDigestV2(item.payload) !== String(item.payload_digest || "").toLowerCase()
+          || String(item.digest || "").toLowerCase() !== expected) throw migrationError("icf_binding_refresh_ledger_invalid");
+        predecessor = item.digest;
+      }
+      if (predecessor !== head.ledger_head_digest) throw migrationError("icf_binding_refresh_head_mismatch");
+      if (ledger.rows[0].event_type !== ICF_INITIAL_WORK_GOVERNANCE_SEED_EVENT
+        || icfEventPayloadDigestV2(ledger.rows[0].payload) !== seed.seed_payload_digest) {
+        throw migrationError("icf_binding_refresh_canonical_drift");
+      }
+      const requestDigest = crypto.createHash("sha256").update(key).digest("hex");
+      const payload = Object.freeze({ schema_version: "icf_work_governance_binding_reobservation_v1",
+        source: "universal_core_server_owned", request_digest: requestDigest,
+        canonical_work: { work_id: seed.work_id, causal_work_id: seed.causal_work_id, project_id: seed.project_id },
+        binding: { seed_payload_digest: seed.seed_payload_digest, prior_version: Number(head.version),
+          prior_ledger_head_digest: head.ledger_head_digest, prior_digest_contract: ICF_EVENT_DIGEST_CONTRACT_V2 } });
+      const replays = ledger.rows.filter((event) => event.event_type === ICF_WORK_GOVERNANCE_REOBSERVED_EVENT
+        && event.payload?.request_digest === requestDigest);
+      if (replays.length > 1) throw migrationError("icf_binding_refresh_replay_ambiguous");
+      const replay = replays[0];
+      if (replay) {
+        const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at"); await client.query("COMMIT");
+        return Object.freeze({ ...seed, state: "replayed", icf_version: Number(replay.seq),
+          ledger_head_digest: replay.digest,
+          consistent_cut_at: initialSeedTimestamp(cut.rows[0]?.consistent_cut_at, "icf_binding_refresh_consistent_cut_invalid") });
+      }
+      const appended = await appendEventOnClient(client, { tenantId: seed.tenant_id, workId: seed.causal_work_id,
+        eventType: ICF_WORK_GOVERNANCE_REOBSERVED_EVENT, payload });
+      const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at"); await client.query("COMMIT");
+      return Object.freeze({ ...seed, state: "reobserved", icf_version: appended.seq,
+        ledger_head_digest: appended.digest, consistent_cut_at: initialSeedTimestamp(cut.rows[0]?.consistent_cut_at, "icf_binding_refresh_consistent_cut_invalid") });
+    } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; } finally { client.release(); }
+  }
+
   async function migrationReadback(client, sql) {
     const targetSchemaResult = await client.query("SELECT current_schema() AS schema_name");
     const targetSchema = String(targetSchemaResult.rows[0]?.schema_name || "");
@@ -650,6 +725,7 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
       } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     },
     ensureInitialWorkGovernanceSeed,
+    refreshWorkGovernanceBinding,
     async head(tenantId, workId) { const result = await pool.query("SELECT version, ledger_head_digest, ledger_head_digest_contract FROM core_icf_work WHERE tenant_id=$1 AND work_id=$2", [tenantId, workId]); return result.rows[0] || { version: 0, ledger_head_digest: null, ledger_head_digest_contract: null }; },
   };
   return store;

@@ -3,6 +3,7 @@ const ROUTES = Object.freeze([
   ["post", "/v1/entity-360/resolve", "entity_360_resolve", "read"],
   ["post", "/v1/entity-360/snapshots/assemble", "entity_360_snapshot_assemble", "write"],
   ["post", "/v1/entity-360/snapshots/bootstrap", "entity_360_work_snapshot_bootstrap", "write"],
+  ["post", "/v1/entity-360/internal/work-context/recover", "entity_360_internal_work_context_recover", "write"],
   ["post", "/v1/entity-360/snapshots/latest", "entity_360_snapshot_latest", "read"],
   ["post", "/v1/entity-360/snapshots/read", "entity_360_snapshot_read", "read"],
   ["post", "/v1/entity-360/snapshots/verify", "entity_360_snapshot_verify", "read"],

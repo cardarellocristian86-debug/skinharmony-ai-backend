@@ -7403,6 +7403,11 @@ export function createUniversalCoreService(options = {}) {
             workId: input.work_id,
           })
           : null,
+        refreshIcfBinding: typeof options.icfStore?.refreshWorkGovernanceBinding === "function"
+          ? (input) => options.icfStore.refreshWorkGovernanceBinding({
+            tenantId: input.tenant_id, workId: input.work_id, idempotencyKey: input.idempotency_key,
+          })
+          : null,
         bitemporalMode: options.entity360BitemporalMode ||
           process.env.CORE_ENTITY360_BITEMPORAL_MODE || "OFF",
       })

@@ -172,6 +172,35 @@ test("Entity360 bootstrap accepts only its request-bound server-owned context", 
       body: JSON.stringify(body) });
     assert.notEqual(principalDenied.status, 201);
     assert.equal(calls.length, 1);
+
+    const recoveryPath = "/v1/entity-360/internal/work-context/recover";
+    const recoveryEndpoint = `http://127.0.0.1:${server.address().port}${recoveryPath}`;
+    const recoveryBody = { work_id: workId, expected_snapshot_version: 3,
+      expected_snapshot_digest: "a".repeat(64) };
+    const recoveryToken = issueDttWorkContext({ secret: workSecret, tenant_id: tenantId,
+      work_id: workId, lease_binding: leaseBinding, agent_presence: presence,
+      method: "POST", path: recoveryPath, body: recoveryBody, now_ms: nowMs });
+    const recovered = await fetch(recoveryEndpoint, { method: "POST",
+      headers: { ...commonHeaders, [DTT_WORK_CONTEXT_HEADER]: recoveryToken },
+      body: JSON.stringify(recoveryBody) });
+    assert.equal(recovered.status, 201, JSON.stringify(await recovered.json()));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].capability, "entity_360_internal_work_context_recover");
+    assert.deepEqual(calls[1].input, recoveryBody);
+    assert.equal(calls[1].identity.work_id, workId);
+    assert.deepEqual(calls[1].identity.authority_scope, [], "DTT recovery grants no Core authority scope");
+
+    for (const [headers, requestBody] of [
+      [commonHeaders, recoveryBody],
+      [{ ...commonHeaders, [DTT_WORK_BOOTSTRAP_CONTEXT_HEADER]: validToken }, recoveryBody],
+      [{ ...commonHeaders, [DTT_WORK_CONTEXT_HEADER]: recoveryToken },
+        { ...recoveryBody, expected_snapshot_digest: "b".repeat(64) }],
+    ]) {
+      const rejected = await fetch(recoveryEndpoint, { method: "POST", headers,
+        body: JSON.stringify(requestBody) });
+      assert.notEqual(rejected.status, 201);
+      assert.equal(calls.length, 2, "unbound, bootstrap-only, and tampered recovery never reach runtime");
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(storageRoot, { recursive: true, force: true });

@@ -319,7 +319,7 @@ function publicMetrics(counter, storeMetrics, mode, policy, ontology) {
 
 export function createEntity360Runtime({ store, adapterRegistry, policy, ontology, mode = "OFF",
   enforcementPolicy, qualificationSigner, qualificationVerifier,
-  bitemporalMode = "OFF", initialIcfSeed, now = () => Date.now() } = {}) {
+  bitemporalMode = "OFF", initialIcfSeed, refreshIcfBinding, now = () => Date.now() } = {}) {
   if (!store || typeof store.writeSnapshot !== "function"
     || typeof store.readSnapshotWriteReplay !== "function"
     || typeof store.registerDefinition !== "function" || typeof store.readRegistry !== "function"
@@ -941,13 +941,14 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       production_decision_changed: false, execution_authorized: false });
   }
 
-  async function initialIcfSeedForWork(identity, workId) {
+  async function initialIcfSeedForWork(identity, workId, idempotencyKey = null) {
     if (typeof initialIcfSeed !== "function") {
       fail("entity360_initial_icf_seed_unavailable", 503);
     }
     let receipt;
     try {
-      receipt = await initialIcfSeed({ tenant_id: identity.tenant_id, work_id: workId });
+      receipt = await (idempotencyKey && refreshIcfBinding ? refreshIcfBinding : initialIcfSeed)({ tenant_id: identity.tenant_id, work_id: workId,
+        idempotency_key: idempotencyKey });
     } catch (error) {
       const code = String(error?.code || error?.message || "icf_initial_seed_unavailable");
       if (["icf_initial_seed_canonical_binding_missing",
@@ -962,7 +963,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       fail("entity360_initial_icf_seed_unavailable", 503, { reason: code.slice(0, 160) });
     }
     if (!receipt || receipt.schema_version !== "icf_initial_work_governance_seed_receipt_v1"
-      || !["seeded", "present"].includes(receipt.state)
+      || !["seeded", "present", "reobserved", "replayed"].includes(receipt.state)
       || receipt.tenant_id !== identity.tenant_id
       || String(receipt.work_id || "").toLowerCase() !== workId.toLowerCase()
       || !String(receipt.causal_work_id || "").trim()
@@ -1116,11 +1117,15 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     const idempotencyKey = text(input.idempotency_key,
       "entity360_idempotency_key_required", 240);
     const featureBefore = await requireTenantEnforcedMode(identity.tenant_id);
-    const initialIcfSeed = await initialIcfSeedForWork(identity, workId);
+    let initialIcfSeed = await initialIcfSeedForWork(identity, workId);
     const requestDigest = bootstrapRequestDigest(identity, workId, idempotencyKey);
     const adopted = await adoptInitialWorkSnapshot({ identity, workId,
       feature: featureBefore, initialIcfSeed, requestDigest, idempotencyKey });
     if (adopted) return adopted;
+    if (initialIcfSeed.state !== "seeded" && typeof refreshIcfBinding === "function") {
+      initialIcfSeed = await initialIcfSeedForWork(identity, workId,
+        `entity360-icf-binding-bootstrap:${requestDigest}`);
+    }
     // Use the PostgreSQL cut returned after the ICF seed transaction wrote or
     // verified its head.  Sampling `now()` before seeding caused the following
     // Entity360 query to hide that same seed behind `created_at <= as_of`.
@@ -1259,6 +1264,113 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     });
   }
 
+  function isRecoverableIncompleteIcfContext(snapshot) {
+    const missing = Array.isArray(snapshot?.missing_context) ? snapshot.missing_context : [];
+    const fact = missing[0];
+    return snapshot?.context_status === "INCOMPLETE"
+      && missing.length === 1
+      && fact?.fact_id === "governance.icf.binding"
+      && fact?.mandatory === true
+      && fact?.high_impact === true
+      && Array.isArray(fact?.reason_codes)
+      && fact.reason_codes.includes("CURRENT_FACT_MISSING")
+      && fact.reason_codes.includes("ONLY_STALE_EVIDENCE_AVAILABLE");
+  }
+
+  async function recoverVerifiedIncompleteIcfContext(identity, { workId, snapshot,
+    expectedVersion, expectedDigest, recoveryNamespace }) {
+    requireSnapshotWorkBinding(snapshot, workId);
+    let predecessor = snapshot;
+    let replayedSuccessor = null;
+    if (Number(snapshot.snapshot_version) !== Number(expectedVersion)
+      || snapshot.deterministic_immutable_digest !== expectedDigest) {
+      if (Number(snapshot.snapshot_version) !== Number(expectedVersion) + 1
+        || snapshot.previous_snapshot_digest !== expectedDigest) {
+        fail("entity360_recovery_snapshot_drift", 409);
+      }
+      predecessor = await store.readSnapshot({ tenant_id: identity.tenant_id,
+        entity_id: snapshot.entity_id, snapshot_version: Number(expectedVersion) });
+      if (!predecessor) fail("entity360_recovery_snapshot_drift", 409);
+      requireSnapshotWorkBinding(predecessor, workId);
+      if (predecessor.deterministic_immutable_digest !== expectedDigest) {
+        fail("entity360_recovery_snapshot_drift", 409);
+      }
+      replayedSuccessor = snapshot;
+    }
+    // The predecessor remains an immutable, independently verified record.
+    // A refresh may only add a successor to the exact narrow ICF-staleness case.
+    if (!isRecoverableIncompleteIcfContext(predecessor)
+      || predecessor.schema_version !== enforcementContract.snapshot_schema_version
+      || predecessor.policy_version !== compiledPolicy.policy_version
+      || predecessor.policy_digest !== compiledPolicy.policy_digest
+      || predecessor.ontology_version !== enforcementContract.ontology_version
+      || predecessor.ontology_digest !== enforcementContract.ontology_digest
+      || predecessor.adapter_registry_version !== enforcementContract.adapter_registry_schema_version
+      || !predecessor.bitemporal || predecessor.bitemporal.knowledge_time_quality !== "VERIFIED"
+      || predecessor.execution_authorized !== false
+      || predecessor.production_decision_mutation !== false) {
+      fail("entity360_recovery_not_applicable", 409);
+    }
+    const verify = async (candidate) => {
+      const verificationContext = await historicalVerificationContext(identity.tenant_id, candidate);
+      const verification = verifyEntity360Snapshot(candidate, {
+        ...verificationContext,
+        verification_time: new Date(now()).toISOString(),
+        persisted_at: candidate.__entity360_persisted_at || null,
+        qualification_verifier: qualificationVerifier,
+      });
+      if (!verification.valid) fail("entity360_recovery_snapshot_verification_failed", 409);
+    };
+    await verify(predecessor);
+    const feature = await requireTenantEnforcedMode(identity.tenant_id);
+    if (feature.mode !== "ENFORCED" || feature.enabled !== true
+      || typeof refreshIcfBinding !== "function") fail("entity360_recovery_not_applicable", 409);
+    const stableFeature = async () => {
+      const currentFeature = await requireTenantEnforcedMode(identity.tenant_id);
+      if (currentFeature.mode !== feature.mode || currentFeature.enabled !== feature.enabled
+        || Number(currentFeature.revision) !== Number(feature.revision)
+        || currentFeature.policy_digest !== feature.policy_digest
+        || currentFeature.enforcement_authority_digest !== feature.enforcement_authority_digest) {
+        fail("entity360_recovery_feature_drift", 409);
+      }
+    };
+    if (replayedSuccessor) {
+      if (replayedSuccessor.context_status !== "READY"
+        || replayedSuccessor.execution_authorized !== false
+        || replayedSuccessor.production_decision_mutation !== false) {
+        fail("entity360_recovery_snapshot_drift", 409);
+      }
+      await verify(replayedSuccessor);
+      await stableFeature();
+      return Object.freeze({ snapshot: replayedSuccessor,
+        projection: await projectPersistedSnapshot(replayedSuccessor),
+        persistence: { revision: Number(replayedSuccessor.snapshot_version), replayed: true,
+          backend: store.kind || "postgresql" },
+        recovery: Object.freeze({ context_only: true, execution_authorized: false,
+          predecessor_snapshot_version: Number(expectedVersion),
+          predecessor_snapshot_digest: expectedDigest }),
+        execution_authorized: false, production_decision_changed: false });
+    }
+    const recoveryKey = `${recoveryNamespace}:${expectedVersion}:${expectedDigest}`;
+    const refreshed = await initialIcfSeedForWork(identity, workId, recoveryKey);
+    const recovered = await assemble(identity, {
+      work_id: workId, entity_type: "work", identity: { work_id: workId },
+      as_of: refreshed.consistent_cut_at, expected_revision: Number(expectedVersion),
+      idempotency_key: recoveryKey,
+    }, { requireReadyBeforePersist: true,
+      persistenceRequestDigest: entity360Digest({ recoveryKey, workId, expectedVersion, expectedDigest }) });
+    requireSnapshotWorkBinding(recovered.snapshot, workId);
+    if (recovered.snapshot.context_status !== "READY"
+      || Number(recovered.snapshot.snapshot_version) !== Number(expectedVersion) + 1
+      || recovered.snapshot.execution_authorized !== false
+      || recovered.snapshot.production_decision_mutation !== false) fail("entity360_recovery_readback_invalid", 503);
+    await verify(recovered.snapshot);
+    await stableFeature();
+    return Object.freeze({ ...recovered,
+      recovery: Object.freeze({ context_only: true, execution_authorized: false,
+        predecessor_snapshot_version: Number(expectedVersion), predecessor_snapshot_digest: expectedDigest }) });
+  }
+
   async function resolveEnforcementContext(rawIdentity, input = {}) {
     if (state !== "ready") fail("entity360_enforcement_runtime_not_ready", 503);
     const identity = requireIdentity(rawIdentity);
@@ -1278,10 +1390,20 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       identity: { work_id: workId },
     });
     if (resolution.status !== "RESOLVED") fail("entity360_enforcement_context_unresolved", 409);
-    const snapshot = await store.readLatestSnapshot({ tenant_id: identity.tenant_id,
+    let snapshot = await store.readLatestSnapshot({ tenant_id: identity.tenant_id,
       entity_id: resolution.entity_id });
     if (!snapshot) fail("entity360_snapshot_not_found", 404);
     requireSnapshotWorkBinding(snapshot, workId);
+    if (snapshot.context_status === "INCOMPLETE") {
+      const recovered = await recoverVerifiedIncompleteIcfContext(identity, {
+        workId,
+        snapshot,
+        expectedVersion: Number(snapshot.snapshot_version),
+        expectedDigest: snapshot.deterministic_immutable_digest,
+        recoveryNamespace: "entity360-incomplete-icf-recovery",
+      });
+      snapshot = recovered.snapshot;
+    }
     if (snapshot.schema_version !== enforcementContract.snapshot_schema_version
       || snapshot.context_status !== "READY"
       || snapshot.policy_digest !== compiledPolicy.policy_digest
@@ -1416,12 +1538,14 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       adapter_registry_version:
         adapterRegistry.schema_version || "entity_360_adapter_registry_v1",
     });
+    const refreshedIcf = await initialIcfSeedForWork(identity, workId,
+      `entity360-icf-binding-refresh:${requestDigest}`);
     const assembled = await assemble(identity, {
       work_id: workId,
       entity_id: resolution.entity_id,
       entity_type: "work",
       identity: { work_id: workId },
-      as_of: new Date(now()).toISOString(),
+      as_of: refreshedIcf.consistent_cut_at,
       expected_revision: expectedRevision,
       idempotency_key: `entity360-enforcement-refresh-${requestDigest}`,
     }, { requireReadyBeforePersist: true,
@@ -1561,6 +1685,29 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     if (capability === "entity_360_snapshot_assemble") return assemble(identity, input);
     if (capability === "entity_360_work_snapshot_bootstrap") {
       return bootstrapInitialWorkSnapshot(identity, input);
+    }
+    if (capability === "entity_360_internal_work_context_recover") {
+      const allowed = new Set(["tenant_id", "work_id", "expected_snapshot_version", "expected_snapshot_digest"]);
+      if (!input || typeof input !== "object" || Array.isArray(input)
+        || Object.keys(input).some((key) => !allowed.has(key))) {
+        fail("entity360_recovery_input_invalid");
+      }
+      const workId = requireWorkBinding(identity, input);
+      const expectedVersion = integer(input.expected_snapshot_version, "entity360_recovery_expected_version_required");
+      const expectedDigest = text(input.expected_snapshot_digest,
+        "entity360_recovery_expected_digest_required", 64).toLowerCase();
+      if (!/^[a-f0-9]{64}$/u.test(expectedDigest)) fail("entity360_recovery_expected_digest_invalid");
+      const resolution = await resolve(identity, { work_id: workId, entity_type: "work", identity: { work_id: workId } });
+      if (resolution.status !== "RESOLVED") fail("entity360_enforcement_context_unresolved", 409);
+      const current = await store.readLatestSnapshot({ tenant_id: identity.tenant_id, entity_id: resolution.entity_id });
+      if (!current) fail("entity360_snapshot_not_found", 404);
+      return recoverVerifiedIncompleteIcfContext(identity, {
+        workId,
+        snapshot: current,
+        expectedVersion,
+        expectedDigest,
+        recoveryNamespace: "entity360-incomplete-icf-recovery",
+      });
     }
     if (capability === "entity_360_snapshot_latest") {
       const workId = requireWorkBinding(identity, input);
