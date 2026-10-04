@@ -209,12 +209,18 @@ class VerdictPersistencePool {
         verified_by_session_fingerprint: "verifier-session-e2e-001" }], rowCount: 1 };
     }
     if (query.includes("FROM tenant_work_task_contract")) return { rows: [], rowCount: 0 };
-    if (query.includes("FROM tenant_work_committed_task_state")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM tenant_work_task_commit") ||
+        query.includes("FROM tenant_work_committed_task_state")) return { rows: [], rowCount: 0 };
     if (query.includes("FROM tenant_work_dependency_manifest")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM tenant_work_trajectory_state")) return { rows: [], rowCount: 0 };
+    if (query.includes("FROM core_continuity_native_plans")) return { rows: [], rowCount: 0 };
     if (query.includes("FROM tenant_work_generic_evidence_reconciliation_batch_v3")) {
       return { rows: [], rowCount: 0 };
     }
     if (query.includes("FROM tenant_work_state_projection")) return { rows: [], rowCount: 0 };
+    if (query.startsWith("SELECT event_id,sequence_number,event_type,payload FROM tenant_work_event")) {
+      return { rows: [], rowCount: 0 };
+    }
     if (query.startsWith("SELECT core_join_digest,core_join_context FROM tenant_work_core_join")) {
       return { rows: this.join ? [structuredClone(this.join)] : [], rowCount: this.join ? 1 : 0 };
     }

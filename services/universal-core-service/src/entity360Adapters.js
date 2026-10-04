@@ -492,6 +492,7 @@ function verifyCausalBindingEvent(row, event, { asOf = null } = {}) {
       previous_event_hash: previousEventHash,
       observed_at: observedAt,
       recorded_at: recordedAt,
+      historical_duplicate_recovery: event.historical_duplicate_recovery || null,
     };
   } catch {
     return { verified: false };
@@ -693,8 +694,8 @@ async function optionalQuery(client, text, values, sourceId, report) {
   return result;
 }
 
-async function readCausalBindingEvent(client, { tenantId, projectUuid, workId, asOf }, report) {
-  if (!projectUuid || !UUID.test(String(projectUuid).toLowerCase())) return null;
+async function readCausalBindingEvent(client, { tenantId, projectUuid, workId, asOf, bindingRow }, report) {
+  if (!bindingRow || !projectUuid || !UUID.test(String(projectUuid).toLowerCase())) return null;
   const result = assertTenantRows(await optionalQuery(client, `SELECT e.tenant_id,
       e.project_id::text AS event_project_uuid,e.event_id::text,e.sequence_number,e.event_type,
       e.operation,e.idempotency_key,e.request_digest,e.payload,e.payload_digest,
@@ -709,9 +710,33 @@ async function readCausalBindingEvent(client, { tenantId, projectUuid, workId, a
       AND e.event_type='WORK_OPENED' AND e.operation='work_bind_intent'
       AND e.payload->'result'->>'work_id'=$3
       AND ($4::timestamptz IS NULL OR e.created_at <= $4::timestamptz)
-    ORDER BY e.sequence_number DESC LIMIT 2`,
+    ORDER BY e.sequence_number ASC LIMIT 3`,
   [tenantId, String(projectUuid).toLowerCase(), workId, asOf], "genesis", report), tenantId);
-  return result.rows.length === 1 ? result.rows[0] : null;
+  if (result.rows.length === 1) return result.rows[0];
+  // A single historical defect produced exactly two otherwise identical,
+  // independently hash-valid roots. This narrow read-only recovery does not
+  // make the second root authoritative: it selects the older one only after
+  // validating both against the immutable binding and retains both refs for
+  // audit. Every other cardinality or integrity shape stays unavailable.
+  if (result.rows.length !== 2) return null;
+  const verified = result.rows.map((event) => verifyCausalBindingEvent(bindingRow, event, { asOf }));
+  if (verified.some((event) => !event.verified)) return null;
+  const [first, second] = verified;
+  if (new Set(verified.map((event) => event.event_id)).size !== 2 ||
+      new Set(verified.map((event) => event.event_hash)).size !== 2 ||
+      new Set(verified.map((event) => event.sequence_number)).size !== 2 ||
+      first.payload_digest !== second.payload_digest) return null;
+  return {
+    ...result.rows[0],
+    historical_duplicate_recovery: Object.freeze({
+      schema_version: "entity360_historical_duplicate_work_opened_recovery_v1",
+      nonauthority: true,
+      selected_event_ref: first.event_ref,
+      event_refs: Object.freeze(verified.map((event) => event.event_ref)),
+      event_hashes: Object.freeze(verified.map((event) => event.event_hash)),
+      payload_digest: first.payload_digest,
+    }),
+  };
 }
 
 function contribution({ scope, sourceId, adapterVersion, observedAt, recordedAt = observedAt,
@@ -1031,7 +1056,7 @@ async function resolveWorkCandidates(client, tenantId, identity, report, asOf = 
   reportProjectSlugConflict(report, logicalProjects);
   const continuityProjectUuid = optionalProjectUuid(continuityRow?.project_uuid);
   const bindingEvent = causalRow ? await readCausalBindingEvent(client, {
-    tenantId, projectUuid: causalRow.project_uuid, workId: continuityWorkId, asOf,
+    tenantId, projectUuid: causalRow.project_uuid, workId: continuityWorkId, asOf, bindingRow: causalRow,
   }, report) : null;
   const causalState = causalAuthorityState(causalRow, continuityProjectUuid, bindingEvent, asOf);
   reportCausalAuthorityGap(report, causalState, continuityProjectUuid);
@@ -1225,7 +1250,7 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
   const continuityProjectUuid = optionalProjectUuid(continuity?.project_uuid);
   const bindingEvent = causalBinding ? await readCausalBindingEvent(client, {
     tenantId: scope.tenant_id, projectUuid: causalBinding.project_uuid,
-    workId: causalWorkId, asOf: scope.as_of,
+    workId: causalWorkId, asOf: scope.as_of, bindingRow: causalBinding,
   }, report) : null;
   const causalState = causalAuthorityState(causalBinding, continuityProjectUuid, bindingEvent,
     scope.as_of);
@@ -1616,6 +1641,9 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
         payload_digest: causalObservation.payload_digest,
         actor_provenance_digest: causalObservation.actor_provenance_digest,
         idempotency_key_digest: causalObservation.idempotency_key_digest,
+        ...(causalObservation.historical_duplicate_recovery ? {
+          historical_duplicate_recovery: causalObservation.historical_duplicate_recovery,
+        } : {}),
       // WORK_OPENED is immutable causal history, not a mutable current-state
       // signal.  Keeping it current eventually marks the entire enforcement
       // context stale even though Genesis/Intent/ICF remain valid.

@@ -855,6 +855,9 @@ export function deriveTenantWorkClosureVerification(input = {}, { verifyCoreJoin
       work.final_evidence_digest !== finalEvidenceDigest) {
     reject("closure_receipt_binding_invalid");
   }
+  if (input.expected_adapter === "software_git" && receipt?.adapter === "generic") {
+    reject("historical_software_release_unproven");
+  }
 
   const reportRow = plainRecord(input.final_report) ? input.final_report : null;
   const report = plainRecord(reportRow?.report) ? reportRow.report : null;
@@ -962,6 +965,25 @@ export function deriveTenantWorkClosureVerification(input = {}, { verifyCoreJoin
     ...projection,
     failure_codes: Object.freeze([...failureCodes]),
     verification_digest: objectDigest(projection),
+  });
+}
+
+function deriveClosureAssurance(state = {}, receipt = null) {
+  const expectedAdapter = verifiedFinalizationAdapter(state);
+  const receiptAdapter = plainRecord(receipt) ? receipt.adapter || null : null;
+  const historicalSoftwareReleaseUnproven = expectedAdapter === "software_git" &&
+    receiptAdapter === "generic";
+  return Object.freeze({
+    schema_version: "tenant_work_closure_assurance_v1",
+    receipt_present: receiptAdapter !== null,
+    expected_adapter: expectedAdapter,
+    receipt_adapter: receiptAdapter,
+    verified: historicalSoftwareReleaseUnproven ? false : null,
+    cryptographic_integrity: "not_evaluated",
+    reason_codes: Object.freeze(historicalSoftwareReleaseUnproven
+      ? ["historical_software_release_unproven"] : []),
+    execution_authorized: false,
+    release_authorized: false,
   });
 }
 
@@ -3399,6 +3421,47 @@ export function createWorkContinuityV2Store({
       return projectLegacyWorkWithClient(client, actor, legacyId);
     });
   }
+  async function readAuthoritativeClosureBindings(client, actor, work) {
+    // Keep the public read plane and closure decisions on one authoritative
+    // source. A closure must never lose persisted software bindings merely
+    // because it did not use the readWork projection path.
+    const contracts = await client.query(`SELECT DISTINCT ON (task_id) task_id,contract_revision,contract,contract_digest,created_at
+      FROM tenant_work_task_contract WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY task_id,contract_revision DESC`, [actor.tenant_id, work.work_id]);
+    const commits = await client.query(`SELECT DISTINCT ON (task_id) task_id,revision,committed_state,commit_digest,committed_at
+      FROM tenant_work_task_commit WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY task_id,revision DESC`, [actor.tenant_id, work.work_id]);
+    const manifests = await client.query(`SELECT DISTINCT ON (task_id) task_id,manifest_revision,manifest,manifest_digest,recorded_at
+      FROM tenant_work_dependency_manifest WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY task_id,manifest_revision DESC`, [actor.tenant_id, work.work_id]);
+    const trajectory = await client.query(`SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at
+      FROM tenant_work_trajectory_state WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, work.work_id]);
+    const nativePlan = await client.query(`SELECT plan_id,plan_version,plan,plan_digest
+      FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2 AND status <> 'cancelled'
+      ORDER BY plan_version DESC,created_at DESC LIMIT 1`, [actor.tenant_id, work.work_id]);
+    const latestPlan = nativePlan.rows[0] || null;
+    const contract = latestPlan?.plan?.acceptance_contract;
+    const effective = latestPlan && objectDigest(latestPlan.plan) === latestPlan.plan_digest &&
+      acceptanceContractIntegrityValid(contract) && contract.intent_digest === work.intent_digest
+      ? { schema_version: "tenant_work_effective_acceptance_contract_v1", plan_id: latestPlan.plan_id,
+        plan_version: Number(latestPlan.plan_version), plan_digest: latestPlan.plan_digest,
+        acceptance_contract: contract, acceptance_contract_digest: objectDigest(contract) } : null;
+    return {
+      task_contracts: contracts.rows, committed_task_states: commits.rows,
+      dependency_manifests: manifests.rows, work_trajectory: trajectory.rows[0] || null,
+      current_native_plan: latestPlan, effective_acceptance_contract: effective,
+      work_state_projection: await readWorkProjectionWithClient(client, actor, work, { persist: false }),
+    };
+  }
+  async function assertHistoricalSuccessorReceiptAssurance(client, actor, work, receipt) {
+    const authoritative = await readAuthoritativeClosureBindings(client, actor, work);
+    const assurance = deriveClosureAssurance({ work, ...authoritative }, receipt);
+    if (assurance.reason_codes.includes("historical_software_release_unproven")) {
+      fail("historical_software_release_unproven");
+    }
+    return assurance;
+  }
   async function readWork(identity, { work_id }) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -3412,45 +3475,14 @@ export function createWorkContinuityV2Store({
       const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]);
       const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]);
       const report = await client.query("SELECT report,report_digest,created_at FROM tenant_work_final_report WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, work.work_id]);
-      const contracts = await client.query(`SELECT DISTINCT ON (task_id) task_id,contract_revision,contract,contract_digest,created_at
-        FROM tenant_work_task_contract WHERE tenant_id=$1 AND work_id=$2
-        ORDER BY task_id,contract_revision DESC`, [actor.tenant_id, work.work_id]);
-      const commits = await client.query(`SELECT DISTINCT ON (task_id) task_id,revision,committed_state,commit_digest,committed_at
-        FROM tenant_work_task_commit WHERE tenant_id=$1 AND work_id=$2
-        ORDER BY task_id,revision DESC`, [actor.tenant_id, work.work_id]);
-      const manifests = await client.query(`SELECT DISTINCT ON (task_id) task_id,manifest_revision,manifest,manifest_digest,recorded_at
-        FROM tenant_work_dependency_manifest WHERE tenant_id=$1 AND work_id=$2
-        ORDER BY task_id,manifest_revision DESC`, [actor.tenant_id, work.work_id]);
-      const trajectory = await client.query(`SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at
-        FROM tenant_work_trajectory_state WHERE tenant_id=$1 AND work_id=$2`,
-      [actor.tenant_id, work.work_id]);
-      const nativePlan = await client.query(`SELECT plan_id,plan_version,plan,plan_digest
-        FROM core_continuity_native_plans
-        WHERE tenant_id=$1 AND work_id=$2 AND status <> 'cancelled'
-        ORDER BY plan_version DESC,created_at DESC LIMIT 1`, [actor.tenant_id, work.work_id]);
-      const latestPlan = nativePlan.rows[0] || null;
-      const candidateAcceptanceContract = latestPlan?.plan?.acceptance_contract;
-      const effectiveAcceptanceContract = latestPlan &&
-        objectDigest(latestPlan.plan) === latestPlan.plan_digest &&
-        acceptanceContractIntegrityValid(candidateAcceptanceContract) &&
-        candidateAcceptanceContract.intent_digest === work.intent_digest
-        ? {
-            schema_version: "tenant_work_effective_acceptance_contract_v1",
-            plan_id: latestPlan.plan_id,
-            plan_version: Number(latestPlan.plan_version),
-            plan_digest: latestPlan.plan_digest,
-            acceptance_contract: candidateAcceptanceContract,
-            acceptance_contract_digest: objectDigest(candidateAcceptanceContract),
-          }
-        : null;
-      const projection = await readWorkProjectionWithClient(client, actor, work, { persist: false });
+      const authoritative = await readAuthoritativeClosureBindings(client, actor, work);
+      // `current_native_plan` can carry operational instructions. It is an
+      // internal closure classifier input, never public Gallery/read output.
+      const { current_native_plan: _currentNativePlan, ...publicAuthoritative } = authoritative;
       return { schema_version: "work_continuity_v2", work: publicWorkProjection(work), tasks: tasks.rows, evidence: evidence.rows,
-        task_contracts: contracts.rows, committed_task_states: commits.rows,
-        dependency_manifests: manifests.rows,
-        effective_acceptance_contract: effectiveAcceptanceContract,
-        work_trajectory: trajectory.rows[0] || null,
-        work_state_projection: projection,
-        closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null };
+        ...publicAuthoritative,
+        closure_receipt: receipt.rows[0] || null, final_report: report.rows[0] || null,
+        closure_assurance: deriveClosureAssurance({ work, ...authoritative }, receipt.rows[0] || null) };
     });
   }
   async function previewNativePlanMerge(identity, { work_id }) {
@@ -3561,6 +3593,7 @@ export function createWorkContinuityV2Store({
         FROM tenant_work_event
         WHERE tenant_id=$1 AND work_id=$2 AND event_type='generic_closure_finalized'
         ORDER BY sequence_number DESC LIMIT 1`, [actor.tenant_id, workId]);
+      const authoritative = await readAuthoritativeClosureBindings(client, actor, work);
       return deriveTenantWorkClosureVerification({
         tenant_id: actor.tenant_id,
         work,
@@ -3570,6 +3603,7 @@ export function createWorkContinuityV2Store({
         closure_receipt: receipt.rows[0] || null,
         final_report: report.rows[0] || null,
         closure_event: event.rows[0] || null,
+        expected_adapter: verifiedFinalizationAdapter({ work, ...authoritative }),
       }, {
         verifyCoreJoin: (context) => Boolean(
           resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(context),
@@ -3937,7 +3971,7 @@ export function createWorkContinuityV2Store({
       let successorClosureEvidence = null;
       if (successorWorkId) {
         const successor = await client.query(`SELECT
-            tw.work_id,tw.project_id,tw.status,r.receipt_digest,f.report_digest
+            tw.work_id,tw.project_id,tw.status,r.receipt_digest,r.adapter,f.report_digest
           FROM tenant_work tw
           JOIN tenant_work_closure_receipt r
             ON r.tenant_id=tw.tenant_id AND r.work_id=tw.work_id
@@ -3951,6 +3985,8 @@ export function createWorkContinuityV2Store({
         if (closedSuccessor.project_id !== work.project_id) {
           fail("historical_bridge_archive_successor_project_mismatch");
         }
+        const successorWork = await loadWork(client, actor, successorWorkId, false);
+        await assertHistoricalSuccessorReceiptAssurance(client, actor, successorWork, closedSuccessor);
         successorClosureEvidence = {
           source: "tenant_work_closure_receipt",
           successor_work_id: successorWorkId,
@@ -9210,7 +9246,7 @@ export function createWorkContinuityV2Store({
         if (expectedStatus === "release_ready" || expectedClassification === "BLOCKED_VALID") {
           const successorV2Id = successorV2?.work_id || successorWorkId;
           const verifiedV2 = await client.query(`SELECT
-              r.receipt_digest,f.report_digest,tw.status
+              r.receipt_digest,r.adapter,f.report_digest,tw.status
             FROM tenant_work tw
             JOIN tenant_work_closure_receipt r
               ON r.tenant_id=tw.tenant_id AND r.work_id=tw.work_id
@@ -9226,6 +9262,8 @@ export function createWorkContinuityV2Store({
             ORDER BY sequence_number DESC LIMIT 1`,
           [actor.tenant_id, successorWorkId, ["closure_finalized", "generic_closure_finalized"]]);
           if (verifiedV2.rows[0]) {
+            const successorWork = await loadWork(client, actor, successorV2Id, false);
+            await assertHistoricalSuccessorReceiptAssurance(client, actor, successorWork, verifiedV2.rows[0]);
             serverEvidence = {
               source: "tenant_work_closure_receipt",
               successor_work_id: successorWorkId,
@@ -9432,7 +9470,9 @@ export function createWorkContinuityV2Store({
       await loadGenericEvidenceReconciliationHeadV3(client, actor.tenant_id, workId);
     const join = await client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
     const receipt = await client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
+    const authoritative = await readAuthoritativeClosureBindings(client, actor, work);
     return { work, tasks: tasks.rows, evidence: evidence.rows,
+      ...authoritative,
       generic_evidence_reconciliation_head_v3: genericEvidenceReconciliationHeadV3,
       join: join.rows[0] || null, receipt: receipt.rows[0] || null };
   }

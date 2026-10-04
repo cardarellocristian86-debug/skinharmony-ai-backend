@@ -153,6 +153,21 @@ test("generic adapter accepts verified native task evidence for an unbound opera
   assert.deepEqual(unboundSoftwareReadiness.missing, []);
 });
 
+test("a historical generic receipt cannot verify a software-bound release", () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const result = deriveTenantWorkClosureVerification({
+    tenant_id: "tenant-a", expected_adapter: "software_git",
+    work: { tenant_id: "tenant-a", work_id: workId, status: "ARCHIVED" },
+    tasks: [{ tenant_id: "tenant-a", work_id: workId, required: true, status: "completed", acceptance_verified: true }],
+    evidence: [{ tenant_id: "tenant-a", work_id: workId, required: true, independently_verified: true, digest: "a".repeat(64) }],
+    closure_receipt: { tenant_id: "tenant-a", work_id: workId, receipt_id: workId, adapter: "generic",
+      core_join_digest: "b".repeat(64), final_evidence_digest: "c".repeat(64), receipt_digest: "d".repeat(64) },
+  }, { verifyCoreJoin: () => false });
+  assert.equal(result.verified, false);
+  assert(result.failure_codes.includes("historical_software_release_unproven"));
+  assert.equal(result.receipt_digest, null);
+});
+
 test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
   const baseIdentity = {
     tenantId: "tenant-a",

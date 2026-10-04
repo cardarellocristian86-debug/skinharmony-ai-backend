@@ -26,6 +26,7 @@ export function verifiedFinalizationAdapter(state = {}) {
   if (declared !== "software_git") return declared;
   const architecture = state?.work?.architecture || {};
   const softwareBound = hasRepositoryBinding(architecture) ||
+    hasRepositoryBinding(state.current_native_plan?.plan || state.current_native_plan) ||
     (state.task_contracts || []).length > 0 ||
     (state.committed_task_states || []).length > 0 ||
     (state.dependency_manifests || []).length > 0 ||

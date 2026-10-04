@@ -360,6 +360,34 @@ test("MCP DTT ACL authorizes the exact Work and masks absence or denial", async 
   );
 });
 
+test("DTT bootstrap can use the same ACL-verified canonical Work without a second read", async () => {
+  const work = {
+    tenant_id: TENANT_ID, work_id: WORK_ID, project_id: "bootstrap",
+    intent_digest: "a".repeat(64), causal_lineage_state: "READY",
+    causal_lineage_digest: "b".repeat(64),
+  };
+  let reads = 0;
+  const store = { async readWork() {
+    reads += 1;
+    return { schema_version: "work_continuity_v2", work };
+  } };
+  const authorized = await authorizeDttExactWorkRead({
+    store, identity: {}, tenant_id: TENANT_ID, work_id: WORK_ID, include_work: true,
+  });
+  assert.equal(reads, 1);
+  assert.deepEqual(authorized.work, work);
+  assert.equal(Object.isFrozen(authorized.work), true);
+  work.causal_lineage_state = "PENDING";
+  assert.equal(authorized.work.causal_lineage_state, "READY");
+  for (const changed of [{ tenant_id: "another-tenant" }, { work_id: LEASE_ID }]) {
+    await assert.rejects(authorizeDttExactWorkRead({
+      store: { async readWork() {
+        return { schema_version: "work_continuity_v2", work: { ...work, ...changed } };
+      } }, identity: {}, tenant_id: TENANT_ID, work_id: WORK_ID, include_work: true,
+    }), /dtt_work_acl_denied/);
+  }
+});
+
 test("MCP DTT lease resolution rejects missing leases and unsigned transport presence", async () => {
   const emptyPool = {
     async query(sql) {

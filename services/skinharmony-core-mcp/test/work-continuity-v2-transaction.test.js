@@ -401,13 +401,14 @@ class AtomicWorkPool {
     this.sequences = new Map();
     this.participants = new Map();
     this.leases = new Map();
+    this.nativePlans = new Map();
     this.queries = [];
     this.queryParameters = [];
     this.databaseNow = "2026-08-08T10:00:00.000Z";
   }
 
   snapshot() {
-    return Object.fromEntries(["reviews", "bootstrapRequests", "legacy", "works", "tasks", "evidence", "joins", "closures", "finalReports", "coreEvents", "events", "reports", "sequences", "participants", "leases"]
+    return Object.fromEntries(["reviews", "bootstrapRequests", "legacy", "works", "tasks", "evidence", "joins", "closures", "finalReports", "coreEvents", "events", "reports", "sequences", "participants", "leases", "nativePlans"]
       .map((name) => [name, cloneMap(this[name])]));
   }
 
@@ -933,6 +934,31 @@ class AtomicWorkPool {
     if (q.startsWith("SELECT * FROM tenant_work_closure_receipt")) {
       const row = this.closures.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT DISTINCT ON (task_id) task_id,contract_revision,contract,contract_digest,created_at FROM tenant_work_task_contract")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("SELECT DISTINCT ON (task_id) task_id,revision,committed_state,commit_digest,committed_at FROM tenant_work_task_commit")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("SELECT DISTINCT ON (task_id) task_id,manifest_revision,manifest,manifest_digest,recorded_at FROM tenant_work_dependency_manifest")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at FROM tenant_work_trajectory_state")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("SELECT plan_id,plan_version,plan,plan_digest FROM core_continuity_native_plans")) {
+      const rows = [...this.nativePlans.values()]
+        .filter((plan) => plan.tenant_id === parameters[0] && plan.work_id === parameters[1] && plan.status !== "cancelled")
+        .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1));
+      return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT event_id,sequence_number,event_type,payload FROM tenant_work_event")) {
+      const rows = [...this.events.values()]
+        .filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+          Number(event.sequence_number) > Number(parameters[2]))
+        .sort((left, right) => Number(left.sequence_number) - Number(right.sequence_number));
+      return { rows: structuredClone(rows), rowCount: rows.length };
     }
     if (q.startsWith("INSERT INTO tenant_work_closure_receipt")) {
       const row = { tenant_id: parameters[0], receipt_id: parameters[1],
@@ -3757,6 +3783,22 @@ test("unbound software proof Work uses generic readiness and atomically releases
     event.work_id === workId && event.event_type === "generic_closure_finalized");
   assert.equal(closureEvent.payload.released_lease_count, 2);
   assert.equal(closureEvent.payload.closed_participant_count, 2);
+
+  const validHistoricalReadback = await store.verifyWorkClosure(identity(), { work_id: workId });
+  assert.equal(validHistoricalReadback.failure_codes.includes("historical_software_release_unproven"), false);
+  const repositoryPlan = { schema_version: "native_agent_plan_v1", repository: "owner/repo", tasks: [] };
+  pool.nativePlans.set(key("tenant-a", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), {
+    tenant_id: "tenant-a", work_id: workId,
+    plan_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", plan_version: 1,
+    plan: repositoryPlan, plan_digest: stableDigest(repositoryPlan), status: "planned",
+  });
+  const beforeHistoricalReadback = pool.snapshot();
+  const historicalReadback = await store.verifyWorkClosure(identity(), { work_id: workId });
+  assert.equal(historicalReadback.verified, false);
+  assert(historicalReadback.failure_codes.includes("historical_software_release_unproven"));
+  assert.equal(historicalReadback.receipt_digest, null);
+  assert.deepEqual(pool.snapshot(), beforeHistoricalReadback,
+    "historical verification is a read-only assurance correction");
 });
 
 test("generic finalize serializes a concurrent legacy Gallery join behind terminal status", async () => {

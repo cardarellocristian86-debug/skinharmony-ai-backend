@@ -152,11 +152,12 @@ class ReconciliationPool {
       });
     }
     this.receipts = successorEvidence
-      ? new Map([[`tenant-a:${SUCCESSOR}`, { receipt_digest: "d".repeat(64) }]])
+      ? new Map([[`tenant-a:${SUCCESSOR}`, { receipt_digest: "d".repeat(64), adapter: "generic" }]])
       : new Map();
     this.reports = successorEvidence
       ? new Map([[`tenant-a:${SUCCESSOR}`, { report_digest: "e".repeat(64) }]])
       : new Map();
+    this.nativePlans = new Map();
     this.calls = [];
   }
 
@@ -270,14 +271,14 @@ class ReconciliationPool {
       return { rows: row ? [{ work_id: row.work_id, legacy_work_id: row.legacy_work_id,
         project_id: row.project_id, status: row.status }] : [] };
     }
-    if (q.startsWith("SELECT r.receipt_digest,f.report_digest,tw.status FROM tenant_work tw")) {
+    if (q.startsWith("SELECT r.receipt_digest,r.adapter,f.report_digest,tw.status FROM tenant_work tw")) {
       const work = this.works.get(`${params[0]}:${params[1]}`);
       const receipt = this.receipts.get(`${params[0]}:${params[1]}`);
       const report = this.reports.get(`${params[0]}:${params[1]}`);
       return { rows: work && ["COMPLETED", "ARCHIVED"].includes(work.status) && receipt && report
         ? [{ ...receipt, ...report, status: work.status }] : [] };
     }
-    if (q.startsWith("SELECT tw.work_id,tw.project_id,tw.status,r.receipt_digest,f.report_digest FROM tenant_work tw")) {
+    if (q.startsWith("SELECT tw.work_id,tw.project_id,tw.status,r.receipt_digest,r.adapter,f.report_digest FROM tenant_work tw")) {
       const work = this.works.get(`${params[0]}:${params[1]}`);
       const receipt = this.receipts.get(`${params[0]}:${params[1]}`);
       const report = this.reports.get(`${params[0]}:${params[1]}`);
@@ -298,6 +299,16 @@ class ReconciliationPool {
     }
     if (q.startsWith("SELECT independently_verified,verified_by_agent_id,verified_by_session_fingerprint,created_at FROM tenant_work_evidence")) {
       return { rows: this.evidence.map((row) => ({ ...row })) };
+    }
+    if (q.startsWith("SELECT DISTINCT ON (task_id) task_id,contract_revision,contract,contract_digest,created_at FROM tenant_work_task_contract") ||
+        q.startsWith("SELECT DISTINCT ON (task_id) task_id,revision,committed_state,commit_digest,committed_at FROM tenant_work_task_commit") ||
+        q.startsWith("SELECT DISTINCT ON (task_id) task_id,manifest_revision,manifest,manifest_digest,recorded_at FROM tenant_work_dependency_manifest") ||
+        q.startsWith("SELECT trajectory_revision,trajectory,trajectory_digest,ledger_watermark,updated_at FROM tenant_work_trajectory_state")) {
+      return { rows: [] };
+    }
+    if (q.startsWith("SELECT plan_id,plan_version,plan,plan_digest FROM core_continuity_native_plans")) {
+      const row = this.nativePlans.get(`${params[0]}:${params[1]}`);
+      return { rows: row ? [{ ...row }] : [] };
     }
     if (q.startsWith("SELECT event_type,event_hash FROM core_continuity_events")) {
       const row = [...this.legacyEvents].reverse().find((item) => item.tenant_id === params[0] &&
@@ -700,6 +711,56 @@ test("historical bridged archive retains the legacy record, requires stale inact
     repair_unattested_historical_timestamp: true,
     idempotency_key: "archive-historical-bridge-blocked-timestamp-repair-unproven-0001",
   }), /historical_bridge_archive_timestamp_repair_ineligible/);
+});
+
+test("historical successor consumers reject a generic receipt when authoritative bindings require software release", async () => {
+  const nativePlan = {
+    plan_id: "99999999-9999-4999-8999-999999999999", plan_version: 1,
+    plan: { schema_version: "native_agent_plan_v1", repository: "owner/repository", tasks: [] },
+    plan_digest: "a".repeat(64), status: "planned",
+  };
+  const archivePool = new ReconciliationPool({
+    sourceStatus: "blocked", sourceV2Status: "BLOCKED", successor: true, successorEvidence: true,
+  });
+  archivePool.works.get(`tenant-a:${SOURCE}`).work_type = "generic";
+  archivePool.works.get(`tenant-a:${SUCCESSOR}`).work_type = "software_git";
+  archivePool.nativePlans.set(`tenant-a:${SUCCESSOR}`, nativePlan);
+  const archiveBefore = {
+    source: archivePool.works.get(`tenant-a:${SOURCE}`).status,
+    legacy: archivePool.legacy.get(`tenant-a:${SOURCE}`).status,
+    events: archivePool.v2Events.length,
+  };
+  await assert.rejects(store(archivePool).archiveHistoricalBridgedWork(identity(), {
+    work_id: SOURCE, expected_classification: "BLOCKED_VALID",
+    reason: "Successor receipt must prove the adapter required by its authoritative plan.",
+    successor_work_id: SUCCESSOR, idempotency_key: "archive-successor-generic-receipt-denied-0001",
+  }), /historical_software_release_unproven/);
+  assert.deepEqual({
+    source: archivePool.works.get(`tenant-a:${SOURCE}`).status,
+    legacy: archivePool.legacy.get(`tenant-a:${SOURCE}`).status,
+    events: archivePool.v2Events.length,
+  }, archiveBefore, "rejected archive rolls back before either historical ledger changes");
+
+  const reconcilePool = new ReconciliationPool({
+    sourceStatus: "release_ready", sourceV2Status: "HANDOFF", successor: true, successorEvidence: true,
+  });
+  reconcilePool.works.get(`tenant-a:${SUCCESSOR}`).work_type = "software_git";
+  reconcilePool.nativePlans.set(`tenant-a:${SUCCESSOR}`, nativePlan);
+  const reconcileBefore = {
+    source: reconcilePool.works.get(`tenant-a:${SOURCE}`).status,
+    legacy: reconcilePool.legacy.get(`tenant-a:${SOURCE}`).status,
+    events: reconcilePool.v2Events.length,
+  };
+  await assert.rejects(store(reconcilePool).reconcileLegacyClosed(identity(), {
+    work_id: SOURCE, action: "SUPERSEDE", expected_status: "release_ready", expected_classification: "STALE",
+    reason: "Successor receipt must prove the adapter required by its authoritative plan.",
+    successor_work_id: SUCCESSOR, idempotency_key: "reconcile-successor-generic-receipt-denied-0001",
+  }), /historical_software_release_unproven/);
+  assert.deepEqual({
+    source: reconcilePool.works.get(`tenant-a:${SOURCE}`).status,
+    legacy: reconcilePool.legacy.get(`tenant-a:${SOURCE}`).status,
+    events: reconcilePool.v2Events.length,
+  }, reconcileBefore, "rejected reconciliation rolls back before either historical ledger changes");
 });
 
 test("stale cancellation is tenant-scoped, dual-audited, archived and idempotent without completion", async () => {

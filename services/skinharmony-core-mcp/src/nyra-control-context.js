@@ -15,6 +15,34 @@ function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+// Work Continuity's legacy architecture revision is not a Gallery V2 ledger
+// revision. When a V2 projection exists, directives must use that projection
+// as their revision source so the later V2 directive read compares like with
+// like. An absent projection keeps historical legacy Work compatible; an
+// invalid present projection remains fail-closed.
+export function resolveNyraDialogueWorkRevision(continuity = {}, projection = null) {
+  const legacyRevision = Number(continuity.work_revision || continuity.architecture_version || 0);
+  if (!projection) {
+    return Number.isSafeInteger(legacyRevision) && legacyRevision > 0
+      ? legacyRevision : null;
+  }
+  const revision = Number(projection.work_revision || 0);
+  const watermark = Number(projection.ledger_watermark || 0);
+  const workId = clean(continuity.work_id, 64);
+  if (
+    projection.schema_version !== "work_state_projection_v1" ||
+    projection.available === false ||
+    !workId || projection.work_id !== workId ||
+    !Number.isSafeInteger(revision) || revision < 1 ||
+    !Number.isSafeInteger(watermark) || watermark < 1 ||
+    revision !== watermark ||
+    !/^[a-f0-9]{64}$/.test(String(projection.projection_digest || ""))
+  ) {
+    throw new Error("continuity_work_projection_invalid");
+  }
+  return revision;
+}
+
 function firstReadyAssignment(autopilot = {}) {
   const assignments = Array.isArray(autopilot.assignments)
     ? autopilot.assignments

@@ -25,6 +25,7 @@ import {
   authorizeGenericWorkCoreJoinExactWorkRead,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
+import { createDttWorkBootstrapBindingResolver } from "./dtt-work-bootstrap-binding.js";
 import {
   createWorkContinuityClosureFinalizeHandler,
   createWorkContinuityClosureEvaluateHandler,
@@ -50,7 +51,10 @@ import {
   buildNyraNativePlanRequest,
   resolveNyraProjectReleaseBinding,
 } from "./nyra-native-plan-bridge.js";
-import { buildNyraControlContext } from "./nyra-control-context.js";
+import {
+  buildNyraControlContext,
+  resolveNyraDialogueWorkRevision,
+} from "./nyra-control-context.js";
 import {
   continuityProjectId,
   resolveContinuityProjectBinding,
@@ -461,46 +465,13 @@ async function resolveDttWorkBinding(identity, workId) {
   }
 }
 
-async function resolveDttWorkBootstrapBinding(identity, workId) {
-  requireTenantWorkCapability(identity, "read");
-  const presence = identity?.agentPresence;
-  if (!presence || presence.transport_bound !== true) {
-    throw legacyWorkAclError("dtt_work_signed_presence_required", 403);
-  }
-  const authorized = await authorizeDttExactWorkRead({
-    store: workContinuityV2Store,
-    identity: withTenantWorkAcl(identity),
-    tenant_id: identity.tenantId,
-    work_id: workId,
-  });
-  const work = authorized?.work || authorized;
-  if (!work || work.work_id !== workId ||
-      work.causal_lineage_state !== "READY" ||
-      !/^[a-f0-9]{64}$/u.test(String(work.causal_lineage_digest || "")) ||
-      !/^[a-f0-9]{64}$/u.test(String(work.intent_digest || ""))) {
-    throw legacyWorkAclError("dtt_work_bootstrap_binding_denied", 409);
-  }
-  return Object.freeze({
-    schema_version: "dtt_work_bootstrap_binding_v1",
-    tenant_id: identity.tenantId,
-    work_id: workId,
-    binding_id: crypto.randomUUID(),
-    work_binding_digest: crypto.createHash("sha256")
-      .update(JSON.stringify(stableCanonical({
-        schema_version: "dtt_work_bootstrap_work_binding_v1",
-        tenant_id: identity.tenantId,
-        work_id: workId,
-        legacy_work_id: work.legacy_work_id || null,
-        project_id: work.project_id,
-        intent_digest: work.intent_digest,
-        causal_lineage_digest: work.causal_lineage_digest,
-      })))
-      .digest("hex"),
-    expires_at: new Date(Date.now() + 60_000).toISOString(),
-    server_owned: true,
-    execution_authorized: false,
-  });
-}
+const resolveDttWorkBootstrapBinding = createDttWorkBootstrapBindingResolver({
+  authorizeExactWorkRead: authorizeDttExactWorkRead,
+  store: workContinuityV2Store,
+  withTenantWorkAcl,
+  requireTenantWorkCapability,
+  aclError: legacyWorkAclError,
+});
 
 async function resolveDttWorkReadBinding(identity, workId) {
   requireTenantWorkCapability(identity, "read");
@@ -951,7 +922,33 @@ async function materializeNyraControlContext(identity, continuity, operation, {
 } = {}) {
   if (!continuity?.work_id || !workContinuityRuntime?.upsertControlContext) return null;
   let projectId = continuity.project_id || null;
-  const expectedRevision = Number(continuity.work_revision || continuity.architecture_version || 0);
+  // The legacy architecture version and the Gallery V2 ledger watermark are
+  // independent counters. Directives validate the latter, so use the exact
+  // V2 projection to materialize their dialogue revision. Otherwise a normal
+  // legacy version of `1` makes a current V2 Work (for example watermark 31)
+  // look like forged revision drift on every consequential continuation.
+  let projectedWorkRevision = null;
+  if (typeof workContinuityV2Store?.readWork === "function") {
+    let state = null;
+    try {
+      state = await workContinuityV2Store.readWork(
+        withTenantWorkAcl(identity),
+        { work_id: continuity.work_id },
+      );
+    } catch (error) {
+      // A historical legacy Work can legitimately have no V2 projection. It
+      // retains its legacy briefing; once a V2 projection exists, malformed
+      // state is rejected below instead of being silently downgraded.
+      if (String(error?.code || error?.message || "") !== "tenant_work_not_found") throw error;
+    }
+    projectedWorkRevision = resolveNyraDialogueWorkRevision(
+      continuity,
+      state?.work_state_projection || null,
+    );
+  }
+  const expectedRevision = projectedWorkRevision || Number(
+    continuity.work_revision || continuity.architecture_version || 0,
+  );
   if (!force && projectId && typeof workContinuityRuntime.readControlContext === "function") {
     const existing = await workContinuityRuntime.readControlContext(identity, {
       work_id: continuity.work_id,
@@ -961,7 +958,7 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       existing &&
       existing.nyra_dialogue?.schema_version === "nyra_dialogue_context_v1" &&
       existing.nyra_dialogue?.persistent === true &&
-      (!expectedRevision || Number(existing.work_revision) === expectedRevision) &&
+      (!expectedRevision || Number(existing.nyra_dialogue?.work?.work_revision) === expectedRevision) &&
       String(existing.next_action || "") === String(continuity.next_action || existing.next_action || ""),
     );
     if (existingCurrent) {
@@ -1033,10 +1030,14 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       continuity: {
         ...continuity,
         project_id: projectId,
+        ...(projectedWorkRevision ? { work_revision: projectedWorkRevision } : {}),
         ...(operational?.next_action ? { next_action: operational.next_action } : {}),
       },
       autopilot,
-      operational,
+      operational: {
+        ...(operational || {}),
+        ...(projectedWorkRevision ? { work_revision: projectedWorkRevision } : {}),
+      },
       operation,
     }),
   });

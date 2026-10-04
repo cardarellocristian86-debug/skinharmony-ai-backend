@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildNyraControlContext, NYRA_CONTROL_CONTEXT_SCHEMA_VERSION } from "../src/nyra-control-context.js";
+import {
+  buildNyraControlContext,
+  NYRA_CONTROL_CONTEXT_SCHEMA_VERSION,
+  resolveNyraDialogueWorkRevision,
+} from "../src/nyra-control-context.js";
 import { attachWorkPreflight } from "../src/app.js";
 
 test("Nyra control context is compact and carries only the next bounded action", () => {
@@ -99,6 +103,27 @@ test("the V2 Work revision wins over the unrelated legacy architecture counter",
   assert.equal(context.work_revision, 52);
   assert.equal(context.nyra_dialogue.work.work_revision, 52);
   assert.equal(context.nyra_dialogue.self_diagnosis.state, "healthy");
+});
+
+test("a valid V2 ledger revision replaces the legacy architecture counter for Nyra directives", () => {
+  const continuity = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    architecture_version: 1,
+  };
+  assert.equal(resolveNyraDialogueWorkRevision(continuity, {
+    schema_version: "work_state_projection_v1",
+    work_id: continuity.work_id,
+    work_revision: 31,
+    ledger_watermark: 31,
+    projection_digest: "a".repeat(64),
+  }), 31);
+  assert.throws(() => resolveNyraDialogueWorkRevision(continuity, {
+    schema_version: "work_state_projection_v1",
+    work_id: continuity.work_id,
+    work_revision: 31,
+    ledger_watermark: 30,
+    projection_digest: "a".repeat(64),
+  }), /continuity_work_projection_invalid/);
 });
 
 test("Nyra exposes only an offered assignment whose dependencies are complete", () => {
