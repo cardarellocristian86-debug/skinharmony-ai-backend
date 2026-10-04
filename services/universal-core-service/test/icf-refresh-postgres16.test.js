@@ -53,6 +53,16 @@ test("PostgreSQL 16 ICF refresh is append-only, replay-safe, and rejects drift",
     assert.deepEqual(new Set([first.state, concurrent.state]), new Set(["reobserved", "replayed"]));
     assert.equal(first.icf_version, 2);
     assert.equal(concurrent.icf_version, 2);
+    const returnedCut = first.state === "reobserved" ? first.consistent_cut_at : concurrent.consistent_cut_at;
+    const visibleAtCut = await pool.query(`SELECT count(*)::int AS count FROM core_icf_event
+      WHERE tenant_id=$1 AND work_id=$2 AND created_at <= $3::timestamptz`,
+    [fixture.tenantId, fixture.causalWorkId, returnedCut]);
+    assert.equal(visibleAtCut.rows[0].count, 2,
+      "the database-owned post-write cut includes the reobserved ICF head");
+    const futureAtCut = await pool.query(`SELECT count(*)::int AS count FROM core_icf_event
+      WHERE tenant_id=$1 AND work_id=$2 AND created_at > $3::timestamptz`,
+    [fixture.tenantId, fixture.causalWorkId, returnedCut]);
+    assert.equal(futureAtCut.rows[0].count, 0, "no committed ICF event is hidden beyond its returned cut");
 
     const second = await store.refreshWorkGovernanceBinding({ ...fixture, idempotencyKey: "refresh-key-two" });
     assert.equal(second.state, "reobserved");
@@ -84,4 +94,21 @@ test("PostgreSQL 16 ICF refresh is append-only, replay-safe, and rejects drift",
     await admin.query(`DROP SCHEMA IF EXISTS ${identifier(schema)} CASCADE`);
     await admin.end();
   }
+});
+
+test("PostgreSQL millisecond cut is an upper bound for a microsecond ICF head", {
+  skip: databaseUrl ? false : "ENTITY360_DATABASE_URL required",
+}, async (t) => {
+  const schema = `icf_cut_${crypto.randomUUID().replaceAll("-", "")}`;
+  const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+  await admin.query(`CREATE SCHEMA ${identifier(schema)}`);
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 1, options: `-c search_path=${schema}` });
+  t.after(async () => { await pool.end(); await admin.query(`DROP SCHEMA ${identifier(schema)} CASCADE`); await admin.end(); });
+  await pool.query("CREATE TABLE core_icf_event (created_at timestamptz NOT NULL)");
+  await pool.query("INSERT INTO core_icf_event(created_at) VALUES ('2026-10-04T00:00:00.123900Z'), ('2026-10-04T00:00:00.125000Z')");
+  const cut = (await pool.query("SELECT date_trunc('milliseconds', '2026-10-04T00:00:00.123950Z'::timestamptz) + interval '1 millisecond' AS cut")).rows[0].cut;
+  assert.equal(cut.toISOString(), "2026-10-04T00:00:00.124Z");
+  const visible = await pool.query("SELECT count(*)::int count FROM core_icf_event WHERE created_at <= $1::timestamptz", [cut]);
+  const future = await pool.query("SELECT count(*)::int count FROM core_icf_event WHERE created_at > $1::timestamptz", [cut]);
+  assert.equal(visible.rows[0].count, 1); assert.equal(future.rows[0].count, 1);
 });

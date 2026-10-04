@@ -3317,10 +3317,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const relation = await client.query(
       "SELECT to_regclass('public.tenant_work_precommit_ticket_gate_claim') AS claim_relation, " +
       "to_regclass('public.tenant_work_precommit_ticket_gate_claim_fulfillment') AS fulfillment_relation, " +
-      "to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') AS abandonment_relation",
+      "to_regclass('public.tenant_work_precommit_ticket_gate_claim_abandonment') AS abandonment_relation, " +
+      "to_regclass('public.tenant_work_precommit_ticket_gate_claim_reconciliation') AS reconciliation_relation",
     );
     if (!relation.rows[0]?.claim_relation || !relation.rows[0]?.fulfillment_relation ||
         !relation.rows[0]?.abandonment_relation) return;
+    if (!relation.rows[0]?.reconciliation_relation) {
+      throw new Error("native_agent_precommit_reconciliation_unavailable");
+    }
     const pending = await client.query(`SELECT 1 AS pending
       FROM public.tenant_work_precommit_ticket_gate_claim c
       LEFT JOIN public.tenant_work_precommit_ticket_gate_claim_fulfillment f
@@ -3333,6 +3337,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
           AND a.claim_id=c.claim_id
       WHERE c.tenant_id=$1 AND c.work_id=$2
         AND f.claim_id IS NULL AND a.claim_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM public.tenant_work_precommit_ticket_gate_claim_reconciliation d
+          WHERE d.tenant_id=c.tenant_id AND d.work_id=c.work_id AND d.claim_id=c.claim_id
+            AND d.stage='deterministic_denial' AND d.ticket_id IS NULL)
       LIMIT 1`, [context.tenantId, context.workId]);
     if (pending.rows[0]) throw new Error("native_agent_precommit_claim_active");
   }

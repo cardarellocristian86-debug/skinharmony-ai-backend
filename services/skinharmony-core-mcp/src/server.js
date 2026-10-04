@@ -3801,6 +3801,12 @@ const baseHandlers = {
         result: { ...autopilot, continuity },
       });
     },
+    nyra_autopilot_verifier_evidence_read: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
+      requireBoundedAssignmentCollaboration(identity);
+      return continuityTextResult({ ok: true,
+        result: await nyraAutopilotRuntime.readVerifierEvidence(identity, args) });
+    },
     nyra_autopilot_enable: async (args, identity) => {
       await requireOwnerGovernance(identity, "nyra.autopilot.enable", "nyra_autopilot");
       return continuityTextResult({

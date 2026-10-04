@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 
 import { foldWorkProjection } from "../src/governed-continuity-context.js";
-import { createWorkContinuityRuntime } from "../src/work-continuity-runtime.js";
+import { createWorkContinuityRuntime, digest } from "../src/work-continuity-runtime.js";
 import { createWorkContinuityV2Store } from "../src/work-continuity-v2-store.js";
 import { WORK_CONTINUITY_V2_SCHEMA_SQL } from "../src/work-continuity-v2.js";
 
@@ -461,5 +461,110 @@ test("PostgreSQL 16 atomically commits governed task state, projection and recov
       manifests: 2, trajectory_events: 2 });
   } finally {
     await pool.end();
+  }
+});
+
+test("PostgreSQL 16 allows replanning only after a persisted deterministic ticket denial", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for denied-claim recovery integration",
+}, async () => {
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `denied_claim_${nonce.slice(0, 20)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 15_000 });
+  // The guard is enabled only in the production composition where both the
+  // native ticket bridge and server-owned V2 binding resolver exist.
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, {
+    pool,
+    nativePrecommitGateBridge: async () => null,
+    nativeV2TaskBindingResolver: async () => null,
+  });
+  const hash = (label) => crypto.createHash("sha256").update(`${nonce}:${label}`).digest("hex");
+  const identity = {
+    tenantId,
+    subject: "owner|denied-claim-postgres16",
+    agentPresence: { session_fingerprint: "a".repeat(64) },
+  };
+  const makeWork = async (label, { reconciliation = null, replan = false } = {}) => {
+    const workId = crypto.randomUUID();
+    const claimId = crypto.randomUUID();
+    const gateDigest = hash(`${label}:gate`);
+    const capsule = { state_hashes: {}, snapshot: { source: "postgres16" }, next_action: "Replan safely" };
+    await pool.query(`INSERT INTO core_continuity_works
+      (tenant_id,project_id,work_id,session_id,idea,objective,status,next_action,created_by)
+      VALUES ($1,$2,$3,$4,'Denied claim recovery','Permit only settled denial recovery',
+        'active','Replan safely','postgres16-test')`, [
+      tenantId, `project-${nonce.slice(0, 12)}`, workId, `session-${label}`,
+    ]);
+    await pool.query(`INSERT INTO tenant_work
+      (tenant_id,work_id,work_code,work_name,work_type,project_id,owner_user_id,
+       created_by_user_id,status,intent_digest,acceptance_criteria,legacy_work_id,causal_lineage_state)
+      VALUES ($1,$2,$3,'Denied claim recovery','software_git',$4,'owner','owner',
+        'ACTIVE',$5,'[]'::jsonb,$2,'READY')`, [
+      tenantId, workId, `DENIAL-${label}-${nonce.slice(0, 8)}`,
+      `project-${nonce.slice(0, 12)}`, hash(`${label}:intent`),
+    ]);
+    await pool.query(`INSERT INTO core_continuity_capsules
+      (tenant_id,work_id,capsule_id,architecture_version,capsule,capsule_digest,supervisor_approved,created_by)
+      VALUES ($1,$2,$3,1,$4::jsonb,$5,true,'postgres16-test')`, [
+      tenantId, workId, crypto.randomUUID(), JSON.stringify(capsule), digest(capsule),
+    ]);
+    await pool.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim
+      (tenant_id,work_id,gate_projection_digest,claim_id,continuation_ref,request_digest,
+       delegation_id,action_digest,host_session_fingerprint,idempotency_key,claim_digest,claimed_by_user_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'owner')`, [
+      tenantId, workId, gateDigest, claimId, `continuation-${label}`, hash(`${label}:request`),
+      `delegation-${label}`, hash(`${label}:action`), "a".repeat(64), `claim-${label}`, hash(`${label}:claim`),
+    ]);
+    if (reconciliation) {
+      await pool.query(`INSERT INTO tenant_work_precommit_ticket_gate_claim_reconciliation
+        (tenant_id,work_id,claim_id,reconciliation_id,gate_projection_digest,stage,ticket_id,error_code,
+         request_digest,continuation_ref,idempotency_key,reconciliation_digest)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [
+        tenantId, workId, claimId, crypto.randomUUID(), gateDigest, reconciliation.stage,
+        reconciliation.ticket_id, reconciliation.error_code, hash(`${label}:request`),
+        `continuation-${label}`, `reconcile-${label}`, hash(`${label}:reconciliation`),
+      ]);
+    }
+    if (replan) {
+      const plan = { coordinator_session_fingerprint: "b".repeat(64) };
+      await pool.query(`INSERT INTO core_continuity_native_plans
+        (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
+        VALUES ($1,$2,$3,$4::jsonb,$5,'planned','postgres16-test')`, [
+        tenantId, workId, crypto.randomUUID(), JSON.stringify(plan), digest(plan),
+      ]);
+    }
+    return workId;
+  };
+  const resume = (workId, label) => runtime.resume(identity, {
+    work_id: workId,
+    session_id: `resumed-${label}`,
+    current_state_hashes: {},
+    idempotency_key: `resume-${label}-${nonce}`,
+  }, { allowed: true, decision_id: `core-${label}` });
+  try {
+    await runtime.initialize();
+    await (createWorkContinuityV2Store({ pool, legacyRuntime: runtime })).initialize();
+    const deterministic = await makeWork("deterministic", {
+      reconciliation: { stage: "deterministic_denial", ticket_id: null, error_code: "core_denied" },
+      replan: true,
+    });
+    const recovered = await resume(deterministic, "deterministic");
+    assert.equal(recovered.resumed, true);
+    assert.equal(recovered.native_replan_required, true);
+    const planStatus = await pool.query(`SELECT status FROM core_continuity_native_plans
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, deterministic]);
+    assert.equal(planStatus.rows[0].status, "superseded");
+
+    const active = await makeWork("active");
+    await assert.rejects(resume(active, "active"), /native_agent_precommit_claim_active/);
+    const unknown = await makeWork("unknown", {
+      reconciliation: { stage: "transport_unknown", ticket_id: null, error_code: "unknown" },
+    });
+    await assert.rejects(resume(unknown, "unknown"), /native_agent_precommit_claim_active/);
+    const ticketed = await makeWork("ticketed", {
+      reconciliation: { stage: "deterministic_denial", ticket_id: `hnt_${hash("ticketed").slice(0, 40)}`, error_code: "core_denied" },
+    });
+    await assert.rejects(resume(ticketed, "ticketed"), /native_agent_precommit_claim_active/);
+  } finally {
+    await runtime.close();
   }
 });
