@@ -20,6 +20,67 @@ test("PostgreSQL continuity bindings distinguish authoritative reconciliation", 
   assert.notEqual(digest({ outcome: "unknown" }), digest({ outcome: "authoritatively_reconciled" }));
 });
 
+test("PostgreSQL 16 closure rejects the generic adapter for a repository-only native plan", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_closure_adapter_${runId.slice(0, 18)}`;
+  const projectId = `closure-adapter-${runId.slice(0, 16)}`;
+  const repositoryWorkId = crypto.randomUUID();
+  const genericWorkId = crypto.randomUUID();
+  const planId = crypto.randomUUID();
+  const intentDigest = digest({ tenantId, runId, purpose: "closure-adapter" });
+  const pool = new Pool({ connectionString: databaseUrl, max: 2, statement_timeout: 10_000 });
+  const runtime = createWorkContinuityRuntime({ databaseUrl }, { pool });
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const owner = reconciliationOwnerIdentity(tenantId);
+  const insertWork = async (workId, suffix) => {
+    await pool.query(`INSERT INTO core_continuity_works
+      (tenant_id,project_id,work_id,session_id,idea,objective,status,next_action,created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,'active','Verify closure adapter','postgres16-closure-adapter')`, [
+      tenantId, projectId, workId, `session-${suffix}-${runId.slice(0, 12)}`,
+      "Closure adapter regression", "Preserve native closure for persisted repository bindings.",
+    ]);
+    await pool.query(`INSERT INTO tenant_work
+      (tenant_id,work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,
+       status,intent_digest,acceptance_criteria,legacy_work_id,causal_lineage_state)
+      VALUES ($1,$2,$3,$4,'software_git',$5,'owner','owner','ACTIVE',$6,'[]'::jsonb,$2,'READY')`, [
+      tenantId, workId, `ADAPTER-${suffix}-${runId.slice(0, 12)}`,
+      `Closure adapter ${suffix}`, projectId, intentDigest,
+    ]);
+  };
+  try {
+    await runtime.initialize();
+    await store.initialize();
+    await insertWork(repositoryWorkId, "repository");
+    await insertWork(genericWorkId, "generic");
+    const repositoryPlan = { schema_version: "native_agent_plan_v1", repository: "owner/repo", tasks: [] };
+    await pool.query(`INSERT INTO core_continuity_native_plans
+      (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
+      VALUES ($1,$2,$3,$4::jsonb,$5,'planned','postgres16-closure-adapter')`, [
+      tenantId, repositoryWorkId, planId, JSON.stringify(repositoryPlan), digest(repositoryPlan),
+    ]);
+
+    await assert.rejects(store.evaluateGenericClosure(owner, {
+      work_id: repositoryWorkId,
+      adapter: "generic",
+    }), /work_closure_adapter_mismatch/);
+    const repositoryRead = await store.readWork(owner, { work_id: repositoryWorkId });
+    assert.equal(Object.hasOwn(repositoryRead, "current_native_plan"), false);
+    assert.equal(repositoryRead.closure_assurance.expected_adapter, "software_git");
+    assert.equal(JSON.stringify(repositoryRead).includes("owner/repo"), false);
+
+    const generic = await store.evaluateGenericClosure(owner, {
+      work_id: genericWorkId,
+      adapter: "generic",
+    });
+    assert.equal(generic.adapter, "generic");
+    assert.equal(generic.ready, false);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("PostgreSQL 16 serializes Core and V2 creation in one Work UUID namespace", {
   skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
 }, async () => {

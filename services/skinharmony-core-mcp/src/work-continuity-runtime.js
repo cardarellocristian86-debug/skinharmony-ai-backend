@@ -81,6 +81,7 @@ export async function authorizeDttExactWorkRead({
   identity,
   tenant_id,
   work_id,
+  include_work = false,
 } = {}) {
   if (typeof store?.readWork !== "function") {
     throw dttWorkBindingError("dtt_work_binding_unavailable");
@@ -104,7 +105,14 @@ export async function authorizeDttExactWorkRead({
   ) {
     throw dttWorkBindingError("dtt_work_acl_denied");
   }
-  return Object.freeze({ tenant_id: tenantId, work_id: workId });
+  return Object.freeze({
+    tenant_id: tenantId,
+    work_id: workId,
+    // Bootstrap needs the exact canonical row that passed the ACL check,
+    // including its persisted lineage. Reuse that read rather than treating
+    // the compact authorization receipt as a Work or performing a second read.
+    ...(include_work === true ? { work: Object.freeze({ ...result.work }) } : {}),
+  });
 }
 
 export async function authorizeGenericWorkCoreJoinExactWorkRead({

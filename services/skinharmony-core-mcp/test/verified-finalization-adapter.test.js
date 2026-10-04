@@ -27,6 +27,7 @@ test("every persisted software or effect binding keeps native closure mandatory"
     { committed_task_states: [{}] },
     { dependency_manifests: [{}] },
     { work_state_projection: { unresolved_effects: [{}] } },
+    { current_native_plan: { plan: { repository: "owner/repo" } } },
   ]) {
     assert.equal(verifiedFinalizationAdapter({ ...base, ...delta }), "software_git");
   }

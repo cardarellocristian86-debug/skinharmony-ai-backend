@@ -658,7 +658,8 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
   assert.equal(fake.queries.some(({ sql }) => /FROM core_causal_event_ledger e/u.test(sql)
     && /e\.event_type='WORK_OPENED'/u.test(sql)
     && /e\.operation='work_bind_intent'/u.test(sql)
-    && /predecessor\.sequence_number=e\.sequence_number-1/u.test(sql)), true,
+    && /predecessor\.sequence_number=e\.sequence_number-1/u.test(sql)
+    && /ORDER BY e\.sequence_number ASC LIMIT 3/u.test(sql)), true,
   "causal Work authority must be bound to the append-only WORK_OPENED event and its predecessor");
   assert.equal(fake.queries.some(({ sql }) => /FROM core_continuity_events/u.test(sql)), false,
     "legacy continuity events cannot become a parallel Entity 360 evidence authority");
@@ -1863,6 +1864,84 @@ for (const invalidEvent of [
     assert.equal(snapshotFor(assembled, invalidEvent.asOf || AT).context_status, "INCOMPLETE");
   });
 }
+
+function equalHistoricalWorkOpenedPair() {
+  const first = causalBindingEvent();
+  const second = causalBindingEvent({ eventPatch: {
+    event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    sequence_number: CAUSAL_EVENT_SEQUENCE + 1,
+    previous_event_hash: first.event_hash,
+    predecessor_event_hash: first.event_hash,
+  } });
+  return [first, second];
+}
+
+test("two verified identical historical WORK_OPENED roots retain the oldest root with nonauthority audit", async () => {
+  const pair = equalHistoricalWorkOpenedPair();
+  const assembled = await assembleWork((sql) => {
+    if (/FROM core_causal_event_ledger/u.test(sql)) return result(pair);
+    return workRows(sql);
+  });
+  const eventContribution = assembled.discovery.source_contributions.find((item) => item.source_id === "event_ledger");
+  assert.equal(eventContribution.evidence_refs[0], `causal_event:${CAUSAL_EVENT_ID}:${CAUSAL_EVENT_SEQUENCE}`);
+  const audit = eventContribution.facts.find((fact) => fact.fact_id === "work.event_ledger_head")
+    .value.historical_duplicate_recovery;
+  assert.equal(audit.nonauthority, true);
+  assert.deepEqual(audit.event_refs, [
+    `causal_event:${CAUSAL_EVENT_ID}:${CAUSAL_EVENT_SEQUENCE}`,
+    `causal_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb:${CAUSAL_EVENT_SEQUENCE + 1}`,
+  ]);
+  assert.deepEqual(audit.event_hashes, pair.map((event) => event.event_hash));
+  assert.equal(snapshotFor(assembled).context_status, "READY");
+});
+
+for (const invalidPair of [
+  { label: "tampered member", rows: () => {
+    const pair = equalHistoricalWorkOpenedPair();
+    pair[1] = { ...pair[1], event_hash: "a".repeat(64) };
+    return pair;
+  } },
+  { label: "third root overflow", rows: () => {
+    const pair = equalHistoricalWorkOpenedPair();
+    const third = causalBindingEvent({ eventPatch: {
+      event_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", sequence_number: CAUSAL_EVENT_SEQUENCE + 2,
+      previous_event_hash: pair[1].event_hash, predecessor_event_hash: pair[1].event_hash,
+    } });
+    return [...pair, third];
+  } },
+  { label: "retargeted member", rows: () => {
+    const pair = equalHistoricalWorkOpenedPair();
+    pair[1] = causalBindingEvent({ resultPatch: { project_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, eventPatch: {
+      event_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", sequence_number: CAUSAL_EVENT_SEQUENCE + 1,
+      previous_event_hash: pair[0].event_hash, predecessor_event_hash: pair[0].event_hash,
+    } });
+    return pair;
+  } },
+  { label: "reobserved only", rows: () => [causalBindingEvent({ eventPatch: { event_type: "WORK_BINDING_REOBSERVED" } })] },
+]) {
+  test(`historical duplicate recovery rejects ${invalidPair.label}`, async () => {
+    const assembled = await assembleWork((sql) => {
+      if (/FROM core_causal_event_ledger/u.test(sql)) return result(invalidPair.rows());
+      return workRows(sql);
+    });
+    assert.equal(assembled.discovery.source_contributions.some((item) => item.source_id === "event_ledger"), false);
+    assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+  });
+}
+
+test("historical duplicate recovery observes only the root available at the as-of cut", async () => {
+  const pair = equalHistoricalWorkOpenedPair();
+  pair[1] = { ...pair[1], created_at: "2026-08-25T10:30:01.000Z" };
+  const asOf = AT;
+  const assembled = await assembleWork((sql, values) => {
+    if (/FROM core_causal_event_ledger/u.test(sql)) {
+      assert.equal(values[3], asOf);
+      return result(pair.filter((event) => event.created_at <= asOf));
+    }
+    return workRows(sql);
+  }, asOf);
+  assert.equal(snapshotFor(assembled, asOf).context_status, "READY");
+});
 
 for (const invalidDigest of [
   {

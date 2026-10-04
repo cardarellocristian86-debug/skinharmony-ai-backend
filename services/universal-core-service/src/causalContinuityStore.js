@@ -19,6 +19,7 @@ function projectLockParts(tenantId, projectId) {
 
 const CHANGE_STATE_EDGES = Object.freeze({ DRAFT: ["MODELED"], MODELED: ["AUTHORIZED"], AUTHORIZED: ["EXECUTED"], EXECUTED: ["OBSERVING"], OBSERVING: ["VERIFIED_PROVISIONAL","PARTIAL","CONTRADICTED","HARMFUL","UNKNOWN"], VERIFIED_PROVISIONAL: ["VERIFIED_FINAL","CONTRADICTED","REMEDIATING"], VERIFIED_FINAL: ["CONTRADICTED"], CLOSED: ["CONTRADICTED"], PARTIAL: ["OBSERVING","REMEDIATING"], CONTRADICTED: ["REMEDIATING"], HARMFUL: ["REMEDIATING","ROLLED_BACK"], UNKNOWN: ["OBSERVING","ESCALATED"], REMEDIATING: ["EXECUTED","ROLLED_BACK"] });
 const OBLIGATION_STATE_EDGES = Object.freeze({ ...CHANGE_STATE_EDGES, ROLLED_BACK: ["REMEDIATING"] });
+const INTERNAL_EVENT_TYPE_RESOLVER = Symbol("internal_event_type_resolver");
 
 function stateEdgeAllowed(edges, from, to) {
   return Array.isArray(edges[from]) && edges[from].includes(to);
@@ -54,6 +55,17 @@ function galleryBindingPayload(row) {
     core_event_sequence: Number(row.core_event_sequence),
     context_digest: row.context_digest,
     provenance: row.provenance || {},
+  };
+}
+
+function workCausalBindingPayload(row) {
+  return {
+    project_id: row.project_id,
+    genesis_intent_id: row.genesis_intent_id,
+    intent_revision_id: row.intent_revision_id,
+    base_state_digest: row.base_state_digest || null,
+    legacy_binding_state: row.legacy_binding_state || "VERIFIED",
+    provenance: row.provenance,
   };
 }
 
@@ -173,7 +185,7 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
     ));
   }
 
-  async function runProjectOperation({ tenant_id, project_id, operation, idempotency_key, request, event_type, actor_provenance = {}, projection_type = "CAUSAL_TIMELINE", mutate }) {
+  async function runProjectOperation({ tenant_id, project_id, operation, idempotency_key, request, event_type, actor_provenance = {}, projection_type = "CAUSAL_TIMELINE", [INTERNAL_EVENT_TYPE_RESOLVER]: resolveEventType, mutate }) {
     const tenantId = requireText(tenant_id, "tenant_id", 120);
     const projectId = requireUuid(project_id, "project_id");
     const operationName = requireText(operation, "operation", 160);
@@ -207,12 +219,13 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
         sequence_number: sequence,
         previous_event_hash: previous?.event_hash || null,
       });
+      const resolvedEventType = resolveEventType?.() || event_type;
       const payload = { schema_version: "causal_event_payload_v1", result };
       const payloadDigest = causalDigest(payload);
       const actorProvenanceDigest = causalDigest(actor_provenance);
       const eventHash = buildCausalEventHash({
         tenant_id: tenantId, project_id: projectId, event_id: eventId, sequence_number: sequence,
-        event_type, operation: operationName, idempotency_key: idempotencyKey,
+        event_type: resolvedEventType, operation: operationName, idempotency_key: idempotencyKey,
         request_digest: requestDigest, payload_digest: payloadDigest, actor_provenance,
         previous_event_hash: previous?.event_hash || null,
       });
@@ -220,10 +233,10 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
         `INSERT INTO core_causal_event_ledger
           (tenant_id,project_id,event_id,sequence_number,event_type,operation,idempotency_key,request_digest,payload,payload_digest,actor_provenance,actor_provenance_digest,previous_event_hash,event_hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11::jsonb,$12,$13,$14)`,
-        [tenantId, projectId, eventId, sequence, event_type, operationName, idempotencyKey, requestDigest, json(payload), payloadDigest, json(actor_provenance), actorProvenanceDigest, previous?.event_hash || null, eventHash],
+        [tenantId, projectId, eventId, sequence, resolvedEventType, operationName, idempotencyKey, requestDigest, json(payload), payloadDigest, json(actor_provenance), actorProvenanceDigest, previous?.event_hash || null, eventHash],
       );
       const outboxId = crypto.randomUUID();
-      const outboxPayload = { event_id: eventId, sequence_number: sequence, event_type, result };
+      const outboxPayload = { event_id: eventId, sequence_number: sequence, event_type: resolvedEventType, result };
       await client.query(
         `INSERT INTO core_causal_projection_outbox
           (tenant_id,outbox_id,project_id,event_id,projection_type,payload,payload_digest)
@@ -466,8 +479,10 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
   }
 
   async function bindWork(input) {
+    let bindingReobserved = false;
     return runProjectOperation({
       ...input, operation: "work_bind_intent", event_type: "WORK_OPENED", request: input,
+      [INTERNAL_EVENT_TYPE_RESOLVER]: () => bindingReobserved ? "WORK_BINDING_REOBSERVED" : "WORK_OPENED",
       mutate: async (client) => {
         const project = rowOrNotFound(await client.query(
           "SELECT project_id,active_state_digest FROM core_projects WHERE tenant_id=$1 AND project_id=$2 FOR UPDATE",
@@ -518,17 +533,10 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
           "SELECT * FROM core_work_causal_bindings WHERE tenant_id=$1 AND work_id=$2",
           [input.tenant_id, input.work_id],
         ));
-        const desired = {
-          project_id: input.project_id, genesis_intent_id: input.genesis_intent_id,
-          intent_revision_id: input.intent_revision_id, base_state_digest: input.base_state_digest || null,
-          legacy_binding_state: input.legacy_binding_state || "VERIFIED", provenance: input.provenance,
-        };
-        const observed = {
-          project_id: existing.project_id, genesis_intent_id: existing.genesis_intent_id,
-          intent_revision_id: existing.intent_revision_id, base_state_digest: existing.base_state_digest,
-          legacy_binding_state: existing.legacy_binding_state, provenance: existing.provenance,
-        };
+        const desired = workCausalBindingPayload(input);
+        const observed = workCausalBindingPayload(existing);
         if (causalDigest(desired) !== causalDigest(observed)) throw new CausalContinuityError("IDEMPOTENCY_CONFLICT");
+        bindingReobserved = true;
         return { ...existing, legacy_binding: legacyBinding };
       },
     });
@@ -1514,13 +1522,14 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
     const previous = events.at(-1);
     const event = {
       tenant_id: input.tenant_id, project_id: input.project_id, event_id: crypto.randomUUID(),
-      sequence_number: (previous?.sequence_number || 0) + 1, event_type: input.event_type, operation: input.operation,
+      sequence_number: (previous?.sequence_number || 0) + 1, event_type: null, operation: input.operation,
       idempotency_key: input.idempotency_key, request_digest: digest, previous_event_hash: previous?.event_hash || null,
       actor_provenance: input.actor_provenance || {},
     };
     const result = await input.mutate(null, {
       event_id: event.event_id, sequence_number: event.sequence_number, previous_event_hash: event.previous_event_hash,
     });
+    event.event_type = input[INTERNAL_EVENT_TYPE_RESOLVER]?.() || input.event_type;
     event.payload = { schema_version: "causal_event_payload_v1", result: structuredClone(result) };
     event.payload_digest = causalDigest(event.payload);
     event.event_hash = buildCausalEventHash({ ...event, idempotency_key: input.idempotency_key, actor_provenance: input.actor_provenance || {} });
@@ -1625,7 +1634,10 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       return revision;
     }); },
     async listRevisions(input) { return listFor(state.revisions, input.tenant_id, (row) => row.project_id === input.project_id); },
-    async bindWork(input) { return withOp(input, "work_bind_intent", "WORK_OPENED", async () => {
+    async bindWork(input) { let bindingReobserved = false; return runProjectOperation({ ...input,
+      operation: "work_bind_intent", event_type: "WORK_OPENED", request: input,
+      [INTERNAL_EVENT_TYPE_RESOLVER]: () => bindingReobserved ? "WORK_BINDING_REOBSERVED" : "WORK_OPENED",
+      mutate: async () => {
       const project = state.projects.get(key(input.tenant_id, input.project_id));
       if (!project) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
       if (input.legacy_binding_state !== "UNRESOLVED_LEGACY_BINDING" && project.active_state_digest !== input.base_state_digest) throw new CausalContinuityError("STALE_PROJECT_STATE");
@@ -1637,16 +1649,12 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       }
       const workKey = key(input.tenant_id, input.work_id);
       const existing = state.works.get(workKey);
-      const binding = (row) => ({
-        project_id: row.project_id, genesis_intent_id: row.genesis_intent_id, intent_revision_id: row.intent_revision_id,
-        base_state_digest: row.base_state_digest || null, legacy_binding_state: row.legacy_binding_state || "VERIFIED",
-        provenance: row.provenance,
-      });
-      if (existing && causalDigest(binding(existing)) !== causalDigest(binding(input))) throw new CausalContinuityError("IDEMPOTENCY_CONFLICT");
+      if (existing && causalDigest(workCausalBindingPayload(existing)) !== causalDigest(workCausalBindingPayload(input))) throw new CausalContinuityError("IDEMPOTENCY_CONFLICT");
+      bindingReobserved = Boolean(existing);
       const row = existing || { ...input };
       state.works.set(workKey, row);
       return { ...row, legacy_binding: legacy ? { present: true, state: input.legacy_binding_state, project_uuid: legacy.project_uuid || null } : { present: false, state: input.legacy_binding_state } };
-    }); },
+    } }); },
     async readWork(input) { return get(state.works, input.tenant_id, input.work_id); },
     async createChange(input) { return withOp(input, "change_create", "CHANGE_OPENED", async () => { const row = { ...input, state: "DRAFT" }; state.changes.set(key(input.tenant_id, input.change_id), row); return row; }); },
     async readChange(input) { return get(state.changes, input.tenant_id, input.change_id); },
