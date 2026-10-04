@@ -451,6 +451,58 @@ function adaptEntity360NyraContext(capabilityId, value, tenantId, workId) {
   };
 }
 
+export function createEntity360InternalWorkContextRecovery({ coreRequest, issueAgentContext } = {}) {
+  if (typeof coreRequest !== "function" || typeof issueAgentContext !== "function") {
+    throw new TypeError("entity 360 recovery transport required");
+  }
+  return async function recoverExistingIncompleteWorkContext(args = {}, identityContext = {}) {
+    const allowed = new Set(["work_id", "expected_snapshot_version", "expected_snapshot_digest"]);
+    if (!args || typeof args !== "object" || Array.isArray(args)
+      || Object.keys(args).some((key) => !allowed.has(key))) {
+      throw new Error("entity360_recovery_input_invalid");
+    }
+    const tenantId = String(identityContext?.tenantId || "").trim();
+    if (!tenantId || !identityContext.agentPresence) throw new Error("agent_presence_session_required");
+    const workId = transportWorkId(args);
+    if (!Number.isSafeInteger(Number(args.expected_snapshot_version))
+      || Number(args.expected_snapshot_version) < 1
+      || !/^[a-f0-9]{64}$/u.test(String(args.expected_snapshot_digest || "").toLowerCase())) {
+      throw new Error("entity360_recovery_input_invalid");
+    }
+    const agentContext = issueAgentContext({ tenant_id: tenantId, work_id: workId,
+      agent_presence: identityContext.agentPresence });
+    if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
+    const value = await coreRequest("/v1/entity-360/internal/work-context/recover", {
+      work_id: workId,
+      expected_snapshot_version: Number(args.expected_snapshot_version),
+      expected_snapshot_digest: String(args.expected_snapshot_digest).toLowerCase(),
+    }, identityContext, {
+      method: "POST",
+      body: { work_id: workId, expected_snapshot_version: Number(args.expected_snapshot_version),
+        expected_snapshot_digest: String(args.expected_snapshot_digest).toLowerCase() },
+      additionalHeaders: { "x-sh-dtt-agent-context": agentContext },
+    });
+    const envelope = assertContextOnlyResponse(value);
+    const safe = envelope?.result;
+    const snapshot = safe?.snapshot;
+    const bindings = [snapshot?.project_work_linkage?.work_id,
+      snapshot?.project_work_linkage?.legacy_work_id]
+      .filter(Boolean).map((candidate) => String(candidate).trim().toLowerCase());
+    if (envelope?.ok !== true || !safe || snapshot?.tenant_scope !== tenantId
+      || snapshot?.entity_type !== "work" || !/^e360_[a-f0-9]{48}$/u.test(String(snapshot?.entity_id || ""))
+      || !bindings.includes(workId) || snapshot?.context_status !== "READY"
+      || Number(snapshot?.snapshot_version) !== Number(args.expected_snapshot_version) + 1
+      || snapshot?.previous_snapshot_digest !== String(args.expected_snapshot_digest).toLowerCase()
+      || safe?.execution_authorized !== false || safe?.production_decision_changed !== false
+      || safe?.recovery?.context_only !== true || safe?.recovery?.execution_authorized !== false
+      || safe?.recovery?.predecessor_snapshot_version !== Number(args.expected_snapshot_version)
+      || safe?.recovery?.predecessor_snapshot_digest !== String(args.expected_snapshot_digest).toLowerCase()) {
+      throw new Error("entity360_recovery_readback_invalid");
+    }
+    return textResult({ ok: true, result: safe });
+  };
+}
+
 export function createEntity360Handlers({
   coreRequest,
   bootstrapCoreRequest = null,

@@ -1500,7 +1500,8 @@ function memoryRuntimeDependencies() {
     setFeatureFlag(value) { featureFlag = value; } };
 }
 
-async function enforcedRuntimeFixture({ now = () => Date.parse(AT), initialIcfSeed = null } = {}) {
+async function enforcedRuntimeFixture({ now = () => Date.parse(AT), initialIcfSeed = null,
+  refreshIcfBinding = null } = {}) {
   const dependencies = memoryRuntimeDependencies();
   const { store, adapterRegistry } = dependencies;
   store.kind = "entity360_postgres_append_only_v1";
@@ -1540,7 +1541,7 @@ async function enforcedRuntimeFixture({ now = () => Date.parse(AT), initialIcfSe
   });
   const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
     ontology: ONTOLOGY, enforcementPolicy: ENFORCEMENT_POLICY, mode: "ENFORCE",
-    bitemporalMode: "ENFORCE", initialIcfSeed: seedInitialIcf, now });
+    bitemporalMode: "ENFORCE", initialIcfSeed: seedInitialIcf, refreshIcfBinding, now });
   await runtime.initialize();
   const feature = await runtime.invoke("entity_360_feature_flag_write",
     CORE_OPERATOR_IDENTITY, { mode: "ENFORCE", enabled: true, expected_revision: 1,
@@ -2115,6 +2116,172 @@ test("Core refreshes an old enforcement snapshot with deterministic replay", asy
   assert.equal(replay.persistence.replayed, true);
   assert.equal(replay.snapshot.deterministic_immutable_digest,
     refreshed.snapshot.deterministic_immutable_digest);
+});
+
+test("only Core refresh can reobserve stale ICF context into a READY snapshot", async () => {
+  let fresh = false;
+  const calls = [];
+  const receipt = {
+    schema_version: "icf_initial_work_governance_seed_receipt_v1", state: "reobserved",
+    tenant_id: TENANT, work_id: WORK_ID, causal_work_id: WORK_ID, project_id: PROJECT_UUID,
+    icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+    consistent_cut_at: AT,
+  };
+  const { runtime, adapterRegistry } = await enforcedRuntimeFixture({
+    refreshIcfBinding: async (input) => { calls.push(input); fresh = true; return receipt; },
+  });
+  const discover = adapterRegistry.assembleContext;
+  adapterRegistry.assembleContext = async (input) => {
+    const result = await discover(input);
+    const staleAt = "2026-08-01T10:00:00.000Z";
+    return { ...result, source_contributions: result.source_contributions.map((item) =>
+      item.source_id === "icf" && !fresh
+        ? { ...item, observed_at: staleAt, recorded_at: staleAt } : item) };
+  };
+  await assert.rejects(runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY,
+    { work_id: WORK_ID, as_of: AT, expected_revision: 1, idempotency_key: "invalid" }),
+  /entity360_bootstrap_revision_invalid/);
+  assert.equal(calls.length, 0);
+  // A generic assembly remains observational: it cannot manufacture freshness.
+  const stale = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY, as_of: AT,
+    expected_revision: 0, idempotency_key: "stale-observation-only",
+  });
+  assert.equal(stale.snapshot.context_status, "INCOMPLETE");
+  assert.equal(calls.length, 0);
+  const input = { tenant_id: TENANT, work_id: WORK_ID,
+    expected_snapshot_version: 1,
+    expected_snapshot_digest: stale.snapshot.deterministic_immutable_digest };
+  await assert.rejects(runtime.refreshEnforcementSnapshot(DTT_IDENTITY, input),
+    /authority|forbidden/);
+  assert.equal(calls.length, 0);
+  const repaired = await runtime.refreshEnforcementSnapshot(CORE_ENFORCEMENT_IDENTITY, input);
+  assert.equal(repaired.snapshot.context_status, "READY");
+  assert.equal(repaired.snapshot.snapshot_version, 2);
+  assert.equal(repaired.snapshot.execution_authorized, false);
+  assert.match(calls[0].idempotency_key, /^entity360-icf-binding-refresh:[a-f0-9]{64}$/);
+});
+
+for (const entrypoint of ["internal DTT", "Core enforcement"]) {
+test(`${entrypoint} recovers verified INCOMPLETE revision 3 once and replays revision 4`, async () => {
+  let fresh = false;
+  const calls = [];
+  const { runtime, adapterRegistry } = await enforcedRuntimeFixture({
+    refreshIcfBinding: async (input) => {
+      calls.push(input); fresh = true;
+      return { schema_version: "icf_initial_work_governance_seed_receipt_v1", state: "reobserved",
+        tenant_id: TENANT, work_id: WORK_ID, causal_work_id: WORK_ID, project_id: PROJECT_UUID,
+        icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+        consistent_cut_at: AT };
+    },
+  });
+  const discover = adapterRegistry.assembleContext;
+  adapterRegistry.assembleContext = async (input) => {
+    const result = await discover(input);
+    const staleAt = "2026-08-01T10:00:00.000Z";
+    return { ...result, source_contributions: result.source_contributions.map((item) =>
+      item.source_id === "icf" && !fresh ? { ...item, observed_at: staleAt, recorded_at: staleAt } : item) };
+  };
+  let stale;
+  for (let revision = 0; revision < 3; revision += 1) {
+    stale = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+      work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY, as_of: AT,
+      expected_revision: revision, idempotency_key: `internal-recovery-stale-${revision}`,
+    });
+  }
+  assert.equal(stale.snapshot.context_status, "INCOMPLETE");
+  const recovered = entrypoint === "Core enforcement"
+    ? await runtime.resolveEnforcementContext(CORE_ENFORCEMENT_IDENTITY, {
+      tenant_id: TENANT, work_id: WORK_ID, phase: "ISSUE",
+      action: { kind: "git.commit", branch: "agent/entity360-recovery" },
+    })
+    : await runtime.invoke("entity_360_internal_work_context_recover", DTT_IDENTITY, {
+    work_id: WORK_ID, expected_snapshot_version: 3,
+    expected_snapshot_digest: stale.snapshot.deterministic_immutable_digest,
+  });
+  assert.equal(recovered.snapshot.context_status, "READY");
+  assert.equal(recovered.snapshot.snapshot_version, 4);
+  assert.equal(recovered.execution_authorized, false);
+  assert.equal(calls.length, 1);
+  const replay = await runtime.invoke("entity_360_internal_work_context_recover", DTT_IDENTITY, {
+    work_id: WORK_ID, expected_snapshot_version: 3,
+    expected_snapshot_digest: stale.snapshot.deterministic_immutable_digest,
+  });
+  assert.equal(replay.persistence.replayed, true);
+  assert.equal(replay.snapshot.deterministic_immutable_digest,
+    recovered.snapshot.deterministic_immutable_digest);
+  assert.equal(calls.length, 1, "a successful retry must not reobserve ICF again");
+  await assert.rejects(() => runtime.invoke("entity_360_internal_work_context_recover", DTT_IDENTITY, {
+    work_id: WORK_ID, expected_snapshot_version: 3, expected_snapshot_digest: "0".repeat(64),
+  }), (error) => error.code === "entity360_recovery_snapshot_drift" && error.status === 409);
+  assert.equal(calls.length, 1, "a drifted predecessor must not cause another ICF write");
+});
+}
+
+test("incomplete-context recovery never writes for tampering, policy drift or other missing facts", async () => {
+  let refreshes = 0;
+  const { runtime, store, adapterRegistry } = await enforcedRuntimeFixture({
+    refreshIcfBinding: async () => { refreshes += 1; throw new Error("unexpected recovery write"); },
+  });
+  const discover = adapterRegistry.assembleContext;
+  adapterRegistry.assembleContext = async (input) => {
+    const result = await discover(input);
+    return { ...result, source_contributions: result.source_contributions.map((item) =>
+      item.source_id === "icf" ? { ...item, observed_at: "2026-08-01T10:00:00.000Z",
+        recorded_at: "2026-08-01T10:00:00.000Z" } : item) };
+  };
+  const stale = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY, as_of: AT,
+    expected_revision: 0, idempotency_key: "negative-recovery-stale",
+  });
+  const input = { work_id: WORK_ID, expected_snapshot_version: 1,
+    expected_snapshot_digest: stale.snapshot.deterministic_immutable_digest };
+  const readLatest = store.readLatestSnapshot;
+  for (const alter of [
+    (s) => { s.context_status = "CONFLICTED"; },
+    (s) => { s.context_status = "AMBIGUOUS"; },
+    (s) => { s.policy_digest = DIGEST_A; },
+    (s) => { s.missing_context.push({ fact_id: "governance.intent.binding", mandatory: true }); },
+    (s) => { s.execution_authorized = true; },
+    (s) => { s.envelope_digest = DIGEST_B; },
+  ]) {
+    store.readLatestSnapshot = async (scope) => {
+      const value = structuredClone(await readLatest(scope)); alter(value); return value;
+    };
+    await assert.rejects(runtime.invoke("entity_360_internal_work_context_recover", DTT_IDENTITY, input),
+      /entity360_recovery_not_applicable|entity360_recovery_snapshot_verification_failed/);
+    assert.equal(refreshes, 0);
+  }
+  store.readLatestSnapshot = readLatest;
+  await assert.rejects(runtime.invoke("entity_360_internal_work_context_recover", DTT_IDENTITY,
+    { ...input, work_id: UNRELATED_WORK_ID }), /entity360_.*work/);
+  assert.equal(refreshes, 0);
+  assert.equal((await readLatest({ tenant_id: TENANT, entity_id: stale.snapshot.entity_id })).snapshot_version, 1);
+});
+
+test("bootstrap reobserves only before the first snapshot and hashes maximum-length retry keys", async () => {
+  const calls = [];
+  const presentSeed = { schema_version: "icf_initial_work_governance_seed_receipt_v1", state: "present",
+    tenant_id: TENANT, work_id: WORK_ID, causal_work_id: WORK_ID, project_id: PROJECT_UUID,
+    icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+    consistent_cut_at: AT };
+  const { runtime } = await enforcedRuntimeFixture({ initialIcfSeed: async () => presentSeed,
+    refreshIcfBinding: async (input) => {
+    calls.push(input);
+    return { schema_version: "icf_initial_work_governance_seed_receipt_v1", state: "reobserved",
+      tenant_id: TENANT, work_id: WORK_ID, causal_work_id: WORK_ID, project_id: PROJECT_UUID,
+      icf_version: 1, ledger_head_digest: DIGEST_D, seed_payload_digest: DIGEST_C,
+      consistent_cut_at: AT };
+  } });
+  const input = { work_id: WORK_ID, as_of: AT, expected_revision: 0, idempotency_key: "k".repeat(240) };
+  const first = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  const replay = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY, input);
+  const adopted = await runtime.invoke("entity_360_work_snapshot_bootstrap", DTT_IDENTITY,
+    { ...input, idempotency_key: "other-owner-recovery-key" });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].idempotency_key, /^entity360-icf-binding-bootstrap:[a-f0-9]{64}$/);
+  assert.equal(replay.snapshot.deterministic_immutable_digest, first.snapshot.deterministic_immutable_digest);
+  assert.equal(adopted.snapshot.deterministic_immutable_digest, first.snapshot.deterministic_immutable_digest);
 });
 
 test("Work snapshot bootstrap emits no gate when the ENFORCED feature binding drifts", async () => {

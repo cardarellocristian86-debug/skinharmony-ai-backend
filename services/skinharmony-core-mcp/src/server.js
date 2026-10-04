@@ -100,6 +100,7 @@ import {
 import {
   ENTITY_360_TOOLS,
   createEntity360Handlers,
+  createEntity360InternalWorkContextRecovery,
 } from "./entity-360.js";
 import {
   POLICY_REGISTRY_SIGN_ROUTE,
@@ -704,6 +705,15 @@ const entity360Handlers = createEntity360Handlers({
   shadowEnableCoreRequest: coreHandlers.entity360ShadowEnableCoreRequest,
   enforceEnableCoreRequest: coreHandlers.entity360EnforceEnableCoreRequest,
   shadowDisableCoreRequest: coreHandlers.entity360ShadowDisableCoreRequest,
+  issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
+    secret: config.dttAgentIdentitySigningSecret,
+    tenant_id,
+    work_id,
+    agent_presence,
+  }),
+});
+const recoverExistingIncompleteWorkContext = createEntity360InternalWorkContextRecovery({
+  coreRequest: coreHandlers.dttCoreRequest,
   issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
@@ -1952,7 +1962,7 @@ async function reconcileCanonicalWorkCausalLineage(identity, work) {
   }
 }
 
-async function bootstrapCanonicalWorkEntity360Context(identity, work) {
+async function bootstrapCanonicalWorkEntity360Context(identity, work, { allowRecovery = true } = {}) {
   const workId = String(work?.work_id || "").trim().toLowerCase();
   const createdAtMilliseconds = Date.parse(String(work?.created_at || ""));
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
@@ -2054,7 +2064,7 @@ async function bootstrapCanonicalWorkEntity360Context(identity, work) {
         .filter(Boolean).map((candidate) => String(candidate).trim().toLowerCase());
       if (latestPayload?.ok !== true || snapshot?.tenant_scope !== identity.tenantId ||
           snapshot?.entity_id !== entityId || snapshot?.entity_type !== "work" ||
-          !workBindings.includes(workId) || snapshot?.context_status !== "READY" ||
+          !workBindings.includes(workId) ||
           !Number.isSafeInteger(Number(snapshot?.snapshot_version)) ||
           Number(snapshot.snapshot_version) < 1 ||
           !/^[a-f0-9]{64}$/u.test(String(snapshot?.deterministic_immutable_digest || "")) ||
@@ -2081,6 +2091,43 @@ async function bootstrapCanonicalWorkEntity360Context(identity, work) {
         const error = new Error("entity360_work_snapshot_verification_invalid");
         error.code = "entity360_work_snapshot_verification_invalid";
         error.status = 409;
+        throw error;
+      }
+      if (snapshot.context_status === "INCOMPLETE") {
+        if (!allowRecovery) {
+          const error = new Error("entity360_work_snapshot_readback_invalid");
+          error.code = "entity360_work_snapshot_readback_invalid";
+          error.status = 503;
+          throw error;
+        }
+        const missing = Array.isArray(snapshot.missing_context) ? snapshot.missing_context : [];
+        const fact = missing[0];
+        const recoverable = missing.length === 1
+          && fact?.fact_id === "governance.icf.binding"
+          && fact?.mandatory === true
+          && fact?.high_impact === true
+          && Array.isArray(fact?.reason_codes)
+          && fact.reason_codes.includes("CURRENT_FACT_MISSING")
+          && fact.reason_codes.includes("ONLY_STALE_EVIDENCE_AVAILABLE");
+        if (!recoverable) {
+          const error = new Error("entity360_work_snapshot_readback_invalid");
+          error.code = "entity360_work_snapshot_readback_invalid";
+          error.status = 503;
+          throw error;
+        }
+        await recoverExistingIncompleteWorkContext({
+          work_id: workId,
+          expected_snapshot_version: Number(snapshot.snapshot_version),
+          expected_snapshot_digest: snapshot.deterministic_immutable_digest,
+        }, identity);
+        // Re-read and independently verify the Core-owned successor. The helper
+        // never returns an action authorization and is intentionally not a tool.
+        return bootstrapCanonicalWorkEntity360Context(identity, work, { allowRecovery: false });
+      }
+      if (snapshot.context_status !== "READY") {
+        const error = new Error("entity360_work_snapshot_readback_invalid");
+        error.code = "entity360_work_snapshot_readback_invalid";
+        error.status = 503;
         throw error;
       }
       return Object.freeze({

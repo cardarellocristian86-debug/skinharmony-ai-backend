@@ -25,7 +25,10 @@ function harness({ resolveAgentContext, invoke } = {}) {
 
 test("routes expose only the bounded Entity 360 surface", () => {
   const { routes, auth, registered } = harness();
-  assert.equal(routes.length, 12);
+  assert.equal(routes.length, 13);
+  assert.deepEqual(ENTITY_360_ROUTES.find(([, path]) =>
+    path === "/v1/entity-360/internal/work-context/recover"),
+  ["post", "/v1/entity-360/internal/work-context/recover", "entity_360_internal_work_context_recover", "write"]);
   assert.deepEqual(registered.routes, ENTITY_360_ROUTES.map(([method, path, capability, access]) => ({
     method: method.toUpperCase(), path, capability, access,
   })));

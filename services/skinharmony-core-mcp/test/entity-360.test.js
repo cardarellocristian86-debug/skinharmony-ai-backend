@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 
-import { ENTITY_360_TOOLS, createEntity360Handlers } from "../src/entity-360.js";
+import { ENTITY_360_TOOLS, createEntity360Handlers, createEntity360InternalWorkContextRecovery } from "../src/entity-360.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import {
@@ -218,6 +218,38 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
   ].includes(item))) {
     assert.equal(toolNamed(name).annotations.readOnlyHint, true, name);
   }
+});
+
+test("Entity 360 internal incomplete-context recovery is DTT-bound and not a public tool", async () => {
+  assert.equal(ENTITY_360_TOOLS.some((entry) => entry.name === "entity_360_internal_work_context_recover"), false);
+  const calls = [];
+  const recover = createEntity360InternalWorkContextRecovery({
+    coreRequest: async (...args) => {
+      calls.push(args);
+      return { ok: true, result: { snapshot: { tenant_scope: "tenant-a", entity_id: ENTITY_ID,
+        entity_type: "work", project_work_linkage: { work_id: WORK_ID }, context_status: "READY",
+        snapshot_version: 4, previous_snapshot_digest: DIGEST }, execution_authorized: false,
+        production_decision_changed: false, recovery: { context_only: true, execution_authorized: false,
+          predecessor_snapshot_version: 3, predecessor_snapshot_digest: DIGEST } } };
+    },
+    issueAgentContext: ({ tenant_id, work_id }) => `signed:${tenant_id}:${work_id}`,
+  });
+  const result = await recover({ work_id: WORK_ID, expected_snapshot_version: 3,
+    expected_snapshot_digest: DIGEST }, { tenantId: "tenant-a", agentPresence });
+  assert.equal(result.structuredContent.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "/v1/entity-360/internal/work-context/recover");
+  assert.equal(calls[0][3].additionalHeaders["x-sh-dtt-agent-context"], `signed:tenant-a:${WORK_ID}`);
+  await assert.rejects(() => recover({ work_id: WORK_ID, expected_snapshot_version: 3,
+    expected_snapshot_digest: DIGEST, action: "git.commit" }, { tenantId: "tenant-a", agentPresence }),
+  /entity360_recovery_input_invalid/u);
+  const malformed = createEntity360InternalWorkContextRecovery({
+    coreRequest: async () => ({ snapshot: { context_status: "READY" } }),
+    issueAgentContext: () => "signed",
+  });
+  await assert.rejects(() => malformed({ work_id: WORK_ID, expected_snapshot_version: 3,
+    expected_snapshot_digest: DIGEST }, { tenantId: "tenant-a", agentPresence }),
+  /entity360_recovery_readback_invalid/u);
 });
 
 test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fields", () => {

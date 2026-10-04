@@ -458,3 +458,90 @@ for (const [name, failure] of [
     assert.equal(harness.committed.some((entry) => /^(branch:|team|assignment)/.test(entry)), false);
   });
 }
+
+test("server-verified expired verifier claim creates one fresh lineage replacement", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const assignmentId = "33333333-3333-4333-8333-333333333333";
+  const prior = {
+    tenant_id: "codexai", work_id: workId, run_id: "22222222-2222-4222-8222-222222222222", assignment_id: assignmentId,
+    assignment_key: "verify", agent_instance_id: "44444444-4444-4444-8444-444444444444", blueprint_id: "independent_verifier",
+    role: "independent_verifier", task_contract: { bounded: true }, dependencies: ["execute"], eligible_client_types: ["codex"],
+    status: "claimed", claim_expires_at: new Date("2026-09-01T00:00:00.000Z"), submitted_result: null, quarantine: null,
+    expired_claim_verified: true,
+  };
+  let inserted = null;
+  const client = { async query(sql, parameters = []) {
+    const statement = String(sql);
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim()) || statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+    if (statement.includes("expired_claim_verified")) return { rows: [prior] };
+    if (statement.includes("SET status='expired'")) return { rows: [{ ...prior, status: "expired" }] };
+    if (statement.includes("task_contract->'reissue'")) return { rows: [] };
+    if (statement.includes("dependencies ? $4")) return { rows: [] };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_assignments")) {
+      inserted = { ...prior, assignment_id: parameters[3], assignment_key: parameters[4], task_contract: JSON.parse(parameters[8]), status: "offered", claim_expires_at: null, expired_claim_verified: undefined };
+      return { rows: [inserted] };
+    }
+    if (statement.includes("FROM core_nyra_autopilot_receipts")) return { rows: [] };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_receipts")) return { rows: [] };
+    return { rows: [] };
+  }, release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const result = await runtime.reissueQuarantinedAssignment({ tenantId: "codexai" }, {
+    work_id: workId, assignment_id: assignmentId, idempotency_key: "reissue-expired-verifier-v1",
+  });
+  assert.equal(result.assignment.status, "offered");
+  assert.notEqual(result.assignment.assignment_id, assignmentId);
+  assert.equal(inserted.role, "independent_verifier");
+  assert.deepEqual(inserted.dependencies, ["execute"]);
+  assert.equal(inserted.task_contract.reissue.source_assignment_id, assignmentId);
+  assert.equal(inserted.task_contract.reissue.source_status, "claimed");
+  assert.equal(inserted.task_contract.reissue.recovery_status, "expired");
+  assert.equal(inserted.task_contract.reissue.reason, "expired_claim_requires_fresh_independent_evidence");
+});
+
+test("reissue rejects active, submitted, and unverified expired claims", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const assignmentId = "33333333-3333-4333-8333-333333333333";
+  for (const [status, expiredClaimVerified, role] of [["claimed", false, "independent_verifier"], ["submitted", false, "independent_verifier"], ["expired", false, "independent_verifier"], ["expired", true, "executor_specialist"]]) {
+    const client = { async query(sql) {
+      const statement = String(sql);
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim())) return { rows: [] };
+      if (statement.includes("expired_claim_verified")) return { rows: [{ status, role, expired_claim_verified: expiredClaimVerified }] };
+      return { rows: [] };
+    }, release() {} };
+    const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+    const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+    await assert.rejects(runtime.reissueQuarantinedAssignment({ tenantId: "codexai" }, {
+      work_id: workId, assignment_id: assignmentId, idempotency_key: `reissue-${status}-claim-v1`,
+    }), (error) => error?.code === "nyra_assignment_reissue_not_applicable");
+  }
+});
+
+test("expired claim reissue replays the existing replacement under the source lock", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const assignmentId = "33333333-3333-4333-8333-333333333333";
+  const replacementId = "55555555-5555-4555-8555-555555555555";
+  const prior = { tenant_id: "codexai", work_id: workId, run_id: "22222222-2222-4222-8222-222222222222", assignment_id: assignmentId,
+    assignment_key: "verify", agent_instance_id: "44444444-4444-4444-8444-444444444444", blueprint_id: "independent_verifier", role: "independent_verifier",
+    task_contract: {}, dependencies: ["execute"], eligible_client_types: ["codex"], status: "expired", claim_expires_at: new Date("2026-09-01T00:00:00.000Z"), submitted_result: null, quarantine: null, expired_claim_verified: true };
+  const replacement = { ...prior, assignment_id: replacementId, assignment_key: "verify_reissue_existing", status: "offered", claim_expires_at: null,
+    task_contract: { reissue: { source_assignment_id: assignmentId, source_status: "expired" } } };
+  let insertAttempted = false;
+  const client = { async query(sql) {
+    const statement = String(sql);
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(statement.trim())) return { rows: [] };
+    if (statement.includes("expired_claim_verified")) return { rows: [prior] };
+    if (statement.includes("task_contract->'reissue'")) return { rows: [replacement] };
+    if (statement.includes("INSERT INTO core_nyra_autopilot_assignments")) insertAttempted = true;
+    return { rows: [] };
+  }, release() {} };
+  const pool = { query: async () => ({ rows: [] }), connect: async () => client, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const result = await runtime.reissueQuarantinedAssignment({ tenantId: "codexai" }, {
+    work_id: workId, assignment_id: assignmentId, idempotency_key: "reissue-expired-replay-v1",
+  });
+  assert.equal(result.idempotent_replay, true);
+  assert.equal(result.assignment.assignment_id, replacementId);
+  assert.equal(insertAttempted, false);
+});
