@@ -145,7 +145,7 @@ function governedMigrationPool({ tamperTargetConstraint = false, initialSeedReco
         const event = icfEvents.get(Number(values[2]));
         return { rows: event ? [{ ...event }] : [], rowCount: event ? 1 : 0 };
       }
-      if (normalized === "SELECT clock_timestamp() AS consistent_cut_at") {
+      if (normalized === "SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS consistent_cut_at") {
         return { rows: [{ consistent_cut_at: consistentCutAt }], rowCount: 1 };
       }
       if (normalized.startsWith("INSERT INTO core_icf_event")) {

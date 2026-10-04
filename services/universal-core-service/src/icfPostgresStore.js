@@ -76,7 +76,9 @@ function initialSeedDigest(value, code) {
 }
 
 function initialSeedTimestamp(value, code) {
-  const milliseconds = Date.parse(String(value || ""));
+  // node-postgres returns timestamptz as Date. String(Date) discards fractional
+  // seconds, which can move a post-write database cut before the ICF event.
+  const milliseconds = value instanceof Date ? value.getTime() : Date.parse(String(value || ""));
   if (!Number.isFinite(milliseconds)) throw migrationError(code);
   return new Date(milliseconds).toISOString();
 }
@@ -410,7 +412,10 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
       // write/readback, otherwise an application clock sampled before this
       // transaction can make the seed look temporally future and leave the
       // first snapshot permanently INCOMPLETE.
-      const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at");
+      // JS ISO timestamps have millisecond precision while PostgreSQL stores
+      // microseconds. Return the next representable DB-owned millisecond so
+      // the committed head cannot fall just after a truncated cut.
+      const cut = await client.query("SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS consistent_cut_at");
       const consistentCutAt = initialSeedTimestamp(
         cut.rows[0]?.consistent_cut_at,
         "icf_initial_seed_consistent_cut_invalid",
@@ -499,14 +504,14 @@ export function createIcfPostgresStore({ pool, audit } = {}) {
       if (replays.length > 1) throw migrationError("icf_binding_refresh_replay_ambiguous");
       const replay = replays[0];
       if (replay) {
-        const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at"); await client.query("COMMIT");
+        const cut = await client.query("SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS consistent_cut_at"); await client.query("COMMIT");
         return Object.freeze({ ...seed, state: "replayed", icf_version: Number(replay.seq),
           ledger_head_digest: replay.digest,
           consistent_cut_at: initialSeedTimestamp(cut.rows[0]?.consistent_cut_at, "icf_binding_refresh_consistent_cut_invalid") });
       }
       const appended = await appendEventOnClient(client, { tenantId: seed.tenant_id, workId: seed.causal_work_id,
         eventType: ICF_WORK_GOVERNANCE_REOBSERVED_EVENT, payload });
-      const cut = await client.query("SELECT clock_timestamp() AS consistent_cut_at"); await client.query("COMMIT");
+      const cut = await client.query("SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 millisecond' AS consistent_cut_at"); await client.query("COMMIT");
       return Object.freeze({ ...seed, state: "reobserved", icf_version: appended.seq,
         ledger_head_digest: appended.digest, consistent_cut_at: initialSeedTimestamp(cut.rows[0]?.consistent_cut_at, "icf_binding_refresh_consistent_cut_invalid") });
     } catch (error) { try { await client.query("ROLLBACK"); } catch {} throw error; } finally { client.release(); }

@@ -127,6 +127,16 @@ function actor(identity, fallback = "nyra_autopilot") {
 }
 function shortKey(prefix, value) { return `${prefix}_${digest(value).slice(0, 48)}`; }
 
+function containsCredentialMaterial(value, depth = 0) {
+  if (depth > 16) return true;
+  if (typeof value === "string") return /(?:sk-[a-z0-9_-]{12,}|ghp_[a-zA-Z0-9]{12,}|xox[baprs]-|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/i.test(value);
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, item]) =>
+    (/^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|client[_-]?secret|private[_-]?key)$/i.test(key)
+      && item !== null && item !== false && item !== "")
+      || containsCredentialMaterial(item, depth + 1));
+}
+
 function isoTimestamp(value, field, { nullable = false } = {}) {
   if ((value === null || value === undefined) && nullable) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -525,6 +535,65 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
           updated_at: isoTimestamp(row.updated_at, "nyra_autopilot_run_updated_at"),
           execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
     },
+    async readVerifierEvidence(identity, input = {}) {
+      const tenantId = tenant(identity?.tenantId); const workId = uuid(input.work_id, "work_id");
+      const verifierAssignmentId = uuid(input.verifier_assignment_id, "verifier_assignment_id");
+      const claimant = presence(identity); await initialize();
+      const verifier = await pool.query(`SELECT assignment_id,run_id,role,status,claimed_agent_id,claimed_presence_signature,claimed_session_fingerprint,claim_expires_at
+        FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3`,
+      [tenantId, workId, verifierAssignmentId]);
+      const row = verifier.rows[0];
+      const expiresAt = row?.claim_expires_at instanceof Date
+        ? row.claim_expires_at.getTime() : Date.parse(String(row?.claim_expires_at || ""));
+      if (!row || row.role !== "independent_verifier" || row.status !== "claimed"
+        || !Number.isFinite(expiresAt) || expiresAt <= Date.now()
+        || row.claimed_agent_id !== claimant.agent_id || row.claimed_presence_signature !== claimant.signature
+        || row.claimed_session_fingerprint !== claimant.session_fingerprint) {
+        throw codedError("nyra_verifier_evidence_read_denied");
+      }
+      const producers = await pool.query(`SELECT assignment_id,assignment_key,role,status,submitted_result
+        FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3
+          AND role<>'independent_verifier' ORDER BY assignment_key`,
+      [tenantId, workId, row.run_id]);
+      if (!producers.rows.length || producers.rows.some((item) =>
+        !["submitted", "verified"].includes(item.status) || item.submitted_result === null)) {
+        throw codedError("nyra_verifier_evidence_producers_incomplete");
+      }
+      if (producers.rows.some((item) => containsCredentialMaterial(item.submitted_result))) {
+        throw codedError("nyra_verifier_evidence_credential_material_denied");
+      }
+      const evidence = producers.rows.map((item) => Object.freeze({ assignment_id: item.assignment_id,
+        assignment_key: item.assignment_key, role: item.role, status: item.status,
+        submitted_result: clone(item.submitted_result), result_digest: digest(item.submitted_result) }));
+      const evidenceById = new Map(evidence.map((item) => [item.assignment_id, item]));
+      const receipts = await pool.query(`SELECT receipt_id,sequence_number,event_type,payload,previous_receipt_hash,receipt_hash,created_at
+        FROM core_nyra_autopilot_receipts WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number`, [tenantId, workId]);
+      let previousHash = null; let previousSequence = 0;
+      const verifiedReceipts = [];
+      for (const item of receipts.rows) {
+        const payload = clone(item.payload); const sequence = Number(item.sequence_number);
+        const unsigned = { tenant_id: tenantId, work_id: workId, sequence_number: sequence,
+          event_type: item.event_type, payload, previous_receipt_hash: item.previous_receipt_hash || null };
+        if (!Number.isSafeInteger(sequence) || sequence !== previousSequence + 1
+          || item.previous_receipt_hash !== previousHash || item.receipt_hash !== digest(unsigned)) {
+          throw codedError("nyra_verifier_evidence_receipt_invalid");
+        }
+        previousHash = item.receipt_hash; previousSequence = sequence;
+        const source = item.event_type === "nyra_assignment_submitted" ? evidenceById.get(payload?.assignment_id) : null;
+        if (source && payload.result_digest !== source.result_digest) throw codedError("nyra_verifier_evidence_receipt_invalid");
+        if (source) verifiedReceipts.push(Object.freeze({
+          receipt_id: item.receipt_id, sequence_number: sequence, event_type: item.event_type, payload,
+          previous_receipt_hash: item.previous_receipt_hash, receipt_hash: item.receipt_hash,
+          created_at: isoTimestamp(item.created_at, "nyra_verifier_receipt_created_at") }));
+      }
+      if (verifiedReceipts.length !== evidence.length
+        || new Set(verifiedReceipts.map((item) => item.payload.assignment_id)).size !== evidence.length) {
+        throw codedError("nyra_verifier_evidence_receipt_invalid");
+      }
+      return Object.freeze({ tenant_id: tenantId, work_id: workId, run_id: row.run_id, verifier_assignment_id: verifierAssignmentId,
+        producer_evidence: evidence, receipts: verifiedReceipts,
+        execution_authorized: false, verification_authorized: false });
+    },
     async reissueQuarantinedAssignment(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);
       const workId = uuid(input.work_id, "work_id");
@@ -801,6 +870,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const claimant = presence(identity);
       const body = input.result && typeof input.result === "object" && !Array.isArray(input.result) ? input.result : null;
       if (!body) throw new Error("nyra_assignment_result_invalid");
+      if (containsCredentialMaterial(body)) throw new Error("nyra_assignment_result_credential_material_denied");
       return transaction(async (client) => {
         await expireClaims(client, tenantId, workId);
         const selected = await client.query(`SELECT * FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`,
@@ -809,6 +879,17 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         if (!row) throw new Error("nyra_assignment_not_found");
         if (row.status === "submitted" && row.claimed_presence_signature === claimant.signature) return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(row), idempotent_replay: true, execution_authorized: false };
         if (row.status !== "claimed" || row.claimed_presence_signature !== claimant.signature || row.claimed_agent_id !== claimant.agent_id) throw new Error("nyra_assignment_submission_denied");
+        // An approval must cover the complete current run even if the caller
+        // skipped the evidence read. Keep incomplete/unknown producers pending.
+        if (row.role === "independent_verifier" && body.verdict === "approved") {
+          const sources = await client.query(`SELECT status,submitted_result FROM core_nyra_autopilot_assignments
+            WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND role<>'independent_verifier' FOR SHARE`,
+          [tenantId, workId, row.run_id]);
+          if (!sources.rows.length || sources.rows.some((item) =>
+            !["submitted", "verified"].includes(item.status) || item.submitted_result === null)) {
+            throw codedError("nyra_verifier_evidence_producers_incomplete");
+          }
+        }
         const guarded = guardInterAgentEnvelope({ tenant_id: tenantId, from_agent_id: claimant.agent_id, to_agent_id: row.blueprint_id,
           from_agent_signature: claimant.signature, from_client_type: claimant.client_type, thread_id: row.assignment_id, body });
         if (!guarded.allowed) {

@@ -311,7 +311,7 @@ test("a rejected verification atomically reoffers every assignment and replays t
 test("Nyra Autopilot keeps activation owner-gated while bounded reconciliation can revive one Work", () => {
   const tools = Object.fromEntries(NYRA_AUTOPILOT_TOOLS.map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), [
-    "nyra_autopilot_enable", "nyra_autopilot_reconcile", "nyra_autopilot_status", "nyra_autopilot_work_read",
+    "nyra_autopilot_enable", "nyra_autopilot_reconcile", "nyra_autopilot_status", "nyra_autopilot_verifier_evidence_read", "nyra_autopilot_work_read",
     "nyra_work_assignment_claim", "nyra_work_assignment_inbox", "nyra_work_assignment_reissue", "nyra_work_assignment_submit",
   ]);
   assert.equal(tools.nyra_autopilot_enable._meta["skinharmony/ownerConfirmationRequired"], true);
@@ -544,4 +544,47 @@ test("expired claim reissue replays the existing replacement under the source lo
   assert.equal(result.idempotent_replay, true);
   assert.equal(result.assignment.assignment_id, replacementId);
   assert.equal(insertAttempted, false);
+});
+
+test("assigned independent verifier reads exact producer outputs and receipt hashes only", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const verifierId = "33333333-3333-4333-8333-333333333333";
+  const producer = { assignment_id: "44444444-4444-4444-8444-444444444444", assignment_key: "execute",
+    role: "executor_specialist", status: "submitted", submitted_result: { artifact: "sha256:abc" } };
+  const receipt = { receipt_id: "55555555-5555-4555-8555-555555555555", sequence_number: 1,
+    event_type: "nyra_assignment_submitted", payload: { assignment_id: producer.assignment_id, result_digest: digest(producer.submitted_result) },
+    previous_receipt_hash: null, receipt_hash: null, created_at: new Date("2026-10-04T10:00:00Z") };
+  receipt.receipt_hash = digest({ tenant_id: "tenant-a", work_id: workId, sequence_number: 1,
+    event_type: receipt.event_type, payload: receipt.payload, previous_receipt_hash: null });
+  const pool = { query: async (sql) => {
+    if (String(sql).includes("SELECT assignment_id,run_id,role,status,claimed_agent_id")) return { rows: [{ assignment_id: verifierId,
+      run_id: "22222222-2222-4222-8222-222222222222", role: "independent_verifier", status: "claimed",
+      claimed_agent_id: "verifier", claimed_presence_signature: `ags_${"a".repeat(32)}`, claimed_session_fingerprint: "b".repeat(32), claim_expires_at: new Date(Date.now() + 60_000) }] };
+    if (String(sql).includes("role<>'independent_verifier'")) return { rows: [producer] };
+    if (String(sql).includes("core_nyra_autopilot_receipts")) return { rows: [receipt] };
+    return { rows: [] };
+  }, end() {} };
+  const runtime = createNyraAutopilotRuntime({}, { pool, teamRuntime: { schemaSql: "" } });
+  const identity = { tenantId: "tenant-a", agentPresence: { agent_id: "verifier", client_type: "codex", transport_bound: true, signature: `ags_${"a".repeat(32)}`, host_transport_session_fingerprint: "b".repeat(32) } };
+  const read = await runtime.readVerifierEvidence(identity, { work_id: workId, verifier_assignment_id: verifierId });
+  assert.deepEqual(read.producer_evidence[0].submitted_result, producer.submitted_result);
+  assert.equal(read.producer_evidence[0].result_digest, digest(producer.submitted_result));
+  assert.equal(read.receipts[0].receipt_hash, receipt.receipt_hash);
+  assert.equal(read.execution_authorized, false);
+  const wrong = createNyraAutopilotRuntime({}, { pool: { query: async (sql) => String(sql).includes("SELECT assignment_id,run_id,role,status,claimed_agent_id") ? ({ rows: [{ assignment_id: verifierId, role: "independent_verifier", status: "claimed", claimed_agent_id: "other", claimed_presence_signature: `ags_${"a".repeat(32)}`, claimed_session_fingerprint: "b".repeat(32), claim_expires_at: new Date(Date.now() + 60_000) }] }) : ({ rows: [] }), end() {} }, teamRuntime: { schemaSql: "" } });
+  await assert.rejects(wrong.readVerifierEvidence(identity, { work_id: workId, verifier_assignment_id: verifierId }), /nyra_verifier_evidence_read_denied/);
+});
+
+
+test("verifier evidence read denies expired claims and absent Work scope", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const verifierId = "33333333-3333-4333-8333-333333333333";
+  const identity = { tenantId: "tenant-a", agentPresence: { agent_id: "verifier", client_type: "codex", transport_bound: true, signature: `ags_${"a".repeat(32)}`, host_transport_session_fingerprint: "b".repeat(32) } };
+  for (const row of [
+    { assignment_id: verifierId, role: "independent_verifier", status: "claimed", claimed_agent_id: "verifier", claimed_presence_signature: `ags_${"a".repeat(32)}`, claim_expires_at: new Date(Date.now() - 1) },
+    null,
+  ]) {
+    const runtime = createNyraAutopilotRuntime({}, { pool: { query: async (sql) => String(sql).includes("SELECT assignment_id,run_id,role,status,claimed_agent_id") ? ({ rows: row ? [row] : [] }) : ({ rows: [] }), end() {} }, teamRuntime: { schemaSql: "" } });
+    await assert.rejects(runtime.readVerifierEvidence(identity, { work_id: workId, verifier_assignment_id: verifierId }), /nyra_verifier_evidence_read_denied/);
+  }
 });
