@@ -4819,6 +4819,32 @@ export function createWorkContinuityV2Store({
       source_digests: Object.freeze(sourceDigests),
     });
   }
+  async function prepareNyraAutopilotSubmissionInServerTransaction(identity, input = {}, { client } = {}) {
+    // This is deliberately an internal server bridge, not a tool/API input:
+    // the caller cannot select a connection. It establishes the governed
+    // Work lock before Autopilot locks its assignment row.
+    await initialize();
+    if (!client || typeof client.query !== "function") {
+      fail("nyra_autopilot_server_transaction_required");
+    }
+    const actor = actorFromIdentity(identity);
+    const work = await loadWork(client, actor, uuid(input.work_id), true);
+    assertPermission(canContributeEvidence, work, actor);
+    return Object.freeze({ work_id: work.work_id, execution_authorized: false });
+  }
+  async function validateNyraAutopilotVerificationCandidateInServerTransaction(identity, input = {}, { client } = {}) {
+    // Kept separate from the public transaction-owning validator so submit
+    // cannot deadlock against its own assignment FOR UPDATE lock.
+    await initialize();
+    if (!client || typeof client.query !== "function") {
+      fail("nyra_autopilot_server_transaction_required");
+    }
+    const actor = actorFromIdentity(identity);
+    return nyraAutopilotVerificationCandidateWithClient(client, actor, {
+      ...input,
+      assignmentStates: ["claimed"],
+    });
+  }
   async function validateNyraAutopilotVerificationCandidate(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -9960,6 +9986,8 @@ export function createWorkContinuityV2Store({
     materializeNativePrecommitTicketGateWithClient,
     fulfillPrecommitTicketTask: guardPendingWorkMutation(fulfillPrecommitTicketTask),
     settlePrecommitEffectLifecycle,
+    prepareNyraAutopilotSubmissionInServerTransaction,
+    validateNyraAutopilotVerificationCandidateInServerTransaction,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
     recordTask: guardPendingWorkMutation(recordTask),
     recordTaskContract: guardPendingWorkMutation(recordTaskContract),
