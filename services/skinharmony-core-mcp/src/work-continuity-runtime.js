@@ -2540,7 +2540,21 @@ CREATE TABLE IF NOT EXISTS core_continuity_intent_anchors (
   PRIMARY KEY (tenant_id, work_id),
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_intent_session_idx
+-- Intent Anchors are immutable historical facts. A reviewed child Work may
+-- inherit its parent’s logical session, so session ownership belongs solely to
+-- core_continuity_session_bindings. Downgrade the former uniqueness rule once;
+-- later schema initialization leaves the ordinary lookup index intact.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_index
+    WHERE indexrelid = to_regclass('core_continuity_intent_session_idx')
+      AND indisunique
+  ) THEN
+    DROP INDEX core_continuity_intent_session_idx;
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS core_continuity_intent_session_idx
   ON core_continuity_intent_anchors (tenant_id, project_id, session_id);
 CREATE OR REPLACE FUNCTION core_continuity_intent_anchors_immutable() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'core_continuity_intent_anchor_immutable'; END;

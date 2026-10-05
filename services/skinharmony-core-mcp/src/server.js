@@ -3879,10 +3879,18 @@ const baseHandlers = {
     nyra_work_assignment_submit: async (args, identity) => {
       requireBoundedAssignmentCollaboration(identity);
       const result = await nyraAutopilotRuntime.submit(identity, args, {
-        validateSubmission: async ({ assignment, result: submittedResult }) => {
-          if (assignment?.role !== "independent_verifier" ||
-              typeof workContinuityV2Store?.validateNyraAutopilotVerificationCandidate !== "function") return;
-          await workContinuityV2Store.validateNyraAutopilotVerificationCandidate(
+        prepareSubmission: async (_submission, { client }) => {
+          if (typeof workContinuityV2Store?.prepareNyraAutopilotSubmissionInServerTransaction !== "function") return;
+          await workContinuityV2Store.prepareNyraAutopilotSubmissionInServerTransaction(
+            withTenantWorkAcl(identity), { work_id: args.work_id }, { client },
+          );
+        },
+        validateSubmission: async ({ assignment, result: submittedResult }, { client }) => {
+          if (assignment?.role !== "independent_verifier") return;
+          if (typeof workContinuityV2Store?.validateNyraAutopilotVerificationCandidateInServerTransaction !== "function") {
+            throw new Error("nyra_autopilot_verification_validator_unavailable");
+          }
+          await workContinuityV2Store.validateNyraAutopilotVerificationCandidateInServerTransaction(
             withTenantWorkAcl(identity),
             {
               work_id: args.work_id,
@@ -3890,6 +3898,7 @@ const baseHandlers = {
               assignment,
               result: submittedResult,
             },
+            { client },
           );
         },
       });

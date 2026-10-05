@@ -2718,3 +2718,74 @@ test("PostgreSQL 16 persists terminal reconciliation v3 as an idempotent append-
     await runtime.close();
   }
 });
+
+test("PostgreSQL 16 preserves immutable parent anchor when reviewed child rebinds its session", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const schema = `child_anchor_${runId}`;
+  const tenantId = `pg16_child_anchor_${runId}`;
+  const projectId = `child-anchor-${runId.slice(0, 12)}`;
+  const sessionId = `child-anchor-session-${runId.slice(0, 12)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 6, statement_timeout: 10_000 });
+  let client; let runtime;
+  try {
+    await pool.query(`CREATE SCHEMA ${pgIdentifier(schema)}`);
+    client = await pool.connect();
+    await client.query(`SET search_path TO ${pgIdentifier(schema)}`);
+    const scopedPool = { query: (...args) => client.query(...args), async connect() {
+      const connection = await pool.connect();
+      await connection.query(`SET search_path TO ${pgIdentifier(schema)}`);
+      return connection;
+    }, async end() {} };
+    runtime = createWorkContinuityRuntime({ databaseUrl }, { pool: scopedPool });
+    const store = createWorkContinuityV2Store({ pool: scopedPool, legacyRuntime: runtime });
+    const owner = reconciliationOwnerIdentity(tenantId);
+    await runtime.initialize(); await store.initialize();
+    // Simulate a deployed pre-fix schema. A fresh initializer must downgrade
+    // the obsolete unique index without touching any anchor rows.
+    await client.query("DROP INDEX core_continuity_intent_session_idx");
+    await client.query("CREATE UNIQUE INDEX core_continuity_intent_session_idx ON core_continuity_intent_anchors (tenant_id,project_id,session_id)");
+    const schemaUpgrader = createWorkContinuityRuntime({ databaseUrl }, { pool: scopedPool });
+    await schemaUpgrader.initialize();
+    const input = (requestId, workId, objective) => ({
+      intent_type: "CREATE_WORK", request_id: requestId, project_id: projectId, session_id: sessionId,
+      ...(workId ? { work_id: workId } : {}), initial_message: "governed child session regression",
+      work_name: "Governed child anchor regression", work_type: "software_git",
+      idea: "Reviewed child inherits logical session.", objective,
+      architecture: { components: [{ id: "core-mcp" }] }, next_action: "finish repair",
+      visibility_scope: "private", acceptance_criteria: ["Parent evidence is immutable."],
+      constraints: ["No unreviewed child session rebind."],
+      tasks: [{ title: "Verify child anchor", required: true }], host_type: "codex_native",
+      client_type: "codex", agent_id: "postgres16-reconciliation-owner",
+    });
+    const parentInput = input(`parent-${runId}`, null, "Create the parent.");
+    const parentReview = await store.openWorkReview(owner, { intent_type: "CREATE_WORK", request: parentInput.objective, create_request: parentInput });
+    const parent = await store.createNewWork(owner, { ...parentInput, review_id: parentReview.review_id, review_digest: parentReview.review_digest,
+      review_decision: "NO_CONFLICT_PROCEED", _core_authorization_receipt: bootstrapCoreAuthorizationReceipt(tenantId, `${runId}-parent`) });
+    const parentAnchor = (await client.query(`SELECT session_id,anchor,intent_digest,create_request_digest FROM core_continuity_intent_anchors WHERE tenant_id=$1 AND work_id=$2`, [tenantId, parent.work.work_id])).rows[0];
+    const childId = crypto.randomUUID();
+    const childInput = input(`child-${runId}`, childId, "Create a bounded child.");
+    const review = await store.openWorkReview(owner, { intent_type: "CREATE_WORK", request: childInput.objective, create_request: childInput });
+    const request = { ...childInput, review_id: review.review_id, review_digest: review.review_digest,
+      review_decision: "CREATE_CHILD_WORK", review_parent_work_id: parent.work.work_id,
+      _core_authorization_receipt: bootstrapCoreAuthorizationReceipt(tenantId, `${runId}-child`) };
+    const [one, two] = await Promise.all([store.createNewWork(owner, request), store.createNewWork(owner, request)]);
+    assert.equal(one.work.work_id, childId); assert.equal(two.work.work_id, childId);
+    assert.equal(Number(one.idempotent_replay) + Number(two.idempotent_replay), 1);
+    const anchors = await client.query(`SELECT work_id,session_id,anchor,intent_digest,create_request_digest FROM core_continuity_intent_anchors WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 ORDER BY work_id`, [tenantId, projectId, sessionId]);
+    assert.equal(anchors.rowCount, 2);
+    assert.deepEqual(anchors.rows.find((row) => row.work_id === parent.work.work_id), { work_id: parent.work.work_id, ...parentAnchor });
+    const binding = await client.query(`SELECT work_id FROM core_continuity_session_bindings WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`, [tenantId, projectId, sessionId]);
+    assert.deepEqual(binding.rows, [{ work_id: childId }]);
+    const index = await client.query(`SELECT indisunique FROM pg_index WHERE indexrelid=to_regclass('core_continuity_intent_session_idx')`);
+    assert.equal(index.rows[0]?.indisunique, false);
+    await assert.rejects(runtime.ensure(owner, { ...childInput, work_id: crypto.randomUUID(), parent_work_id: parent.work.work_id,
+      idea: "unreviewed", objective: "Must not rebind." }, { creationAuthorized: true }), /continuity_session_intent_conflict/);
+    assert.equal(Number((await client.query(`SELECT count(*)::int AS count FROM core_continuity_intent_anchors WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`, [tenantId, projectId, sessionId])).rows[0].count), 2);
+    await assert.rejects(client.query(`UPDATE core_continuity_intent_anchors SET anchor=anchor WHERE tenant_id=$1 AND work_id=$2`, [tenantId, parent.work.work_id]), /core_continuity_intent_anchor_immutable/);
+  } finally {
+    await runtime?.close().catch(() => {}); client?.release();
+    await pool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`).catch(() => {}); await pool.end();
+  }
+});

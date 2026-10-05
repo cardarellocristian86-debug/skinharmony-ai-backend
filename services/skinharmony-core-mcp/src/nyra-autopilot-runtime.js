@@ -862,7 +862,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(updated.rows[0]), receipt, execution_authorized: false };
       });
     },
-    async submit(identity, input = {}, { validateSubmission = null } = {}) {
+    async submit(identity, input = {}, { prepareSubmission = null, validateSubmission = null } = {}) {
       const tenantId = tenant(identity?.tenantId);
       const workId = uuid(input.work_id, "work_id");
       const assignmentId = uuid(input.assignment_id, "assignment_id");
@@ -872,6 +872,13 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       if (!body) throw new Error("nyra_assignment_result_invalid");
       if (containsCredentialMaterial(body)) throw new Error("nyra_assignment_result_credential_material_denied");
       return transaction(async (client) => {
+        // Lock the governed Work before the assignment. The server-owned V2
+        // validator reuses this same client, so PostgreSQL sees one coherent
+        // Work -> assignment -> producer lock order rather than a self-wait
+        // across two transactions.
+        if (typeof prepareSubmission === "function") {
+          await prepareSubmission({ tenant_id: tenantId, work_id: workId, assignment_id: assignmentId }, { client });
+        }
         await expireClaims(client, tenantId, workId);
         const selected = await client.query(`SELECT * FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`,
           [tenantId, workId, assignmentId]);
@@ -914,7 +921,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
               claimed_session_fingerprint: row.claimed_session_fingerprint,
             },
             result: guarded.value,
-          });
+          }, { client });
         }
         const updated = await client.query(`UPDATE core_nyra_autopilot_assignments SET status='submitted',submitted_result=$4::jsonb,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 RETURNING *`, [tenantId, workId, assignmentId, serialized]);
